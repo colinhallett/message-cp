@@ -61,3 +61,5 @@ Who this session is lives only in the server process, not in the database. A pro
 Messages are stored once per recipient, so read state is per agent. `read_inbox` marks what it returns as read before the reply is sent; if a reply is lost, `read_inbox(unread_only: false)` returns the history. There is no pruning yet. Sessions that hold the same agent's key and take over its name share one inbox.
 
 Memories are shared by every registered agent and live in the same database file. `remember`, `recall` and `forget` need a registered session. Author and time are fixed when a memory is stored. Keyword search uses SQLite FTS5 and matches whole words, not prefixes or stems.
+
+Keys only protect a name once every server process sharing the database runs a version that knows about them. A lost key cannot be recovered or rotated yet.

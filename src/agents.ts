@@ -1,4 +1,4 @@
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import type { Db } from "./db.js";
 
 export class ToolError extends Error {}
@@ -43,6 +43,9 @@ export function validateName(name: string): void {
 const MAX_KEY_LENGTH = 256;
 
 const hashKey = (key: string) => createHash("sha256").update(key).digest("hex");
+const sameHash = (a: string, b: string) => timingSafeEqual(Buffer.from(a), Buffer.from(b));
+
+export type RegisterResult = Agent & { key?: string };
 
 function validateKey(key: string): void {
   if (key.length < 1 || key.length > MAX_KEY_LENGTH) {
@@ -56,7 +59,7 @@ function validateKey(key: string): void {
  * before keys existed) is claimed by this call. With no `key` given a new one is generated and
  * returned, this once; only its hash is stored. `bio` undefined keeps an existing agent's bio.
  */
-export const registerAgent = (db: Db, name: string, bio?: string, key?: string): Agent & { key?: string } =>
+export const registerAgent = (db: Db, name: string, bio?: string, key?: string): RegisterResult =>
   db.transaction(() => {
     validateName(name);
     if (bio !== undefined && bio.length > MAX_BIO_LENGTH) {
@@ -66,23 +69,25 @@ export const registerAgent = (db: Db, name: string, bio?: string, key?: string):
     const existing = db.prepare("SELECT key_hash FROM agents WHERE name = ?").get(name) as
       | { key_hash: string | null }
       | undefined;
-    if (existing?.key_hash && (key === undefined || hashKey(key) !== existing.key_hash)) {
+    if (existing?.key_hash && (key === undefined || !sameHash(hashKey(key), existing.key_hash))) {
       throw new ToolError(
         `Agent '${name}' is already registered and has a key. Pass its key to take it over.`,
       );
     }
-    const issued = key === undefined ? randomBytes(32).toString("hex") : undefined;
-    const keyHash = hashKey(key ?? issued!);
+    const issued = key === undefined;
+    const effectiveKey = key ?? randomBytes(32).toString("hex");
+    const keyHash = hashKey(effectiveKey);
     const now = Date.now();
     const row = db
       .prepare(
         `INSERT INTO agents (name, bio, registered_at, last_seen, key_hash) VALUES (?, ?, ?, ?, ?)
+         -- Reached on a conflict only after the key check above passed.
          ON CONFLICT(name) DO UPDATE SET bio = COALESCE(?, bio), last_seen = excluded.last_seen, key_hash = excluded.key_hash
          RETURNING name, bio, registered_at, last_seen`,
       )
       .get(name, bio ?? "", now, now, keyHash, bio ?? null) as Row;
     // A caller that supplied its own key already has it.
-    return issued === undefined ? toAgent(row) : { ...toAgent(row), key: issued };
+    return issued ? { ...toAgent(row), key: effectiveKey } : toAgent(row);
   }).immediate();
 
 /**

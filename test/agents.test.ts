@@ -275,7 +275,6 @@ describe("agent keys", () => {
     });
 
     it("claims an agent that has no key and refuses one with a different key", () => {
-      db.prepare("UPDATE agents SET key_hash = NULL").run();
       db.prepare("INSERT INTO agents (name, bio, registered_at, last_seen) VALUES ('old', 'b', 0, 0)").run();
       const env = { MEMORY_CP_AGENT: "old", MEMORY_CP_AGENT_KEY: "k1" };
       agentFromEnv(db, env);
