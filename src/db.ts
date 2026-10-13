@@ -80,14 +80,44 @@ function migrate(db: Db): void {
   }
 }
 
+// Several processes switching a new file to WAL at once make the losers fail with SQLITE_BUSY straight away,
+// without waiting for the busy timeout, so the switch is retried here.
+const WAL_RETRY_LIMIT_MS = 5000;
+const WAL_RETRY_MAX_DELAY_MS = 50;
+
+function isBusy(err: unknown): boolean {
+  const code = (err as { code?: unknown } | null)?.code;
+  return typeof code === "string" && code.startsWith("SQLITE_BUSY");
+}
+
+// openDb is synchronous, so the pause between retries blocks the thread.
+function sleepSync(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+function enableWal(db: Db): void {
+  const deadline = Date.now() + WAL_RETRY_LIMIT_MS;
+  let delay = 1;
+  for (;;) {
+    try {
+      db.pragma("journal_mode = WAL");
+      return;
+    } catch (err) {
+      if (!isBusy(err) || Date.now() >= deadline) throw err;
+      sleepSync(delay * (0.5 + Math.random())); // jitter keeps the losers from retrying in step
+      delay = Math.min(delay * 2, WAL_RETRY_MAX_DELAY_MS);
+    }
+  }
+}
+
 export function openDb(path: string = dbPath()): Db {
   // Owner-only, whatever the umask: names and bios are not for other local accounts.
   // WAL and journal files take the permissions of the main file.
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   if (!existsSync(path)) writeFileSync(path, "", { mode: 0o600, flag: "a" });
   const db = new Database(path);
-  // WAL and a busy timeout let several processes share the file without lock errors.
-  db.pragma("journal_mode = WAL");
+  // WAL and a busy timeout let several processes share the file without lock errors; enableWal retries the first switch.
+  enableWal(db);
   db.pragma("busy_timeout = 5000");
   db.exec(SCHEMA);
   migrate(db);
