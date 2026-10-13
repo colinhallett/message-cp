@@ -81,6 +81,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   completed_at INTEGER
 );
 CREATE INDEX IF NOT EXISTS tasks_status ON tasks (status, id);
+CREATE INDEX IF NOT EXISTS tasks_assignee ON tasks (assignee, id);
 
 CREATE TABLE IF NOT EXISTS task_tags (
   task_id INTEGER NOT NULL,

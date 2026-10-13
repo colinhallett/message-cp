@@ -80,9 +80,10 @@ export function postTask(db: Db, poster: string, title: string, details: string,
   checkLength("Details", details, MAX_TASK_TEXT_LENGTH);
   const clean = cleanTags(tags);
   if (clean.length > MAX_TAGS) throw new ToolError(`At most ${MAX_TAGS} tags per task.`);
-  const now = Date.now();
   return db
     .transaction((): Task => {
+      // Read the clock after the write lock is held, so id order is creation-time order.
+      const now = Date.now();
       const { lastInsertRowid } = db
         .prepare("INSERT INTO tasks (title, details, status, poster, created_at) VALUES (?, ?, 'open', ?, ?)")
         .run(title, details, poster, now);
