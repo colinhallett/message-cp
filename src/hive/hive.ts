@@ -10,6 +10,8 @@ import type { AgentConfig, HiveConfig } from "./config.js";
 import { STALE_MS, abandonStaleRuns, beat, claimMessages, ensureRunsTable, finishRun, promptFor } from "./runs.js";
 
 const MAX_OUTPUT = 1_000_000;
+/** The start of stdout is kept apart from the tail: a CLI announces its session id there. */
+const MAX_HEAD = 64_000;
 const KILL_GRACE_MS = 5000;
 const DRAIN_MS = 1000;
 
@@ -110,6 +112,7 @@ export function startHive(db: Db, config: HiveConfig, options: HiveOptions = {})
       Object.assign(env, cmd.env);
       const child = spawn(cmd.command, cmd.args, { cwd: agent.cwd, env, stdio: ["pipe", "pipe", "pipe"], detached: true });
       let stdout = "";
+      let head = "";
       let stderr = "";
       let timedOut = false;
       let settled = false;
@@ -134,13 +137,16 @@ export function startHive(db: Db, config: HiveConfig, options: HiveOptions = {})
       }, agent.timeoutSeconds * 1000);
       child.stdout.setEncoding("utf8");
       child.stderr.setEncoding("utf8");
-      child.stdout.on("data", (d: string) => (stdout = (stdout + d).slice(-MAX_OUTPUT)));
+      child.stdout.on("data", (d: string) => {
+        if (head.length < MAX_HEAD) head += d.slice(0, MAX_HEAD - head.length);
+        stdout = (stdout + d).slice(-MAX_OUTPUT);
+      });
       child.stderr.on("data", (d: string) => (stderr = (stderr + d).slice(-2000)));
       child.on("error", (err) => done({ exitStatus: "error", error: err.message }));
       child.stdin.on("error", () => {});
       child.stdin.end(cmd.stdin);
       const finish = (code: number | null, signal: NodeJS.Signals | null) => {
-        const sessionId = cli.parseSessionId(stdout);
+        const sessionId = cli.parseSessionId(stdout) ?? cli.parseSessionId(head);
         if (timedOut) return done({ exitStatus: "timeout", sessionId, error: `no exit within ${agent.timeoutSeconds}s` });
         if (code === 0) return done({ exitStatus: "ok", sessionId });
         done({ exitStatus: signal ? `signal ${signal}` : `exit ${code}`, sessionId, error: stderr.trim() || undefined });

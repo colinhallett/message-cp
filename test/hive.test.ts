@@ -317,6 +317,10 @@ describe("codex command line", () => {
     expect(overrides(codexCli.build(spec()).args)).toContain('sandbox_mode="read-only"');
   });
 
+  it("keeps a scoped write permission read-only, since the sandbox cannot confine writes to a path", () => {
+    expect(overrides(codexCli.build(spec({ allowedTools: ["Edit(src/docs/**)", "Write(x)"] })).args)).toContain('sandbox_mode="read-only"');
+  });
+
   it("resumes by session id with no working-directory flag, and starts afresh with one", () => {
     const resumed = codexCli.build(spec({ resumeSessionId: "t1" })).args;
     expect(resumed.slice(0, 2)).toEqual(["exec", "resume"]);

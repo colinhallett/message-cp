@@ -76,7 +76,7 @@ const toml = (value: unknown) => JSON.stringify(value);
  * write tool gives `workspace-write` (no network), anything else `read-only`. Approval is `never`, so
  * a refused action fails instead of waiting for a prompt. Sandbox and approval are config overrides on
  * every run because `codex exec resume` has no flag for either; the working directory is the process's.
- * Shell commands cannot be limited per command, so `Bash(...)` entries do not widen or narrow anything.
+ * A scoped entry such as `Edit(src/**)` stays `read-only`: the sandbox cannot confine writes to a path. Shell commands cannot be limited per command, so `Bash(...)` entries do not widen or narrow anything.
  */
 export const codexCli: AgentCli = {
   build(spec) {
@@ -85,7 +85,7 @@ export const codexCli: AgentCli = {
       args: string[];
       env: Record<string, string>;
     };
-    const sandbox = spec.allowedTools.some((t) => WRITE_TOOLS.has(t.replace(/\(.*$/, ""))) ? "workspace-write" : "read-only";
+    const sandbox = spec.allowedTools.some((t) => WRITE_TOOLS.has(t)) ? "workspace-write" : "read-only";
     const key = `mcp_servers.${MCP_SERVER_NAME}`;
     const overrides = [
       `approval_policy=${toml("never")}`,
