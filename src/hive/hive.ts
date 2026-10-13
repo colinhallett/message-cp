@@ -7,7 +7,7 @@ import { ToolError, registerAgent } from "../agents.js";
 import { dbPath, type Db } from "../db.js";
 import { MCP_SERVER_NAME, claudeCli, type AgentCli } from "./agent-cli.js";
 import type { AgentConfig, HiveConfig } from "./config.js";
-import { abandonOrphanedRuns, claimMessages, ensureRunsTable, finishRun, promptFor } from "./runs.js";
+import { STALE_MS, abandonStaleRuns, beat, claimMessages, ensureRunsTable, finishRun, promptFor } from "./runs.js";
 
 const MAX_OUTPUT = 1_000_000;
 const KILL_GRACE_MS = 5000;
@@ -38,7 +38,8 @@ export function startHive(db: Db, config: HiveConfig, options: HiveOptions = {})
   const log = options.log ?? ((line: string) => console.error(`memory-cp hive: ${line}`));
   ensureRunsTable(db);
   // A hive that died mid-run leaves rows with no end; their messages were already read and are not retried.
-  const orphans = abandonOrphanedRuns(db);
+  // Rows still being beaten by another live hive are not touched.
+  const orphans = abandonStaleRuns(db);
   if (orphans > 0) log(`${orphans} run(s) from an earlier hive never finished; marked abandoned`);
 
   // Agents must exist to receive messages. One whose key does not match is left out, not fatal.
@@ -59,6 +60,7 @@ export function startHive(db: Db, config: HiveConfig, options: HiveOptions = {})
   });
 
   const running = new Map<string, Promise<void>>();
+  const runIds = new Map<string, number>();
   let stopped = false;
 
   const execute = async (agent: AgentConfig, runId: number, claim: NonNullable<ReturnType<typeof claimMessages>>) => {
@@ -153,6 +155,11 @@ export function startHive(db: Db, config: HiveConfig, options: HiveOptions = {})
 
   const tick = () => {
     if (stopped) return;
+    try {
+      abandonStaleRuns(db);
+    } catch (err) {
+      log(`could not update run records: ${err instanceof Error ? err.message : err}`);
+    }
     for (const agent of agents) {
       // One run per agent: what arrives meanwhile waits for the next claim, in order.
       if (running.has(agent.name)) continue;
@@ -174,18 +181,29 @@ export function startHive(db: Db, config: HiveConfig, options: HiveOptions = {})
         }
         log(`agent ${agent.name}: run ${runId} ended: ${outcome.exitStatus}${outcome.error ? ` (${outcome.error.slice(0, 200)})` : ""}`);
         running.delete(agent.name);
+        runIds.delete(agent.name);
       });
       running.set(agent.name, p);
+      runIds.set(agent.name, runId);
     }
   };
 
   const timer = setInterval(tick, config.pollMs);
+  // Beats outlive `stop()` until the running agents end, so other hives do not take them for dead.
+  const beater = setInterval(() => {
+    try {
+      beat(db, [...runIds.values()]);
+    } catch (err) {
+      log(`could not update run records: ${err instanceof Error ? err.message : err}`);
+    }
+  }, STALE_MS / 6);
   tick();
   return {
     async stop() {
       stopped = true;
       clearInterval(timer);
       await Promise.all(running.values());
+      clearInterval(beater);
     },
   };
 }

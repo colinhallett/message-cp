@@ -7,6 +7,7 @@ import { openDb, type Db } from "../src/db.js";
 import { claudeCli, type AgentCli } from "../src/hive/agent-cli.js";
 import { parseConfig, type AgentConfig } from "../src/hive/config.js";
 import { startHive } from "../src/hive/hive.js";
+import { ensureRunsTable } from "../src/hive/runs.js";
 import { sendMessage } from "../src/messages.js";
 
 const root = resolve(import.meta.dirname, "..");
@@ -208,6 +209,32 @@ describe("run loop", () => {
     db.prepare("INSERT INTO hive_runs (agent, message_ids, started_at) VALUES ('worker-1', '[1]', 1)").run();
     start([agentConfig("worker-1")], standIn("reply"));
     expect(runs()[0]).toMatchObject({ exit_status: "abandoned", error: expect.stringContaining("stopped") });
+  });
+
+  it("does not run an agent while another hive's run for it is live", async () => {
+    registerAgent(db, "worker-1", undefined, "key-worker-1");
+    ensureRunsTable(db);
+    const now = Date.now();
+    db.prepare("INSERT INTO hive_runs (agent, message_ids, started_at, heartbeat_at) VALUES ('worker-1', '[]', ?, ?)").run(now, now);
+    start([agentConfig("worker-1")], standIn("reply"));
+    sendMessage(db, "boss", "worker-1", "x");
+    await new Promise((r) => setTimeout(r, 300));
+    expect(runs()).toHaveLength(1);
+    expect(runs()[0]).toMatchObject({ exit_status: null });
+    expect(unread("worker-1")).toBe(1);
+  });
+
+  it("starts afresh after a resumed run timed out", async () => {
+    ensureRunsTable(db);
+    db.prepare("INSERT INTO hive_runs (agent, message_ids, started_at, ended_at, exit_status, session_id) VALUES ('worker-1', '[]', 1, 2, 'ok', 's1')").run();
+    db.prepare("INSERT INTO hive_runs (agent, message_ids, started_at, ended_at, exit_status, resumed_session) VALUES ('worker-1', '[]', 3, 4, 'timeout', 's1')").run();
+    registerAgent(db, "worker-1", undefined, "key-worker-1");
+    const seen: (string | undefined)[] = [];
+    const cli: AgentCli = { ...standIn("reply"), build: (s) => (seen.push(s.resumeSessionId), standIn("reply").build(s)) };
+    start([agentConfig("worker-1")], cli);
+    sendMessage(db, "boss", "worker-1", "x");
+    await new Promise((r) => setTimeout(r, 500));
+    expect(seen[0]).toBeUndefined();
   });
 
   it("starts afresh when resuming the last session failed", async () => {
