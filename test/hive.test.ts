@@ -1,10 +1,10 @@
-import { mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, realpathSync, readFileSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { registerAgent } from "../src/agents.js";
 import { openDb, type Db } from "../src/db.js";
-import { claudeCli, type AgentCli } from "../src/hive/agent-cli.js";
+import { claudeCli, codexCli, type AgentCli } from "../src/hive/agent-cli.js";
 import { parseConfig, type AgentConfig } from "../src/hive/config.js";
 import { startHive } from "../src/hive/hive.js";
 import { ensureRunsTable } from "../src/hive/runs.js";
@@ -294,6 +294,92 @@ describe("claude command line", () => {
     expect(claudeCli.parseSessionId('{"session_id":"abc"}')).toBe("abc");
     expect(claudeCli.parseSessionId("not json")).toBeUndefined();
   });
+});
+
+describe("codex command line", () => {
+  const mcp = () => {
+    const path = join(dir, "mcp.json");
+    writeFileSync(path, JSON.stringify({ mcpServers: { "memory-cp": { command: "node", args: ["/s/index.js"], env: { MEMORY_CP_AGENT: "a", MEMORY_CP_AGENT_KEY: "s3cret", MEMORY_CP_DB: "/db" } } } }));
+    return path;
+  };
+  const spec = (extra = {}) => ({ agent: "a", cwd: "/w", prompt: "P", mcpConfigPath: mcp(), allowedTools: ["Read"], ...extra });
+  const overrides = (args: string[]) => args.flatMap((a, i) => (args[i - 1] === "-c" ? [a] : []));
+
+  it("sets sandbox and approval as config overrides on a first run and a resumed run, never bypassing", () => {
+    for (const resumeSessionId of [undefined, "t1"]) {
+      const { args, stdin } = codexCli.build(spec({ resumeSessionId, allowedTools: ["Edit"] }));
+      expect(stdin).toBe("P");
+      expect(overrides(args)).toEqual(expect.arrayContaining(['approval_policy="never"', 'sandbox_mode="workspace-write"']));
+      expect(args.join(" ")).not.toMatch(/bypass|danger|--sandbox|-s /i);
+      expect(args).not.toContain("P");
+      expect(args.at(-1)).toBe("-");
+    }
+    expect(overrides(codexCli.build(spec()).args)).toContain('sandbox_mode="read-only"');
+  });
+
+  it("resumes by session id with no working-directory flag, and starts afresh with one", () => {
+    const resumed = codexCli.build(spec({ resumeSessionId: "t1" })).args;
+    expect(resumed.slice(0, 2)).toEqual(["exec", "resume"]);
+    expect(resumed).toContain("t1");
+    expect(resumed).not.toContain("-C");
+    const fresh = codexCli.build(spec()).args;
+    expect(fresh).not.toContain("resume");
+    expect(fresh[fresh.indexOf("-C") + 1]).toBe("/w");
+  });
+
+  it("passes memory-cp in Codex's MCP form with the key only in the environment", () => {
+    const built = codexCli.build(spec({ model: "m", rolePrompt: "R" }));
+    expect(overrides(built.args)).toEqual(expect.arrayContaining([
+      'mcp_servers.memory-cp.command="node"',
+      'mcp_servers.memory-cp.args=["/s/index.js"]',
+      'mcp_servers.memory-cp.env_vars=["MEMORY_CP_AGENT","MEMORY_CP_AGENT_KEY","MEMORY_CP_DB"]',
+      'developer_instructions="R"',
+    ]));
+    expect(built.args).toEqual(expect.arrayContaining(["-m", "m"]));
+    expect(JSON.stringify(built.args)).not.toContain("s3cret");
+    expect(built.env).toMatchObject({ MEMORY_CP_AGENT_KEY: "s3cret" });
+  });
+
+  it("takes the session id from thread.started", () => {
+    expect(codexCli.parseSessionId('{"type":"thread.started","thread_id":"t9"}\n{"type":"turn.completed"}\n')).toBe("t9");
+    expect(codexCli.parseSessionId("noise\n")).toBeUndefined();
+  });
+
+  it("runs through the hive like any agent: replies, records the thread id, resumes it", async () => {
+    const bin = join(dir, "bin");
+    mkdirSync(bin);
+    symlinkSync(join(root, "test/fixtures/fake-codex.mjs"), join(bin, "codex"));
+    chmodSync(join(root, "test/fixtures/fake-codex.mjs"), 0o755);
+    const callsLog = join(dir, "codex-calls.jsonl");
+    const saved = { PATH: process.env.PATH, LOG: process.env.FAKE_CODEX_LOG };
+    process.env.PATH = `${bin}:${process.env.PATH}`;
+    process.env.FAKE_CODEX_LOG = callsLog;
+    try {
+      const hive = startHive(db, { pollMs: 50, agents: [agentConfig("cx", { cli: "codex", allowedTools: [] })] }, {
+        serverCommand: { command: serverEntry, args: [join(root, "src/index.ts")] },
+        dbFile,
+        log: () => {},
+      });
+      hives.push(hive);
+      sendMessage(db, "boss", "cx", "please summarise");
+      await until(finished(1));
+      sendMessage(db, "boss", "cx", "again");
+      await until(finished(2));
+      expect(runs().map((r) => r.exit_status)).toEqual(["ok", "ok"]);
+      expect(inbox("boss")).toEqual([
+        { sender: "cx", body: "done: please summarise" },
+        { sender: "cx", body: "done: again" },
+      ]);
+      const calls = readFileSync(callsLog, "utf8").trim().split("\n").map((l) => JSON.parse(l) as { argv: string[]; cwd: string });
+      expect(calls[1].argv).toContain(runs()[0].session_id!);
+      expect(calls[1].argv.slice(0, 2)).toEqual(["exec", "resume"]);
+      expect(calls[1].cwd).toBe(realpathSync(dir));
+    } finally {
+      process.env.PATH = saved.PATH;
+      if (saved.LOG === undefined) delete process.env.FAKE_CODEX_LOG;
+      else process.env.FAKE_CODEX_LOG = saved.LOG;
+    }
+  }, 40000);
 });
 
 describe("config", () => {
