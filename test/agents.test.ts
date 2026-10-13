@@ -288,6 +288,16 @@ describe("agent keys", () => {
       expect(() => agentFromEnv(db, { MEMORY_CP_AGENT: "a" })).toThrow(ToolError);
       expect(() => agentFromEnv(db, { MEMORY_CP_AGENT_KEY: "k" })).toThrow(ToolError);
     });
+
+    it("rejects empty values instead of starting anonymous", () => {
+      expect(() => agentFromEnv(db, { MEMORY_CP_AGENT: "", MEMORY_CP_AGENT_KEY: "" })).toThrow(ToolError);
+      expect(() => agentFromEnv(db, { MEMORY_CP_AGENT: "" })).toThrow(ToolError);
+    });
+
+    it("refuses with a ToolError when the stored hash is malformed", () => {
+      db.prepare("INSERT INTO agents (name, bio, registered_at, last_seen, key_hash) VALUES ('bad', 'b', 0, 0, 'xyz')").run();
+      expect(() => agentFromEnv(db, { MEMORY_CP_AGENT: "bad", MEMORY_CP_AGENT_KEY: "k" })).toThrow(/has a key/);
+    });
   });
 
   it("migrates a database file created before keys and lets the next register claim the agent", async () => {

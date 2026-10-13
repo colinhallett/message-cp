@@ -48,7 +48,7 @@ export function createServer(db: Db, session = new Session()): McpServer {
     "register",
     {
       description:
-        "Register this session as an agent with a name and short bio. A new name returns a key, once: keep it. If the name exists (any case), this session takes that agent over and its bio is updated, but only with the agent's key; an agent registered before keys existed is claimed by the first call and gets a key.",
+        "Register this session as an agent with a name and short bio. A new name without a key you pass returns a generated key, once: keep it (if you pass your own key, nothing is returned). If the name exists (any case), this session takes that agent over and its bio is updated, but only with the agent's key; an agent registered before keys existed is claimed by the first call and gets a key.",
       inputSchema: {
         name: z.string().describe("1-32 characters: letters, digits, '-' and '_'. 'all' is reserved."),
         bio: z.string().describe("A short description of who you are and what you work on."),

@@ -43,7 +43,11 @@ export function validateName(name: string): void {
 const MAX_KEY_LENGTH = 256;
 
 const hashKey = (key: string) => createHash("sha256").update(key).digest("hex");
-const sameHash = (a: string, b: string) => timingSafeEqual(Buffer.from(a), Buffer.from(b));
+const sameHash = (a: string, b: string) => {
+  const x = Buffer.from(a);
+  const y = Buffer.from(b);
+  return x.length === y.length && timingSafeEqual(x, y);
+};
 
 export type RegisterResult = Agent & { key?: string };
 
@@ -97,7 +101,7 @@ export const registerAgent = (db: Db, name: string, bio?: string, key?: string):
 export function agentFromEnv(db: Db, env: NodeJS.ProcessEnv = process.env): string | undefined {
   const name = env.MEMORY_CP_AGENT;
   const key = env.MEMORY_CP_AGENT_KEY;
-  if (!name && !key) return undefined;
+  if (name === undefined && key === undefined) return undefined;
   if (!name || !key) {
     throw new ToolError("MEMORY_CP_AGENT and MEMORY_CP_AGENT_KEY must be set together.");
   }
