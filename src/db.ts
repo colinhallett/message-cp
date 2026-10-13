@@ -43,6 +43,7 @@ CREATE TABLE IF NOT EXISTS memories (
   created_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS memories_author ON memories (author, id);
+CREATE INDEX IF NOT EXISTS memories_recent ON memories (created_at, id);
 
 CREATE TABLE IF NOT EXISTS memory_tags (
   memory_id INTEGER NOT NULL,
