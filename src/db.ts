@@ -20,6 +20,19 @@ CREATE TABLE IF NOT EXISTS agents (
   registered_at INTEGER NOT NULL,
   last_seen INTEGER NOT NULL
 );
+
+-- One row per recipient, so a broadcast has its own read state for each agent.
+CREATE TABLE IF NOT EXISTS messages (
+  id INTEGER PRIMARY KEY,
+  recipient_id INTEGER NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+  sender TEXT NOT NULL,
+  body TEXT NOT NULL,
+  broadcast INTEGER NOT NULL,
+  created_at INTEGER NOT NULL,
+  read_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS messages_inbox ON messages (recipient_id, read_at, id);
+CREATE INDEX IF NOT EXISTS messages_history ON messages (recipient_id, id);
 `;
 
 export function openDb(path: string = dbPath()): Db {
