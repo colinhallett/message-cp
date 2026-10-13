@@ -118,9 +118,12 @@ function toMemories(db: Db, rows: Row[]): Memory[] {
 }
 
 export function getMemory(db: Db, id: number): Memory {
-  const row = db.prepare("SELECT id, author, text, created_at FROM memories WHERE id = ?").get(id) as Row | undefined;
-  if (!row) throw new ToolError(`No memory with id ${id}.`);
-  return toMemories(db, [row])[0];
+  // One read transaction, so the row and its tags come from the same snapshot.
+  return db.transaction(() => {
+    const row = db.prepare("SELECT id, author, text, created_at FROM memories WHERE id = ?").get(id) as Row | undefined;
+    if (!row) throw new ToolError(`No memory with id ${id}.`);
+    return toMemories(db, [row])[0];
+  })();
 }
 
 export function forget(db: Db, id: number): { forgotten: number } {
