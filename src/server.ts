@@ -13,6 +13,19 @@ import {
   recall,
   remember,
 } from "./memories.js";
+import {
+  DEFAULT_TASK_LIMIT,
+  MAX_TASK_LIMIT,
+  MAX_TASK_TEXT_LENGTH,
+  MAX_TITLE_LENGTH,
+  claimTask,
+  completeTask,
+  getTask,
+  listTasks,
+  postTask,
+  releaseTask,
+  type TaskStatus,
+} from "./tasks.js";
 import { DEFAULT_INBOX_LIMIT, MAX_BODY_LENGTH, MAX_INBOX_LIMIT, readInbox, sendMessage } from "./messages.js";
 
 /** Who this server process is acting as. Lives only in memory, never in the database. */
@@ -167,6 +180,78 @@ export function createServer(db: Db, session = new Session()): McpServer {
       session.require();
       return forget(db, id);
     }),
+  );
+
+  server.registerTool(
+    "post_task",
+    {
+      description: `Post a task on the shared board for any agent to claim. It starts open and you are recorded as the poster. Requires register first.`,
+      inputSchema: {
+        title: z.string().describe(`At most ${MAX_TITLE_LENGTH} characters.`),
+        details: z.string().describe(`What needs doing, at most ${MAX_TASK_TEXT_LENGTH} characters.`),
+        tags: z.array(z.string()).max(MAX_TAGS).optional().describe("Short labels to find it by."),
+      },
+    },
+    tool(({ title, details, tags }: { title: string; details: string; tags?: string[] }) =>
+      postTask(db, session.require(), title, details, tags),
+    ),
+  );
+
+  server.registerTool(
+    "list_tasks",
+    {
+      description: `List tasks, oldest first, one page at a time (default ${DEFAULT_TASK_LIMIT}, max ${MAX_TASK_LIMIT}; a full page means there may be more, so call again with a higher offset). status keeps tasks in that state; tags keeps tasks that carry all the given tags; assignee keeps one agent's claimed or done tasks. Filters combine. Requires register first.`,
+      inputSchema: {
+        status: z.enum(["open", "claimed", "done"]).optional(),
+        tags: z.array(z.string()).max(MAX_TAGS).optional(),
+        assignee: z.string().optional().describe("An agent name (case-insensitive)."),
+        limit: z.number().int().min(1).max(MAX_TASK_LIMIT).optional(),
+        offset: z.number().int().min(0).optional(),
+      },
+    },
+    tool(({ status, tags, assignee, limit, offset }: { status?: TaskStatus; tags?: string[]; assignee?: string; limit?: number; offset?: number }) => {
+      session.require();
+      return listTasks(db, status, tags, assignee, limit, offset);
+    }),
+  );
+
+  server.registerTool(
+    "get_task",
+    {
+      description: "Fetch one task by id, including its result once done. Requires register first.",
+      inputSchema: { id: z.number().int() },
+    },
+    tool(({ id }: { id: number }) => {
+      session.require();
+      return getTask(db, id);
+    }),
+  );
+
+  server.registerTool(
+    "claim_task",
+    {
+      description: "Claim an open task so nobody else works on it. When several agents claim at once exactly one succeeds; the others get an error naming the holder. Requires register first.",
+      inputSchema: { id: z.number().int() },
+    },
+    tool(({ id }: { id: number }) => claimTask(db, session.require(), id)),
+  );
+
+  server.registerTool(
+    "release_task",
+    {
+      description: "Give a task you claimed back to the board, open again. Only the claimer can. Requires register first.",
+      inputSchema: { id: z.number().int() },
+    },
+    tool(({ id }: { id: number }) => releaseTask(db, session.require(), id)),
+  );
+
+  server.registerTool(
+    "complete_task",
+    {
+      description: `Mark a task you claimed as done with a result (at most ${MAX_TASK_TEXT_LENGTH} characters). The poster gets the result as a message from you, unless you are the poster. Only the claimer can. Requires register first.`,
+      inputSchema: { id: z.number().int(), result: z.string() },
+    },
+    tool(({ id, result }: { id: number; result: string }) => completeTask(db, session.require(), id, result)),
   );
 
   return server;
