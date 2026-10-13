@@ -5,5 +5,184 @@
     "tessl-labs/factory-setup": {
       "version": "0.3.0"
     }
+  },
+  "actions": {
+    "implement": {
+      "skill": "colin/ticket-to-pr-implement",
+      "environment": "factory-memory-cp-implement",
+      "agent": "claude",
+      "model": "claude-sonnet-5-5"
+    },
+    "shepherd": {
+      "skill": "colin/ticket-to-pr-shepherd",
+      "environment": "factory-memory-cp-shepherd",
+      "agent": "claude",
+      "model": "claude-sonnet-5-5"
+    }
+  },
+  "triggers": {
+    "issue-delegated": {
+      "on": [
+        "linear:Issue.create",
+        "linear:Issue.update"
+      ],
+      "when": {
+        "event.data.delegateId": "255a43a8-0c1d-421d-8625-8e1b92634d86",
+        "event.data.state.type": "unstarted"
+      },
+      "concurrency": {
+        "keys": [
+          {
+            "key": "implement:{{ event.data.id }}",
+            "limit": 1
+          }
+        ]
+      },
+      "action": "implement"
+    },
+    "pr-review": {
+      "on": [
+        "github:pull_request_review.submitted"
+      ],
+      "when": {
+        "event.pull_request.head.ref": {
+          "matches": "^tessl/"
+        },
+        "event.pull_request.labels.*.name": {
+          "any": {
+            "equals": "tessl"
+          }
+        },
+        "event.sender.type": {
+          "not": {
+            "equals": "Bot"
+          }
+        }
+      },
+      "concurrency": {
+        "debounce": "90s",
+        "keys": [
+          {
+            "key": "shepherd:{{ event.pull_request.number }}",
+            "limit": 1
+          }
+        ]
+      },
+      "action": "shepherd"
+    },
+    "pr-review-comment": {
+      "on": [
+        "github:pull_request_review_comment.created"
+      ],
+      "when": {
+        "event.pull_request.head.ref": {
+          "matches": "^tessl/"
+        },
+        "event.pull_request.labels.*.name": {
+          "any": {
+            "equals": "tessl"
+          }
+        },
+        "event.sender.type": {
+          "not": {
+            "equals": "Bot"
+          }
+        }
+      },
+      "concurrency": {
+        "debounce": "90s",
+        "keys": [
+          {
+            "key": "shepherd:{{ event.pull_request.number }}",
+            "limit": 1
+          }
+        ]
+      },
+      "action": "shepherd"
+    },
+    "pr-comment": {
+      "on": [
+        "github:issue_comment.created"
+      ],
+      "when": {
+        "isPullRequest": "true",
+        "event.issue.state": "open",
+        "event.issue.labels.*.name": {
+          "any": {
+            "equals": "tessl"
+          }
+        },
+        "event.sender.type": {
+          "not": {
+            "equals": "Bot"
+          }
+        }
+      },
+      "concurrency": {
+        "debounce": "90s",
+        "keys": [
+          {
+            "key": "shepherd:{{ event.issue.number }}",
+            "limit": 1
+          }
+        ]
+      },
+      "action": "shepherd"
+    },
+    "pr-checks-failed": {
+      "on": [
+        "github:check_run.completed"
+      ],
+      "when": {
+        "event.check_run.pull_requests.0.number": {
+          "exists": true
+        },
+        "event.check_run.check_suite.head_branch": {
+          "matches": "^tessl/"
+        },
+        "event.check_run.conclusion": {
+          "in": [
+            "failure",
+            "timed_out",
+            "startup_failure",
+            "action_required"
+          ]
+        }
+      },
+      "concurrency": {
+        "debounce": "90s",
+        "keys": [
+          {
+            "key": "shepherd:{{ event.check_run.pull_requests.0.number }}",
+            "limit": 1
+          }
+        ]
+      },
+      "action": "shepherd"
+    },
+    "pr-checks-passed": {
+      "on": [
+        "github:check_suite.completed"
+      ],
+      "when": {
+        "event.check_suite.pull_requests.0.number": {
+          "exists": true
+        },
+        "event.check_suite.head_branch": {
+          "matches": "^tessl/"
+        },
+        "event.check_suite.conclusion": "success"
+      },
+      "concurrency": {
+        "debounce": "90s",
+        "keys": [
+          {
+            "key": "shepherd:{{ event.check_suite.pull_requests.0.number }}",
+            "limit": 1
+          }
+        ]
+      },
+      "action": "shepherd"
+    }
   }
 }
