@@ -68,6 +68,18 @@ CREATE TRIGGER IF NOT EXISTS memories_no_update BEFORE UPDATE ON memories BEGIN
 END;
 `;
 
+// CREATE TABLE IF NOT EXISTS leaves an existing table alone, so columns added later are added here, only when missing.
+function migrate(db: Db): void {
+  const columns = db.prepare("PRAGMA table_info(agents)").all() as { name: string }[];
+  if (columns.some((c) => c.name === "key_hash")) return;
+  try {
+    db.exec("ALTER TABLE agents ADD COLUMN key_hash TEXT");
+  } catch (err) {
+    // Another process added it between our check and the ALTER.
+    if (!(err instanceof Error && /duplicate column name/i.test(err.message))) throw err;
+  }
+}
+
 export function openDb(path: string = dbPath()): Db {
   // Owner-only, whatever the umask: names and bios are not for other local accounts.
   // WAL and journal files take the permissions of the main file.
@@ -78,5 +90,6 @@ export function openDb(path: string = dbPath()): Db {
   db.pragma("journal_mode = WAL");
   db.pragma("busy_timeout = 5000");
   db.exec(SCHEMA);
+  migrate(db);
   return db;
 }

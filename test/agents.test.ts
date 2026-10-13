@@ -5,7 +5,8 @@ import { mkdtempSync, existsSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { ToolError } from "../src/agents.js";
+import { ToolError, agentFromEnv, registerAgent } from "../src/agents.js";
+import Database from "better-sqlite3";
 import { openDb, type Db } from "../src/db.js";
 import { Session, createServer } from "../src/server.js";
 
@@ -113,15 +114,15 @@ describe("register", () => {
   it("takes over an existing name instead of creating a second agent", async () => {
     const one = await connect();
     const two = await connect();
-    await call(one, "register", { name: "alice", bio: "first" });
-    await call(two, "register", { name: "alice", bio: "second" });
+    const { key } = (await call(one, "register", { name: "alice", bio: "first" })).json;
+    await call(two, "register", { name: "alice", bio: "second", key });
     expect(agentRows()).toEqual([{ name: "alice", bio: "second" }]);
   });
 
   it("compares names case-insensitively and keeps the first spelling", async () => {
     const client = await connect();
-    await call(client, "register", { name: "Alice", bio: "one" });
-    await call(client, "register", { name: "ALICE", bio: "two" });
+    const { key } = (await call(client, "register", { name: "Alice", bio: "one" })).json;
+    await call(client, "register", { name: "ALICE", bio: "two", key });
     expect(agentRows()).toEqual([{ name: "Alice", bio: "two" }]);
     expect((await call(client, "get_agent", { name: "aLiCe" })).json.name).toBe("Alice");
   });
@@ -216,4 +217,136 @@ describe("last seen", () => {
     await call(two, "list_agents");
     expect(lastSeen()).toBe(before);
   });
+});
+
+describe("agent keys", () => {
+  const row = (name = "alice") =>
+    db.prepare("SELECT bio, last_seen, key_hash FROM agents WHERE name = ?").get(name) as {
+      bio: string;
+      last_seen: number;
+      key_hash: string | null;
+    };
+
+  it("returns a key once on creating an agent and stores only its hash", async () => {
+    const client = await connect();
+    const { key } = (await call(client, "register", { name: "alice", bio: "x" })).json;
+    expect(key).toMatch(/^[0-9a-f]{64}$/);
+    expect(row().key_hash).toMatch(/^[0-9a-f]{64}$/);
+    expect(row().key_hash).not.toBe(key);
+    expect(JSON.stringify(db.prepare("SELECT * FROM agents").all())).not.toContain(key);
+    const again = (await call(client, "register", { name: "alice", bio: "y", key })).json;
+    expect(again.key).toBeUndefined();
+  });
+
+  it("refuses a takeover without the key or with the wrong one and changes nothing", async () => {
+    const owner = await connect();
+    const other = await connect();
+    const { key } = (await call(owner, "register", { name: "alice", bio: "mine" })).json;
+    await call(owner, "send_message", { to: "alice", body: "hi" }).catch(() => undefined);
+    const before = row();
+    const inbox = db.prepare("SELECT count(*) AS n FROM messages").get();
+    for (const args of [{}, { key: "wrong" }]) {
+      const res = await call(other, "register", { name: "ALICE", bio: "stolen", ...args });
+      expect(res.isError).toBe(true);
+      expect(res.text).toContain("has a key");
+      expect(res.text).not.toContain(key);
+    }
+    expect(row()).toEqual(before);
+    expect(db.prepare("SELECT count(*) AS n FROM messages").get()).toEqual(inbox);
+    expect((await call(other, "send_message", { to: "alice", body: "x" })).isError).toBe(true);
+  });
+
+  it("never shows a key or hash in list_agents or get_agent", async () => {
+    const client = await connect();
+    const { key } = (await call(client, "register", { name: "alice", bio: "x" })).json;
+    for (const r of [await call(client, "list_agents"), await call(client, "get_agent", { name: "alice" })]) {
+      expect(r.text).not.toContain(key);
+      expect(r.text).not.toContain(row().key_hash!);
+    }
+  });
+
+  describe("from the environment", () => {
+    it("creates the agent with the given key and acts as it", async () => {
+      expect(agentFromEnv(db, { MEMORY_CP_AGENT: "worker-1", MEMORY_CP_AGENT_KEY: "k1" })).toBe("worker-1");
+      expect(row("worker-1").key_hash).not.toBeNull();
+      const other = await connect();
+      expect((await call(other, "register", { name: "worker-1", bio: "x", key: "k1" })).isError).toBe(false);
+      expect((await call(other, "register", { name: "worker-1", bio: "x" })).isError).toBe(true);
+    });
+
+    it("claims an agent that has no key and refuses one with a different key", () => {
+      db.prepare("INSERT INTO agents (name, bio, registered_at, last_seen) VALUES ('old', 'b', 0, 0)").run();
+      const env = { MEMORY_CP_AGENT: "old", MEMORY_CP_AGENT_KEY: "k1" };
+      agentFromEnv(db, env);
+      expect(row("old").key_hash).not.toBeNull();
+      expect(() => agentFromEnv(db, { ...env, MEMORY_CP_AGENT_KEY: "k2" })).toThrow(/has a key/);
+      expect(row("old").bio).toBe("b");
+    });
+
+    it("needs both variables, or neither", () => {
+      expect(agentFromEnv(db, {})).toBeUndefined();
+      expect(() => agentFromEnv(db, { MEMORY_CP_AGENT: "a" })).toThrow(ToolError);
+      expect(() => agentFromEnv(db, { MEMORY_CP_AGENT_KEY: "k" })).toThrow(ToolError);
+    });
+
+    it("rejects empty values instead of starting anonymous", () => {
+      expect(() => agentFromEnv(db, { MEMORY_CP_AGENT: "", MEMORY_CP_AGENT_KEY: "" })).toThrow(ToolError);
+      expect(() => agentFromEnv(db, { MEMORY_CP_AGENT: "" })).toThrow(ToolError);
+    });
+
+    it("refuses with a ToolError when the stored hash is malformed", () => {
+      db.prepare("INSERT INTO agents (name, bio, registered_at, last_seen, key_hash) VALUES ('bad', 'b', 0, 0, 'xyz')").run();
+      expect(() => agentFromEnv(db, { MEMORY_CP_AGENT: "bad", MEMORY_CP_AGENT_KEY: "k" })).toThrow(/has a key/);
+    });
+
+    it("refuses a takeover when the stored hash is an empty string", () => {
+      db.prepare("INSERT INTO agents (name, bio, registered_at, last_seen, key_hash) VALUES ('empty', 'b', 0, 0, '')").run();
+      expect(() => agentFromEnv(db, { MEMORY_CP_AGENT: "empty", MEMORY_CP_AGENT_KEY: "k" })).toThrow(/has a key/);
+      expect(() => registerAgent(db, "empty", "x", "k")).toThrow(/has a key/);
+      expect((db.prepare("SELECT key_hash FROM agents WHERE name='empty'").get() as { key_hash: string }).key_hash).toBe("");
+    });
+  });
+
+  it("migrates a database file created before keys and lets the next register claim the agent", async () => {
+    const old = join(dir, "old.sqlite");
+    const raw = new Database(old);
+    raw.exec(`CREATE TABLE agents (id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+      bio TEXT NOT NULL, registered_at INTEGER NOT NULL, last_seen INTEGER NOT NULL);
+      INSERT INTO agents (name, bio, registered_at, last_seen) VALUES ('legacy', 'was here', 1, 1);`);
+    raw.close();
+    const migrated = openDb(old);
+    openDb(old).close(); // reopening must not fail on the existing column
+    const server = createServer(migrated);
+    const [a, b] = InMemoryTransport.createLinkedPair();
+    const client = new Client({ name: "test", version: "0" });
+    await Promise.all([server.connect(a), client.connect(b)]);
+    clients.push(client);
+    const res = await call(client, "register", { name: "legacy", bio: "claimed" });
+    expect(res.isError).toBe(false);
+    expect(res.json.key).toBeDefined();
+    expect((await call(client, "register", { name: "legacy", bio: "again" })).isError).toBe(true);
+    migrated.close();
+  });
+
+  it("two real server processes: the env-started one acts at once and the takeover is refused", async () => {
+    const start = async (env: Record<string, string>) => {
+      const client = new Client({ name: "test", version: "0" });
+      await client.connect(
+        new StdioClientTransport({
+          command: "npx",
+          args: ["tsx", join(import.meta.dirname, "../src/index.ts")],
+          env: { ...process.env, MEMORY_CP_DB: dbFile, ...env } as Record<string, string>,
+        }),
+      );
+      clients.push(client);
+      return client;
+    };
+    const worker = await start({ MEMORY_CP_AGENT: "worker-1", MEMORY_CP_AGENT_KEY: "secret" });
+    const intruder = await start({});
+    await call(intruder, "register", { name: "peer", bio: "x" });
+    expect((await call(worker, "send_message", { to: "peer", body: "hello" })).isError).toBe(false);
+    const res = await call(intruder, "register", { name: "worker-1", bio: "stolen" });
+    expect(res.isError).toBe(true);
+    expect(row("worker-1").bio).toBe("");
+  }, 60_000);
 });

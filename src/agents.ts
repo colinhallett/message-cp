@@ -1,3 +1,4 @@
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import type { Db } from "./db.js";
 
 export class ToolError extends Error {}
@@ -39,21 +40,72 @@ export function validateName(name: string): void {
   }
 }
 
-/** Creates the agent, or takes over an existing one with the same name (any case). */
-export function registerAgent(db: Db, name: string, bio: string): Agent {
-  validateName(name);
-  if (bio.length > MAX_BIO_LENGTH) {
-    throw new ToolError(`Bio is too long: at most ${MAX_BIO_LENGTH} characters.`);
+const MAX_KEY_LENGTH = 256;
+
+const hashKey = (key: string) => createHash("sha256").update(key).digest("hex");
+const sameHash = (a: string, b: string) => {
+  const x = Buffer.from(a);
+  const y = Buffer.from(b);
+  return x.length === y.length && timingSafeEqual(x, y);
+};
+
+export type RegisterResult = Agent & { key?: string };
+
+function validateKey(key: string): void {
+  if (key.length < 1 || key.length > MAX_KEY_LENGTH) {
+    throw new ToolError(`Invalid key: use 1-${MAX_KEY_LENGTH} characters.`);
   }
-  const now = Date.now();
-  const row = db
-    .prepare(
-      `INSERT INTO agents (name, bio, registered_at, last_seen) VALUES (?, ?, ?, ?)
-       ON CONFLICT(name) DO UPDATE SET bio = excluded.bio, last_seen = excluded.last_seen
-       RETURNING name, bio, registered_at, last_seen`,
-    )
-    .get(name, bio, now, now) as Row;
-  return toAgent(row);
+}
+
+/**
+ * Creates the agent, or takes over an existing one with the same name (any case).
+ * An agent that has a key can only be taken over with that key; one without a key (registered
+ * before keys existed) is claimed by this call. With no `key` given a new one is generated and
+ * returned, this once; only its hash is stored. `bio` undefined keeps an existing agent's bio.
+ */
+export const registerAgent = (db: Db, name: string, bio?: string, key?: string): RegisterResult =>
+  db.transaction(() => {
+    validateName(name);
+    if (bio !== undefined && bio.length > MAX_BIO_LENGTH) {
+      throw new ToolError(`Bio is too long: at most ${MAX_BIO_LENGTH} characters.`);
+    }
+    if (key !== undefined) validateKey(key);
+    const existing = db.prepare("SELECT key_hash FROM agents WHERE name = ?").get(name) as
+      | { key_hash: string | null }
+      | undefined;
+    if (existing && existing.key_hash !== null && (key === undefined || !sameHash(hashKey(key), existing.key_hash))) {
+      throw new ToolError(
+        `Agent '${name}' is already registered and has a key. Pass its key to take it over.`,
+      );
+    }
+    const issued = key === undefined;
+    const effectiveKey = key ?? randomBytes(32).toString("hex");
+    const keyHash = hashKey(effectiveKey);
+    const now = Date.now();
+    const row = db
+      .prepare(
+        `INSERT INTO agents (name, bio, registered_at, last_seen, key_hash) VALUES (?, ?, ?, ?, ?)
+         -- Reached on a conflict only after the key check above passed.
+         ON CONFLICT(name) DO UPDATE SET bio = COALESCE(?, bio), last_seen = excluded.last_seen, key_hash = excluded.key_hash
+         RETURNING name, bio, registered_at, last_seen`,
+      )
+      .get(name, bio ?? "", now, now, keyHash, bio ?? null) as Row;
+    // A caller that supplied its own key already has it.
+    return issued ? { ...toAgent(row), key: effectiveKey } : toAgent(row);
+  }).immediate();
+
+/**
+ * The agent a supervisor chose for this process through MEMORY_CP_AGENT and MEMORY_CP_AGENT_KEY:
+ * created or claimed with that key. Throws ToolError if the agent has a different key.
+ */
+export function agentFromEnv(db: Db, env: NodeJS.ProcessEnv = process.env): string | undefined {
+  const name = env.MEMORY_CP_AGENT;
+  const key = env.MEMORY_CP_AGENT_KEY;
+  if (name === undefined && key === undefined) return undefined;
+  if (!name || !key) {
+    throw new ToolError("MEMORY_CP_AGENT and MEMORY_CP_AGENT_KEY must be set together.");
+  }
+  return registerAgent(db, name, undefined, key).name;
 }
 
 export const DEFAULT_LIST_LIMIT = 50;
