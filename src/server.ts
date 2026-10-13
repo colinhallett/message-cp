@@ -2,6 +2,15 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { DEFAULT_LIST_LIMIT, MAX_LIST_LIMIT, ToolError, getAgent, listAgents, registerAgent, touchAgent } from "./agents.js";
 import type { Db } from "./db.js";
+import {
+  DEFAULT_RECALL_LIMIT,
+  MAX_RECALL_LIMIT,
+  MAX_TAGS,
+  MAX_TEXT_LENGTH,
+  forget,
+  recall,
+  remember,
+} from "./memories.js";
 import { DEFAULT_INBOX_LIMIT, MAX_BODY_LENGTH, MAX_INBOX_LIMIT, readInbox, sendMessage } from "./messages.js";
 
 /** Who this server process is acting as. Lives only in memory, never in the database. */
@@ -101,6 +110,47 @@ export function createServer(db: Db, session = new Session()): McpServer {
     tool(({ unread_only, limit, offset }: { unread_only?: boolean; limit?: number; offset?: number }) =>
       readInbox(db, session.require(), unread_only, limit, offset),
     ),
+  );
+
+  server.registerTool(
+    "remember",
+    {
+      description: `Store a memory that every agent can find later, with optional tags. It records you as the author and cannot be edited, only forgotten. Requires register first.`,
+      inputSchema: {
+        text: z.string().describe(`The memory, at most ${MAX_TEXT_LENGTH} characters.`),
+        tags: z.array(z.string()).max(MAX_TAGS).optional().describe("Short labels to find it by."),
+      },
+    },
+    tool(({ text, tags }: { text: string; tags?: string[] }) => remember(db, session.require(), text, tags)),
+  );
+
+  server.registerTool(
+    "recall",
+    {
+      description: `Find memories from any agent, newest first (default ${DEFAULT_RECALL_LIMIT}, max ${MAX_RECALL_LIMIT}). query matches words in the text (plain words, no operators); tags keeps memories that carry all the given tags; author keeps one agent's memories. Filters combine; with none, returns the newest. Requires register first.`,
+      inputSchema: {
+        query: z.string().optional(),
+        tags: z.array(z.string()).max(MAX_TAGS).optional(),
+        author: z.string().optional().describe("An agent name (case-insensitive)."),
+        limit: z.number().int().min(1).max(MAX_RECALL_LIMIT).optional(),
+      },
+    },
+    tool(({ query, tags, author, limit }: { query?: string; tags?: string[]; author?: string; limit?: number }) => {
+      session.require();
+      return recall(db, query, tags, author, limit);
+    }),
+  );
+
+  server.registerTool(
+    "forget",
+    {
+      description: "Delete a memory by id. Any registered agent can delete any memory. Errors if the id does not exist. Requires register first.",
+      inputSchema: { id: z.number().int() },
+    },
+    tool(({ id }: { id: number }) => {
+      session.require();
+      return forget(db, id);
+    }),
   );
 
   return server;

@@ -33,6 +33,38 @@ CREATE TABLE IF NOT EXISTS messages (
 );
 CREATE INDEX IF NOT EXISTS messages_inbox ON messages (recipient_id, read_at, id);
 CREATE INDEX IF NOT EXISTS messages_history ON messages (recipient_id, id);
+
+-- Shared memories. The author is kept as text, like a message sender, so it survives whatever happens to the agent row.
+-- AUTOINCREMENT so a forgotten id is never handed to a later memory.
+CREATE TABLE IF NOT EXISTS memories (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  author TEXT NOT NULL COLLATE NOCASE,
+  text TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS memories_author ON memories (author, id);
+
+CREATE TABLE IF NOT EXISTS memory_tags (
+  memory_id INTEGER NOT NULL,
+  tag TEXT NOT NULL,
+  PRIMARY KEY (tag, memory_id)
+) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS memory_tags_memory ON memory_tags (memory_id);
+
+-- Keyword index over memory text, kept in step by the triggers below.
+CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(text, content='memories', content_rowid='id');
+
+CREATE TRIGGER IF NOT EXISTS memories_ai AFTER INSERT ON memories BEGIN
+  INSERT INTO memories_fts (rowid, text) VALUES (new.id, new.text);
+END;
+CREATE TRIGGER IF NOT EXISTS memories_ad AFTER DELETE ON memories BEGIN
+  INSERT INTO memories_fts (memories_fts, rowid, text) VALUES ('delete', old.id, old.text);
+  DELETE FROM memory_tags WHERE memory_id = old.id;
+END;
+-- Memories are added and deleted, never edited.
+CREATE TRIGGER IF NOT EXISTS memories_no_update BEFORE UPDATE ON memories BEGIN
+  SELECT RAISE(ABORT, 'memories cannot be edited');
+END;
 `;
 
 export function openDb(path: string = dbPath()): Db {
