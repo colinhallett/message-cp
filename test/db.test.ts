@@ -18,6 +18,7 @@ function openTogether(file: string, count: number) {
         });
         let stderr = "";
         child.stderr.on("data", (d) => (stderr += d));
+        child.on("error", (err) => resolve({ code: null, stderr: `spawn failed: ${err.message}` }));
         child.on("exit", (code) => resolve({ code, stderr }));
       }),
     ),
