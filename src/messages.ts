@@ -26,6 +26,12 @@ export const MAX_BODY_LENGTH = 4000;
 export const DEFAULT_INBOX_LIMIT = 50;
 export const MAX_INBOX_LIMIT = 200;
 
+function countCodePoints(s: string): number {
+  let n = 0;
+  for (const _ of s) n++;
+  return n;
+}
+
 /**
  * Stores one delivery per recipient: the named agent, or for `all` every agent registered right now
  * except the sender. Read state therefore belongs to each recipient.
@@ -33,7 +39,8 @@ export const MAX_INBOX_LIMIT = 200;
 export function sendMessage(db: Db, from: string, to: string, body: string): SendResult {
   if (body.trim().length === 0) throw new ToolError("Message body is empty.");
   // Count characters (code points), not UTF-16 code units, to match what the tool advertises.
-  if ([...body].length > MAX_BODY_LENGTH) {
+  // A code point is at most 2 code units, so anything over twice the limit is too long without iterating.
+  if (body.length > 2 * MAX_BODY_LENGTH || countCodePoints(body) > MAX_BODY_LENGTH) {
     throw new ToolError(`Message is too long: at most ${MAX_BODY_LENGTH} characters.`);
   }
   const broadcast = to.toLowerCase() === "all";

@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS messages (
   read_at INTEGER
 );
 CREATE INDEX IF NOT EXISTS messages_inbox ON messages (recipient_id, read_at, id);
+CREATE INDEX IF NOT EXISTS messages_history ON messages (recipient_id, id);
 `;
 
 export function openDb(path: string = dbPath()): Db {
