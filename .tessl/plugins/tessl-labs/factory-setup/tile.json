@@ -1,0 +1,11 @@
+{
+  "name": "tessl-labs/factory-setup",
+  "version": "0.3.0",
+  "summary": "Set up, explain, and change a Tessl factory on a repository: pick automations that fit how you work, such as triaging tickets, shipping tickets as pull requests, keeping pull requests moving, code review, and scheduled jobs.",
+  "skills": {
+    "factory-setup": {
+      "path": "skills/factory-setup/SKILL.md"
+    }
+  },
+  "private": false
+}

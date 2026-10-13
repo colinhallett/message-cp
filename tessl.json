@@ -1,0 +1,9 @@
+{
+  "name": "memory-cp",
+  "mode": "vendored",
+  "dependencies": {
+    "tessl-labs/factory-setup": {
+      "version": "0.3.0"
+    }
+  }
+}
