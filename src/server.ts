@@ -4,6 +4,7 @@ import { DEFAULT_LIST_LIMIT, MAX_LIST_LIMIT, ToolError, getAgent, listAgents, re
 import type { Db } from "./db.js";
 import {
   DEFAULT_RECALL_LIMIT,
+  MAX_QUERY_LENGTH,
   MAX_RECALL_LIMIT,
   MAX_TAGS,
   MAX_TEXT_LENGTH,
@@ -127,17 +128,18 @@ export function createServer(db: Db, session = new Session()): McpServer {
   server.registerTool(
     "recall",
     {
-      description: `Find memories from any agent, newest first (default ${DEFAULT_RECALL_LIMIT}, max ${MAX_RECALL_LIMIT}). query matches words in the text (plain words, no operators); tags keeps memories that carry all the given tags; author keeps one agent's memories. Filters combine; with none, returns the newest. Requires register first.`,
+      description: `Find memories from any agent, newest first (default ${DEFAULT_RECALL_LIMIT}, max ${MAX_RECALL_LIMIT} per call; a full page means there may be more, so call again with offset). query matches words in the text (plain words, no operators, at most ${MAX_QUERY_LENGTH} characters); tags keeps memories that carry all the given tags; author keeps one agent's memories. Filters combine; with none, returns the newest. Requires register first.`,
       inputSchema: {
-        query: z.string().optional(),
+        query: z.string().max(MAX_QUERY_LENGTH).optional(),
         tags: z.array(z.string()).max(MAX_TAGS).optional(),
         author: z.string().optional().describe("An agent name (case-insensitive)."),
         limit: z.number().int().min(1).max(MAX_RECALL_LIMIT).optional(),
+        offset: z.number().int().min(0).optional().describe("Skip this many newer matches, to page back through older ones."),
       },
     },
-    tool(({ query, tags, author, limit }: { query?: string; tags?: string[]; author?: string; limit?: number }) => {
+    tool(({ query, tags, author, limit, offset }: { query?: string; tags?: string[]; author?: string; limit?: number; offset?: number }) => {
       session.require();
-      return recall(db, query, tags, author, limit);
+      return recall(db, query, tags, author, limit, offset);
     }),
   );
 

@@ -21,6 +21,7 @@ export const MAX_TAGS = 20;
 export const MAX_TAG_LENGTH = 50;
 export const DEFAULT_RECALL_LIMIT = 20;
 export const MAX_RECALL_LIMIT = 100;
+export const MAX_QUERY_LENGTH = 500;
 
 function countCodePoints(s: string): number {
   let n = 0;
@@ -64,14 +65,18 @@ export function remember(db: Db, author: string, text: string, tags: string[] = 
   return { id, author, text, tags: clean.sort(), storedAt: new Date(now).toISOString() };
 }
 
-/** Newest first. Query, tags and author all narrow the same result. */
+/** Newest first by stored time, ties broken by id; page with `offset`. Query, tags and author all narrow the same result. */
 export function recall(
   db: Db,
   query?: string,
   tags: string[] = [],
   author?: string,
   limit = DEFAULT_RECALL_LIMIT,
+  offset = 0,
 ): Memory[] {
+  if (query !== undefined && query.length > MAX_QUERY_LENGTH) {
+    throw new ToolError(`Query is too long: at most ${MAX_QUERY_LENGTH} characters.`);
+  }
   const where: string[] = [];
   const params: (string | number)[] = [];
   const match = query === undefined ? undefined : toMatch(query);
@@ -95,9 +100,9 @@ export function recall(
     .prepare(
       `SELECT m.id, m.author, m.text, m.created_at FROM memories m
        ${where.length ? "WHERE " + where.join(" AND ") : ""}
-       ORDER BY m.id DESC LIMIT ?`,
+       ORDER BY m.created_at DESC, m.id DESC LIMIT ? OFFSET ?`,
     )
-    .all(...params, Math.max(1, Math.min(limit, MAX_RECALL_LIMIT))) as Row[];
+    .all(...params, Math.max(1, Math.min(limit, MAX_RECALL_LIMIT)), Math.max(0, offset)) as Row[];
   const tagsOf = db.prepare("SELECT tag FROM memory_tags WHERE memory_id = ? ORDER BY tag");
   return rows.map((r) => ({
     id: r.id,

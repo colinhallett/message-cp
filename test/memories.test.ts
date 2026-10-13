@@ -165,6 +165,36 @@ describe("recall filters", () => {
     ]);
     expect((await call(a, "recall", { limit: 101 })).isError).toBe(true);
   });
+
+  it("pages back to the oldest match with offset", async () => {
+    const a = await connect("alice");
+    const insert = db.prepare("INSERT INTO memories (author, text, created_at) VALUES ('alice', ?, ?)");
+    for (let i = 1; i <= 120; i++) insert.run(`m${i}`, i);
+
+    const texts = (r: { json: { text: string }[] }) => r.json.map((m) => m.text);
+    expect(texts(await call(a, "recall", { limit: 100, offset: 100 }))).toHaveLength(20);
+    expect(texts(await call(a, "recall", { limit: 5, offset: 115 }))).toEqual(["m5", "m4", "m3", "m2", "m1"]);
+    expect((await call(a, "recall", { offset: 120 })).json).toEqual([]);
+    expect((await call(a, "recall", { offset: -1 })).isError).toBe(true);
+  });
+
+  it("orders by stored time, not insertion order", async () => {
+    const a = await connect("alice");
+    const insert = db.prepare("INSERT INTO memories (author, text, created_at) VALUES ('alice', ?, ?)");
+    insert.run("newer", 2000);
+    insert.run("older, inserted later", 1000);
+    insert.run("same time as newer", 2000);
+
+    expect((await call(a, "recall")).json.map((m: { text: string }) => m.text)).toEqual([
+      "same time as newer", "newer", "older, inserted later",
+    ]);
+  });
+
+  it("rejects an over-long query", async () => {
+    const a = await connect("alice");
+    expect((await call(a, "recall", { query: "x ".repeat(300) })).isError).toBe(true);
+    expect((await call(a, "recall", { query: "x ".repeat(250) })).isError).toBeFalsy();
+  });
 });
 
 describe("remember validation", () => {
