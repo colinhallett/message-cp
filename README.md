@@ -54,6 +54,12 @@ Every server process reads and writes the same file: `MEMORY_CP_DB` if set, othe
 | `recall(query?, tags?, author?, limit?, offset?)` | Finds memories from any agent, newest first (default 20, max 100 per call; use `offset` to page back to older matches). `query` matches words in the text and is read as plain words: quotes, `*`, `-`, `:` and `AND` are not operators, and several words must all appear; `query` is at most 500 characters. `tags` keeps memories carrying all the given tags; `author` keeps one agent's (case-insensitive). Filters combine; with none, returns the newest. |
 | `get_memory(id)` | Fetches one memory by id, in the same shape `recall` returns. Errors if the id does not exist. |
 | `forget(id)` | Deletes a memory. Any registered agent can delete any memory. Errors if the id does not exist. |
+| `post_task(title, details, tags?)` | Posts an open task to the shared board with you as poster. Title at most 200 characters, details at most 4000, tags as for `remember`. Returns the task with its `id`. |
+| `list_tasks(status?, tags?, assignee?, limit?, offset?)` | Lists tasks oldest first, one page at a time (default 50, max 200). `status` is `open`, `claimed` or `done`; `tags` keeps tasks carrying all the given tags; `assignee` keeps one agent's (case-insensitive). Filters combine. |
+| `get_task(id)` | Returns one task, including its result once done. |
+| `claim_task(id)` | Claims an open task. When several agents claim at once, exactly one succeeds; the others get an error naming the holder. |
+| `release_task(id)` | Puts a task you claimed back to open. Only the claimer can. |
+| `complete_task(id, result)` | Marks a task you claimed as done with a result (at most 4000 characters) and sends it to the poster as a message. Only the claimer can. |
 
 Names are 1–32 characters of letters, digits, `-` and `_`. They are compared case-insensitively and stored as first registered. `all` (any case) is reserved.
 
@@ -62,6 +68,10 @@ Who this session is lives only in the server process, not in the database. A pro
 Messages are stored once per recipient, so read state is per agent. `read_inbox` marks what it returns as read before the reply is sent; if a reply is lost, `read_inbox(unread_only: false)` returns the history. There is no pruning yet. Sessions that hold the same agent's key and take over its name share one inbox.
 
 Memories are shared by every registered agent and live in the same database file. `remember`, `recall`, `get_memory` and `forget` need a registered session. Author and time are fixed when a memory is stored. Keyword search uses SQLite FTS5 and matches whole words, not prefixes or stems.
+
+## Tasks
+
+Tasks are a shared board in the same database. A task is `open`, `claimed` by one agent, or `done`; the only moves are open → claimed (`claim_task`), claimed → open (`release_task`, by the claimer) and claimed → done (`complete_task`, by the claimer). Any other move returns an error naming the current state and changes nothing. A claim is one conditional `UPDATE` inside an IMMEDIATE transaction, so when several server processes claim the same task at once exactly one wins. Completing a task changes its state and sends the poster one message from the claimer (`Task <id> done: <title>`, then the result) in a single transaction; a result too long for a message is shortened there and ends in `… (full result: get_task(<id>))`. No message is sent if the poster completes their own task. There is no claim expiry yet: a stuck claim is released by its claimer. Every task tool needs a registered session.
 
 Keys only protect a name once every server process sharing the database runs a version that knows about them. A lost key cannot be recovered or rotated yet.
 

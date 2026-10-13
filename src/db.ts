@@ -66,6 +66,28 @@ END;
 CREATE TRIGGER IF NOT EXISTS memories_no_update BEFORE UPDATE ON memories BEGIN
   SELECT RAISE(ABORT, 'memories cannot be edited');
 END;
+
+-- Shared task board. poster and assignee are kept as text, like a message sender.
+CREATE TABLE IF NOT EXISTS tasks (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  title TEXT NOT NULL,
+  details TEXT NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('open', 'claimed', 'done')),
+  poster TEXT NOT NULL COLLATE NOCASE,
+  assignee TEXT COLLATE NOCASE,
+  result TEXT,
+  created_at INTEGER NOT NULL,
+  claimed_at INTEGER,
+  completed_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS tasks_status ON tasks (status, id);
+
+CREATE TABLE IF NOT EXISTS task_tags (
+  task_id INTEGER NOT NULL,
+  tag TEXT NOT NULL,
+  PRIMARY KEY (tag, task_id)
+) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS task_tags_task ON task_tags (task_id);
 `;
 
 // CREATE TABLE IF NOT EXISTS leaves an existing table alone, so columns added later are added here, only when missing.

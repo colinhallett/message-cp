@@ -23,13 +23,13 @@ export const DEFAULT_RECALL_LIMIT = 20;
 export const MAX_RECALL_LIMIT = 100;
 export const MAX_QUERY_LENGTH = 500;
 
-function countCodePoints(s: string): number {
+export function countCodePoints(s: string): number {
   let n = 0;
   for (const _ of s) n++;
   return n;
 }
 
-function cleanTags(tags: string[]): string[] {
+export function cleanTags(tags: string[]): string[] {
   const clean = [...new Set(tags.map((t) => t.trim()))];
   if (clean.some((t) => t.length === 0 || countCodePoints(t) > MAX_TAG_LENGTH)) {
     throw new ToolError(`Each tag must be 1-${MAX_TAG_LENGTH} characters.`);
