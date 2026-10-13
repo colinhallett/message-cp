@@ -21,5 +21,6 @@ addresses it or explains why it cannot.
 
 ## How to use
 
-Assign a Linear issue to Tessl. The factory picks it up, does the work, and
-opens a pull request for your review.
+Delegate a Linear issue to Tessl and leave it in Todo. The factory picks it up,
+does the work, and opens a pull request for your review. Moving the issue out of
+Todo or removing the delegate stops the work.
