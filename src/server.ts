@@ -2,6 +2,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { DEFAULT_LIST_LIMIT, MAX_LIST_LIMIT, ToolError, getAgent, listAgents, registerAgent, touchAgent } from "./agents.js";
 import type { Db } from "./db.js";
+import { MAX_BODY_LENGTH, readInbox, sendMessage } from "./messages.js";
 
 /** Who this server process is acting as. Lives only in memory, never in the database. */
 export class Session {
@@ -73,6 +74,29 @@ export function createServer(db: Db, session = new Session()): McpServer {
       if (!agent) throw new ToolError(`No agent named '${name}'.`);
       return agent;
     }),
+  );
+
+  server.registerTool(
+    "send_message",
+    {
+      description:
+        "Send a message to one registered agent by name, or to every other registered agent with to: 'all'. A broadcast only reaches agents registered when it is sent. Requires register first.",
+      inputSchema: {
+        to: z.string().describe("An agent name, or 'all'."),
+        body: z.string().describe(`The message, at most ${MAX_BODY_LENGTH} characters.`),
+      },
+    },
+    tool(({ to, body }: { to: string; body: string }) => sendMessage(db, session.require(), to, body)),
+  );
+
+  server.registerTool(
+    "read_inbox",
+    {
+      description:
+        "Read your messages, oldest first. By default only unread ones; everything returned is marked read. Messages are not pushed, so call this to check. Requires register first.",
+      inputSchema: { unread_only: z.boolean().optional().describe("Default true.") },
+    },
+    tool(({ unread_only }: { unread_only?: boolean }) => readInbox(db, session.require(), unread_only)),
   );
 
   return server;
