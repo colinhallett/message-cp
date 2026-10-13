@@ -15,6 +15,7 @@ Requires a connected Linear workspace with a team mapped to this project and an
 active issue-to-PR automation in `tessl.json`: the `implement-linear` action
 and a `linear-issue-delegated` trigger that fires on `linear:Issue.create` and
 `linear:Issue.update`, filters for the Tessl delegate id and `unstarted` state,
+limits to one active implementation per issue (concurrency key `implement:{{ event.data.id }}`, limit 1),
 and dispatches `implement-linear`.
 
 1. Create or find a COL Linear issue describing what you want done.
