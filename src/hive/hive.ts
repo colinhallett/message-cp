@@ -5,11 +5,13 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ToolError, registerAgent } from "../agents.js";
 import { dbPath, type Db } from "../db.js";
-import { MCP_SERVER_NAME, claudeCli, type AgentCli } from "./agent-cli.js";
+import { MCP_SERVER_NAME, claudeCli, codexCli, type AgentCli, type Command } from "./agent-cli.js";
 import type { AgentConfig, HiveConfig } from "./config.js";
 import { STALE_MS, abandonStaleRuns, beat, claimMessages, ensureRunsTable, finishRun, promptFor } from "./runs.js";
 
 const MAX_OUTPUT = 1_000_000;
+/** The start of stdout is kept apart from the tail: a CLI announces its session id there. */
+const MAX_HEAD = 64_000;
 const KILL_GRACE_MS = 5000;
 const DRAIN_MS = 1000;
 
@@ -29,7 +31,7 @@ interface Outcome {
 
 /** Starts the polling loop. `stop()` stops claiming new work and resolves once running runs have ended. */
 export function startHive(db: Db, config: HiveConfig, options: HiveOptions = {}) {
-  const clis: Record<string, AgentCli> = { claude: claudeCli, ...options.clis };
+  const clis: Record<string, AgentCli> = { claude: claudeCli, codex: codexCli, ...options.clis };
   const serverCommand = options.serverCommand ?? {
     command: process.execPath,
     args: [fileURLToPath(new URL("../index.js", import.meta.url))],
@@ -101,14 +103,16 @@ export function startHive(db: Db, config: HiveConfig, options: HiveOptions = {})
     }
   };
 
-  const runProcess = (cli: AgentCli, cmd: { command: string; args: string[]; stdin: string }, agent: AgentConfig) =>
+  const runProcess = (cli: AgentCli, cmd: Command, agent: AgentConfig) =>
     new Promise<Outcome>((resolve) => {
       // The child must not inherit an identity or key meant for another process.
       const env = { ...process.env };
       delete env.MEMORY_CP_AGENT;
       delete env.MEMORY_CP_AGENT_KEY;
+      Object.assign(env, cmd.env);
       const child = spawn(cmd.command, cmd.args, { cwd: agent.cwd, env, stdio: ["pipe", "pipe", "pipe"], detached: true });
       let stdout = "";
+      let head = "";
       let stderr = "";
       let timedOut = false;
       let settled = false;
@@ -133,13 +137,16 @@ export function startHive(db: Db, config: HiveConfig, options: HiveOptions = {})
       }, agent.timeoutSeconds * 1000);
       child.stdout.setEncoding("utf8");
       child.stderr.setEncoding("utf8");
-      child.stdout.on("data", (d: string) => (stdout = (stdout + d).slice(-MAX_OUTPUT)));
+      child.stdout.on("data", (d: string) => {
+        if (head.length < MAX_HEAD) head += d.slice(0, MAX_HEAD - head.length);
+        stdout = (stdout + d).slice(-MAX_OUTPUT);
+      });
       child.stderr.on("data", (d: string) => (stderr = (stderr + d).slice(-2000)));
       child.on("error", (err) => done({ exitStatus: "error", error: err.message }));
       child.stdin.on("error", () => {});
       child.stdin.end(cmd.stdin);
       const finish = (code: number | null, signal: NodeJS.Signals | null) => {
-        const sessionId = cli.parseSessionId(stdout);
+        const sessionId = cli.parseSessionId(stdout) ?? cli.parseSessionId(head);
         if (timedOut) return done({ exitStatus: "timeout", sessionId, error: `no exit within ${agent.timeoutSeconds}s` });
         if (code === 0) return done({ exitStatus: "ok", sessionId });
         done({ exitStatus: signal ? `signal ${signal}` : `exit ${code}`, sessionId, error: stderr.trim() || undefined });
