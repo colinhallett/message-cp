@@ -9,6 +9,7 @@ import {
   MAX_TAGS,
   MAX_TEXT_LENGTH,
   forget,
+  getMemory,
   recall,
   remember,
 } from "./memories.js";
@@ -141,6 +142,18 @@ export function createServer(db: Db, session = new Session()): McpServer {
     tool(({ query, tags, author, limit, offset }: { query?: string; tags?: string[]; author?: string; limit?: number; offset?: number }) => {
       session.require();
       return recall(db, query, tags, author, limit, offset);
+    }),
+  );
+
+  server.registerTool(
+    "get_memory",
+    {
+      description: "Fetch one memory by id, in the same shape recall returns, for example an id from a recall result or a message. Errors if the id does not exist. Requires register first.",
+      inputSchema: { id: z.number().int() },
+    },
+    tool(({ id }: { id: number }) => {
+      session.require();
+      return getMemory(db, id);
     }),
   );
 

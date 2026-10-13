@@ -103,6 +103,10 @@ export function recall(
        ORDER BY m.created_at DESC, m.id DESC LIMIT ? OFFSET ?`,
     )
     .all(...params, Math.max(1, Math.min(limit, MAX_RECALL_LIMIT)), Math.max(0, offset)) as Row[];
+  return toMemories(db, rows);
+}
+
+function toMemories(db: Db, rows: Row[]): Memory[] {
   const tagsOf = db.prepare("SELECT tag FROM memory_tags WHERE memory_id = ? ORDER BY tag");
   return rows.map((r) => ({
     id: r.id,
@@ -111,6 +115,15 @@ export function recall(
     tags: (tagsOf.all(r.id) as { tag: string }[]).map((t) => t.tag),
     storedAt: new Date(r.created_at).toISOString(),
   }));
+}
+
+export function getMemory(db: Db, id: number): Memory {
+  // One read transaction, so the row and its tags come from the same snapshot.
+  return db.transaction(() => {
+    const row = db.prepare("SELECT id, author, text, created_at FROM memories WHERE id = ?").get(id) as Row | undefined;
+    if (!row) throw new ToolError(`No memory with id ${id}.`);
+    return toMemories(db, [row])[0];
+  })();
 }
 
 export function forget(db: Db, id: number): { forgotten: number } {

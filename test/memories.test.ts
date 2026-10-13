@@ -239,3 +239,34 @@ describe("forget", () => {
     expect((await call(a, "recall", { query: "keep" })).json).toHaveLength(1);
   });
 });
+
+describe("get_memory", () => {
+  it("requires a registered session and changes nothing", async () => {
+    const c = await connect();
+    const r = await call(c, "get_memory", { id: 1 });
+    expect(r.isError).toBe(true);
+    expect(r.text).toContain("Call `register` first");
+    expect(memoryCount()).toBe(0);
+  });
+
+  it("returns from a second session the memory in the shape recall uses", async () => {
+    const a = await connect("alice");
+    const b = await connect("bob");
+    const stored = (await call(a, "remember", { text: "The deploy key lives in vault", tags: ["ops", "secrets"] })).json;
+    await call(a, "remember", { text: "other" });
+
+    const got = await call(b, "get_memory", { id: stored.id });
+    expect(got.json).toEqual(stored);
+    expect(got.json).toEqual((await call(b, "recall", { query: "deploy" })).json[0]);
+    expect(memoryCount()).toBe(2);
+  });
+
+  it("errors naming an unknown id and changes nothing", async () => {
+    const a = await connect("alice");
+    await call(a, "remember", { text: "note" });
+    const r = await call(a, "get_memory", { id: 999 });
+    expect(r.isError).toBe(true);
+    expect(r.text).toContain("999");
+    expect(memoryCount()).toBe(1);
+  });
+});
