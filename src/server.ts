@@ -48,14 +48,15 @@ export function createServer(db: Db, session = new Session()): McpServer {
     "register",
     {
       description:
-        "Register this session as an agent with a name and short bio. If the name exists (any case), this session takes that agent over and its bio is updated.",
+        "Register this session as an agent with a name and short bio. A new name returns a key, once: keep it. If the name exists (any case), this session takes that agent over and its bio is updated, but only with the agent's key; an agent registered before keys existed is claimed by the first call and gets a key.",
       inputSchema: {
         name: z.string().describe("1-32 characters: letters, digits, '-' and '_'. 'all' is reserved."),
         bio: z.string().describe("A short description of who you are and what you work on."),
+        key: z.string().optional().describe("The agent's key, required to take over an existing agent that has one."),
       },
     },
-    tool(({ name, bio }: { name: string; bio: string }) => {
-      const agent = registerAgent(db, name, bio);
+    tool(({ name, bio, key }: { name: string; bio: string; key?: string }) => {
+      const agent = registerAgent(db, name, bio, key);
       session.name = agent.name;
       return agent;
     }),
