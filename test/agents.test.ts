@@ -5,7 +5,7 @@ import { mkdtempSync, existsSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { ToolError, agentFromEnv } from "../src/agents.js";
+import { ToolError, agentFromEnv, registerAgent } from "../src/agents.js";
 import Database from "better-sqlite3";
 import { openDb, type Db } from "../src/db.js";
 import { Session, createServer } from "../src/server.js";
@@ -297,6 +297,13 @@ describe("agent keys", () => {
     it("refuses with a ToolError when the stored hash is malformed", () => {
       db.prepare("INSERT INTO agents (name, bio, registered_at, last_seen, key_hash) VALUES ('bad', 'b', 0, 0, 'xyz')").run();
       expect(() => agentFromEnv(db, { MEMORY_CP_AGENT: "bad", MEMORY_CP_AGENT_KEY: "k" })).toThrow(/has a key/);
+    });
+
+    it("refuses a takeover when the stored hash is an empty string", () => {
+      db.prepare("INSERT INTO agents (name, bio, registered_at, last_seen, key_hash) VALUES ('empty', 'b', 0, 0, '')").run();
+      expect(() => agentFromEnv(db, { MEMORY_CP_AGENT: "empty", MEMORY_CP_AGENT_KEY: "k" })).toThrow(/has a key/);
+      expect(() => registerAgent(db, "empty", "x", "k")).toThrow(/has a key/);
+      expect((db.prepare("SELECT key_hash FROM agents WHERE name='empty'").get() as { key_hash: string }).key_hash).toBe("");
     });
   });
 

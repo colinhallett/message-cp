@@ -73,7 +73,7 @@ export const registerAgent = (db: Db, name: string, bio?: string, key?: string):
     const existing = db.prepare("SELECT key_hash FROM agents WHERE name = ?").get(name) as
       | { key_hash: string | null }
       | undefined;
-    if (existing?.key_hash && (key === undefined || !sameHash(hashKey(key), existing.key_hash))) {
+    if (existing && existing.key_hash !== null && (key === undefined || !sameHash(hashKey(key), existing.key_hash))) {
       throw new ToolError(
         `Agent '${name}' is already registered and has a key. Pass its key to take it over.`,
       );
