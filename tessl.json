@@ -13,8 +13,8 @@
       "agent": "claude",
       "model": "claude-sonnet-5-5"
     },
-    "shepherd": {
-      "skill": "colin/ticket-to-pr-shepherd",
+    "shepherd-session": {
+      "skill": "file:tessl-factory#pr-shepherd-session",
       "environment": "factory-memory-cp-shepherd",
       "agent": "claude",
       "model": "claude-sonnet-5-5"
@@ -40,27 +40,18 @@
       },
       "action": "implement"
     },
-    "pr-review": {
+    "pr-labelled": {
       "on": [
-        "github:pull_request_review.submitted"
+        "github:pull_request.labeled"
       ],
       "when": {
+        "event.label.name": "tessl",
         "event.pull_request.head.ref": {
           "matches": "^tessl/"
         },
-        "event.pull_request.labels.*.name": {
-          "any": {
-            "equals": "tessl"
-          }
-        },
-        "event.sender.type": {
-          "not": {
-            "equals": "Bot"
-          }
-        }
+        "event.pull_request.state": "open"
       },
       "concurrency": {
-        "debounce": "90s",
         "keys": [
           {
             "key": "shepherd:{{ event.pull_request.number }}",
@@ -68,122 +59,7 @@
           }
         ]
       },
-      "action": "shepherd"
-    },
-    "pr-review-comment": {
-      "on": [
-        "github:pull_request_review_comment.created"
-      ],
-      "when": {
-        "event.pull_request.head.ref": {
-          "matches": "^tessl/"
-        },
-        "event.pull_request.labels.*.name": {
-          "any": {
-            "equals": "tessl"
-          }
-        },
-        "event.sender.type": {
-          "not": {
-            "equals": "Bot"
-          }
-        }
-      },
-      "concurrency": {
-        "debounce": "90s",
-        "keys": [
-          {
-            "key": "shepherd:{{ event.pull_request.number }}",
-            "limit": 1
-          }
-        ]
-      },
-      "action": "shepherd"
-    },
-    "pr-comment": {
-      "on": [
-        "github:issue_comment.created"
-      ],
-      "when": {
-        "isPullRequest": "true",
-        "event.issue.state": "open",
-        "event.issue.labels.*.name": {
-          "any": {
-            "equals": "tessl"
-          }
-        },
-        "event.sender.type": {
-          "not": {
-            "equals": "Bot"
-          }
-        }
-      },
-      "concurrency": {
-        "debounce": "90s",
-        "keys": [
-          {
-            "key": "shepherd:{{ event.issue.number }}",
-            "limit": 1
-          }
-        ]
-      },
-      "action": "shepherd"
-    },
-    "pr-checks-failed": {
-      "on": [
-        "github:check_run.completed"
-      ],
-      "when": {
-        "event.check_run.pull_requests.0.number": {
-          "exists": true
-        },
-        "event.check_run.check_suite.head_branch": {
-          "matches": "^tessl/"
-        },
-        "event.check_run.conclusion": {
-          "in": [
-            "failure",
-            "timed_out",
-            "startup_failure",
-            "action_required"
-          ]
-        }
-      },
-      "concurrency": {
-        "debounce": "90s",
-        "keys": [
-          {
-            "key": "shepherd:{{ event.check_run.pull_requests.0.number }}",
-            "limit": 1
-          }
-        ]
-      },
-      "action": "shepherd"
-    },
-    "pr-checks-passed": {
-      "on": [
-        "github:check_run.completed"
-      ],
-      "when": {
-        "event.check_run.name": "test",
-        "event.check_run.conclusion": "success",
-        "event.check_run.pull_requests.0.number": {
-          "exists": true
-        },
-        "event.check_run.check_suite.head_branch": {
-          "matches": "^tessl/"
-        }
-      },
-      "concurrency": {
-        "debounce": "90s",
-        "keys": [
-          {
-            "key": "shepherd:{{ event.check_run.pull_requests.0.number }}",
-            "limit": 1
-          }
-        ]
-      },
-      "action": "shepherd"
+      "action": "shepherd-session"
     }
   }
 }

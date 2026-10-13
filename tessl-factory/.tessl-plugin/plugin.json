@@ -1,0 +1,6 @@
+{
+  "name": "colin/memory-cp-factory",
+  "version": "0.1.0",
+  "private": true,
+  "skills": ["skills/pr-shepherd-session"]
+}
