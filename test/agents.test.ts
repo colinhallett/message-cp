@@ -1,0 +1,198 @@
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { mkdtempSync, existsSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { ToolError } from "../src/agents.js";
+import { openDb, type Db } from "../src/db.js";
+import { Session, createServer } from "../src/server.js";
+
+let dir: string;
+let dbFile: string;
+let db: Db;
+const clients: Client[] = [];
+
+beforeEach(() => {
+  dir = mkdtempSync(join(tmpdir(), "memory-cp-"));
+  dbFile = join(dir, "db.sqlite");
+  db = openDb(dbFile);
+});
+
+afterEach(async () => {
+  await Promise.all(clients.splice(0).map((c) => c.close()));
+  db.close();
+});
+
+/** A real server and client joined in-process, each session with its own connection to the file. */
+async function connect(): Promise<Client> {
+  const server = createServer(openDb(dbFile));
+  const [a, b] = InMemoryTransport.createLinkedPair();
+  const client = new Client({ name: "test", version: "0" });
+  await Promise.all([server.connect(a), client.connect(b)]);
+  clients.push(client);
+  return client;
+}
+
+async function call(client: Client, name: string, args: Record<string, unknown> = {}) {
+  const res = (await client.callTool({ name, arguments: args })) as {
+    isError?: boolean;
+    content: { text: string }[];
+  };
+  const text = res.content[0].text;
+  return { isError: !!res.isError, text, json: res.isError ? undefined : JSON.parse(text) };
+}
+
+const agentRows = () => db.prepare("SELECT name, bio FROM agents").all();
+
+describe("shared database", () => {
+  it("creates the directory and file named by MEMORY_CP_DB", () => {
+    const nested = join(dir, "a", "b", "db.sqlite");
+    process.env.MEMORY_CP_DB = nested;
+    try {
+      openDb().close();
+    } finally {
+      delete process.env.MEMORY_CP_DB;
+    }
+    expect(existsSync(nested)).toBe(true);
+  });
+
+  it("shows a registration from one session to another", async () => {
+    const one = await connect();
+    const two = await connect();
+    await call(one, "register", { name: "alice", bio: "writes code" });
+    const { json } = await call(two, "list_agents");
+    expect(json).toHaveLength(1);
+    expect(json[0]).toMatchObject({ name: "alice", bio: "writes code" });
+    expect(json[0].lastSeen).toMatch(/^\d{4}-/);
+  });
+
+  it("works across real server processes over stdio", async () => {
+    const start = async () => {
+      const client = new Client({ name: "test", version: "0" });
+      await client.connect(
+        new StdioClientTransport({
+          command: "npx",
+          args: ["tsx", join(import.meta.dirname, "../src/index.ts")],
+          env: { ...process.env, MEMORY_CP_DB: dbFile } as Record<string, string>,
+        }),
+      );
+      clients.push(client);
+      return client;
+    };
+    const [one, two] = [await start(), await start()];
+    expect((await call(two, "list_agents")).json).toEqual([]);
+    await call(one, "register", { name: "bob", bio: "tests" });
+    expect((await call(two, "list_agents")).json[0]).toMatchObject({ name: "bob", bio: "tests" });
+  }, 60_000);
+});
+
+describe("register", () => {
+  it("takes over an existing name instead of creating a second agent", async () => {
+    const one = await connect();
+    const two = await connect();
+    await call(one, "register", { name: "alice", bio: "first" });
+    await call(two, "register", { name: "alice", bio: "second" });
+    expect(agentRows()).toEqual([{ name: "alice", bio: "second" }]);
+  });
+
+  it("compares names case-insensitively and keeps the first spelling", async () => {
+    const client = await connect();
+    await call(client, "register", { name: "Alice", bio: "one" });
+    await call(client, "register", { name: "ALICE", bio: "two" });
+    expect(agentRows()).toEqual([{ name: "Alice", bio: "two" }]);
+    expect((await call(client, "get_agent", { name: "aLiCe" })).json.name).toBe("Alice");
+  });
+
+  it.each(["", "a".repeat(33), "has space", "dot.name", "ünï", "all", "ALL", "All"])(
+    "rejects the name %j",
+    async (name) => {
+      const client = await connect();
+      const res = await call(client, "register", { name, bio: "x" });
+      expect(res.isError).toBe(true);
+      expect(agentRows()).toEqual([]);
+    },
+  );
+
+  it("accepts letters, digits, '-' and '_' up to 32 characters", async () => {
+    const client = await connect();
+    const name = "a-Z_9".padEnd(32, "x");
+    expect((await call(client, "register", { name, bio: "x" })).isError).toBe(false);
+  });
+});
+
+describe("get_agent", () => {
+  it("returns an error for an unknown name", async () => {
+    const client = await connect();
+    const res = await call(client, "get_agent", { name: "nobody" });
+    expect(res.isError).toBe(true);
+    expect(res.text).toContain("nobody");
+  });
+});
+
+describe("session identity", () => {
+  it("tells an unregistered session to call register first", () => {
+    expect(() => new Session().require()).toThrow(ToolError);
+    expect(() => new Session().require()).toThrow(/Call `register` first/);
+  });
+
+  it("is not stored in the database: a second process starts unregistered", async () => {
+    const one = await connect();
+    await call(one, "register", { name: "alice", bio: "x" });
+    const session = new Session();
+    createServer(openDb(dbFile), session);
+    expect(() => session.require()).toThrow(ToolError);
+  });
+
+  it("returns the registered name after register", async () => {
+    const session = new Session();
+    const server = createServer(db, session);
+    const [a, b] = InMemoryTransport.createLinkedPair();
+    const client = new Client({ name: "test", version: "0" });
+    await Promise.all([server.connect(a), client.connect(b)]);
+    clients.push(client);
+    await call(client, "register", { name: "Alice", bio: "x" });
+    expect(session.require()).toBe("Alice");
+  });
+});
+
+describe("last seen", () => {
+  const lastSeen = () =>
+    (db.prepare("SELECT last_seen FROM agents WHERE name = 'alice'").get() as { last_seen: number })
+      .last_seen;
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+  it("is updated by every tool call from a registered session", async () => {
+    const client = await connect();
+    await call(client, "register", { name: "alice", bio: "x" });
+    for (const [tool, args] of [
+      ["list_agents", {}],
+      ["get_agent", { name: "alice" }],
+    ] as const) {
+      const before = lastSeen();
+      await sleep(5);
+      await call(client, tool, args);
+      expect(lastSeen()).toBeGreaterThan(before);
+    }
+  });
+
+  it("is updated even when the call returns an error", async () => {
+    const client = await connect();
+    await call(client, "register", { name: "alice", bio: "x" });
+    const before = lastSeen();
+    await sleep(5);
+    expect((await call(client, "get_agent", { name: "nobody" })).isError).toBe(true);
+    expect(lastSeen()).toBeGreaterThan(before);
+  });
+
+  it("is not touched by an unregistered session", async () => {
+    const one = await connect();
+    const two = await connect();
+    await call(one, "register", { name: "alice", bio: "x" });
+    const before = lastSeen();
+    await sleep(5);
+    await call(two, "list_agents");
+    expect(lastSeen()).toBe(before);
+  });
+});

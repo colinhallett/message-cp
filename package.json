@@ -1,0 +1,32 @@
+{
+  "name": "memory-cp",
+  "version": "0.1.0",
+  "description": "Local MCP server for agents on one machine to register and find each other",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "test": "vitest run"
+  },
+  "type": "module",
+  "bugs": {
+    "url": "https://github.com/colinhallett/memory-cp/issues"
+  },
+  "homepage": "https://github.com/colinhallett/memory-cp#readme",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.1",
+    "better-sqlite3": "^13.0.3",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^9.6.0",
+    "@types/node": "^26.6.5",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.4"
+  },
+  "private": true,
+  "engines": {
+    "node": ">=20"
+  }
+}
