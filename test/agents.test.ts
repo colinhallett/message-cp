@@ -1,7 +1,7 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { mkdtempSync, existsSync } from "node:fs";
+import { mkdtempSync, existsSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -56,6 +56,27 @@ describe("shared database", () => {
       delete process.env.MEMORY_CP_DB;
     }
     expect(existsSync(nested)).toBe(true);
+  });
+
+  it("creates the default database owner-only whatever the umask", () => {
+    const nested = join(dir, "private", "db.sqlite");
+    const old = process.umask(0o000);
+    try {
+      openDb(nested).close();
+    } finally {
+      process.umask(old);
+    }
+    expect(statSync(join(dir, "private")).mode & 0o077).toBe(0);
+    expect(statSync(nested).mode & 0o077).toBe(0);
+  });
+
+  it("pages list_agents and caps the page size", async () => {
+    const one = await connect();
+    for (let i = 0; i < 60; i++) db.prepare("INSERT INTO agents (name, bio, registered_at, last_seen) VALUES (?, '', 0, 0)").run(`a${String(i).padStart(2, "0")}`);
+    expect((await call(one, "list_agents")).json).toHaveLength(50);
+    const page = (await call(one, "list_agents", { limit: 20, offset: 50 })).json;
+    expect(page.map((a: { name: string }) => a.name)).toEqual(Array.from({ length: 10 }, (_, i) => `a${50 + i}`));
+    expect((await call(one, "list_agents", { limit: 1000 })).isError).toBe(true);
   });
 
   it("shows a registration from one session to another", async () => {

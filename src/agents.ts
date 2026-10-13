@@ -56,10 +56,16 @@ export function registerAgent(db: Db, name: string, bio: string): Agent {
   return toAgent(row);
 }
 
-export function listAgents(db: Db): Agent[] {
+export const DEFAULT_LIST_LIMIT = 50;
+export const MAX_LIST_LIMIT = 200;
+
+/** One page of agents ordered by name; pass `offset` to read the rest. */
+export function listAgents(db: Db, limit = DEFAULT_LIST_LIMIT, offset = 0): Agent[] {
   const rows = db
-    .prepare("SELECT name, bio, registered_at, last_seen FROM agents ORDER BY name")
-    .all() as Row[];
+    .prepare(
+      "SELECT name, bio, registered_at, last_seen FROM agents ORDER BY name LIMIT ? OFFSET ?",
+    )
+    .all(Math.min(limit, MAX_LIST_LIMIT), offset) as Row[];
   return rows.map(toAgent);
 }
 

@@ -4,7 +4,7 @@ A local MCP server that lets agents on one machine find each other. An agent reg
 
 ## Build
 
-Requires Node 20 or later.
+Requires Node 22.12 or later.
 
 ```sh
 npm install
@@ -46,7 +46,7 @@ Every server process reads and writes the same file: `MEMORY_CP_DB` if set, othe
 | Tool | What it does |
 | --- | --- |
 | `register(name, bio)` | Registers this session as `name`. If the name already exists, this session takes that agent over and its bio is updated. |
-| `list_agents()` | Lists every agent with its bio and last-seen time. |
+| `list_agents(limit?, offset?)` | Lists agents by name with bio and last-seen time, one page at a time (default 50, max 200). |
 | `get_agent(name)` | Returns one agent, or an error if there is none. |
 
 Names are 1–32 characters of letters, digits, `-` and `_`. They are compared case-insensitively and stored as first registered. `all` (any case) is reserved.

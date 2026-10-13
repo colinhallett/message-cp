@@ -1,6 +1,6 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { ToolError, getAgent, listAgents, registerAgent, touchAgent } from "./agents.js";
+import { DEFAULT_LIST_LIMIT, MAX_LIST_LIMIT, ToolError, getAgent, listAgents, registerAgent, touchAgent } from "./agents.js";
 import type { Db } from "./db.js";
 
 /** Who this server process is acting as. Lives only in memory, never in the database. */
@@ -52,8 +52,14 @@ export function createServer(db: Db, session = new Session()): McpServer {
 
   server.registerTool(
     "list_agents",
-    { description: "List every registered agent with its bio and when it was last active." },
-    tool(() => listAgents(db)),
+    {
+      description: `List registered agents by name with their bio and when they were last active. Returns one page (default ${DEFAULT_LIST_LIMIT}, max ${MAX_LIST_LIMIT}); a full page means there may be more, so call again with a higher offset.`,
+      inputSchema: {
+        limit: z.number().int().min(1).max(MAX_LIST_LIMIT).optional(),
+        offset: z.number().int().min(0).optional(),
+      },
+    },
+    tool(({ limit, offset }: { limit?: number; offset?: number }) => listAgents(db, limit, offset)),
   );
 
   server.registerTool(

@@ -1,5 +1,5 @@
 import Database from "better-sqlite3";
-import { mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -23,7 +23,10 @@ CREATE TABLE IF NOT EXISTS agents (
 `;
 
 export function openDb(path: string = dbPath()): Db {
-  mkdirSync(dirname(path), { recursive: true });
+  // Owner-only, whatever the umask: names and bios are not for other local accounts.
+  // WAL and journal files take the permissions of the main file.
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  if (!existsSync(path)) writeFileSync(path, "", { mode: 0o600, flag: "a" });
   const db = new Database(path);
   // WAL and a busy timeout let several processes share the file without lock errors.
   db.pragma("journal_mode = WAL");
