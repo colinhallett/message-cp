@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { openDb, type Db } from "../src/db.js";
-import { MAX_BODY_LENGTH } from "../src/messages.js";
+import { MAX_BODY_LENGTH, MAX_BROADCAST_RECIPIENTS } from "../src/messages.js";
 import { createServer } from "../src/server.js";
 
 let dbFile: string;
@@ -133,6 +133,39 @@ describe("broadcasts", () => {
     const r = await call(a, "send_message", { to: "all", body: "anyone?" });
     expect(r.json).toEqual({ delivered: 0, recipients: [] });
     expect(messageCount()).toBe(0);
+  });
+});
+
+describe("bounds", () => {
+  it("counts characters, not UTF-16 code units, against the body limit", async () => {
+    const a = await connect("alice");
+    await connect("bob");
+    const ok = await call(a, "send_message", { to: "bob", body: "😀".repeat(MAX_BODY_LENGTH) });
+    expect(ok.isError).toBe(false);
+    const big = await call(a, "send_message", { to: "bob", body: "😀".repeat(MAX_BODY_LENGTH + 1) });
+    expect(big.isError).toBe(true);
+    expect(messageCount()).toBe(1);
+  });
+
+  it("refuses a broadcast above the recipient cap and stores nothing", async () => {
+    const a = await connect("alice");
+    const ins = db.prepare("INSERT INTO agents (name, bio, registered_at, last_seen) VALUES (?, 'x', 0, 0)");
+    for (let i = 0; i < MAX_BROADCAST_RECIPIENTS + 1; i++) ins.run(`peer${i}`);
+    const r = await call(a, "send_message", { to: "all", body: "hi" });
+    expect(r.isError).toBe(true);
+    expect(messageCount()).toBe(0);
+  });
+
+  it("pages the inbox and leaves unread messages beyond the page unread", async () => {
+    const a = await connect("alice");
+    const b = await connect("bob");
+    for (const body of ["1", "2", "3"]) await call(a, "send_message", { to: "bob", body });
+    const first = await call(b, "read_inbox", { limit: 2 });
+    expect(first.json.map((m: { body: string }) => m.body)).toEqual(["1", "2"]);
+    const second = await call(b, "read_inbox", { limit: 2 });
+    expect(second.json.map((m: { body: string }) => m.body)).toEqual(["3"]);
+    const hist = await call(b, "read_inbox", { unread_only: false, limit: 2, offset: 2 });
+    expect(hist.json.map((m: { body: string }) => m.body)).toEqual(["3"]);
   });
 });
 

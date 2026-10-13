@@ -23,6 +23,10 @@ interface Row {
 }
 
 export const MAX_BODY_LENGTH = 4000;
+/** A broadcast writes one row per recipient inside the write lock, so its fan-out is capped. */
+export const MAX_BROADCAST_RECIPIENTS = 200;
+export const DEFAULT_INBOX_LIMIT = 50;
+export const MAX_INBOX_LIMIT = 200;
 
 /**
  * Stores one delivery per recipient: the named agent, or for `all` every agent registered right now
@@ -30,7 +34,8 @@ export const MAX_BODY_LENGTH = 4000;
  */
 export function sendMessage(db: Db, from: string, to: string, body: string): SendResult {
   if (body.trim().length === 0) throw new ToolError("Message body is empty.");
-  if (body.length > MAX_BODY_LENGTH) {
+  // Count characters (code points), not UTF-16 code units, to match what the tool advertises.
+  if ([...body].length > MAX_BODY_LENGTH) {
     throw new ToolError(`Message is too long: at most ${MAX_BODY_LENGTH} characters.`);
   }
   const broadcast = to.toLowerCase() === "all";
@@ -40,8 +45,13 @@ export function sendMessage(db: Db, from: string, to: string, body: string): Sen
       let recipients: { id: number; name: string }[];
       if (broadcast) {
         recipients = db
-          .prepare("SELECT id, name FROM agents WHERE name <> ? ORDER BY name")
-          .all(from) as typeof recipients;
+          .prepare("SELECT id, name FROM agents WHERE name <> ? ORDER BY name LIMIT ?")
+          .all(from, MAX_BROADCAST_RECIPIENTS + 1) as typeof recipients;
+        if (recipients.length > MAX_BROADCAST_RECIPIENTS) {
+          throw new ToolError(
+            `Too many agents to broadcast to: at most ${MAX_BROADCAST_RECIPIENTS} other agents. Nothing was sent; message agents by name instead.`,
+          );
+        }
       } else {
         const agent = getAgent(db, to);
         if (!agent) throw new ToolError(`No agent named '${to}'.`);
@@ -57,8 +67,17 @@ export function sendMessage(db: Db, from: string, to: string, body: string): Sen
     .immediate();
 }
 
-/** The caller's messages, oldest first. Everything returned is marked read. */
-export function readInbox(db: Db, name: string, unreadOnly = true): Message[] {
+/**
+ * One page of the caller's messages, oldest first. Everything returned is marked read. Unread
+ * messages beyond the page stay unread for the next call; with `unreadOnly` false, use `offset`.
+ */
+export function readInbox(
+  db: Db,
+  name: string,
+  unreadOnly = true,
+  limit = DEFAULT_INBOX_LIMIT,
+  offset = 0,
+): Message[] {
   return db
     .transaction((): Message[] => {
       const rows = db
@@ -66,9 +85,9 @@ export function readInbox(db: Db, name: string, unreadOnly = true): Message[] {
           `SELECT m.id, m.sender, m.body, m.broadcast, m.created_at, m.read_at
            FROM messages m JOIN agents a ON a.id = m.recipient_id
            WHERE a.name = ? ${unreadOnly ? "AND m.read_at IS NULL" : ""}
-           ORDER BY m.id`,
+           ORDER BY m.id LIMIT ? OFFSET ?`,
         )
-        .all(name) as Row[];
+        .all(name, Math.min(limit, MAX_INBOX_LIMIT), offset) as Row[];
       const mark = db.prepare("UPDATE messages SET read_at = ? WHERE id = ? AND read_at IS NULL");
       const now = Date.now();
       for (const r of rows) mark.run(now, r.id);

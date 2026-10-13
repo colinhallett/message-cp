@@ -2,7 +2,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { DEFAULT_LIST_LIMIT, MAX_LIST_LIMIT, ToolError, getAgent, listAgents, registerAgent, touchAgent } from "./agents.js";
 import type { Db } from "./db.js";
-import { MAX_BODY_LENGTH, readInbox, sendMessage } from "./messages.js";
+import { DEFAULT_INBOX_LIMIT, MAX_BODY_LENGTH, MAX_BROADCAST_RECIPIENTS, MAX_INBOX_LIMIT, readInbox, sendMessage } from "./messages.js";
 
 /** Who this server process is acting as. Lives only in memory, never in the database. */
 export class Session {
@@ -79,8 +79,7 @@ export function createServer(db: Db, session = new Session()): McpServer {
   server.registerTool(
     "send_message",
     {
-      description:
-        "Send a message to one registered agent by name, or to every other registered agent with to: 'all'. A broadcast only reaches agents registered when it is sent. Requires register first.",
+      description: `Send a message to one registered agent by name, or to every other registered agent with to: 'all'. A broadcast only reaches agents registered when it is sent, and fails with nothing sent if more than ${MAX_BROADCAST_RECIPIENTS} other agents are registered. Requires register first.`,
       inputSchema: {
         to: z.string().describe("An agent name, or 'all'."),
         body: z.string().describe(`The message, at most ${MAX_BODY_LENGTH} characters.`),
@@ -92,11 +91,16 @@ export function createServer(db: Db, session = new Session()): McpServer {
   server.registerTool(
     "read_inbox",
     {
-      description:
-        "Read your messages, oldest first. By default only unread ones; everything returned is marked read. Messages are not pushed, so call this to check. Requires register first.",
-      inputSchema: { unread_only: z.boolean().optional().describe("Default true.") },
+      description: `Read your messages, oldest first, one page at a time (default ${DEFAULT_INBOX_LIMIT}, max ${MAX_INBOX_LIMIT}). By default only unread ones; everything returned is marked read, so a full page means there may be more: call again. With unread_only false, use offset to page through history. Messages are not pushed, so call this to check. Requires register first.`,
+      inputSchema: {
+        unread_only: z.boolean().optional().describe("Default true."),
+        limit: z.number().int().min(1).max(MAX_INBOX_LIMIT).optional(),
+        offset: z.number().int().min(0).optional(),
+      },
     },
-    tool(({ unread_only }: { unread_only?: boolean }) => readInbox(db, session.require(), unread_only)),
+    tool(({ unread_only, limit, offset }: { unread_only?: boolean; limit?: number; offset?: number }) =>
+      readInbox(db, session.require(), unread_only, limit, offset),
+    ),
   );
 
   return server;
