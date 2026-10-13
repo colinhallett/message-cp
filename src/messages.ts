@@ -23,8 +23,6 @@ interface Row {
 }
 
 export const MAX_BODY_LENGTH = 4000;
-/** A broadcast writes one row per recipient inside the write lock, so its fan-out is capped. */
-export const MAX_BROADCAST_RECIPIENTS = 200;
 export const DEFAULT_INBOX_LIMIT = 50;
 export const MAX_INBOX_LIMIT = 200;
 
@@ -45,13 +43,8 @@ export function sendMessage(db: Db, from: string, to: string, body: string): Sen
       let recipients: { id: number; name: string }[];
       if (broadcast) {
         recipients = db
-          .prepare("SELECT id, name FROM agents WHERE name <> ? ORDER BY name LIMIT ?")
-          .all(from, MAX_BROADCAST_RECIPIENTS + 1) as typeof recipients;
-        if (recipients.length > MAX_BROADCAST_RECIPIENTS) {
-          throw new ToolError(
-            `Too many agents to broadcast to: at most ${MAX_BROADCAST_RECIPIENTS} other agents. Nothing was sent; message agents by name instead.`,
-          );
-        }
+          .prepare("SELECT id, name FROM agents WHERE name <> ? ORDER BY name")
+          .all(from) as typeof recipients;
       } else {
         const agent = getAgent(db, to);
         if (!agent) throw new ToolError(`No agent named '${to}'.`);

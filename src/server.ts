@@ -2,7 +2,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { DEFAULT_LIST_LIMIT, MAX_LIST_LIMIT, ToolError, getAgent, listAgents, registerAgent, touchAgent } from "./agents.js";
 import type { Db } from "./db.js";
-import { DEFAULT_INBOX_LIMIT, MAX_BODY_LENGTH, MAX_BROADCAST_RECIPIENTS, MAX_INBOX_LIMIT, readInbox, sendMessage } from "./messages.js";
+import { DEFAULT_INBOX_LIMIT, MAX_BODY_LENGTH, MAX_INBOX_LIMIT, readInbox, sendMessage } from "./messages.js";
 
 /** Who this server process is acting as. Lives only in memory, never in the database. */
 export class Session {
@@ -79,7 +79,7 @@ export function createServer(db: Db, session = new Session()): McpServer {
   server.registerTool(
     "send_message",
     {
-      description: `Send a message to one registered agent by name, or to every other registered agent with to: 'all'. A broadcast only reaches agents registered when it is sent, and fails with nothing sent if more than ${MAX_BROADCAST_RECIPIENTS} other agents are registered. Requires register first.`,
+      description: `Send a message to one registered agent by name, or to every other registered agent with to: 'all'. A broadcast only reaches agents registered when it is sent. Requires register first.`,
       inputSchema: {
         to: z.string().describe("An agent name, or 'all'."),
         body: z.string().describe(`The message, at most ${MAX_BODY_LENGTH} characters.`),

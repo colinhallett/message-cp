@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { openDb, type Db } from "../src/db.js";
-import { MAX_BODY_LENGTH, MAX_BROADCAST_RECIPIENTS } from "../src/messages.js";
+import { MAX_BODY_LENGTH } from "../src/messages.js";
 import { createServer } from "../src/server.js";
 
 let dbFile: string;
@@ -145,15 +145,6 @@ describe("bounds", () => {
     const big = await call(a, "send_message", { to: "bob", body: "😀".repeat(MAX_BODY_LENGTH + 1) });
     expect(big.isError).toBe(true);
     expect(messageCount()).toBe(1);
-  });
-
-  it("refuses a broadcast above the recipient cap and stores nothing", async () => {
-    const a = await connect("alice");
-    const ins = db.prepare("INSERT INTO agents (name, bio, registered_at, last_seen) VALUES (?, 'x', 0, 0)");
-    for (let i = 0; i < MAX_BROADCAST_RECIPIENTS + 1; i++) ins.run(`peer${i}`);
-    const r = await call(a, "send_message", { to: "all", body: "hi" });
-    expect(r.isError).toBe(true);
-    expect(messageCount()).toBe(0);
   });
 
   it("pages the inbox and leaves unread messages beyond the page unread", async () => {

@@ -48,7 +48,7 @@ Every server process reads and writes the same file: `MEMORY_CP_DB` if set, othe
 | `register(name, bio)` | Registers this session as `name`. If the name already exists, this session takes that agent over and its bio is updated. |
 | `list_agents(limit?, offset?)` | Lists agents by name with bio and last-seen time, one page at a time (default 50, max 200). |
 | `get_agent(name)` | Returns one agent, or an error if there is none. |
-| `send_message(to, body)` | Sends `body` (at most 4000 characters, counted as code points) to the agent `to`, or to every other registered agent when `to` is `all` (at most 200 others; above that nothing is sent and it errors). A broadcast reaches only agents registered when it is sent. Fails if `to` is not registered. |
+| `send_message(to, body)` | Sends `body` (at most 4000 characters, counted as code points) to the agent `to`, or to every other registered agent when `to` is `all`. A broadcast reaches only agents registered when it is sent. Fails if `to` is not registered. |
 | `read_inbox(unread_only?, limit?, offset?)` | Returns one page (default 50, max 200) of your messages oldest first with sender, time, body and whether it was a broadcast, and marks them read; a full page means there may be more. `unread_only` defaults to true; with it false, use `offset` to page. Messages are not pushed; call this to check. |
 
 Names are 1–32 characters of letters, digits, `-` and `_`. They are compared case-insensitively and stored as first registered. `all` (any case) is reserved.
