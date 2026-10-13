@@ -63,3 +63,36 @@ Messages are stored once per recipient, so read state is per agent. `read_inbox`
 Memories are shared by every registered agent and live in the same database file. `remember`, `recall` and `forget` need a registered session. Author and time are fixed when a memory is stored. Keyword search uses SQLite FTS5 and matches whole words, not prefixes or stems.
 
 Keys only protect a name once every server process sharing the database runs a version that knows about them. A lost key cannot be recovered or rotated yet.
+
+## Hive
+
+`memory-cp hive --config hive.json` runs in the foreground and gives agents that are not running a way to receive work. About once a second it checks the database for unread messages to the agents named in the config. When one has some, the hive starts the agent's CLI in the agent's working directory with those messages as the prompt, resumes the agent's previous session, and lets it reply with `send_message`. Any agent on the same database can send it work. Stop it with Ctrl-C; it waits for running agents to finish first.
+
+```json
+{
+  "pollMs": 1000,
+  "agents": [
+    {
+      "name": "worker-1",
+      "cli": "claude",
+      "key": "a-secret-only-this-file-holds",
+      "cwd": "/path/to/project",
+      "model": "sonnet",
+      "allowedTools": ["Read", "Grep", "Bash(git status)"],
+      "timeoutSeconds": 600,
+      "rolePrompt": "You are the docs worker."
+    }
+  ]
+}
+```
+
+`cli` (default `claude`), `model`, `rolePrompt` and `pollMs` are optional; the rest are required. Relative `cwd`s are resolved against the config file. The file holds keys, so `chmod 600` it; the hive warns if others can read it.
+
+- **One run per agent.** Messages that arrive during a run wait for the next run, oldest first, at most 20 per run.
+- **Read at start.** A run's messages are marked read when it starts, so a restart never hands them out again. If a run fails, those messages are not retried; the failure is in `hive_runs`.
+- **Identity.** The run's `memory-cp` server starts as the agent through `MEMORY_CP_AGENT` and `MEMORY_CP_AGENT_KEY`. The key is written to a temporary MCP config with mode 0600, deleted when the run ends. It is not in the prompt, the logs or any command line. An agent in the config whose key does not match the database is skipped, with a log line.
+- **Permissions.** Claude Code runs with `-p --permission-mode dontAsk --permission-prompts none`, so anything not in `allowedTools` is refused and nothing waits for a prompt. The `memory-cp` tools are always allowed. Settings files are not read (`--setting-sources ""`), so a `.claude/settings.json` in the agent's directory cannot grant more. There is no way to turn permission checks off.
+- **Failures.** A run that fails or exceeds `timeoutSeconds` (it is killed), or a CLI that is not installed, is recorded and does not affect the hive or other agents.
+- **Records.** The `hive_runs` table holds, per run: agent, message ids, start and end time, exit status (`ok`, `exit N`, `timeout`, `error`, `abandoned`), session id and error text. The next run resumes the latest session id for that agent, unless a run that resumed it failed (including by timeout), in which case the agent starts a fresh session. Runs a killed hive left unfinished are marked `abandoned` once their heartbeat is 30 seconds stale (a live hive on the same database keeps its runs); an agent with an unfinished run is not started again by any hive until it ends or goes stale; their messages were already read and are not retried. An agent whose `cli` is unknown is skipped at startup, leaving its messages unread.
+
+The command line for each agent CLI is built behind the small `AgentCli` interface in `src/hive/agent-cli.ts`; only Claude Code is implemented.

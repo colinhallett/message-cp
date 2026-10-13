@@ -28,5 +28,8 @@
   "private": true,
   "engines": {
     "node": ">=22.12"
+  },
+  "bin": {
+    "memory-cp": "dist/cli.js"
   }
 }
