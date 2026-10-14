@@ -56,13 +56,27 @@ Read both again before every write, because they move while you work.
 
 ## The loop
 
+You end the session for exactly three reasons: the PR is merged or closed (situation 1), the work has been stopped (situation 2), or it is 43 minutes since you started ("Time"). Anything else, including "nothing to do right now", "checks are still running", "waiting for a review" or "the PR is ready", means wait 90 seconds (step 4) and look again. Ending early leaves the PR with nobody watching it: a review that arrives later is never answered. Before you end, say which of the three reasons applies.
+
 Repeat:
 
 1. Check the time (see "Time").
 2. Read the record.
 3. Take the first situation below that applies.
-4. Unless that situation says to stop, wait 90 seconds (`sleep 90`) and go
-   back to step 1.
+4. Unless that situation says to stop, wait 90 seconds and go back to step 1.
+   Wait by running this as an ordinary shell command **in the foreground**
+   and waiting for it to return:
+
+   ```bash
+   node -e "setTimeout(() => {}, 90000)"
+   ```
+
+   Plain `sleep` may be refused in this environment; this command is the
+   wait to use. Never run it in the background, and never use a background
+   task, timer, monitor or scheduled wake-up that would notify you later:
+   this is a non-interactive session, so when you stop to wait for a
+   notification the session ends and its background timers are killed with
+   it, leaving nobody watching the PR.
 
 ## Situations
 
@@ -71,7 +85,14 @@ Repeat:
    the `tessl` label), or the issue is `completed`, `canceled`, or no longer delegated to
    Tessl. Stop silently.
 3. **There is work to do:** feedback without an answer, a failed check, or a
-   merge conflict. Do the work on the existing branch, push, answer each item
+   merge conflict. Feedback is every unresolved review thread, every
+   conversation comment by someone other than you, and every review whose
+   body has text, from any reviewer, person or bot. A review whose body
+   carries findings and has no inline threads is still feedback (a person's
+   `CHANGES_REQUESTED` review often looks like this). An item is answered only
+   once a reply of yours, posted after it, addresses it by name; a review that
+   arrived while you were working, after you last read the record, is not
+   answered by work you did before it. Do the work on the existing branch, push, answer each item
    where it was raised, and resolve the threads you answered. Then keep
    looping: your push starts new checks and a new review, and you will see
    them on a later pass.
@@ -79,12 +100,17 @@ Repeat:
    looping without changing code until someone answers. Also do this when
    rounds stop converging: the same concern comes back after you answered it,
    or you have pushed fixes five times and feedback keeps coming.
-5. **Nothing is outstanding and the checks are green.** If the PR has no
+5. **Nothing is outstanding and the checks are green.** Read the reviews
+   again first: a review posted since your last read means situation 3. If the PR has no
    ready comment for the current head, post one: `PR ready for review:
    <pr url>` plus the marker. Keep looping, because the owner may still leave
    feedback or merge.
 6. **Nothing is outstanding and checks or a review are still running.** Keep
    looping.
+
+## When the work moves away from the plan
+
+The Linear issue and the repository's design docs are the plan. When a change you push departs from it in a way the issue's owner would want to know (the scope grows or shrinks, the approach changes, an invariant or a "Not in scope" item no longer holds, or a design decision is taken that the issue left open), post one comment on the Linear issue saying what changed, why (which review finding or failure led to it), and the commit. Use `commentCreate(input: {issueId, body})` through `$LINEAR_API_URL/graphql`, with the request body written to a file. Small fixes that keep to the plan need no comment. If the design docs in the repository describe the plan, update them in the same push as well.
 
 ## Ending
 
@@ -103,8 +129,8 @@ the marker. Do not post it when you stop because the PR was merged or closed.
 4. You push only onto the head you read this pass, and you push after every
    commit.
 5. You never merge or enable auto-merge.
-6. You wait only with `sleep 90` between passes. You never wait inside a pass,
-   and you never run past 43 minutes.
+6. You wait only with the foreground 90-second wait in "The loop" between passes. You never wait
+   inside a pass, never wait in the background, and never run past 43 minutes.
 7. A red check, a failing test or a broken build is never declined. Before you
    call a check a flake, merge the base in and run it locally.
 8. You rerun a CI job that failed for infrastructure reasons at most once.

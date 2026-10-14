@@ -60,6 +60,68 @@
         ]
       },
       "action": "shepherd-session"
+    },
+    "pr-review": {
+      "on": [
+        "github:pull_request_review.submitted"
+      ],
+      "when": {
+        "event.pull_request.head.ref": {
+          "matches": "^tessl/"
+        },
+        "event.pull_request.labels.*.name": {
+          "any": {
+            "equals": "tessl"
+          }
+        },
+        "event.pull_request.state": "open",
+        "event.sender.login": {
+          "not": {
+            "equals": "tessl-helper[bot]"
+          }
+        }
+      },
+      "concurrency": {
+        "debounce": "90s",
+        "keys": [
+          {
+            "key": "shepherd:{{ event.pull_request.number }}",
+            "limit": 1
+          }
+        ]
+      },
+      "action": "shepherd-session"
+    },
+    "pr-checks-failed": {
+      "on": [
+        "github:check_run.completed"
+      ],
+      "when": {
+        "event.check_run.pull_requests.0.number": {
+          "exists": true
+        },
+        "event.check_run.check_suite.head_branch": {
+          "matches": "^tessl/"
+        },
+        "event.check_run.conclusion": {
+          "in": [
+            "failure",
+            "timed_out",
+            "startup_failure",
+            "action_required"
+          ]
+        }
+      },
+      "concurrency": {
+        "debounce": "90s",
+        "keys": [
+          {
+            "key": "shepherd:{{ event.check_run.pull_requests.0.number }}",
+            "limit": 1
+          }
+        ]
+      },
+      "action": "shepherd-session"
     }
   }
 }
