@@ -65,15 +65,8 @@ export function remember(db: Db, author: string, text: string, tags: string[] = 
   return { id, author, text, tags: clean.sort(), storedAt: new Date(now).toISOString() };
 }
 
-/** Newest first by stored time, ties broken by id; page with `offset`. Query, tags and author all narrow the same result. */
-export function recall(
-  db: Db,
-  query?: string,
-  tags: string[] = [],
-  author?: string,
-  limit = DEFAULT_RECALL_LIMIT,
-  offset = 0,
-): Memory[] {
+/** The WHERE clauses `recall` and `forget_memories` share, so what one finds the other deletes. */
+function memoryFilter(query?: string, tags: string[] = [], author?: string) {
   if (query !== undefined && query.length > MAX_QUERY_LENGTH) {
     throw new ToolError(`Query is too long: at most ${MAX_QUERY_LENGTH} characters.`);
   }
@@ -96,6 +89,19 @@ export function recall(
     where.push("m.author = ?");
     params.push(author);
   }
+  return { where, params };
+}
+
+/** Newest first by stored time, ties broken by id; page with `offset`. Query, tags and author all narrow the same result. */
+export function recall(
+  db: Db,
+  query?: string,
+  tags: string[] = [],
+  author?: string,
+  limit = DEFAULT_RECALL_LIMIT,
+  offset = 0,
+): Memory[] {
+  const { where, params } = memoryFilter(query, tags, author);
   const rows = db
     .prepare(
       `SELECT m.id, m.author, m.text, m.created_at FROM memories m
@@ -130,4 +136,39 @@ export function forget(db: Db, id: number): { forgotten: number } {
   const { changes } = db.prepare("DELETE FROM memories WHERE id = ?").run(id);
   if (changes === 0) throw new ToolError(`No memory with id ${id}.`);
   return { forgotten: id };
+}
+
+export const MAX_FORGET_IDS = 100;
+
+export type ForgetMemoriesResult =
+  | { dryRun: true; matched: number; ids: number[] }
+  | { dryRun: false; deleted: number };
+
+/**
+ * Deletes every memory `recall` would find with the same filters, with no paging limit. Needs at least one
+ * filter that survives recall's clean-up, so a blank query or empty tags can never mean everything.
+ * With `dryRun` (the default) nothing is deleted: returns the count and up to MAX_FORGET_IDS ids.
+ */
+export function forgetMemories(
+  db: Db,
+  tags?: string[],
+  author?: string,
+  query?: string,
+  dryRun = true,
+): ForgetMemoriesResult {
+  const { where, params } = memoryFilter(query, tags, author);
+  if (where.length === 0) {
+    throw new ToolError("Give at least one of tags, author or query; a blank query or empty tags do not count.");
+  }
+  const select = db.prepare(
+    `SELECT m.id FROM memories m WHERE ${where.join(" AND ")} ORDER BY m.created_at DESC, m.id DESC`,
+  );
+  const run = db.transaction((): ForgetMemoriesResult => {
+    const ids = (select.all(...params) as { id: number }[]).map((r) => r.id);
+    if (dryRun) return { dryRun: true, matched: ids.length, ids: ids.slice(0, MAX_FORGET_IDS) };
+    const del = db.prepare("DELETE FROM memories WHERE id = ?");
+    for (const id of ids) del.run(id);
+    return { dryRun: false, deleted: ids.length };
+  });
+  return dryRun ? run() : run.immediate();
 }

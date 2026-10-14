@@ -3,6 +3,8 @@ import type { Db } from "./db.js";
 
 export class ToolError extends Error {}
 
+export const NOT_REGISTERED = "This session is not registered. Call `register` first.";
+
 export interface Agent {
   name: string;
   bio: string;
@@ -51,6 +53,25 @@ const sameHash = (a: string, b: string) => {
 
 export type RegisterResult = Agent & { key?: string };
 
+/** Which registration a session belongs to. Survives a takeover of the name, not a removal. */
+export interface Identity {
+  id: number;
+  registeredAt: number;
+  instance: string | null;
+}
+
+interface IdentityRow {
+  id: number;
+  registered_at: number;
+  instance: string | null;
+}
+
+const toIdentity = (row: IdentityRow): Identity => ({
+  id: row.id,
+  registeredAt: row.registered_at,
+  instance: row.instance,
+});
+
 function validateKey(key: string): void {
   if (key.length < 1 || key.length > MAX_KEY_LENGTH) {
     throw new ToolError(`Invalid key: use 1-${MAX_KEY_LENGTH} characters.`);
@@ -64,6 +85,15 @@ function validateKey(key: string): void {
  * returned, this once; only its hash is stored. `bio` undefined keeps an existing agent's bio.
  */
 export const registerAgent = (db: Db, name: string, bio?: string, key?: string): RegisterResult =>
+  registerWithIdentity(db, name, bio, key).result;
+
+/** `registerAgent`, also returning the identity of the registration the caller now holds. */
+export const registerWithIdentity = (
+  db: Db,
+  name: string,
+  bio?: string,
+  key?: string,
+): { result: RegisterResult; identity: Identity } =>
   db.transaction(() => {
     validateName(name);
     if (bio !== undefined && bio.length > MAX_BIO_LENGTH) {
@@ -84,14 +114,14 @@ export const registerAgent = (db: Db, name: string, bio?: string, key?: string):
     const now = Date.now();
     const row = db
       .prepare(
-        `INSERT INTO agents (name, bio, registered_at, last_seen, key_hash) VALUES (?, ?, ?, ?, ?)
+        `INSERT INTO agents (name, bio, registered_at, last_seen, key_hash, instance) VALUES (?, ?, ?, ?, ?, ?)
          -- Reached on a conflict only after the key check above passed.
          ON CONFLICT(name) DO UPDATE SET bio = COALESCE(?, bio), last_seen = excluded.last_seen, key_hash = excluded.key_hash
-         RETURNING name, bio, registered_at, last_seen`,
+         RETURNING id, name, bio, registered_at, last_seen, instance`,
       )
-      .get(name, bio ?? "", now, now, keyHash, bio ?? null) as Row;
+      .get(name, bio ?? "", now, now, keyHash, randomBytes(16).toString("hex"), bio ?? null) as Row & IdentityRow;
     // A caller that supplied its own key already has it.
-    return issued ? { ...toAgent(row), key: effectiveKey } : toAgent(row);
+    return { result: issued ? { ...toAgent(row), key: effectiveKey } : toAgent(row), identity: toIdentity(row) };
   }).immediate();
 
 /**
@@ -99,13 +129,22 @@ export const registerAgent = (db: Db, name: string, bio?: string, key?: string):
  * created or claimed with that key. Throws ToolError if the agent has a different key.
  */
 export function agentFromEnv(db: Db, env: NodeJS.ProcessEnv = process.env): string | undefined {
+  return registerFromEnv(db, env)?.name;
+}
+
+/** `agentFromEnv`, also returning the identity of the registration it made, so a session binds to exactly that one. */
+export function registerFromEnv(
+  db: Db,
+  env: NodeJS.ProcessEnv = process.env,
+): { name: string; identity: Identity } | undefined {
   const name = env.MEMORY_CP_AGENT;
   const key = env.MEMORY_CP_AGENT_KEY;
   if (name === undefined && key === undefined) return undefined;
   if (!name || !key) {
     throw new ToolError("MEMORY_CP_AGENT and MEMORY_CP_AGENT_KEY must be set together.");
   }
-  return registerAgent(db, name, undefined, key).name;
+  const { result, identity } = registerWithIdentity(db, name, undefined, key);
+  return { name: result.name, identity };
 }
 
 export const DEFAULT_LIST_LIMIT = 50;
@@ -128,6 +167,59 @@ export function getAgent(db: Db, name: string): Agent | undefined {
   return row && toAgent(row);
 }
 
+/** The identity of the agent registered under `name` right now, if any. */
+export function identityOf(db: Db, name: string): Identity | undefined {
+  const row = db.prepare("SELECT id, registered_at, instance FROM agents WHERE name = ?").get(name) as
+    | IdentityRow
+    | undefined;
+  return row && toIdentity(row);
+}
+
+/** The name of the agent `identity` still belongs to, or undefined once that registration was removed. */
+export function nameOfIdentity(db: Db, identity: Identity): string | undefined {
+  const row = db
+    .prepare("SELECT name FROM agents WHERE id = ? AND registered_at = ? AND instance IS ?")
+    .get(identity.id, identity.registeredAt, identity.instance) as { name: string } | undefined;
+  return row?.name;
+}
+
 export function touchAgent(db: Db, name: string): void {
   db.prepare("UPDATE agents SET last_seen = ? WHERE name = ?").run(Date.now(), name);
 }
+
+export interface Unregistered {
+  removed: string;
+  releasedTasks: number;
+  deletedMessages: number;
+}
+
+/**
+ * Removes the agent `name`: its registration and the messages addressed to it. Tasks it claimed go back to
+ * open; memories it wrote and tasks it posted stay. An agent with a key is removed only with that key,
+ * unless `own` is the identity of the caller's session: then that exact registration is removed, or nothing
+ * if it is already gone, so a name registered by someone else in the meantime is never touched.
+ * One IMMEDIATE transaction, because foreign keys are off and the schema's cascade never runs.
+ */
+export const removeAgent = (db: Db, name: string, key?: string, own?: Identity): Unregistered =>
+  db.transaction((): Unregistered => {
+    const row = (
+      own
+        ? db
+            .prepare("SELECT id, name, key_hash FROM agents WHERE id = ? AND registered_at = ? AND instance IS ?")
+            .get(own.id, own.registeredAt, own.instance)
+        : db.prepare("SELECT id, name, key_hash FROM agents WHERE name = ?").get(name)
+    ) as { id: number; name: string; key_hash: string | null } | undefined;
+    if (!row) throw new ToolError(own ? NOT_REGISTERED : `No agent named '${name}'.`);
+    if (row.key_hash !== null && !own) {
+      if (key === undefined) throw new ToolError(`Agent '${row.name}' has a key. Pass its key to remove it.`);
+      if (!sameHash(hashKey(key), row.key_hash)) throw new ToolError(`Wrong key for agent '${row.name}'.`);
+    }
+    const deletedMessages = db.prepare("DELETE FROM messages WHERE recipient_id = ?").run(row.id).changes;
+    const releasedTasks = db
+      .prepare(
+        "UPDATE tasks SET status = 'open', assignee = NULL, claimed_at = NULL WHERE status = 'claimed' AND assignee = ?",
+      )
+      .run(row.name).changes;
+    db.prepare("DELETE FROM agents WHERE id = ?").run(row.id);
+    return { removed: row.name, releasedTasks, deletedMessages };
+  }).immediate();

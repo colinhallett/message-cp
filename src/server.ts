@@ -1,6 +1,19 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { DEFAULT_LIST_LIMIT, MAX_LIST_LIMIT, ToolError, getAgent, listAgents, registerAgent, touchAgent } from "./agents.js";
+import {
+  DEFAULT_LIST_LIMIT,
+  MAX_LIST_LIMIT,
+  NOT_REGISTERED,
+  ToolError,
+  getAgent,
+  identityOf,
+  listAgents,
+  nameOfIdentity,
+  registerWithIdentity,
+  removeAgent,
+  touchAgent,
+  type Identity,
+} from "./agents.js";
 import type { Db } from "./db.js";
 import {
   DEFAULT_RECALL_LIMIT,
@@ -9,6 +22,7 @@ import {
   MAX_TAGS,
   MAX_TEXT_LENGTH,
   forget,
+  forgetMemories,
   getMemory,
   recall,
   remember,
@@ -28,25 +42,54 @@ import {
 } from "./tasks.js";
 import { DEFAULT_INBOX_LIMIT, MAX_BODY_LENGTH, MAX_INBOX_LIMIT, readInbox, sendMessage } from "./messages.js";
 
-/** Who this server process is acting as. Lives only in memory, never in the database. */
+/**
+ * Who this server process is acting as. Lives only in memory, never in the database, but every use is checked
+ * against the registration it was made for: once that is removed the session is unregistered again.
+ */
 export class Session {
-  name: string | undefined;
+  private identity: Identity | undefined;
+  private db: Db | undefined;
+
+  /** The database the identity is checked against. `createServer` calls this. */
+  attach(db: Db): void {
+    this.db = db;
+  }
+
+  bind(identity: Identity): void {
+    this.identity = identity;
+  }
+
+  /** The registration this session belongs to, as last checked by `current`/`require`. */
+  get registration(): Identity | undefined {
+    return this.identity;
+  }
+
+  /** The agent's name, or undefined if unregistered or the registration was removed. */
+  current(): string | undefined {
+    if (!this.identity || !this.db) return undefined;
+    const name = nameOfIdentity(this.db, this.identity);
+    if (name === undefined) this.identity = undefined;
+    return name;
+  }
 
   /** For tools that need to know the caller. */
   require(): string {
-    if (!this.name) throw new ToolError("This session is not registered. Call `register` first.");
-    return this.name;
+    const name = this.current();
+    if (!name) throw new ToolError(NOT_REGISTERED);
+    return name;
   }
 }
 
 /** One server per session. */
 export function createServer(db: Db, session = new Session()): McpServer {
+  session.attach(db);
   const server = new McpServer({ name: "memory-cp", version: "0.1.0" });
 
   // Wraps a tool: bumps last-seen for a registered session and turns ToolError into an error result.
   const tool = <A>(run: (args: A) => unknown) => async (args: A) => {
     // Touch first so a failing call still counts. `register` sets last-seen itself.
-    if (session.name) touchAgent(db, session.name);
+    const name = session.current();
+    if (name) touchAgent(db, name);
     try {
       const result = run(args);
       return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
@@ -70,9 +113,31 @@ export function createServer(db: Db, session = new Session()): McpServer {
       },
     },
     tool(({ name, bio, key }: { name: string; bio: string; key?: string }) => {
-      const agent = registerAgent(db, name, bio, key);
-      session.name = agent.name;
-      return agent;
+      const { result, identity } = registerWithIdentity(db, name, bio, key);
+      session.bind(identity);
+      return result;
+    }),
+  );
+
+  server.registerTool(
+    "unregister",
+    {
+      description:
+        "Remove an agent's registration and the messages addressed to it; tasks it claimed go back to open, its memories and posted tasks stay. With no arguments it removes you, and this session is unregistered until it calls `register` again. With name and key it removes that agent, only if the key matches (an agent that has no key can be removed by name alone); name and key work even from a session that has not registered. Any other session still acting as the removed agent is unregistered too. A process started with MEMORY_CP_AGENT registers that agent again when it starts.",
+      inputSchema: {
+        name: z.string().optional().describe("The agent to remove. Omit to remove yourself."),
+        key: z.string().optional().describe("That agent's key, required if it has one."),
+      },
+    },
+    tool(({ name, key }: { name?: string; key?: string }) => {
+      if (name === undefined) {
+        if (key !== undefined) throw new ToolError("Pass the name of the agent the key belongs to.");
+        const self = session.require();
+        return removeAgent(db, self, undefined, session.registration);
+      }
+      // A name with its key carries its own proof; anything else needs to know who is asking.
+      if (key === undefined) session.require();
+      return removeAgent(db, name, key);
     }),
   );
 
@@ -179,6 +244,23 @@ export function createServer(db: Db, session = new Session()): McpServer {
     tool(({ id }: { id: number }) => {
       session.require();
       return forget(db, id);
+    }),
+  );
+
+  server.registerTool(
+    "forget_memories",
+    {
+      description: `Delete every memory that recall would find with the same tags, author and query, with no paging limit. Needs at least one of them (a blank query or empty tags do not count). By default it only previews: dry_run defaults to true and returns how many match and up to 100 of their ids, deleting nothing. Pass dry_run false to delete them all and get the count. Any registered agent can delete any memory. Requires register first.`,
+      inputSchema: {
+        tags: z.array(z.string()).max(MAX_TAGS).optional(),
+        author: z.string().optional().describe("An agent name (case-insensitive)."),
+        query: z.string().max(MAX_QUERY_LENGTH).optional(),
+        dry_run: z.boolean().optional().describe("Default true."),
+      },
+    },
+    tool(({ tags, author, query, dry_run }: { tags?: string[]; author?: string; query?: string; dry_run?: boolean }) => {
+      session.require();
+      return forgetMemories(db, tags, author, query, dry_run);
     }),
   );
 
