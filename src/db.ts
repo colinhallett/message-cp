@@ -92,15 +92,21 @@ CREATE INDEX IF NOT EXISTS task_tags_task ON task_tags (task_id);
 `;
 
 // CREATE TABLE IF NOT EXISTS leaves an existing table alone, so columns added later are added here, only when missing.
-function migrate(db: Db): void {
+function addColumn(db: Db, column: string, definition: string): void {
   const columns = db.prepare("PRAGMA table_info(agents)").all() as { name: string }[];
-  if (columns.some((c) => c.name === "key_hash")) return;
+  if (columns.some((c) => c.name === column)) return;
   try {
-    db.exec("ALTER TABLE agents ADD COLUMN key_hash TEXT");
+    db.exec(`ALTER TABLE agents ADD COLUMN ${column} ${definition}`);
   } catch (err) {
     // Another process added it between our check and the ALTER.
     if (!(err instanceof Error && /duplicate column name/i.test(err.message))) throw err;
   }
+}
+
+function migrate(db: Db): void {
+  addColumn(db, "key_hash", "TEXT");
+  // A random token per registration, so a session can tell its agent from a later one that reuses the id or name.
+  addColumn(db, "instance", "TEXT");
 }
 
 // Several processes switching a new file to WAL at once make the losers fail with SQLITE_BUSY straight away,
