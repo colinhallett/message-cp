@@ -97,8 +97,21 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
 
     const header = req.headers["mcp-session-id"];
     const id = Array.isArray(header) ? header[0] : header;
-    // A request without a session can only start one: refuse it before buffering its body when the cap is reached.
-    if (!id && sessions.size + initializing >= maxSessions) return reply(res, 503, "Too many sessions");
+    // A request without a session can only start one. Refuse it at the cap, closing the connection so an unread
+    // body cannot hold it open; otherwise take a slot now, before the body is buffered, and give it back at the end.
+    if (!id && sessions.size + initializing >= maxSessions) {
+      return reply(res, 503, "Too many sessions", { Connection: "close" });
+    }
+    const reserved = !id && req.method === "POST";
+    if (reserved) initializing++;
+    try {
+      await serve(req, res, id);
+    } finally {
+      if (reserved) initializing--;
+    }
+  };
+
+  const serve = async (req: IncomingMessage, res: ServerResponse, id: string | undefined) => {
     let body: unknown;
     if (req.method === "POST") {
       try {
@@ -120,8 +133,6 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
     if (req.method !== "POST" || !isInitializeRequest(body)) {
       return reply(res, 400, "Send an initialize request first");
     }
-    // Re-check: the body read above is async, so another initialize may have been admitted meanwhile.
-    if (sessions.size + initializing >= maxSessions) return reply(res, 503, "Too many sessions");
     const live: Live = { lastUsed: Date.now(), transport: undefined as never };
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: () => randomUUID(),
@@ -133,14 +144,8 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
     transport.onclose = () => {
       if (transport.sessionId) sessions.delete(transport.sessionId);
     };
-    // Count the session from admission, so concurrent initializes cannot all pass the check above.
-    initializing++;
-    try {
-      await createServer(db, new Session(), { remote: true }).connect(transport);
-      await transport.handleRequest(req, res, body);
-    } finally {
-      initializing--;
-    }
+    await createServer(db, new Session(), { remote: true }).connect(transport);
+    await transport.handleRequest(req, res, body);
   };
 
   const server = createHttpServer((req, res) => {

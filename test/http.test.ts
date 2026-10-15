@@ -128,6 +128,15 @@ describe("limits", () => {
     expect((await post(auth)).status).toBe(200);
   });
 
+  it("admits only maxSessions concurrent initializes", async () => {
+    await http.close();
+    http = await startHttp(db, { token: TOKEN, port: 0, maxSessions: 2 });
+    const auth = { Authorization: `Bearer ${TOKEN}` };
+    const statuses = (await Promise.all([1, 2, 3, 4, 5].map(() => post(auth)))).map((r) => r.status).sort();
+    expect(statuses).toEqual([200, 200, 503, 503, 503]);
+    expect(http.sessionCount()).toBe(2);
+  });
+
   it("accepts extra spaces after the Bearer scheme", async () => {
     expect((await post({ Authorization: `Bearer   ${TOKEN}` })).status).toBe(200);
   });
