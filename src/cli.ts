@@ -43,7 +43,7 @@ if (command === "hive") {
   if (!Number.isInteger(port) || port < 0 || port > 65535) usage();
   const host = opts.get("--host") ?? DEFAULT_HTTP_HOST;
   const publicUrl = opts.get("--public-url");
-  if (publicUrl !== undefined && !/^https?:\/\/[^\s']+$/.test(publicUrl)) usage();
+  if (publicUrl !== undefined && !/^https?:\/\/[^\s'?#]+$/.test(publicUrl)) usage();
   const http = await startHttp(openDb(), { token, host, port, publicUrl });
   console.error(`memory-cp serve: listening on http://${host}:${http.port}/mcp`);
   const shutdown = () => void http.close().then(() => process.exit(0));

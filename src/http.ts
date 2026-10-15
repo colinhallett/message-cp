@@ -75,6 +75,7 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
   if (!Number.isFinite(waitHoldMs) || waitHoldMs < 0) throw new Error("waitHoldMs must be a finite number >= 0");
   const sessions = new Map<string, Live>();
   let initializing = 0;
+  let waiting = 0;
 
   const drop = (id: string) => {
     const live = sessions.get(id);
@@ -107,8 +108,11 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
   const wait = async (req: IncomingMessage, res: ServerResponse) => {
     if (req.method !== "GET") return reply(res, 405, "Method not allowed", { Allow: "GET" });
     const name = new URL(req.url ?? "", "http://x").searchParams.get("agent");
-    const first = name ? unreadSummary(db, name) : undefined;
+    const first = name ? poll(name) : undefined;
     if (!first) return reply(res, 404, "No such agent");
+    // Held requests are capped like sessions, so a runaway client cannot pin the server's connections.
+    if (waiting >= maxSessions) return reply(res, 503, "Too many waiting requests", { "Retry-After": "5" });
+    waiting++;
     let gone = false;
     let wake: () => void = () => {};
     res.on("close", () => {
@@ -116,8 +120,23 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
       wake();
     });
     const deadline = Date.now() + waitHoldMs;
-    for (let unread: typeof first | undefined = first; ; unread = poll(name!)) {
-      if (gone) return;
+    try {
+      await hold(first, name!, deadline, res, () => gone, (w) => (wake = w));
+    } finally {
+      waiting--;
+    }
+  };
+
+  const hold = async (
+    first: NonNullable<ReturnType<typeof poll>>,
+    name: string,
+    deadline: number,
+    res: ServerResponse,
+    isGone: () => boolean,
+    setWake: (w: () => void) => void,
+  ) => {
+    for (let unread: typeof first | undefined = first; ; unread = poll(name)) {
+      if (isGone()) return;
       if (!unread) return reply(res, 404, "No such agent");
       if (unread.count > 0) {
         res.writeHead(200, { "Content-Type": "text/plain" });
@@ -131,10 +150,10 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
       // Sleep a second, or until the client goes away; the timer is cleared either way.
       await new Promise<void>((resolve) => {
         const timer = setTimeout(resolve, Math.min(1000, left));
-        wake = () => {
+        setWake(() => {
           clearTimeout(timer);
           resolve();
-        };
+        });
       });
     }
   };
