@@ -4,6 +4,7 @@ import { openDb } from "./db.js";
 import { loadConfig } from "./hive/config.js";
 import { startHive } from "./hive/hive.js";
 import { unreadSummary } from "./messages.js";
+import { formatUnread } from "./wait.js";
 
 const [command, ...rest] = process.argv.slice(2);
 
@@ -23,14 +24,14 @@ if (command === "hive") {
   process.on("SIGTERM", shutdown);
 } else if (command === "serve") {
   const usage = () => {
-    console.error("usage: memory-cp serve [--host <address>] [--port <port>]");
+    console.error("usage: memory-cp serve [--host <address>] [--port <port>] [--public-url <url>]");
     process.exit(2);
   };
   const opts = new Map<string, string>();
   for (let i = 0; i < rest.length; i += 2) {
     const name = rest[i];
     const value = rest[i + 1];
-    if ((name !== "--host" && name !== "--port") || opts.has(name) || !value || value.startsWith("--")) usage();
+    if ((name !== "--host" && name !== "--port" && name !== "--public-url") || opts.has(name) || !value || value.startsWith("--")) usage();
     opts.set(name, value!);
   }
   const token = process.env.MEMORY_CP_HTTP_TOKEN;
@@ -41,7 +42,9 @@ if (command === "hive") {
   const port = opts.has("--port") ? Number(opts.get("--port")) : DEFAULT_HTTP_PORT;
   if (!Number.isInteger(port) || port < 0 || port > 65535) usage();
   const host = opts.get("--host") ?? DEFAULT_HTTP_HOST;
-  const http = await startHttp(openDb(), { token, host, port });
+  const publicUrl = opts.get("--public-url");
+  if (publicUrl !== undefined && (!/^https?:\/\/[^\s'?#]+$/.test(publicUrl) || /\/mcp\/*$/.test(publicUrl))) usage();
+  const http = await startHttp(openDb(), { token, host, port, publicUrl });
   console.error(`memory-cp serve: listening on http://${host}:${http.port}/mcp`);
   const shutdown = () => void http.close().then(() => process.exit(0));
   process.on("SIGINT", shutdown);
@@ -72,7 +75,7 @@ if (command === "hive") {
       // Exit from the write callback so a piped stdout is flushed before the process ends.
       const err = await new Promise<Error | null | undefined>((r) =>
         process.stdout.write(
-          `${unread.count} unread ${unread.count === 1 ? "message" : "messages"} from ${unread.senders.join(", ")}\n`,
+          `${formatUnread(unread)}\n`,
           r,
         ),
       );
