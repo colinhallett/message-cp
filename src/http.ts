@@ -9,12 +9,15 @@ export const DEFAULT_HTTP_PORT = 8787;
 export const DEFAULT_HTTP_HOST = "127.0.0.1";
 export const DEFAULT_IDLE_TIMEOUT_MS = 30 * 60 * 1000;
 const MAX_BODY_BYTES = 4 * 1024 * 1024;
+export const DEFAULT_MAX_SESSIONS = 256;
 
 export interface HttpOptions {
   token: string;
   host?: string;
   port?: number;
   idleTimeoutMs?: number;
+  /** Most MCP sessions kept at once; further initializes get 503 until one ends or idles out. */
+  maxSessions?: number;
 }
 
 export interface HttpServer {
@@ -33,7 +36,7 @@ interface Live {
 
 /** Constant-time comparison: both sides are hashed so the lengths match. */
 function tokenMatches(header: string | undefined, token: string): boolean {
-  const m = /^bearer (.*)$/i.exec(header ?? "");
+  const m = /^bearer +(.*)$/i.exec(header ?? "");
   const a = createHash("sha256").update(m?.[1] ?? "").digest();
   const b = createHash("sha256").update(token).digest();
   return timingSafeEqual(a, b) && m !== null;
@@ -59,7 +62,11 @@ async function readBody(req: IncomingMessage): Promise<unknown> {
 export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServer> {
   if (!options.token) throw new Error("an HTTP token is required");
   const idleTimeoutMs = options.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS;
+  if (!Number.isFinite(idleTimeoutMs) || idleTimeoutMs < 0) throw new Error("idleTimeoutMs must be a finite number >= 0");
+  const maxSessions = options.maxSessions ?? DEFAULT_MAX_SESSIONS;
+  if (!Number.isInteger(maxSessions) || maxSessions < 1) throw new Error("maxSessions must be a positive integer");
   const sessions = new Map<string, Live>();
+  let initializing = 0;
 
   const drop = (id: string) => {
     const live = sessions.get(id);
@@ -111,6 +118,7 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
     if (req.method !== "POST" || !isInitializeRequest(body)) {
       return reply(res, 400, "Send an initialize request first");
     }
+    if (sessions.size + initializing >= maxSessions) return reply(res, 503, "Too many sessions");
     const live: Live = { lastUsed: Date.now(), transport: undefined as never };
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: () => randomUUID(),
@@ -122,8 +130,14 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
     transport.onclose = () => {
       if (transport.sessionId) sessions.delete(transport.sessionId);
     };
-    await createServer(db, new Session(), { remote: true }).connect(transport);
-    await transport.handleRequest(req, res, body);
+    // Count the session from admission, so concurrent initializes cannot all pass the check above.
+    initializing++;
+    try {
+      await createServer(db, new Session(), { remote: true }).connect(transport);
+      await transport.handleRequest(req, res, body);
+    } finally {
+      initializing--;
+    }
   };
 
   const server = createHttpServer((req, res) => {

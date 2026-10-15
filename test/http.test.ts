@@ -115,6 +115,30 @@ describe("sessions", () => {
   });
 });
 
+describe("limits", () => {
+  it("refuses initializes past maxSessions until one ends", async () => {
+    await http.close();
+    http = await startHttp(db, { token: TOKEN, port: 0, maxSessions: 1 });
+    const auth = { Authorization: `Bearer ${TOKEN}` };
+    const first = await post(auth);
+    expect(first.status).toBe(200);
+    expect((await post(auth)).status).toBe(503);
+    const sid = first.headers.get("mcp-session-id")!;
+    await fetch(url(), { method: "DELETE", headers: { ...auth, "mcp-session-id": sid } });
+    expect((await post(auth)).status).toBe(200);
+  });
+
+  it("accepts extra spaces after the Bearer scheme", async () => {
+    expect((await post({ Authorization: `Bearer   ${TOKEN}` })).status).toBe(200);
+  });
+
+  it("rejects an invalid idle timeout or session cap", async () => {
+    await expect(startHttp(db, { token: TOKEN, port: 0, idleTimeoutMs: NaN })).rejects.toThrow(/idleTimeoutMs/);
+    await expect(startHttp(db, { token: TOKEN, port: 0, idleTimeoutMs: -1 })).rejects.toThrow(/idleTimeoutMs/);
+    await expect(startHttp(db, { token: TOKEN, port: 0, maxSessions: 0 })).rejects.toThrow(/maxSessions/);
+  });
+});
+
 describe("stdio and HTTP on one database", () => {
   it("lets a stdio-style server read what an HTTP client wrote, with the wait command intact", async () => {
     const remote = await connect();

@@ -22,22 +22,25 @@ if (command === "hive") {
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
 } else if (command === "serve") {
-  const flag = (name: string) => {
-    const i = rest.indexOf(name);
-    return i >= 0 ? rest[i + 1] : undefined;
+  const usage = () => {
+    console.error("usage: memory-cp serve [--host <address>] [--port <port>]");
+    process.exit(2);
   };
+  const opts = new Map<string, string>();
+  for (let i = 0; i < rest.length; i += 2) {
+    const name = rest[i];
+    const value = rest[i + 1];
+    if ((name !== "--host" && name !== "--port") || opts.has(name) || !value || value.startsWith("--")) usage();
+    opts.set(name, value!);
+  }
   const token = process.env.MEMORY_CP_HTTP_TOKEN;
   if (!token) {
     console.error("memory-cp serve: set MEMORY_CP_HTTP_TOKEN to a non-empty value; every request must carry it.");
     process.exit(2);
   }
-  const portText = rest.includes("--port") ? flag("--port") : undefined;
-  const port = rest.includes("--port") ? Number(portText || NaN) : DEFAULT_HTTP_PORT;
-  if (!Number.isInteger(port) || port < 0 || port > 65535 || (rest.includes("--host") && !flag("--host"))) {
-    console.error("usage: memory-cp serve [--host <address>] [--port <port>]");
-    process.exit(2);
-  }
-  const host = flag("--host") ?? DEFAULT_HTTP_HOST;
+  const port = opts.has("--port") ? Number(opts.get("--port")) : DEFAULT_HTTP_PORT;
+  if (!Number.isInteger(port) || port < 0 || port > 65535) usage();
+  const host = opts.get("--host") ?? DEFAULT_HTTP_HOST;
   const http = await startHttp(openDb(), { token, host, port });
   console.error(`memory-cp serve: listening on http://${host}:${http.port}/mcp`);
   const shutdown = () => void http.close().then(() => process.exit(0));
