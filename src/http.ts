@@ -97,6 +97,8 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
 
     const header = req.headers["mcp-session-id"];
     const id = Array.isArray(header) ? header[0] : header;
+    // A request without a session can only start one: refuse it before buffering its body when the cap is reached.
+    if (!id && sessions.size + initializing >= maxSessions) return reply(res, 503, "Too many sessions");
     let body: unknown;
     if (req.method === "POST") {
       try {
@@ -118,6 +120,7 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
     if (req.method !== "POST" || !isInitializeRequest(body)) {
       return reply(res, 400, "Send an initialize request first");
     }
+    // Re-check: the body read above is async, so another initialize may have been admitted meanwhile.
     if (sessions.size + initializing >= maxSessions) return reply(res, 503, "Too many sessions");
     const live: Live = { lastUsed: Date.now(), transport: undefined as never };
     const transport = new StreamableHTTPServerTransport({

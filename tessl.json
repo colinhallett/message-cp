@@ -4,6 +4,9 @@
   "dependencies": {
     "tessl-labs/factory-setup": {
       "version": "0.3.0"
+    },
+    "colin/memory-cp-factory": {
+      "source": "file:tessl-factory"
     }
   },
   "actions": {
