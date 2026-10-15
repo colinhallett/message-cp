@@ -110,6 +110,11 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
     const name = new URL(req.url ?? "", "http://x").searchParams.get("agent");
     const first = name ? poll(name) : undefined;
     if (!first) return reply(res, 404, "No such agent");
+    // Mail that is already there is answered at once, whatever the cap.
+    if (first.count > 0) {
+      res.writeHead(200, { "Content-Type": "text/plain" });
+      return void res.end(`${formatUnread(first)}\n`);
+    }
     // Held requests are capped like sessions, so a runaway client cannot pin the server's connections.
     if (waiting >= maxSessions) return reply(res, 503, "Too many waiting requests", { "Retry-After": "5" });
     waiting++;
