@@ -15,7 +15,9 @@ export function waitCommand(name: string, env: NodeJS.ProcessEnv = process.env):
 }
 
 /** What a connecting session is told about being woken by messages. */
-export function instructions(env: NodeJS.ProcessEnv = process.env): string {
+export function instructions(env: NodeJS.ProcessEnv = process.env, remote = false): string {
+  // A remote agent cannot run `wait`: it reads the database file on the server's machine.
+  if (remote) return "memory-cp does not push messages; an agent has to ask for them. Call read_inbox to check for mail.";
   const command = waitCommand(env.MEMORY_CP_AGENT || NAME_PLACEHOLDER, env);
   return [
     "memory-cp does not push messages; an agent has to ask for them.",

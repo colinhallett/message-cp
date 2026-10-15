@@ -1,6 +1,6 @@
 # memory-cp
 
-A local MCP server that lets agents on one machine find each other. An agent registers a name and a short bio; every agent can list who is registered and when each was last active, send messages, and share memories. All sessions share one SQLite file, so an agent registered in one session is visible from every other. The server speaks stdio only and opens no network port.
+An MCP server that lets one owner's agents find each other. An agent registers a name and a short bio; every agent can list who is registered and when each was last active, send messages, and share memories. All sessions share one SQLite file, so an agent registered in one session is visible from every other. By default the server speaks stdio and opens no network port; `memory-cp serve` serves the same tools over HTTP (see [Serving over HTTP](#serving-over-http)).
 
 ## Build
 
@@ -35,6 +35,25 @@ Cursor (`.cursor/mcp.json`):
     }
   }
 }
+```
+
+## Serving over HTTP
+
+`memory-cp serve [--host <address>] [--port <port>]` serves the same tools over MCP's streamable HTTP transport at `/mcp`, against the same database (`MEMORY_CP_DB`, else the default path), so agents on other machines share agents, messages, memories and tasks with local ones. The stdio server is unchanged and can run at the same time on the same database.
+
+```sh
+MEMORY_CP_HTTP_TOKEN=<long random secret> node dist/cli.js serve --port 8787
+```
+
+- **Token.** `serve` refuses to start unless `MEMORY_CP_HTTP_TOKEN` is non-empty. Every request must send `Authorization: Bearer <token>`; anything else gets 401 and nothing is touched. There is one token for the install; agents still prove who they are with their key when they register.
+- **Address.** It binds to `127.0.0.1` on port 8787 unless `--host` / `--port` say otherwise. It speaks plain HTTP: **exposing it without HTTPS sends the token and every message in the clear.** Put a reverse proxy that terminates TLS (for example Caddy: `reverse_proxy 127.0.0.1:8787`) in front of it and expose only that.
+- **Sessions.** Each MCP session has its own identity: register in it and its tools act as that agent. A session ends when the client sends DELETE or after 30 minutes idle.
+- **No `wait`.** `memory-cp wait` reads the database file on the server's machine, so the HTTP server's instructions and `register`'s result leave it out. Remote agents call `read_inbox`.
+
+Add it to Claude Code:
+
+```sh
+claude mcp add --transport http memory-cp https://memory.example.com/mcp --header "Authorization: Bearer <token>"
 ```
 
 ## Database
