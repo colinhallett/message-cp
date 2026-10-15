@@ -43,7 +43,13 @@ if (command === "hive") {
       process.exit(1);
     }
     if (unread.count > 0) {
-      console.log(`${unread.count} unread ${unread.count === 1 ? "message" : "messages"} from ${unread.senders.join(", ")}`);
+      // Exit from the write callback so a piped stdout is flushed before the process ends.
+      await new Promise((r) =>
+        process.stdout.write(
+          `${unread.count} unread ${unread.count === 1 ? "message" : "messages"} from ${unread.senders.join(", ")}\n`,
+          r,
+        ),
+      );
       process.exit(0);
     }
     await new Promise((r) => setTimeout(r, 1000));

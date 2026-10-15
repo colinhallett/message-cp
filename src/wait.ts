@@ -11,7 +11,7 @@ const shellQuote = (s: string) => (/^[A-Za-z0-9_\/.:@%+=,-]+$/.test(s) ? s : `'$
 /** The shell command that exits once `name` has unread mail, reading the same database as this server. */
 export function waitCommand(name: string, env: NodeJS.ProcessEnv = process.env): string {
   const db = env.MEMORY_CP_DB ? `MEMORY_CP_DB=${shellQuote(resolve(env.MEMORY_CP_DB))} ` : "";
-  return `${db}node ${shellQuote(cliPath)} wait ${name}`;
+  return `${db}node ${shellQuote(cliPath)} wait ${shellQuote(name)}`;
 }
 
 /** What a connecting session is told about being woken by messages. */
