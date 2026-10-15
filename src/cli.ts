@@ -44,13 +44,15 @@ if (command === "hive") {
     }
     if (unread.count > 0) {
       // Exit from the write callback so a piped stdout is flushed before the process ends.
-      await new Promise((r) =>
+      const err = await new Promise<Error | null | undefined>((r) =>
         process.stdout.write(
           `${unread.count} unread ${unread.count === 1 ? "message" : "messages"} from ${unread.senders.join(", ")}\n`,
           r,
         ),
       );
-      process.exit(0);
+      // A summary that was not delivered must not look like a successful wake-up.
+      if (err) console.error(`memory-cp wait: could not write the summary: ${err.message}`);
+      process.exit(err ? 1 : 0);
     }
     await new Promise((r) => setTimeout(r, 1000));
   }
