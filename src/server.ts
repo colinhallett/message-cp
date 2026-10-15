@@ -40,7 +40,7 @@ import {
   releaseTask,
   type TaskStatus,
 } from "./tasks.js";
-import { instructions, waitCommand } from "./wait.js";
+import { httpWaitCommand, instructions, waitCommand } from "./wait.js";
 import { DEFAULT_INBOX_LIMIT, MAX_BODY_LENGTH, MAX_INBOX_LIMIT, readInbox, sendMessage } from "./messages.js";
 
 /**
@@ -82,12 +82,12 @@ export class Session {
 }
 
 /** One server per session. */
-export function createServer(db: Db, session = new Session(), options: { remote?: boolean } = {}): McpServer {
+export function createServer(db: Db, session = new Session(), options: { remote?: boolean; publicUrl?: string } = {}): McpServer {
   const remote = options.remote ?? false;
   session.attach(db);
   const server = new McpServer(
     { name: "memory-cp", version: "0.1.0" },
-    { instructions: instructions(process.env, remote) },
+    { instructions: instructions(process.env, remote, options.publicUrl) },
   );
 
   // Wraps a tool: bumps last-seen for a registered session and turns ToolError into an error result.
@@ -120,7 +120,8 @@ export function createServer(db: Db, session = new Session(), options: { remote?
     tool(({ name, bio, key }: { name: string; bio: string; key?: string }) => {
       const { result, identity } = registerWithIdentity(db, name, bio, key);
       session.bind(identity);
-      return remote ? result : { ...result, waitCommand: waitCommand(result.name) };
+      if (!remote) return { ...result, waitCommand: waitCommand(result.name) };
+      return options.publicUrl ? { ...result, waitCommand: httpWaitCommand(options.publicUrl, result.name) } : result;
     }),
   );
 

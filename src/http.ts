@@ -3,7 +3,9 @@ import { createServer as createHttpServer, type IncomingMessage, type Server, ty
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import type { Db } from "./db.js";
+import { unreadSummary } from "./messages.js";
 import { Session, createServer } from "./server.js";
+import { DEFAULT_WAIT_HOLD_MS, formatUnread } from "./wait.js";
 
 export const DEFAULT_HTTP_PORT = 8787;
 export const DEFAULT_HTTP_HOST = "127.0.0.1";
@@ -18,6 +20,10 @@ export interface HttpOptions {
   idleTimeoutMs?: number;
   /** Most MCP sessions kept at once; further initializes get 503 until one ends or idles out. */
   maxSessions?: number;
+  /** The URL clients reach this server at (it may sit behind a proxy); without it no wait command is offered. */
+  publicUrl?: string;
+  /** How long GET /wait holds a request with no mail before answering 204. */
+  waitHoldMs?: number;
 }
 
 export interface HttpServer {
@@ -65,6 +71,8 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
   if (!Number.isFinite(idleTimeoutMs) || idleTimeoutMs < 0) throw new Error("idleTimeoutMs must be a finite number >= 0");
   const maxSessions = options.maxSessions ?? DEFAULT_MAX_SESSIONS;
   if (!Number.isInteger(maxSessions) || maxSessions < 1) throw new Error("maxSessions must be a positive integer");
+  const waitHoldMs = options.waitHoldMs ?? DEFAULT_WAIT_HOLD_MS;
+  if (!Number.isFinite(waitHoldMs) || waitHoldMs < 0) throw new Error("waitHoldMs must be a finite number >= 0");
   const sessions = new Map<string, Live>();
   let initializing = 0;
 
@@ -84,12 +92,60 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
   );
   sweep.unref();
 
+  /** One check for mail; a lock held past the busy timeout counts as no mail this time, as in `memory-cp wait`. */
+  const poll = (name: string) => {
+    try {
+      return unreadSummary(db, name);
+    } catch (err) {
+      const code = (err as { code?: unknown } | null)?.code;
+      if (typeof code !== "string" || !code.startsWith("SQLITE_BUSY")) throw err;
+      return { count: 0, senders: [] as string[] };
+    }
+  };
+
+  /** Answers 200 with the unread summary as soon as the agent has mail, 204 after `waitHoldMs` without any. */
+  const wait = async (req: IncomingMessage, res: ServerResponse) => {
+    if (req.method !== "GET") return reply(res, 405, "Method not allowed", { Allow: "GET" });
+    const name = new URL(req.url ?? "", "http://x").searchParams.get("agent");
+    const first = name ? unreadSummary(db, name) : undefined;
+    if (!first) return reply(res, 404, "No such agent");
+    let gone = false;
+    let wake: () => void = () => {};
+    res.on("close", () => {
+      gone = true;
+      wake();
+    });
+    const deadline = Date.now() + waitHoldMs;
+    for (let unread: typeof first | undefined = first; ; unread = poll(name!)) {
+      if (gone) return;
+      if (!unread) return reply(res, 404, "No such agent");
+      if (unread.count > 0) {
+        res.writeHead(200, { "Content-Type": "text/plain" });
+        return void res.end(`${formatUnread(unread)}\n`);
+      }
+      const left = deadline - Date.now();
+      if (left <= 0) {
+        res.writeHead(204);
+        return void res.end();
+      }
+      // Sleep a second, or until the client goes away; the timer is cleared either way.
+      await new Promise<void>((resolve) => {
+        const timer = setTimeout(resolve, Math.min(1000, left));
+        wake = () => {
+          clearTimeout(timer);
+          resolve();
+        };
+      });
+    }
+  };
+
   const handle = async (req: IncomingMessage, res: ServerResponse) => {
     // The token is the first thing a request meets.
     if (!tokenMatches(req.headers.authorization, options.token)) {
       return reply(res, 401, "Unauthorized", { "WWW-Authenticate": "Bearer" });
     }
     const path = (req.url ?? "").split("?")[0];
+    if (path === "/wait") return wait(req, res);
     if (path !== "/mcp") return reply(res, 404, "Not found");
     if (req.method !== "POST" && req.method !== "GET" && req.method !== "DELETE") {
       return reply(res, 405, "Method not allowed", { Allow: "GET, POST, DELETE" });
@@ -144,7 +200,7 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
     transport.onclose = () => {
       if (transport.sessionId) sessions.delete(transport.sessionId);
     };
-    await createServer(db, new Session(), { remote: true }).connect(transport);
+    await createServer(db, new Session(), { remote: true, publicUrl: options.publicUrl }).connect(transport);
     await transport.handleRequest(req, res, body);
   };
 

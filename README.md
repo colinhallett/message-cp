@@ -39,7 +39,7 @@ Cursor (`.cursor/mcp.json`):
 
 ## Serving over HTTP
 
-`memory-cp serve [--host <address>] [--port <port>]` serves the same tools over MCP's streamable HTTP transport at `/mcp`, against the same database (`MEMORY_CP_DB`, else the default path), so agents on other machines share agents, messages, memories and tasks with local ones. The stdio server is unchanged and can run at the same time on the same database.
+`memory-cp serve [--host <address>] [--port <port>] [--public-url <url>]` serves the same tools over MCP's streamable HTTP transport at `/mcp`, against the same database (`MEMORY_CP_DB`, else the default path), so agents on other machines share agents, messages, memories and tasks with local ones. The stdio server is unchanged and can run at the same time on the same database.
 
 ```sh
 MEMORY_CP_HTTP_TOKEN=<long random secret> node dist/cli.js serve --port 8787
@@ -48,7 +48,7 @@ MEMORY_CP_HTTP_TOKEN=<long random secret> node dist/cli.js serve --port 8787
 - **Token.** `serve` refuses to start unless `MEMORY_CP_HTTP_TOKEN` is non-empty. Every request must send `Authorization: Bearer <token>`; anything else gets 401 and nothing is touched. There is one token for the install; agents still prove who they are with their key when they register.
 - **Address.** It binds to `127.0.0.1` on port 8787 unless `--host` / `--port` say otherwise. It speaks plain HTTP: **exposing it without HTTPS sends the token and every message in the clear.** Put a reverse proxy that terminates TLS (for example Caddy: `reverse_proxy 127.0.0.1:8787`) in front of it and expose only that.
 - **Sessions.** Each MCP session has its own identity: register in it and its tools act as that agent. A session ends when the client sends DELETE or after 30 minutes idle.
-- **No `wait`.** `memory-cp wait` reads the database file on the server's machine, so the HTTP server's instructions and `register`'s result leave it out. Remote agents call `read_inbox`.
+- **`wait` over HTTP.** `GET /wait?agent=<name>` (same bearer token as `/mcp`) answers 200 with the same one-line summary as `memory-cp wait` as soon as that agent has unread mail, 204 after about four minutes without any (ask again), 404 for an unknown agent. It checks the database about once a second and never reads or marks anything. Start `serve` with `--public-url <the https URL clients use, without /mcp>` and the server's instructions and `register`'s `waitCommand` carry a ready-to-run `curl` loop; without it they leave the wait command out and remote agents call `read_inbox`. See "Waking a remote agent".
 
 Add it to Claude Code:
 
@@ -95,6 +95,12 @@ Memories are shared by every registered agent and live in the same database file
 `memory-cp wait <name>` blocks until the agent `<name>` has at least one unread message, prints one line with how many and from whom (never the bodies), and exits 0. It does not read or mark anything: `read_inbox` is still the only way to read mail. It uses the database the server uses (`MEMORY_CP_DB`, else the default path), checks about once a second, and exits 1 with an error if no agent has that name. Run it as `node /absolute/path/to/dist/cli.js wait <name>`.
 
 An agent runs it as a background command (in Claude Code, a Bash call with `run_in_background`), and Claude Code wakes the session when it finishes, whether the agent is working or idle. The order matters: when it fires, call `read_inbox` first and then start the command again, because starting it before reading fires at once on the same message.
+
+### Waking a remote agent
+
+With `serve --public-url https://memory.example.com`, a remote agent needs only `sh` and `curl`. Tell it "register as X and turn on push": `register` returns `waitCommand`, a `curl` loop that asks `/wait` again after each 204 and exits 0 printing the summary when mail arrives (401 or 404 end it with a non-zero exit and a message). The agent runs it as a background command, calls `read_inbox` when it fires, then starts it again.
+
+The token is read from the environment variable `MEMORY_CP_HTTP_TOKEN`, else from the file `~/.memory-cp/http-token` (put the same token you gave `serve` there, mode 0600). It is passed to `curl` on stdin, so it is never in the instructions, a tool result or a process list.
 
 Sessions learn this from the server: its `initialize` result carries instructions that give the command with the absolute path of the built CLI and, if the server has `MEMORY_CP_DB` set, that variable. The name is a placeholder unless the process was started with `MEMORY_CP_AGENT`. `register` also returns the ready-to-run command, with the agent's name filled in, in `waitCommand`.
 
