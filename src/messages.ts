@@ -100,3 +100,22 @@ export function readInbox(
     })
     .immediate();
 }
+
+export interface Unread {
+  count: number;
+  senders: string[];
+}
+
+/** How many unread messages `name` has and who sent them, without reading or marking anything. Undefined if there is no such agent. */
+export function unreadSummary(db: Db, name: string): Unread | undefined {
+  const agent = getAgent(db, name);
+  if (!agent) return undefined;
+  // One query, so the count and the senders always describe the same messages.
+  const rows = db
+    .prepare(
+      `SELECT m.sender, COUNT(*) AS n FROM messages m JOIN agents a ON a.id = m.recipient_id
+       WHERE a.name = ? AND m.read_at IS NULL GROUP BY m.sender ORDER BY MIN(m.id)`,
+    )
+    .all(agent.name) as { sender: string; n: number }[];
+  return { count: rows.reduce((sum, r) => sum + r.n, 0), senders: rows.map((r) => r.sender) };
+}

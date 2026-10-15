@@ -40,6 +40,7 @@ import {
   releaseTask,
   type TaskStatus,
 } from "./tasks.js";
+import { instructions, waitCommand } from "./wait.js";
 import { DEFAULT_INBOX_LIMIT, MAX_BODY_LENGTH, MAX_INBOX_LIMIT, readInbox, sendMessage } from "./messages.js";
 
 /**
@@ -83,7 +84,7 @@ export class Session {
 /** One server per session. */
 export function createServer(db: Db, session = new Session()): McpServer {
   session.attach(db);
-  const server = new McpServer({ name: "memory-cp", version: "0.1.0" });
+  const server = new McpServer({ name: "memory-cp", version: "0.1.0" }, { instructions: instructions() });
 
   // Wraps a tool: bumps last-seen for a registered session and turns ToolError into an error result.
   const tool = <A>(run: (args: A) => unknown) => async (args: A) => {
@@ -115,7 +116,7 @@ export function createServer(db: Db, session = new Session()): McpServer {
     tool(({ name, bio, key }: { name: string; bio: string; key?: string }) => {
       const { result, identity } = registerWithIdentity(db, name, bio, key);
       session.bind(identity);
-      return result;
+      return { ...result, waitCommand: waitCommand(result.name) };
     }),
   );
 
@@ -181,7 +182,7 @@ export function createServer(db: Db, session = new Session()): McpServer {
   server.registerTool(
     "read_inbox",
     {
-      description: `Read your messages, oldest first, one page at a time (default ${DEFAULT_INBOX_LIMIT}, max ${MAX_INBOX_LIMIT}). By default only unread ones; everything returned is marked read, so a full page means there may be more: call again. With unread_only false, use offset to page through history. Messages are not pushed, so call this to check. Requires register first.`,
+      description: `Read your messages, oldest first, one page at a time (default ${DEFAULT_INBOX_LIMIT}, max ${MAX_INBOX_LIMIT}). By default only unread ones; everything returned is marked read, so a full page means there may be more: call again. With unread_only false, use offset to page through history. To be woken when mail arrives instead of polling, run the wait command that register returns in the background, and start it again after each read. Requires register first.`,
       inputSchema: {
         unread_only: z.boolean().optional().describe("Default true."),
         limit: z.number().int().min(1).max(MAX_INBOX_LIMIT).optional(),
