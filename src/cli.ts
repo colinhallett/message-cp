@@ -2,6 +2,7 @@
 import { openDb } from "./db.js";
 import { loadConfig } from "./hive/config.js";
 import { startHive } from "./hive/hive.js";
+import { unreadSummary } from "./messages.js";
 
 const [command, ...rest] = process.argv.slice(2);
 
@@ -19,9 +20,37 @@ if (command === "hive") {
   };
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
+} else if (command === "wait") {
+  const name = rest[0];
+  if (!name) {
+    console.error("usage: memory-cp wait <name>");
+    process.exit(2);
+  }
+  const db = openDb();
+  for (;;) {
+    let unread;
+    try {
+      unread = unreadSummary(db, name);
+    } catch (err) {
+      // A lock held past the busy timeout is transient: try again at the next check.
+      const code = (err as { code?: unknown } | null)?.code;
+      if (typeof code !== "string" || !code.startsWith("SQLITE_BUSY")) throw err;
+      await new Promise((r) => setTimeout(r, 1000));
+      continue;
+    }
+    if (!unread) {
+      console.error(`memory-cp wait: no agent named '${name}'.`);
+      process.exit(1);
+    }
+    if (unread.count > 0) {
+      console.log(`${unread.count} unread ${unread.count === 1 ? "message" : "messages"} from ${unread.senders.join(", ")}`);
+      process.exit(0);
+    }
+    await new Promise((r) => setTimeout(r, 1000));
+  }
 } else if (command === undefined) {
   await import("./index.js");
 } else {
-  console.error(`memory-cp: unknown command '${command}'. Commands: hive`);
+  console.error(`memory-cp: unknown command '${command}'. Commands: hive, wait`);
   process.exit(2);
 }

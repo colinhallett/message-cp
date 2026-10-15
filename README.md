@@ -50,7 +50,7 @@ Every server process reads and writes the same file: `MEMORY_CP_DB` if set, othe
 | `list_agents(limit?, offset?)` | Lists agents by name with bio and last-seen time, one page at a time (default 50, max 200). |
 | `get_agent(name)` | Returns one agent, or an error if there is none. |
 | `send_message(to, body)` | Sends `body` (at most 4000 characters, counted as code points) to the agent `to`, or to every other registered agent when `to` is `all`. A broadcast reaches only agents registered when it is sent. Fails if `to` is not registered. |
-| `read_inbox(unread_only?, limit?, offset?)` | Returns one page (default 50, max 200) of your messages oldest first with sender, time, body and whether it was a broadcast, and marks them read; a full page means there may be more. `unread_only` defaults to true; with it false, use `offset` to page. Messages are not pushed; call this to check. |
+| `read_inbox(unread_only?, limit?, offset?)` | Returns one page (default 50, max 200) of your messages oldest first with sender, time, body and whether it was a broadcast, and marks them read; a full page means there may be more. `unread_only` defaults to true; with it false, use `offset` to page. Messages are not pushed by the server; to be woken instead of polling, see Waking on messages. |
 | `remember(text, tags?)` | Stores a shared memory (at most 4000 characters, up to 20 tags of 1–50 characters) with you as author and the time stored. Returns it with its `id`. Memories cannot be edited. |
 | `recall(query?, tags?, author?, limit?, offset?)` | Finds memories from any agent, newest first (default 20, max 100 per call; use `offset` to page back to older matches). `query` matches words in the text and is read as plain words: quotes, `*`, `-`, `:` and `AND` are not operators, and several words must all appear; `query` is at most 500 characters. `tags` keeps memories carrying all the given tags; `author` keeps one agent's (case-insensitive). Filters combine; with none, returns the newest. |
 | `get_memory(id)` | Fetches one memory by id, in the same shape `recall` returns. Errors if the id does not exist. |
@@ -70,6 +70,14 @@ Who this session is lives only in the server process, not in the database. A pro
 Messages are stored once per recipient, so read state is per agent. `read_inbox` marks what it returns as read before the reply is sent; if a reply is lost, `read_inbox(unread_only: false)` returns the history. There is no pruning yet. Sessions that hold the same agent's key and take over its name share one inbox.
 
 Memories are shared by every registered agent and live in the same database file. `remember`, `recall`, `get_memory`, `forget` and `forget_memories` need a registered session. Removing an agent does not delete its memories; use `forget_memories(author: ...)` for that. Author and time are fixed when a memory is stored. Keyword search uses SQLite FTS5 and matches whole words, not prefixes or stems.
+
+## Waking on messages
+
+`memory-cp wait <name>` blocks until the agent `<name>` has at least one unread message, prints one line with how many and from whom (never the bodies), and exits 0. It does not read or mark anything: `read_inbox` is still the only way to read mail. It uses the database the server uses (`MEMORY_CP_DB`, else the default path), checks about once a second, and exits 1 with an error if no agent has that name. Run it as `node /absolute/path/to/dist/cli.js wait <name>`.
+
+An agent runs it as a background command (in Claude Code, a Bash call with `run_in_background`), and Claude Code wakes the session when it finishes, whether the agent is working or idle. The order matters: when it fires, call `read_inbox` first and then start the command again, because starting it before reading fires at once on the same message.
+
+Sessions learn this from the server: its `initialize` result carries instructions that give the command with the absolute path of the built CLI and, if the server has `MEMORY_CP_DB` set, that variable. The name is a placeholder unless the process was started with `MEMORY_CP_AGENT`. `register` also returns the ready-to-run command, with the agent's name filled in, in `waitCommand`.
 
 ## Tasks
 
