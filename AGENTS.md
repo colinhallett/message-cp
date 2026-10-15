@@ -6,7 +6,7 @@
 
 ## Design constraints
 
-memory-cp is a local, single-user stdio server on one machine with a handful to a few dozen agents. When review raises scale, paging or permission concerns, weigh them against that scale:
+memory-cp is a single-user server, reached over stdio on its own machine or over HTTPS by the same owner's agents elsewhere, with a handful to a few dozen agents. When review raises scale, paging or permission concerns, weigh them against that scale:
 
 - Broadcast (`send_message` to `all`) reaches every registered agent; do not cap recipients.
 - Paged tools (`list_agents`, `read_inbox`, `recall`) use `limit` plus `offset`; keyset/cursor paging is out of scope unless a ticket asks for it.

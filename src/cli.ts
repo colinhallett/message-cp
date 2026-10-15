@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { DEFAULT_HTTP_HOST, DEFAULT_HTTP_PORT, startHttp } from "./http.js";
 import { openDb } from "./db.js";
 import { loadConfig } from "./hive/config.js";
 import { startHive } from "./hive/hive.js";
@@ -18,6 +19,31 @@ if (command === "hive") {
     console.error("memory-cp hive: stopping, waiting for running agents");
     void hive.stop().then(() => process.exit(0));
   };
+  process.on("SIGINT", shutdown);
+  process.on("SIGTERM", shutdown);
+} else if (command === "serve") {
+  const usage = () => {
+    console.error("usage: memory-cp serve [--host <address>] [--port <port>]");
+    process.exit(2);
+  };
+  const opts = new Map<string, string>();
+  for (let i = 0; i < rest.length; i += 2) {
+    const name = rest[i];
+    const value = rest[i + 1];
+    if ((name !== "--host" && name !== "--port") || opts.has(name) || !value || value.startsWith("--")) usage();
+    opts.set(name, value!);
+  }
+  const token = process.env.MEMORY_CP_HTTP_TOKEN;
+  if (!token) {
+    console.error("memory-cp serve: set MEMORY_CP_HTTP_TOKEN to a non-empty value; every request must carry it.");
+    process.exit(2);
+  }
+  const port = opts.has("--port") ? Number(opts.get("--port")) : DEFAULT_HTTP_PORT;
+  if (!Number.isInteger(port) || port < 0 || port > 65535) usage();
+  const host = opts.get("--host") ?? DEFAULT_HTTP_HOST;
+  const http = await startHttp(openDb(), { token, host, port });
+  console.error(`memory-cp serve: listening on http://${host}:${http.port}/mcp`);
+  const shutdown = () => void http.close().then(() => process.exit(0));
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
 } else if (command === "wait") {
@@ -59,6 +85,6 @@ if (command === "hive") {
 } else if (command === undefined) {
   await import("./index.js");
 } else {
-  console.error(`memory-cp: unknown command '${command}'. Commands: hive, wait`);
+  console.error(`memory-cp: unknown command '${command}'. Commands: hive, serve, wait`);
   process.exit(2);
 }

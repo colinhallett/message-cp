@@ -82,9 +82,13 @@ export class Session {
 }
 
 /** One server per session. */
-export function createServer(db: Db, session = new Session()): McpServer {
+export function createServer(db: Db, session = new Session(), options: { remote?: boolean } = {}): McpServer {
+  const remote = options.remote ?? false;
   session.attach(db);
-  const server = new McpServer({ name: "memory-cp", version: "0.1.0" }, { instructions: instructions() });
+  const server = new McpServer(
+    { name: "memory-cp", version: "0.1.0" },
+    { instructions: instructions(process.env, remote) },
+  );
 
   // Wraps a tool: bumps last-seen for a registered session and turns ToolError into an error result.
   const tool = <A>(run: (args: A) => unknown) => async (args: A) => {
@@ -116,7 +120,7 @@ export function createServer(db: Db, session = new Session()): McpServer {
     tool(({ name, bio, key }: { name: string; bio: string; key?: string }) => {
       const { result, identity } = registerWithIdentity(db, name, bio, key);
       session.bind(identity);
-      return { ...result, waitCommand: waitCommand(result.name) };
+      return remote ? result : { ...result, waitCommand: waitCommand(result.name) };
     }),
   );
 
