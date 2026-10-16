@@ -36,8 +36,30 @@ const usage = () => {
 };
 
 const args = process.argv.slice(2);
-if (args.length !== 0 && (args.length !== 2 || args[0] !== "--url" || !/^https?:\/\/\S+$/.test(args[1]))) usage();
-const liveUrl = args[1];
+if (args.length !== 0 && (args.length !== 2 || args[0] !== "--url")) usage();
+/**
+ * The live server's base URL, without /mcp. Plain http is accepted only for a loopback host, so the token never
+ * crosses a network in the clear; credentials, a query or a fragment in the URL are refused rather than printed.
+ */
+const liveUrl = (() => {
+  if (!args[1]) return undefined;
+  let url;
+  try {
+    url = new URL(args[1]);
+  } catch {
+    usage();
+  }
+  const loopback = ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname);
+  if (url.protocol !== "https:" && !(url.protocol === "http:" && loopback)) {
+    console.error("e2e: --url must be https (plain http only for localhost, 127.0.0.1 or [::1]): the token would cross the network in the clear");
+    process.exit(2);
+  }
+  if (url.username || url.password || url.search || url.hash) {
+    console.error("e2e: --url must not carry credentials, a query or a fragment; pass the token in MEMORY_CP_HTTP_TOKEN");
+    process.exit(2);
+  }
+  return `${url.origin}${url.pathname.replace(/\/+$/, "").replace(/\/mcp$/, "")}`;
+})();
 
 /** Runs one step: prints "ok" only once `fn` has returned, and turns any error into a failure of this step. */
 async function step(name, fn) {
@@ -89,10 +111,22 @@ async function startLocal() {
   return { url, token, stop };
 }
 
-/** Parses a tool result's JSON, or throws the server's error text. */
+/** Rejects if `promise` has not settled within `ms`, so no network phase can hold the run (or its cleanup) open. */
+const within = (promise, ms, what) => {
+  let timer;
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => (timer = setTimeout(() => reject(new Error(`${what} did not finish within ${ms / 1000}s`)), ms))),
+  ]).finally(() => clearTimeout(timer));
+};
+
+/** Parses a tool result's JSON, or throws the server's error text, cut to one short line it cannot style the terminal with. */
 function parse(result, tool) {
   const text = result.content?.[0]?.text ?? "";
-  if (result.isError) throw new Error(`${tool} returned an error: ${text}`);
+  if (result.isError) {
+    const shown = text.replace(/[\u0000-\u001f\u007f-\u009f]+/g, " ").trim();
+    throw new Error(`${tool} returned an error: ${shown.length > 200 ? `${shown.slice(0, 200)}...` : shown}`);
+  }
   return JSON.parse(text);
 }
 
@@ -104,7 +138,7 @@ async function main() {
       console.error("e2e: set MEMORY_CP_HTTP_TOKEN to the server's token to check it with --url");
       process.exit(2);
     }
-    server = { url: liveUrl.replace(/\/+$/, "").replace(/\/mcp$/, ""), token, stop: async () => {} };
+    server = { url: liveUrl, token, stop: async () => {} };
   }
 
   const suffix = randomBytes(4).toString("hex");
@@ -160,6 +194,7 @@ async function main() {
             ...(auth ? { Authorization: auth } : {}),
           },
           body: initialize,
+          signal: AbortSignal.timeout(CALL_TIMEOUT_MS),
         });
         await res.body?.cancel();
         if (res.status !== 401) throw new Error(`${label} got ${res.status}`);
@@ -171,6 +206,7 @@ async function main() {
         const client = new Client({ name: "memory-cp-e2e", version: "0" });
         await client.connect(
           new StreamableHTTPClientTransport(mcpUrl, { requestInit: { headers: { Authorization: `Bearer ${server.token}` } } }),
+          { timeout: CALL_TIMEOUT_MS },
         );
         agent.client = client;
         agent.registering = true;
@@ -240,6 +276,7 @@ async function main() {
         new StreamableHTTPClientTransport(new URL(`${server.url}/mcp`), {
           requestInit: { headers: { Authorization: `Bearer ${server.token}` } },
         }),
+        { timeout: CALL_TIMEOUT_MS },
       );
       const result = await cleanup.callTool({ name: "unregister", arguments: { name: agent.name, key: agent.key } }, undefined, {
         timeout: CALL_TIMEOUT_MS,
@@ -252,13 +289,13 @@ async function main() {
       console.error(`FAIL cleanup: could not unregister ${agent.name}: ${describe(err)}`);
       failure ??= "FAIL cleanup";
     } finally {
-      await cleanup?.close().catch(() => {});
+      await within(cleanup?.close() ?? Promise.resolve(), CALL_TIMEOUT_MS, "close").catch(() => {});
     }
   }
   for (const agent of agents) {
     if (!agent.client) continue;
-    await agent.client.transport?.terminateSession().catch(() => {});
-    await agent.client.close().catch(() => {});
+    await within(agent.client.transport?.terminateSession() ?? Promise.resolve(), CALL_TIMEOUT_MS, "DELETE /mcp").catch(() => {});
+    await within(agent.client.close(), CALL_TIMEOUT_MS, "close").catch(() => {});
   }
   await server?.stop();
 
