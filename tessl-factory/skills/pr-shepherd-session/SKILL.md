@@ -38,13 +38,15 @@ comment (see "Ending") and stop.
 ## Reading the record
 
 - **The PR:** `gh pr view <n> --json
-  number,state,headRefName,headRefOid,baseRefName,mergeable,isCrossRepository,labels,body,comments,reviews`,
-  the changed files with `gh pr diff <n> --name-only`, and every review
-  thread with `gh api graphql` on `pullRequest { reviewThreads(first: 100) {
-  nodes { id isResolved comments(first: 100) { nodes { author { login } body
-  createdAt } } } pageInfo { hasNextPage endCursor } } }`, paging until done. Check runs on the head: `gh pr checks
-  <n>`. If a read fails, treat this pass as having nothing to do and try again
-  on the next one.
+  number,state,headRefName,headRefOid,baseRefName,mergeable,isCrossRepository,labels,body,comments,reviews`
+  and every review thread with `gh api graphql` on `pullRequest {
+  reviewThreads(first: 100) { nodes { id isResolved comments(first: 100) {
+  nodes { author { login } body createdAt } } } pageInfo { hasNextPage
+  endCursor } } }`, paging until done. Check runs on the head: `gh pr checks
+  <n> --json name,bucket`. That command exits non-zero when a check fails or
+  is pending, and prints an empty list when no check runs at all; neither is
+  a failed read. If a read fails, treat this pass as having nothing to do and
+  try again on the next one.
 - **The issue:** its id is in the PR body's `Closes <id>` line. On a
   `tessl/<id>` branch, the two ids must agree. Read it from Linear:
   `$LINEAR_API_URL/graphql` with `Authorization: Bearer $LINEAR_TOKEN`,
@@ -89,7 +91,8 @@ Repeat:
 3. **There is work to do:** feedback without an answer, a failed check, or a
    merge conflict. Feedback is every unresolved review thread, every
    conversation comment by someone other than you, and every review whose
-   body has text, from any reviewer, person or bot. A review whose body
+   body has text, from any reviewer, person or bot, except an `APPROVED`
+   review with no findings. A review whose body
    carries findings and has no inline threads is still feedback (a person's
    `CHANGES_REQUESTED` review often looks like this). An item is answered only
    once a reply of yours, posted after it, addresses it by name; a review that
@@ -102,53 +105,66 @@ Repeat:
    looping without changing code until someone answers. Also do this when
    rounds stop converging: the same concern comes back after you answered it,
    or you have pushed fixes five times and feedback keeps coming.
-5. **Nothing is outstanding and the checks are green.** Read the reviews
-   again first: a review posted since your last read means situation 3. Then
-   run the gate (see "The merge gate") and merge, or hand the PR to the owner.
+5. **Nothing is outstanding and no check is failing or pending.** An empty
+   check list counts as none failing. Read the reviews again first: a review
+   posted since your last read means situation 3. Then run "The merge gate".
 6. **Nothing is outstanding and checks or a review are still running.** Keep
    looping.
 
 ## The merge gate
 
-No CI workflow runs on this repository, so an empty or short check list on
-GitHub is not evidence that the tests pass. Your own run of the commands below
-is the test gate. Work through these in order for the head commit `<sha>` you
-read this pass. When an item does not hold, stop the gate, go back to the
-situation it points to, and keep looping.
+No CI workflow runs on this repository, so an empty check list on GitHub says
+nothing about the tests. Your own run of the commands in step 4 is the test
+gate. Work through the steps in order for the head commit `<sha>` you read this
+pass. When a step does not hold, stop the gate there, do what it says, and keep
+looping.
 
-1. **Code Review approves this head.** Code Review is `tessl-reviewer` (`tessl-reviewer[bot]` in
-   the REST API). Take
-   its latest review whose state is not `COMMENTED` (its `COMMENTED` reviews
-   only carry inline threads). It must be `APPROVED` with `commit.oid` equal to
-   `<sha>`. If it is on an older commit, or there is none yet, a review is
-   still running: situation 6.
+1. **Code Review approves this head.** Code Review is the `tessl-reviewer`
+   bot (`tessl-reviewer[bot]` in the REST API). Take its latest review whose
+   state is not `COMMENTED`; its `COMMENTED` reviews only carry inline
+   threads. It must be `APPROVED` with `commit.oid` equal to `<sha>`. None yet,
+   or one on an older commit: a review is still running, situation 6. Any
+   other verdict on `<sha>`: its findings are feedback, situation 3; once you
+   have answered them all without a new push, Code Review will not look
+   again, so that is situation 4.
 2. **Nobody is waiting.** No review thread is unresolved, no person's comment
    is unanswered (as situation 3 defines it), and no person's latest review is
-   `CHANGES_REQUESTED`. Otherwise: situation 3.
-3. **The base is in.** `git fetch origin <base>` and `git merge-base
-   --is-ancestor origin/<base> <sha>`. If the base is not in, merge it in and
-   push (situation 3). That makes a new head, which needs its own review.
-4. **The tests pass here.** With `HEAD` at `<sha>` and a clean worktree, run
-   `npm ci`, `npm run build`, `npm test` and `npm run e2e`, in that order.
-   Every one must exit 0. A failure is a failed check: situation 3.
-   Once all four have passed on `<sha>` this session, later passes on the
-   same head need not run them again.
+   `CHANGES_REQUESTED`. An unanswered item is situation 3. A
+   `CHANGES_REQUESTED` review you have already answered waits for that person
+   to review again: situation 6.
+3. **The base is in.** `git fetch origin <base>`, then `git merge-base
+   --is-ancestor origin/<base> <sha>`. If it is not, merge the base in and
+   push. That makes a new head, which needs its own review.
+4. **The tests pass here.** Start this step only before 38 minutes (see
+   "Time"). With `HEAD` at `<sha>` and a clean worktree, run `npm ci`, `npm
+   run build`, `npm test` and `npm run e2e`, in that order. Every one must
+   exit 0. Record the outcome for `<sha>`: a pass on `<sha>` need not be run
+   again this session. A failure is a failed check, the same as a red check on
+   GitHub: say on the PR which command failed and how, and fix it (situation
+   3). Do not run the commands again on `<sha>` unless you have new reason to
+   think the failure came from the environment, and then only once.
 5. **GitHub can merge it.** Read the PR again: the head is still `<sha>`,
-   `mergeable` is `MERGEABLE`, and `isCrossRepository` is `false`. A new head
-   means start again on the next pass. `CONFLICTING` means situation 3.
-   `UNKNOWN` means GitHub is still working it out, so try again next pass.
-6. **Only the owner merges factory files.** If any changed file is
-   `DIRECTION.md`, `AGENTS.md` or `tessl.json`, or is under `tessl-factory/`
-   or `.tessl/`, do not merge. If the PR has no ready comment for this head,
-   post one: `PR ready, and it needs the owner to merge: it changes <those
-   files>. <pr url>` plus the marker. Keep looping, because the owner may
-   still leave feedback or merge.
-7. **Merge.** `gh pr merge <n> --squash --match-head-commit <sha>`. If it
-   fails, do nothing else this pass. Read the record again on the next pass.
-   If it succeeds, move the Linear issue to the team's state of type
-   `completed` with the lowest `position`, using `issueUpdate(id, input:
-   {stateId})` with the request body written to a file, unless the issue is
-   already `completed`. Then stop: the PR is merged (situation 1).
+   `mergeable` is `MERGEABLE`, and `isCrossRepository` is `false`. A new head:
+   start again on the next pass. `CONFLICTING`: situation 3. `UNKNOWN`: GitHub
+   is still working it out, try again on the next pass. A fork: never merge it.
+6. **Only the owner merges the owner's files.** List the changed files with
+   `git diff --name-only --no-renames origin/<base>...<sha>`, so a renamed
+   file shows both its old and new path. If any is `DIRECTION.md`,
+   `AGENTS.md` or `tessl.json` at the repository root, or is under
+   `tessl-factory/` or `.tessl/`, do not merge. If the PR has no such comment
+   from you yet, post once: `PR ready, and it needs the owner to merge: it
+   changes <those files>. <pr url>` plus the marker. Keep looping, because the
+   owner may still leave feedback or merge.
+7. **Merge.** `gh pr merge <n> --squash --match-head-commit <sha>`, never with
+   `--admin` or `--auto`. If it fails, do nothing else this pass and read the
+   record again on the next; if it fails the same way on `<sha>` a second
+   time, say on the PR what the error was, once, and keep looping. If it
+   succeeds, read the issue again and, unless it is already `completed`, move
+   it to the team's `completed` state with the lowest `position` with
+   `issueUpdate(id, input: {stateId})`, the request body written to a file.
+   If that call fails, try once more, then post on the PR that the merge
+   happened and the issue still needs moving to Done. Then stop: the PR is
+   merged (situation 1).
 
 ## When the work moves away from the plan
 
@@ -158,7 +174,8 @@ The Linear issue and the repository's design docs are the plan. When a change yo
 
 When you stop because of the time limit and the PR is still open, post one
 comment: `Shepherd session ending at the time limit.` followed by one line on
-where the PR stands (ready, waiting on a check, or waiting on an answer), plus
+where the PR stands (waiting on the owner to merge, waiting on a review or a
+check, waiting on an answer, or a merge that keeps failing), plus
 the marker. Do not post it when you stop because the PR was merged or closed.
 
 ## Invariants
@@ -208,7 +225,8 @@ the marker. Do not post it when you stop because the PR was merged or closed.
   your reply is a question.
 - **Other replies:** `gh pr comment <n> --body-file <file>`. Findings that
   exist only in a review's body are answered by name in one comment.
-- **Failed checks:** read the job log first (`gh api
+- **Failed checks:** a failure in your own gate run (step 4) is read from
+  its output. For a check on GitHub, read the job log first (`gh api
   repos/<owner>/<repo>/actions/jobs/<job id>/logs`). Failed before any test
   output ran: infrastructure, rerun once. A real assertion, lint or type
   error: fix it. Cannot tell: say what you found and ask.
