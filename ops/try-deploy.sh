@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 # Exercises deploy.sh end to end without root or systemd: a bare git repo stands in for GitHub, and a stand-in
 # `systemctl` runs `node current/dist/cli.js serve` in the background. It deploys a good commit, then a commit
-# whose server builds but fails `npm run e2e`, and checks that the good release is live and serving again, and
-# that a run interrupted before its check is undone by the next one.
+# whose server builds but fails `npm run e2e`, and checks that the good release is live and serving again, that a
+# run interrupted before its check or rollback is undone by the next one, and that a failed sha is tried again once
+# main has moved away from it and back.
 #
 #   ops/try-deploy.sh            (from a clone of this repo; needs git, node, npm, curl, flock)
 #
-# Exits 0 when both deploys behave, 1 otherwise. Its work directory is printed and kept for inspection.
+# Exits 0 when all of that holds, 1 otherwise. Its work directory is printed and kept for inspection.
 set -euo pipefail
 
 SRC=$(cd "$(dirname "$0")/.." && pwd)
@@ -95,6 +96,23 @@ cp -a "$ROOT/releases/$GOOD" "$ROOT/releases/unchecked"
 ln -sfn releases/unchecked "$ROOT/current"
 deploy || fail "the run after an interrupted one failed"
 [ "$(live)" = "$GOOD" ] || fail "current is $(live), not $GOOD"
+
+say "7. a rollback that did not pass its check is tried again by the next run"
+# As if a rollback's restart failed: current is live-sha, but rollback-pending says the rollback is not finished.
+"$WORK/bin/systemctl" stop memory-cp
+touch "$ROOT/rollback-pending"
+deploy || fail "the run after an unfinished rollback failed"
+[ -e "$ROOT/rollback-pending" ] && fail "rollback-pending is still there"
+curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/mcp" | grep -qx 401 || fail "the restored release is not serving"
+
+say "8. once main moves away from a failed sha and back, that sha is tried again"
+git -C "$WORK/origin.git" update-ref refs/heads/main "$GOOD"
+deploy || fail "the run with main back on the live sha failed"
+[ -e "$ROOT/failed-sha" ] && fail "failed-sha was kept after main moved"
+git -C "$WORK/origin.git" update-ref refs/heads/main "$BAD"
+if deploy; then fail "the bad commit deployed the second time"; fi
+[ "$(live)" = "$GOOD" ] || fail "current is $(live) after the second rollback, not $GOOD"
+[ "$(cat "$ROOT/failed-sha")" = "$BAD" ] || fail "failed-sha does not record $BAD again"
 
 [ -d "$ROOT/releases/$BAD" ] && fail "the failed release was kept"
 grep -qF "$(grep TOKEN "$WORK/etc/memory-cp.env" | cut -d= -f2)" "$WORK/var/server.log" && fail "the server log has the token"

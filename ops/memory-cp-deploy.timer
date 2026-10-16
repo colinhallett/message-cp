@@ -1,4 +1,4 @@
-# Checks origin/main every two minutes, so a merge is live within about five.
+# Checks origin/main two minutes after the last run ended, so a merge is usually live within about five.
 [Unit]
 Description=Deploy origin/main of memory-cp every two minutes
 

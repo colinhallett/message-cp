@@ -1,6 +1,6 @@
 # Deploying `main` to the server
 
-The server deploys itself. Every two minutes `memory-cp-deploy.timer` runs `deploy.sh`, which fetches `origin/main` with a read-only deploy key and, if it is new, builds it, switches it in, restarts `memory-cp.service` and runs `npm run e2e` against the public URL. A release that fails `npm ci`, `npm run build` or that check is rolled back to the previous one, and its sha is written to `failed-sha` so it is not tried again until `main` moves. A release is live only once it has passed the check: its sha is then written to `live-sha`, and a run that ends between switching and checking (a reboot, a timeout) is undone by the next run, which puts `live-sha` back before anything else. A merge is live, or rolled back, within about five minutes.
+The server deploys itself. Every two minutes `memory-cp-deploy.timer` runs `deploy.sh`, which fetches `origin/main` with a read-only deploy key and, if it is new, builds it, switches it in, restarts `memory-cp.service` and runs `npm run e2e` against the public URL. A release that fails `npm ci`, `npm run build` or that check is rolled back to the previous one, and its sha is written to `failed-sha` so it is not tried again until `main` moves. A rollback is finished only once the restored release passes the check too; until then `rollback-pending` exists and every run tries the rollback again before anything else. A release is live only once it has passed the check: its sha is then written to `live-sha`, and a run that ends between switching and checking (a reboot, a timeout) is undone by the next run, which puts `live-sha` back before anything else. When runs take their usual minute or two, a merge is live, or rolled back, within about five minutes; a run that hangs holds up the next one for up to its 15-minute timeout.
 
 | File | What it is |
 | --- | --- |
@@ -18,14 +18,17 @@ The server deploys itself. Every two minutes `memory-cp-deploy.timer` runs `depl
   releases/<sha>/       one built release per commit, root's and read-only to the server; the newest five are kept
   current -> releases/<sha>   the live release; switching it is the deploy, switching it back is the rollback
   live-sha              the last sha that passed its check
-  failed-sha            the last sha that failed, not retried until main moves; its release is deleted
+  failed-sha            the sha that failed at main's current tip, not retried until main moves; its release is deleted
+  rollback-pending      present while a rollback has not yet passed its check; the next run tries it again
   deploy.lock           flock(1) lock: two runs never overlap
   build-home/           HOME and npm cache for builds (memory-cp-build's)
   check-home/           HOME and npm cache for the check (memory-cp's)
 /etc/memory-cp.env      MEMORY_CP_HTTP_TOKEN, MEMORY_CP_PUBLIC_URL, MEMORY_CP_DB (root, 0600)
 ```
 
-The database (`MEMORY_CP_DB`) and `/etc/memory-cp.env` are outside `releases/`, and no deploy writes them; `deploy.sh` refuses to run if `MEMORY_CP_DB` points inside a release. The token is read from `/etc/memory-cp.env` by root and given to the check in its environment, never on a command line, and nothing prints it. Builds run as `memory-cp-build`, a user that can read neither the token nor the database, so a dependency's install script cannot either; the check runs as `memory-cp`, the server's user. Everything `deploy.sh` prints goes to the journal: `journalctl -u memory-cp-deploy`.
+The database (`MEMORY_CP_DB`) and `/etc/memory-cp.env` are outside `releases/`, and no deploy script writes them; `deploy.sh` refuses to run if `MEMORY_CP_DB` points inside a release. The token is read from `/etc/memory-cp.env` by root and given to the check in its environment, never on a command line, and nothing prints it. Builds run as `memory-cp-build`, a user that can read neither the token nor the database, so a dependency's install script cannot either; the check runs as `memory-cp`, the server's user. Everything `deploy.sh` prints goes to the journal: `journalctl -u memory-cp-deploy`.
+
+A rollback switches the code, not the database. A release that is started and then fails its check has already opened the database, and its startup migrations have run, so a rolled-back release must still work on the database as the newer one left it. Keep migrations additive (add tables and columns; drop them only in a release after the one that stopped using them), as `src/db.ts` does. If a bad release did damage data, restore the night's backup (see `restore.md`).
 
 ## Install
 
@@ -59,12 +62,15 @@ As root, on a machine with Node 22.12 or later, git, curl, `flock` and `setpriv`
 4. `/etc/memory-cp.env`, if the server does not have it yet (keep the existing token and database path if it does, and add `MEMORY_CP_PUBLIC_URL`):
 
    ```sh
-   MEMORY_CP_HTTP_TOKEN=<the token agents use>
+   install -m 600 -o root -g root /dev/null /etc/memory-cp.env
+   cat >/etc/memory-cp.env <<'EOF'
+   MEMORY_CP_HTTP_TOKEN=replace-with-the-token-agents-use
    MEMORY_CP_PUBLIC_URL=https://memory.example.com
    MEMORY_CP_DB=/var/lib/memory-cp/db.sqlite
+   EOF
    ```
 
-   `chown root:root /etc/memory-cp.env && chmod 600 /etc/memory-cp.env`. `MEMORY_CP_PUBLIC_URL` is the https URL clients use, without `/mcp`; the check runs against it, through Caddy.
+   Then edit the token and URL in place. An existing file must also be `root:root` and `0600`: `chown root:root /etc/memory-cp.env && chmod 600 /etc/memory-cp.env`. `MEMORY_CP_PUBLIC_URL` is the https URL clients use, without `/mcp`; the check runs against it, through Caddy.
 
 5. The script and units, from a checkout of this repository:
 
@@ -85,10 +91,10 @@ As root, on a machine with Node 22.12 or later, git, curl, `flock` and `setpriv`
    systemctl enable --now memory-cp-deploy.timer
    ```
 
-   If the first deploy fails there is nothing to roll back to, so the server stays stopped until a commit passes.
+   If the first deploy fails there is nothing to roll back to. On a fresh install the server stays stopped until a commit passes. When replacing a running server, a failed `npm ci` or `npm run build` leaves the old process running (nothing was switched or restarted), but a release that starts and then fails its check is stopped, and the server stays stopped until a commit passes.
 
-To see what is live: `cat /opt/memory-cp/live-sha`. A failure while the registry, the network or Caddy was down also lands in `failed-sha`; to retry that sha without a new commit, `rm /opt/memory-cp/failed-sha`. To roll back by hand, stop the timer first (`systemctl stop memory-cp-deploy.timer`), since a run puts `live-sha` back and deploys `main` again.
+To see what is live: `cat /opt/memory-cp/live-sha`. A failed `git fetch` records nothing; the next run fetches again. But once a sha has been fetched, a failure while the registry, the network or Caddy was down lands in `failed-sha` like any other; to retry that sha without a new commit, `rm /opt/memory-cp/failed-sha`. To roll back by hand, stop the timer first (`systemctl stop memory-cp-deploy.timer`), since a run puts `live-sha` back and deploys `main` again.
 
 ## Trying it
 
-`ops/try-deploy.sh` runs `deploy.sh` for real, without root or systemd: a bare git repo stands in for GitHub, and a stand-in `systemctl` starts the server from `current` on port 18787 (`PORT=` to change it). It deploys this checkout's HEAD and checks it, runs again and does nothing, then pushes a commit whose server answers every authorised request with 500 and checks that it fails `npm run e2e`, is rolled back and deleted, is not retried, and that the previous release passes the check again; last, it points `current` at an unchecked release, as a killed run would leave it, and checks that the next run restores the good one. It exits 0 when all of that holds and keeps its work directory for inspection.
+`ops/try-deploy.sh` runs `deploy.sh` for real, without root or systemd: a bare git repo stands in for GitHub, and a stand-in `systemctl` starts the server from `current` on port 18787 (`PORT=` to change it). It deploys this checkout's HEAD and checks it, runs again and does nothing, then pushes a commit whose server answers every authorised request with 500 and checks that it fails `npm run e2e`, is rolled back and deleted, is not retried, and that the previous release passes the check again; last, it points `current` at an unchecked release, as a killed run would leave it, and checks that the next run restores the good one; then it leaves a rollback unfinished and checks that the next run finishes it, and moves `main` back to the good sha and on to the bad one again and checks that the bad one is tried, and rolled back, again. It exits 0 when all of that holds and keeps its work directory for inspection.

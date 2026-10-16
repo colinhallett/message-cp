@@ -7,12 +7,15 @@
 #   3. builds it in $ROOT/releases/<sha> (npm ci, npm run build) as $BUILD_USER, which never sees the token;
 #   4. points the $ROOT/current symlink at it and restarts memory-cp.service;
 #   5. runs the release's `npm run e2e -- --url <public URL>` as $SERVER_USER, with the token in its environment only;
-#   6. records the sha in $ROOT/live-sha once that passes; on any failure, points current back at the previous
-#      release, restarts it, deletes the failed release and records its sha in $ROOT/failed-sha so it is not tried
-#      again until main moves.
-# A run that ends between 4 and 6 (a reboot, a timeout) leaves current pointing past live-sha; the next run puts
-# live-sha back first, then deploys main again. It keeps the five releases that went live most recently. The database and /etc/memory-cp.env are never inside $ROOT/releases and
-# nothing here writes them. Everything it prints goes to the journal; it never prints the token.
+#   6. records the sha in $ROOT/live-sha once that passes; on any failure, records its sha in $ROOT/failed-sha so it
+#      is not tried again until main moves, points current back at the previous release, restarts and checks it,
+#      and deletes the failed release.
+# A rollback is finished only once the restored release passes its check; until then $ROOT/rollback-pending exists.
+# A run that ends between 4 and 6 (a reboot, a timeout), or a rollback whose restart or check failed, leaves current
+# pointing past live-sha or rollback-pending in place; the next run restores live-sha first, then deploys main.
+# failed-sha holds back only an unchanged main: a run that sees main elsewhere removes it.
+# It keeps the five releases that went live most recently. The database and /etc/memory-cp.env are never inside
+# $ROOT/releases and nothing here writes them. Everything it prints goes to the journal; it never prints the token.
 set -euo pipefail
 umask 022
 
@@ -79,6 +82,12 @@ wait_ready() {
   return 1
 }
 
+# Writes <value> to $ROOT/<file> by renaming, so a run killed mid-write leaves the old value or the new one.
+write_state() {
+  echo "$2" >"$ROOT/$1.new"
+  mv -T "$ROOT/$1.new" "$ROOT/$1"
+}
+
 # Runs release <sha>'s end-to-end check against the public URL. The token goes in its environment only.
 check() {
   wait_ready || return 1
@@ -111,24 +120,47 @@ LIVE=$(cat "$ROOT/live-sha" 2>/dev/null || true)
 FAILED=$(cat "$ROOT/failed-sha" 2>/dev/null || true)
 CURRENT=$(basename "$(readlink "$ROOT/current" 2>/dev/null || true)")
 
-# An earlier run switched current but never finished its check: put back the release that passed one.
-if [ "$CURRENT" != "$LIVE" ]; then
+# Points current back at $LIVE, restarts it and checks it. rollback-pending stays until that check passes, so a
+# rollback that was interrupted or whose restart or check failed is tried again by the next run.
+restore_live() {
+  touch "$ROOT/rollback-pending"
+  switch_to "$LIVE"
+  systemctl restart "$SERVICE" || log "systemctl restart $SERVICE failed"
+  if check "$LIVE"; then
+    rm -f "$ROOT/rollback-pending"
+    log "$LIVE is serving again and passes its check"
+  else
+    log "$LIVE is restored but does not pass its check; the next run tries again"
+    return 1
+  fi
+}
+
+RESTORED=ok
+# An earlier run switched current but never finished its check, or did not finish a rollback: put back the release
+# that passed one.
+if [ "$CURRENT" != "$LIVE" ] || [ -e "$ROOT/rollback-pending" ]; then
   if [ -n "$LIVE" ] && [ -d "$ROOT/releases/$LIVE" ]; then
-    log "current is $CURRENT, which was never checked; restoring $LIVE"
-    switch_to "$LIVE"
-    systemctl restart "$SERVICE"
+    log "current is $CURRENT and live-sha is $LIVE, and no check has passed since; restoring $LIVE"
+    restore_live || RESTORED=failed
   elif [ -L "$ROOT/current" ]; then
     log "current is $CURRENT, which was never checked, and nothing has passed a check; stopping $SERVICE"
     rm "$ROOT/current"
     systemctl stop "$SERVICE"
+    rm -f "$ROOT/rollback-pending"
+  else
+    rm -f "$ROOT/rollback-pending"
   fi
 fi
 
-if [ "$SHA" = "$LIVE" ]; then
-  exit 0
-fi
 if [ "$SHA" = "$FAILED" ]; then
   log "origin/main is still $SHA, which failed; waiting for main to move"
+  [ "$RESTORED" = ok ] || exit 1
+  exit 0
+fi
+# main has moved since that failure, so the failure no longer holds back its sha if main comes back to it.
+rm -f "$ROOT/failed-sha"
+if [ "$SHA" = "$LIVE" ]; then
+  [ "$RESTORED" = ok ] || exit 1
   exit 0
 fi
 
@@ -136,17 +168,11 @@ log "deploying $SHA (live: ${LIVE:-none})"
 
 fail() {
   log "$SHA failed: $1"
-  echo "$SHA" >"$ROOT/failed-sha"
+  write_state failed-sha "$SHA"
   if [ -n "$LIVE" ] && [ -d "$ROOT/releases/$LIVE" ]; then
-    if [ "$(basename "$(readlink "$ROOT/current")")" != "$LIVE" ]; then
+    if [ "$(basename "$(readlink "$ROOT/current")")" != "$LIVE" ] || [ -e "$ROOT/rollback-pending" ]; then
       log "rolling back to $LIVE"
-      switch_to "$LIVE"
-      systemctl restart "$SERVICE" || log "systemctl restart $SERVICE failed"
-      if check "$LIVE"; then
-        log "$LIVE is serving again and passes its check"
-      else
-        log "$LIVE is restored but does not pass its check"
-      fi
+      restore_live || true
     fi
   elif [ -L "$ROOT/current" ]; then
     log "no earlier release to roll back to; stopping $SERVICE"
@@ -176,8 +202,8 @@ fi
 switch_to "$SHA"
 systemctl restart "$SERVICE" || fail "systemctl restart $SERVICE"
 check "$SHA" || fail "npm run e2e against $PUBLIC_URL"
-echo "$SHA" >"$ROOT/live-sha.new"
-mv -T "$ROOT/live-sha.new" "$ROOT/live-sha"
+write_state live-sha "$SHA"
+rm -f "$ROOT/rollback-pending"
 log "$SHA is live and passes its check"
 
 # Keep the $KEEP releases that went live most recently (one that goes live again counts as new).
