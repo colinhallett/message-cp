@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ToolError, agentFromEnv, registerAgent } from "../src/agents.js";
 import Database from "better-sqlite3";
-import { openDb, type Db } from "../src/db.js";
+import { OWNER_ACCOUNT, openDb, type Db } from "../src/db.js";
 import { Session, createServer } from "../src/server.js";
 
 let dir: string;
@@ -73,7 +73,7 @@ describe("shared database", () => {
 
   it("pages list_agents and caps the page size", async () => {
     const one = await connect();
-    for (let i = 0; i < 60; i++) db.prepare("INSERT INTO agents (name, bio, registered_at, last_seen) VALUES (?, '', 0, 0)").run(`a${String(i).padStart(2, "0")}`);
+    for (let i = 0; i < 60; i++) db.prepare("INSERT INTO agents (account_id, name, bio, registered_at, last_seen) VALUES (1, ?, '', 0, 0)").run(`a${String(i).padStart(2, "0")}`);
     expect((await call(one, "list_agents")).json).toHaveLength(50);
     const page = (await call(one, "list_agents", { limit: 20, offset: 50 })).json;
     expect(page.map((a: { name: string }) => a.name)).toEqual(Array.from({ length: 10 }, (_, i) => `a${50 + i}`));
@@ -276,7 +276,7 @@ describe("agent keys", () => {
 
   describe("from the environment", () => {
     it("creates the agent with the given key and acts as it", async () => {
-      expect(agentFromEnv(db, { MEMORY_CP_AGENT: "worker-1", MEMORY_CP_AGENT_KEY: "k1" })).toBe("worker-1");
+      expect(agentFromEnv(db, OWNER_ACCOUNT, { MEMORY_CP_AGENT: "worker-1", MEMORY_CP_AGENT_KEY: "k1" })).toBe("worker-1");
       expect(row("worker-1").key_hash).not.toBeNull();
       const other = await connect();
       expect((await call(other, "register", { name: "worker-1", bio: "x", key: "k1" })).isError).toBe(false);
@@ -284,34 +284,34 @@ describe("agent keys", () => {
     });
 
     it("claims an agent that has no key and refuses one with a different key", () => {
-      db.prepare("INSERT INTO agents (name, bio, registered_at, last_seen) VALUES ('old', 'b', 0, 0)").run();
+      db.prepare("INSERT INTO agents (account_id, name, bio, registered_at, last_seen) VALUES (1, 'old', 'b', 0, 0)").run();
       const env = { MEMORY_CP_AGENT: "old", MEMORY_CP_AGENT_KEY: "k1" };
-      agentFromEnv(db, env);
+      agentFromEnv(db, OWNER_ACCOUNT, env);
       expect(row("old").key_hash).not.toBeNull();
-      expect(() => agentFromEnv(db, { ...env, MEMORY_CP_AGENT_KEY: "k2" })).toThrow(/has a key/);
+      expect(() => agentFromEnv(db, OWNER_ACCOUNT, { ...env, MEMORY_CP_AGENT_KEY: "k2" })).toThrow(/has a key/);
       expect(row("old").bio).toBe("b");
     });
 
     it("needs both variables, or neither", () => {
-      expect(agentFromEnv(db, {})).toBeUndefined();
-      expect(() => agentFromEnv(db, { MEMORY_CP_AGENT: "a" })).toThrow(ToolError);
-      expect(() => agentFromEnv(db, { MEMORY_CP_AGENT_KEY: "k" })).toThrow(ToolError);
+      expect(agentFromEnv(db, OWNER_ACCOUNT, {})).toBeUndefined();
+      expect(() => agentFromEnv(db, OWNER_ACCOUNT, { MEMORY_CP_AGENT: "a" })).toThrow(ToolError);
+      expect(() => agentFromEnv(db, OWNER_ACCOUNT, { MEMORY_CP_AGENT_KEY: "k" })).toThrow(ToolError);
     });
 
     it("rejects empty values instead of starting anonymous", () => {
-      expect(() => agentFromEnv(db, { MEMORY_CP_AGENT: "", MEMORY_CP_AGENT_KEY: "" })).toThrow(ToolError);
-      expect(() => agentFromEnv(db, { MEMORY_CP_AGENT: "" })).toThrow(ToolError);
+      expect(() => agentFromEnv(db, OWNER_ACCOUNT, { MEMORY_CP_AGENT: "", MEMORY_CP_AGENT_KEY: "" })).toThrow(ToolError);
+      expect(() => agentFromEnv(db, OWNER_ACCOUNT, { MEMORY_CP_AGENT: "" })).toThrow(ToolError);
     });
 
     it("refuses with a ToolError when the stored hash is malformed", () => {
-      db.prepare("INSERT INTO agents (name, bio, registered_at, last_seen, key_hash) VALUES ('bad', 'b', 0, 0, 'xyz')").run();
-      expect(() => agentFromEnv(db, { MEMORY_CP_AGENT: "bad", MEMORY_CP_AGENT_KEY: "k" })).toThrow(/has a key/);
+      db.prepare("INSERT INTO agents (account_id, name, bio, registered_at, last_seen, key_hash) VALUES (1, 'bad', 'b', 0, 0, 'xyz')").run();
+      expect(() => agentFromEnv(db, OWNER_ACCOUNT, { MEMORY_CP_AGENT: "bad", MEMORY_CP_AGENT_KEY: "k" })).toThrow(/has a key/);
     });
 
     it("refuses a takeover when the stored hash is an empty string", () => {
-      db.prepare("INSERT INTO agents (name, bio, registered_at, last_seen, key_hash) VALUES ('empty', 'b', 0, 0, '')").run();
-      expect(() => agentFromEnv(db, { MEMORY_CP_AGENT: "empty", MEMORY_CP_AGENT_KEY: "k" })).toThrow(/has a key/);
-      expect(() => registerAgent(db, "empty", "x", "k")).toThrow(/has a key/);
+      db.prepare("INSERT INTO agents (account_id, name, bio, registered_at, last_seen, key_hash) VALUES (1, 'empty', 'b', 0, 0, '')").run();
+      expect(() => agentFromEnv(db, OWNER_ACCOUNT, { MEMORY_CP_AGENT: "empty", MEMORY_CP_AGENT_KEY: "k" })).toThrow(/has a key/);
+      expect(() => registerAgent(db, OWNER_ACCOUNT, "empty", "x", "k")).toThrow(/has a key/);
       expect((db.prepare("SELECT key_hash FROM agents WHERE name='empty'").get() as { key_hash: string }).key_hash).toBe("");
     });
   });

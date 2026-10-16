@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { getAgent, registerFromEnv, removeAgent } from "../src/agents.js";
 import { unreadSummary } from "../src/messages.js";
-import { openDb, type Db } from "../src/db.js";
+import { OWNER_ACCOUNT, openDb, type Db } from "../src/db.js";
 import { Session, createServer } from "../src/server.js";
 
 let dbFile: string;
@@ -87,7 +87,7 @@ describe("unregister", () => {
 
   it("removes an agent that has no key by name alone", async () => {
     const b = await agent("bob");
-    db.prepare("INSERT INTO agents (name, bio, registered_at, last_seen) VALUES ('old', '', 1, 1)").run();
+    db.prepare("INSERT INTO agents (account_id, name, bio, registered_at, last_seen) VALUES (1, 'old', '', 1, 1)").run();
     expect((await call(b.client, "unregister", { name: "old" })).isError).toBe(false);
     expect(count("SELECT COUNT(*) AS n FROM agents WHERE name = 'old' AND removed_at IS NULL")).toBe(0);
   });
@@ -146,11 +146,11 @@ describe("unregister", () => {
     expect((await call(b.client, "send_message", { to: "all", body: "x" })).json).toEqual({ delivered: 0, recipients: [] });
     expect((await call(b.client, "unregister", { name: "alice" })).text).toMatch(/No agent named/);
     expect((await call(a.client, "read_inbox")).text).toMatch(REGISTER_FIRST);
-    expect(unreadSummary(db, "alice")).toBeUndefined();
+    expect(unreadSummary(db, OWNER_ACCOUNT, "alice")).toBeUndefined();
     // Nor can anyone reach the row by its placeholder name.
     const id = (db.prepare("SELECT id FROM agents WHERE removed_name = 'alice'").get() as { id: number }).id;
-    expect(getAgent(db, `removed:${id}`)).toBeUndefined();
-    expect(unreadSummary(db, `removed:${id}`)).toBeUndefined();
+    expect(getAgent(db, OWNER_ACCOUNT, `removed:${id}`)).toBeUndefined();
+    expect(unreadSummary(db, OWNER_ACCOUNT, `removed:${id}`)).toBeUndefined();
     expect((await call(b.client, "register", { name: `removed:${id}`, bio: "x" })).isError).toBe(true);
   });
 
@@ -201,7 +201,7 @@ describe("a session whose agent was removed", () => {
     const a = await agent("alice");
     const row = db.prepare("SELECT id, registered_at FROM agents WHERE name = 'alice' AND removed_at IS NULL").get() as { id: number; registered_at: number };
     db.prepare("DELETE FROM agents WHERE id = ?").run(row.id);
-    db.prepare("INSERT INTO agents (id, name, bio, registered_at, last_seen, instance) VALUES (?, 'alice', '', ?, ?, 'other')").run(
+    db.prepare("INSERT INTO agents (id, account_id, name, bio, registered_at, last_seen, instance) VALUES (?, 1, 'alice', '', ?, ?, 'other')").run(
       row.id,
       row.registered_at,
       row.registered_at,
@@ -218,7 +218,7 @@ describe("a session whose agent was removed", () => {
     // carol removed behind the session's back and registered again by someone else
     db.prepare("DELETE FROM agents WHERE name = 'carol'").run();
     const other = await agent("carol");
-    expect(() => removeAgent(db, "carol", undefined, stale)).toThrow(REGISTER_FIRST);
+    expect(() => removeAgent(db, OWNER_ACCOUNT, "carol", undefined, stale)).toThrow(REGISTER_FIRST);
     expect(count("SELECT COUNT(*) AS n FROM agents WHERE name = 'carol'")).toBe(1);
     expect((await call(other.client, "read_inbox")).isError).toBe(false);
     expect((await call(a.client, "read_inbox")).isError).toBe(false);
@@ -227,7 +227,7 @@ describe("a session whose agent was removed", () => {
   it("also applies to a session started from MEMORY_CP_AGENT", async () => {
     const env = { MEMORY_CP_AGENT: "worker", MEMORY_CP_AGENT_KEY: "k" };
     const session = new Session();
-    session.bind(registerFromEnv(db, env)!.identity);
+    session.bind(registerFromEnv(db, OWNER_ACCOUNT, env)!.identity);
     const w = await connect(session);
     expect((await call(w, "read_inbox")).isError).toBe(false);
     const b = await agent("bob");

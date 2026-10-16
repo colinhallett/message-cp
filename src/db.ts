@@ -1,5 +1,6 @@
 import Database from "better-sqlite3";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { randomBytes } from "node:crypto";
+import { chmodSync, existsSync, mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -10,18 +11,46 @@ export function dbPath(): string {
   return process.env.MEMORY_CP_DB || join(homedir(), ".memory-cp", "db.sqlite");
 }
 
-// Every table lives here so later changes add to one place.
-// NOCASE makes names unique regardless of case while keeping the first-registered spelling.
-const SCHEMA = `
-CREATE TABLE IF NOT EXISTS agents (
+/** The account the migration creates: the token in MEMORY_CP_HTTP_TOKEN, stdio and `memory-cp wait` act as it. */
+export const OWNER_ACCOUNT = 1;
+export type AccountId = number;
+
+// Agent names are unique within an account, so two accounts can each have a `planner`. NOCASE makes them unique
+// regardless of case while keeping the first-registered spelling. The rebuild in migrate() creates the same table.
+const agentsTable = (table: string) => `
+CREATE TABLE IF NOT EXISTS ${table} (
   id INTEGER PRIMARY KEY,
-  name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+  account_id INTEGER NOT NULL REFERENCES accounts(id),
+  name TEXT NOT NULL COLLATE NOCASE,
   bio TEXT NOT NULL,
   registered_at INTEGER NOT NULL,
-  last_seen INTEGER NOT NULL
+  last_seen INTEGER NOT NULL,
+  key_hash TEXT,
+  instance TEXT,
+  removed_at INTEGER,
+  removed_name TEXT,
+  UNIQUE (account_id, name)
+);`;
+
+// Every table lives here so later changes add to one place.
+const SCHEMA = `
+CREATE TABLE IF NOT EXISTS accounts (
+  id INTEGER PRIMARY KEY,
+  name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+  created_at INTEGER NOT NULL
 );
 
--- One row per recipient, so a broadcast has its own read state for each agent.
+-- Only a token's hash is stored; the token itself is shown once, when it is created.
+CREATE TABLE IF NOT EXISTS tokens (
+  id INTEGER PRIMARY KEY,
+  account_id INTEGER NOT NULL REFERENCES accounts(id),
+  hash TEXT NOT NULL UNIQUE,
+  created_at INTEGER NOT NULL,
+  revoked_at INTEGER
+);
+${agentsTable("agents")}
+
+-- One row per recipient, so a broadcast has its own read state for each agent. A message belongs to its recipient's account.
 CREATE TABLE IF NOT EXISTS messages (
   id INTEGER PRIMARY KEY,
   recipient_id INTEGER NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
@@ -36,9 +65,11 @@ CREATE INDEX IF NOT EXISTS messages_history ON messages (recipient_id, id);
 `;
 
 // CREATE TABLE IF NOT EXISTS leaves an existing table alone, so columns added later are added here, only when missing.
+const hasColumn = (db: Db, column: string) =>
+  (db.prepare("PRAGMA table_info(agents)").all() as { name: string }[]).some((c) => c.name === column);
+
 function addColumn(db: Db, column: string, definition: string): void {
-  const columns = db.prepare("PRAGMA table_info(agents)").all() as { name: string }[];
-  if (columns.some((c) => c.name === column)) return;
+  if (hasColumn(db, column)) return;
   try {
     db.exec(`ALTER TABLE agents ADD COLUMN ${column} ${definition}`);
   } catch (err) {
@@ -59,16 +90,77 @@ DROP TABLE IF EXISTS tasks;
 DROP TABLE IF EXISTS hive_runs;
 `;
 
-function migrate(db: Db): void {
+/** The copy of the database the accounts migration leaves next to it, taken just before it rebuilds `agents`. */
+export const preAccountsCopy = (path: string) => `${path}.before-accounts`;
+
+/**
+ * Copies the database at `path` to `preAccountsCopy(path)`, owner-only whatever the umask, unless that copy exists.
+ * The copy is written under another name and renamed into place, so it is never seen half-written.
+ */
+function copyBeforeAccounts(path: string): void {
+  const copy = preAccountsCopy(path);
+  if (existsSync(copy)) return;
+  const partial = `${copy}.${randomBytes(6).toString("hex")}.partial`;
+  writeFileSync(partial, "", { mode: 0o600, flag: "wx" });
+  try {
+    chmodSync(partial, 0o600);
+    // A second connection, since VACUUM cannot run inside the caller's transaction. It reads the last commit, which
+    // nobody can change while the caller holds the write lock.
+    const source = new Database(path);
+    try {
+      source.prepare("VACUUM INTO ?").run(partial);
+    } finally {
+      source.close();
+    }
+    chmodSync(partial, 0o600);
+    renameSync(partial, copy);
+  } catch (err) {
+    rmSync(partial, { force: true });
+    throw err;
+  }
+}
+
+/**
+ * Gives every agent an account by rebuilding `agents` with an `account_id`, all existing rows going to the owner's
+ * account, so that names are unique per account. SQLite cannot change a table's UNIQUE constraint in place.
+ * The check, the copy and the rebuild all happen under the write lock, so when several processes open the file at
+ * once exactly one of them copies and rebuilds, and the others find the work done.
+ */
+function addAccounts(db: Db, path: string): void {
+  if (hasColumn(db, "account_id")) return;
+  // Dropping the old table must not cascade to the messages that reference it; this cannot change inside a transaction.
+  const foreignKeys = db.pragma("foreign_keys", { simple: true });
+  db.pragma("foreign_keys = OFF");
+  try {
+    db.transaction(() => {
+      if (hasColumn(db, "account_id")) return;
+      copyBeforeAccounts(path);
+      db.exec(agentsTable("agents_by_account"));
+      db.prepare(
+        `INSERT INTO agents_by_account (id, account_id, name, bio, registered_at, last_seen, key_hash, instance, removed_at, removed_name)
+         SELECT id, ?, name, bio, registered_at, last_seen, key_hash, instance, removed_at, removed_name FROM agents`,
+      ).run(OWNER_ACCOUNT);
+      db.exec("DROP TABLE agents");
+      db.exec("ALTER TABLE agents_by_account RENAME TO agents");
+      if ((db.pragma("foreign_key_check") as unknown[]).length > 0) throw new Error("accounts migration broke a foreign key");
+    }).immediate();
+  } finally {
+    db.pragma(`foreign_keys = ${foreignKeys ? "ON" : "OFF"}`);
+  }
+}
+
+function migrate(db: Db, path: string): void {
   addColumn(db, "key_hash", "TEXT");
   // A random token per registration, so a session can tell its agent from a later one that reuses the id or name.
   addColumn(db, "instance", "TEXT");
   // A removed agent keeps its row, so the messages addressed to it stay and its id is never reused.
   addColumn(db, "removed_at", "INTEGER");
   addColumn(db, "removed_name", "TEXT");
-  // Broadcast reads every live agent in name order; this keeps it from scanning the removed rows too.
-  db.exec("CREATE INDEX IF NOT EXISTS agents_live ON agents (name) WHERE removed_at IS NULL");
   db.exec(DROP_REMOVED);
+  db.prepare("INSERT OR IGNORE INTO accounts (id, name, created_at) VALUES (?, 'owner', ?)").run(OWNER_ACCOUNT, Date.now());
+  addAccounts(db, path);
+  // Broadcast reads every live agent of one account in name order; this keeps it from scanning the removed rows too.
+  db.exec("CREATE INDEX IF NOT EXISTS agents_live ON agents (account_id, name) WHERE removed_at IS NULL");
 }
 
 // Several processes switching a new file to WAL at once make the losers fail with SQLITE_BUSY straight away,
@@ -111,6 +203,6 @@ export function openDb(path: string = dbPath()): Db {
   enableWal(db);
   db.pragma("busy_timeout = 5000");
   db.exec(SCHEMA);
-  migrate(db);
+  migrate(db, path);
   return db;
 }

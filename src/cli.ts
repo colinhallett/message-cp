@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { DEFAULT_HTTP_HOST, DEFAULT_HTTP_PORT, startHttp } from "./http.js";
-import { openDb } from "./db.js";
+import { AccountError, addAccount, addToken, listAccounts, revokeToken } from "./accounts.js";
+import { OWNER_ACCOUNT, openDb } from "./db.js";
 import { unreadSummary } from "./messages.js";
 import { formatUnread } from "./wait.js";
 
@@ -43,7 +44,8 @@ if (command === "serve") {
   for (;;) {
     let unread;
     try {
-      unread = unreadSummary(db, name);
+      // `wait` reads the database file directly, so it is the owner's account, like stdio.
+      unread = unreadSummary(db, OWNER_ACCOUNT, name);
     } catch (err) {
       // A lock held past the busy timeout is transient: try again at the next check.
       const code = (err as { code?: unknown } | null)?.code;
@@ -69,9 +71,43 @@ if (command === "serve") {
     }
     await new Promise((r) => setTimeout(r, 1000));
   }
+} else if (command === "account" || command === "token") {
+  // Run on the server, against the database serve uses. A new token is printed this once, to stdout, and only its
+  // hash is stored; everything else goes to stderr.
+  const usage = () => {
+    console.error(
+      "usage: memory-cp account add <name> | memory-cp account list | memory-cp token add <account> | memory-cp token revoke <token id>",
+    );
+    process.exit(2);
+  };
+  const [action, arg, extra] = rest;
+  if (extra !== undefined) usage();
+  const db = openDb();
+  const printToken = (t: { id: number; account: string; token: string }) => {
+    console.error(`memory-cp: token ${t.id} for account '${t.account}'. It is shown only now; keep it.`);
+    console.log(t.token);
+  };
+  try {
+    if (command === "account" && action === "add" && arg) printToken(addAccount(db, arg));
+    else if (command === "account" && action === "list" && arg === undefined) {
+      for (const a of listAccounts(db)) {
+        console.log(`${a.name}\tcreated ${a.createdAt}\ttokens: ${a.tokenIds.length ? a.tokenIds.join(", ") : "none"}`);
+      }
+    } else if (command === "token" && action === "add" && arg) printToken(addToken(db, arg));
+    else if (command === "token" && action === "revoke" && arg) {
+      const id = Number(arg);
+      if (!/^[0-9]+$/.test(arg) || !Number.isSafeInteger(id)) usage();
+      console.error(`memory-cp: revoked token ${id} of account '${revokeToken(db, id)}'.`);
+    } else usage();
+  } catch (err) {
+    if (!(err instanceof AccountError)) throw err;
+    console.error(`memory-cp: ${err.message}`);
+    process.exit(1);
+  }
+  db.close();
 } else if (command === undefined) {
   await import("./index.js");
 } else {
-  console.error(`memory-cp: unknown command '${command}'. Commands: serve, wait`);
+  console.error(`memory-cp: unknown command '${command}'. Commands: serve, wait, account, token`);
   process.exit(2);
 }

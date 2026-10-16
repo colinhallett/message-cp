@@ -1,9 +1,12 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
-import type { Db } from "./db.js";
+import type { AccountId, Db } from "./db.js";
 
 export class ToolError extends Error {}
 
 export const NOT_REGISTERED = "This session is not registered. Call `register` first.";
+
+// Every function here takes the caller's account and reads or writes only that account's agents: another account's
+// agent of the same name is invisible, never "taken", and gives the same answer as no agent at all.
 
 export interface Agent {
   name: string;
@@ -84,12 +87,13 @@ function validateKey(key: string): void {
  * before keys existed) is claimed by this call. With no `key` given a new one is generated and
  * returned, this once; only its hash is stored. `bio` undefined keeps an existing agent's bio.
  */
-export const registerAgent = (db: Db, name: string, bio?: string, key?: string): RegisterResult =>
-  registerWithIdentity(db, name, bio, key).result;
+export const registerAgent = (db: Db, account: AccountId, name: string, bio?: string, key?: string): RegisterResult =>
+  registerWithIdentity(db, account, name, bio, key).result;
 
 /** `registerAgent`, also returning the identity of the registration the caller now holds. */
 export const registerWithIdentity = (
   db: Db,
+  account: AccountId,
   name: string,
   bio?: string,
   key?: string,
@@ -100,7 +104,9 @@ export const registerWithIdentity = (
       throw new ToolError(`Bio is too long: at most ${MAX_BIO_LENGTH} characters.`);
     }
     if (key !== undefined) validateKey(key);
-    const existing = db.prepare("SELECT key_hash FROM agents WHERE name = ? AND removed_at IS NULL").get(name) as
+    const existing = db
+      .prepare("SELECT key_hash FROM agents WHERE account_id = ? AND name = ? AND removed_at IS NULL")
+      .get(account, name) as
       | { key_hash: string | null }
       | undefined;
     if (existing && existing.key_hash !== null && (key === undefined || !sameHash(hashKey(key), existing.key_hash))) {
@@ -114,12 +120,12 @@ export const registerWithIdentity = (
     const now = Date.now();
     const row = db
       .prepare(
-        `INSERT INTO agents (name, bio, registered_at, last_seen, key_hash, instance) VALUES (?, ?, ?, ?, ?, ?)
-         -- Reached on a conflict only after the key check above passed.
-         ON CONFLICT(name) DO UPDATE SET bio = COALESCE(?, bio), last_seen = excluded.last_seen, key_hash = excluded.key_hash
+        `INSERT INTO agents (account_id, name, bio, registered_at, last_seen, key_hash, instance) VALUES (?, ?, ?, ?, ?, ?, ?)
+         -- Reached on a conflict only after the key check above passed. Another account's agent of the same name never conflicts.
+         ON CONFLICT(account_id, name) DO UPDATE SET bio = COALESCE(?, bio), last_seen = excluded.last_seen, key_hash = excluded.key_hash
          RETURNING id, name, bio, registered_at, last_seen, instance`,
       )
-      .get(name, bio ?? "", now, now, keyHash, randomBytes(16).toString("hex"), bio ?? null) as Row & IdentityRow;
+      .get(account, name, bio ?? "", now, now, keyHash, randomBytes(16).toString("hex"), bio ?? null) as Row & IdentityRow;
     // A caller that supplied its own key already has it.
     return { result: issued ? { ...toAgent(row), key: effectiveKey } : toAgent(row), identity: toIdentity(row) };
   }).immediate();
@@ -128,13 +134,14 @@ export const registerWithIdentity = (
  * The agent a supervisor chose for this process through MEMORY_CP_AGENT and MEMORY_CP_AGENT_KEY:
  * created or claimed with that key. Throws ToolError if the agent has a different key.
  */
-export function agentFromEnv(db: Db, env: NodeJS.ProcessEnv = process.env): string | undefined {
-  return registerFromEnv(db, env)?.name;
+export function agentFromEnv(db: Db, account: AccountId, env: NodeJS.ProcessEnv = process.env): string | undefined {
+  return registerFromEnv(db, account, env)?.name;
 }
 
 /** `agentFromEnv`, also returning the identity of the registration it made, so a session binds to exactly that one. */
 export function registerFromEnv(
   db: Db,
+  account: AccountId,
   env: NodeJS.ProcessEnv = process.env,
 ): { name: string; identity: Identity } | undefined {
   const name = env.MEMORY_CP_AGENT;
@@ -143,48 +150,50 @@ export function registerFromEnv(
   if (!name || !key) {
     throw new ToolError("MEMORY_CP_AGENT and MEMORY_CP_AGENT_KEY must be set together.");
   }
-  const { result, identity } = registerWithIdentity(db, name, undefined, key);
+  const { result, identity } = registerWithIdentity(db, account, name, undefined, key);
   return { name: result.name, identity };
 }
 
 export const DEFAULT_LIST_LIMIT = 50;
 export const MAX_LIST_LIMIT = 200;
 
-/** One page of agents ordered by name; pass `offset` to read the rest. */
-export function listAgents(db: Db, limit = DEFAULT_LIST_LIMIT, offset = 0): Agent[] {
+/** One page of the account's agents ordered by name; pass `offset` to read the rest. */
+export function listAgents(db: Db, account: AccountId, limit = DEFAULT_LIST_LIMIT, offset = 0): Agent[] {
   const rows = db
     .prepare(
-      "SELECT name, bio, registered_at, last_seen FROM agents WHERE removed_at IS NULL ORDER BY name LIMIT ? OFFSET ?",
+      "SELECT name, bio, registered_at, last_seen FROM agents WHERE account_id = ? AND removed_at IS NULL ORDER BY name LIMIT ? OFFSET ?",
     )
-    .all(Math.min(limit, MAX_LIST_LIMIT), offset) as Row[];
+    .all(account, Math.min(limit, MAX_LIST_LIMIT), offset) as Row[];
   return rows.map(toAgent);
 }
 
-export function getAgent(db: Db, name: string): Agent | undefined {
+export function getAgent(db: Db, account: AccountId, name: string): Agent | undefined {
   const row = db
-    .prepare("SELECT name, bio, registered_at, last_seen FROM agents WHERE name = ? AND removed_at IS NULL")
-    .get(name) as Row | undefined;
+    .prepare("SELECT name, bio, registered_at, last_seen FROM agents WHERE account_id = ? AND name = ? AND removed_at IS NULL")
+    .get(account, name) as Row | undefined;
   return row && toAgent(row);
 }
 
 /** The identity of the agent registered under `name` right now, if any. */
-export function identityOf(db: Db, name: string): Identity | undefined {
-  const row = db.prepare("SELECT id, registered_at, instance FROM agents WHERE name = ? AND removed_at IS NULL").get(name) as
+export function identityOf(db: Db, account: AccountId, name: string): Identity | undefined {
+  const row = db
+    .prepare("SELECT id, registered_at, instance FROM agents WHERE account_id = ? AND name = ? AND removed_at IS NULL")
+    .get(account, name) as
     | IdentityRow
     | undefined;
   return row && toIdentity(row);
 }
 
 /** The name of the agent `identity` still belongs to, or undefined once that registration was removed. */
-export function nameOfIdentity(db: Db, identity: Identity): string | undefined {
+export function nameOfIdentity(db: Db, account: AccountId, identity: Identity): string | undefined {
   const row = db
-    .prepare("SELECT name FROM agents WHERE id = ? AND registered_at = ? AND instance IS ? AND removed_at IS NULL")
-    .get(identity.id, identity.registeredAt, identity.instance) as { name: string } | undefined;
+    .prepare("SELECT name FROM agents WHERE account_id = ? AND id = ? AND registered_at = ? AND instance IS ? AND removed_at IS NULL")
+    .get(account, identity.id, identity.registeredAt, identity.instance) as { name: string } | undefined;
   return row?.name;
 }
 
-export function touchAgent(db: Db, name: string): void {
-  db.prepare("UPDATE agents SET last_seen = ? WHERE name = ? AND removed_at IS NULL").run(Date.now(), name);
+export function touchAgent(db: Db, account: AccountId, name: string): void {
+  db.prepare("UPDATE agents SET last_seen = ? WHERE account_id = ? AND name = ? AND removed_at IS NULL").run(Date.now(), account, name);
 }
 
 export interface Unregistered {
@@ -211,14 +220,16 @@ const REMOVED_INSTANCE = "removed";
  * registration is removed, or nothing if it is already gone, so a name registered by someone else in the meantime is
  * never touched.
  */
-export const removeAgent = (db: Db, name: string, key?: string, own?: Identity): Unregistered =>
+export const removeAgent = (db: Db, account: AccountId, name: string, key?: string, own?: Identity): Unregistered =>
   db.transaction((): Unregistered => {
     const row = (
       own
         ? db
-            .prepare("SELECT id, name, key_hash FROM agents WHERE id = ? AND registered_at = ? AND instance IS ? AND removed_at IS NULL")
-            .get(own.id, own.registeredAt, own.instance)
-        : db.prepare("SELECT id, name, key_hash FROM agents WHERE name = ? AND removed_at IS NULL").get(name)
+            .prepare(
+              "SELECT id, name, key_hash FROM agents WHERE account_id = ? AND id = ? AND registered_at = ? AND instance IS ? AND removed_at IS NULL",
+            )
+            .get(account, own.id, own.registeredAt, own.instance)
+        : db.prepare("SELECT id, name, key_hash FROM agents WHERE account_id = ? AND name = ? AND removed_at IS NULL").get(account, name)
     ) as { id: number; name: string; key_hash: string | null } | undefined;
     if (!row) throw new ToolError(own ? NOT_REGISTERED : `No agent named '${name}'.`);
     if (row.key_hash !== null && !own) {
