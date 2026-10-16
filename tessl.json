@@ -32,6 +32,12 @@
       "environment": "factory-memory-cp-prod-check",
       "agent": "claude",
       "model": "claude-opus-5-5"
+    },
+    "planner": {
+      "skill": "file:tessl-factory#planner",
+      "environment": "factory-memory-cp-implement",
+      "agent": "claude",
+      "model": "claude-opus-5-5"
     }
   },
   "triggers": {
@@ -166,6 +172,12 @@
       "cron": "17 7 * * *",
       "timezone": "UTC",
       "description": "Daily e2e check of the live server; files or comments on one prod-check issue in COL when it fails"
+    },
+    "planner": {
+      "action": "planner",
+      "cron": "43 6 * * *",
+      "timezone": "UTC",
+      "description": "Daily planner: files and delegates up to two COL tickets from DIRECTION.md and open issues; on Mondays posts the weekly summary"
     }
   }
 }
