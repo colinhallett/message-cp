@@ -35,26 +35,30 @@ run the check and do not write to Linear.
    writing to Linear: that is the factory failing, not the server.
 
    ```bash
-   rm -rf /tmp/prod-check
-   git clone --quiet --depth 1 --branch main "$(git remote get-url origin)" /tmp/prod-check
-   git -C /tmp/prod-check rev-parse HEAD
+   CHECK_DIR=$(mktemp -d /tmp/prod-check.XXXXXX); echo "$CHECK_DIR"
+   git clone --quiet --depth 1 --branch main "$(git remote get-url origin)" "$CHECK_DIR/main"
+   git -C "$CHECK_DIR/main" rev-parse HEAD
    ```
 
+   Every path below is under this run's own `$CHECK_DIR` (the path it
+   printed; set it again in each new shell). A run that overlaps another, a
+   slow check or one triggered by hand, never touches its checkout or output.
+
 3. Install with `npm ci --ignore-scripts --no-audit --no-fund` in
-   `/tmp/prod-check`. The check needs only the MCP client, and the sandbox has
+   `$CHECK_DIR/main`. The check needs only the MCP client, and the sandbox has
    no `make` to build `better-sqlite3`. If the install fails, that is a
    failure with the step `npm ci --ignore-scripts`.
 4. Run the check and keep its output and exit code:
 
    ```bash
-   cd /tmp/prod-check
-   npm run e2e -- --url "$MEMORY_CP_URL" > /tmp/prod-check.out 2>&1; echo $? > /tmp/prod-check.code
+   cd "$CHECK_DIR/main"
+   npm run e2e -- --url "$MEMORY_CP_URL" > "$CHECK_DIR/out" 2>&1; echo $? > "$CHECK_DIR/code"
    ```
 
 Exit code 0 is a pass. Any other code is a failure. Nothing else counts:
 not the output, not your opinion of the server.
 
-The failed step is taken from the **last** line of `/tmp/prod-check.out` that
+The failed step is taken from the **last** line of `$CHECK_DIR/out` that
 starts `FAIL ` (an earlier one may be `FAIL cleanup`). Report only the step
 name: the text after `FAIL ` up to the first `: `. Never the rest of that
 line, which can quote a message body or the server's error text. If the rest
@@ -102,6 +106,13 @@ If there is more than one, use the oldest and say so in the run output.
   - no `assigneeId` and no `delegateId`. What to build is for the planner and
     the owner to decide.
 
+  Then run the lookup again. Another run may have filed one at the same
+  time. If an open `prod-check` issue older than yours exists, comment your
+  report on the oldest and cancel yours with `issueUpdate(id, input:
+  {stateId})`, using the team's state of type `canceled` with the lowest
+  `position`.
+  Each failed run then leaves one open issue, however runs overlap.
+
 The report, used as the issue description or the comment:
 
 ```text
@@ -112,8 +123,14 @@ The hourly prod check failed.
 - Exit code: <code>
 - Time: <time>
 - main: <commit>
-- Server: <MEMORY_CP_URL without any path>
+- Server: <origin>
 ```
+
+`<origin>` is the output of
+`node -e 'try { console.log(new URL(process.env.MEMORY_CP_URL).origin) } catch { console.log("unparseable") }'`:
+scheme, host and port only, never a user, password, path, query or fragment.
+Write that, not `MEMORY_CP_URL`, even when the check failed because the URL
+was rejected.
 
 That is all it contains. Do not paste the FAIL line, the rest of the e2e output, any message
 body, the environment, or the token.
