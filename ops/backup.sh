@@ -14,9 +14,11 @@ set -euo pipefail
 say() { echo "memory-cp-backup: $*" >&2; }
 fail() { say "$*"; exit 1; }
 
-command -v sqlite3 >/dev/null || fail "sqlite3 is not installed"
-command -v curl >/dev/null || fail "curl is not installed"
+for tool in sqlite3 gzip curl; do
+  command -v "$tool" >/dev/null || fail "$tool is not installed"
+done
 
+[ -n "${MEMORY_CP_DB:-}" ] || [ -n "${HOME:-}" ] || fail "set MEMORY_CP_DB, or User= in the unit so HOME is set"
 db="${MEMORY_CP_DB:-$HOME/.memory-cp/db.sqlite}"
 [ -f "$db" ] || fail "no database at $db"
 # Run as the database's owner: sqlite3 may create the -wal and -shm files, and ones owned by another user lock the server out.
@@ -32,7 +34,9 @@ fi
 [ -r "$url_file" ] || fail "cannot read the upload URL file $url_file"
 url="$(tr -d '[:space:]' <"$url_file")"
 # Checked so it can go into curl's config safely; the message names the file, never the URL.
-[[ "$url" =~ ^https?://[^\"\\]+/$ ]] || fail "$url_file must hold one http(s) URL ending in /"
+# Plain http is allowed only to this machine, for testing: the URL's path is the credential.
+[[ "$url" =~ ^(https://|http://(127\.0\.0\.1|localhost)[:/])[^\"\\]+/$ ]] ||
+  fail "$url_file must hold one https URL ending in /"
 
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
@@ -47,7 +51,7 @@ check="$(sqlite3 -bail "$snap" "PRAGMA integrity_check;")" || fail "integrity ch
 gzip -9 -c "$snap" >"$work/$name"
 size="$(wc -c <"$work/$name")"
 
-# The URL reaches curl on stdin as config, so it is not in the process list; curl's own errors do not print the path.
+# The URL reaches curl on stdin as config, so it is not in the process list; curl's own errors do not print the URL (its path is the credential).
 printf 'url = "%s%s"\n' "$url" "$name" |
   curl --config - --silent --show-error --fail --retry 3 --max-time 600 --upload-file "$work/$name" --output /dev/null ||
   fail "upload of $name failed"

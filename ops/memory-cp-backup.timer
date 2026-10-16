@@ -3,7 +3,7 @@ Description=Back up the memory-cp database nightly at 02:30 UTC
 
 [Timer]
 OnCalendar=*-*-* 02:30:00 UTC
-# A night missed while the server was down runs at the next boot.
+# A night missed while the machine was off runs at the next boot.
 Persistent=true
 
 [Install]
