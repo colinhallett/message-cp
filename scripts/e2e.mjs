@@ -38,7 +38,8 @@ const usage = () => {
 const args = process.argv.slice(2);
 if (args.length !== 0 && (args.length !== 2 || args[0] !== "--url")) usage();
 /**
- * The live server's base URL, without /mcp. Plain http is accepted only for a loopback host, so the token never
+ * The live server's base URL, without /mcp. Plain http is accepted only for a loopback address (not the name
+ * localhost, which a resolver may send elsewhere), so the token never
  * crosses a network in the clear; credentials, a query or a fragment in the URL are refused rather than printed.
  */
 const liveUrl = (() => {
@@ -49,9 +50,9 @@ const liveUrl = (() => {
   } catch {
     usage();
   }
-  const loopback = ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname);
+  const loopback = /^127(\.\d{1,3}){3}$/.test(url.hostname) || url.hostname === "[::1]";
   if (url.protocol !== "https:" && !(url.protocol === "http:" && loopback)) {
-    console.error("e2e: --url must be https (plain http only for localhost, 127.0.0.1 or [::1]): the token would cross the network in the clear");
+    console.error("e2e: --url must be https (plain http only for 127.x.x.x or [::1]): the token would cross the network in the clear");
     process.exit(2);
   }
   if (url.username || url.password || url.search || url.hash) {
@@ -85,7 +86,10 @@ async function startLocal() {
   const exited = new Promise((resolve) => child.once("exit", resolve));
   const stop = async () => {
     if (child.exitCode === null && child.signalCode === null) child.kill("SIGTERM");
+    // The server waits for open connections before it exits; one left by a stalled request must not hold the run.
+    const kill = setTimeout(() => child.kill("SIGKILL"), 5000);
     await exited;
+    clearTimeout(kill);
     rmSync(dir, { recursive: true, force: true });
   };
   let stderr = "";
@@ -304,6 +308,8 @@ async function main() {
     process.exit(1);
   }
   console.log("all checks passed");
+  // A request abandoned at its deadline may still be open; it must not keep the process alive.
+  process.exit(0);
 }
 
 await main();

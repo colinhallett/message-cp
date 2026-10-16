@@ -54,7 +54,7 @@ MEMORY_CP_HTTP_TOKEN=<long random secret> node dist/cli.js serve --port 8787
 
 `npm run e2e` (after `npm run build`) starts `dist/cli.js serve` on a free port with a temporary database and a generated token, then checks it the way remote agents use it: no token or a wrong token gets 401; two MCP clients register over streamable HTTP; `GET /wait` has no mail for the second agent, then answers 200 soon after the first sends it a message; `read_inbox` returns that message and `/wait` stops reporting mail; both agents unregister and `list_agents` no longer shows them. It stops the server and exits 0, or names the failed step and exits 1. Bad usage, or `--url` without `MEMORY_CP_HTTP_TOKEN`, exits 2 before any check runs.
 
-`MEMORY_CP_HTTP_TOKEN=<token> npm run e2e -- --url https://memory.example.com` runs the same checks against a running server. The URL must be `https` (plain `http` only for a loopback host) and carry no credentials, query or fragment. Its agents are named `e2e-<random>-a` and `-b` and are unregistered before it exits, even after a failure. It needs only the runtime dependencies, and it never prints the token.
+`MEMORY_CP_HTTP_TOKEN=<token> npm run e2e -- --url https://memory.example.com` runs the same checks against a running server. The URL must be `https` (plain `http` only for a loopback address, `127.x.x.x` or `[::1]`) and carry no credentials, query or fragment. Its agents are named `e2e-<random>-a` and `-b` and are unregistered before it exits, even after a failure. It needs only the runtime dependencies, and it never prints the token.
 
 Add it to Claude Code:
 
