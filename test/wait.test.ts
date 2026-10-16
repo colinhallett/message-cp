@@ -27,8 +27,8 @@ afterEach(() => {
 
 /**
  * Starts `memory-cp wait <name>` as its own process on the test database. Starting src/cli.ts
- * through tsx takes ~0.4 s alone but can pass 5 s while the whole suite runs, so the tests that
- * timed out under that load set their own timeout instead of vitest's default 5 s.
+ * through tsx takes ~0.4 s on its own but can exceed 5 s while the full suite runs, so the two
+ * tests that wait for mail set a 20 s timeout; they timed out under that load at vitest's default.
  */
 function startWait(name: string) {
   const child = spawn(tsx, [join(root, "src/cli.ts"), "wait", name], {
