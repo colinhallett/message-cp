@@ -23,7 +23,7 @@ The server deploys itself. Every two minutes `memory-cp-deploy.timer` runs `depl
   deploy.lock           flock(1) lock: two runs never overlap
   build-home/           HOME and npm cache for builds (memory-cp-build's)
   check-home/           HOME and npm cache for the check (memory-cp's)
-/etc/memory-cp.env      MEMORY_CP_HTTP_TOKEN, MEMORY_CP_PUBLIC_URL, MEMORY_CP_DB (root, 0600)
+/etc/memory-cp.env      MEMORY_CP_HTTP_TOKEN, MEMORY_CP_PUBLIC_URL, MEMORY_CP_DB, and the MEMORY_CP_GITHUB_* sign-in settings (root, 0600)
 ```
 
 The database (`MEMORY_CP_DB`) and `/etc/memory-cp.env` are outside `releases/`, and no deploy script writes them; `deploy.sh` refuses to run if `MEMORY_CP_DB` points inside a release. The token is read from `/etc/memory-cp.env` by root and given to the check in its environment, never on a command line, and nothing prints it. Builds run as `memory-cp-build`, a user that can read neither the token nor the database, so a dependency's install script cannot either; the check runs as `memory-cp`, the server's user. Everything `deploy.sh` prints goes to the journal: `journalctl -u memory-cp-deploy`.
@@ -82,6 +82,17 @@ As root, on a machine with Node 22.12 or later, git, curl, `flock` and `setpriv`
    ```
 
    Then edit the token and URL in place. An existing file must also be `root:root` and `0600`: `chown root:root /etc/memory-cp.env && chmod 600 /etc/memory-cp.env`. `MEMORY_CP_PUBLIC_URL` is the https URL clients use, without `/mcp`; the check runs against it, through Caddy.
+
+   To turn on [sign-in with GitHub](../README.md#sign-in-with-github), first create a GitHub OAuth App (GitHub → Settings → Developer settings → OAuth Apps → New OAuth App) with the homepage URL set to `MEMORY_CP_PUBLIC_URL` and the **Authorization callback URL** set to `MEMORY_CP_PUBLIC_URL` followed by `/oauth/github/callback`, and generate a client secret. Then add to the same file:
+
+   ```sh
+   MEMORY_CP_GITHUB_CLIENT_ID=the-oauth-app-client-id
+   MEMORY_CP_GITHUB_CLIENT_SECRET=the-oauth-app-client-secret
+   MEMORY_CP_GITHUB_ALLOWED_LOGINS=owner-login,friend-login
+   MEMORY_CP_OWNER_GITHUB_LOGIN=owner-login
+   ```
+
+   and restart the server (`systemctl restart memory-cp.service`). It is off unless the id, the secret and `MEMORY_CP_PUBLIC_URL` are all set; `journalctl -u memory-cp -n 5` shows `sign-in with GitHub is on` and the callback URL it expects. Changing the allowlist needs a restart too. `MEMORY_CP_HTTP_TOKEN` stays required, and `npm run e2e` keeps checking with it.
 
 5. The script and units, from a checkout of this repository:
 

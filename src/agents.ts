@@ -120,12 +120,14 @@ export const registerWithIdentity = (
     const now = Date.now();
     const row = db
       .prepare(
-        `INSERT INTO agents (account_id, name, bio, registered_at, last_seen, key_hash, instance) VALUES (?, ?, ?, ?, ?, ?, ?)
+        `INSERT INTO agents (account_id, name, bio, registered_at, last_seen, key_hash, instance, wait_key_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
          -- Reached on a conflict only after the key check above passed. Another account's agent of the same name never conflicts.
-         ON CONFLICT(account_id, name) DO UPDATE SET bio = COALESCE(?, bio), last_seen = excluded.last_seen, key_hash = excluded.key_hash
+         ON CONFLICT(account_id, name) DO UPDATE SET bio = COALESCE(?, bio), last_seen = excluded.last_seen, key_hash = excluded.key_hash,
+           -- A takeover with the same generated key keeps it; one with a chosen key leaves wait_key_hash unequal to key_hash.
+           wait_key_hash = COALESCE(excluded.wait_key_hash, wait_key_hash)
          RETURNING id, name, bio, registered_at, last_seen, instance`,
       )
-      .get(account, name, bio ?? "", now, now, keyHash, randomBytes(16).toString("hex"), bio ?? null) as Row & IdentityRow;
+      .get(account, name, bio ?? "", now, now, keyHash, randomBytes(16).toString("hex"), issued ? keyHash : null, bio ?? null) as Row & IdentityRow;
     // A caller that supplied its own key already has it.
     return { result: issued ? { ...toAgent(row), key: effectiveKey } : toAgent(row), identity: toIdentity(row) };
   }).immediate();
@@ -242,3 +244,17 @@ export const removeAgent = (db: Db, account: AccountId, name: string, key?: stri
     const keptMessages = (db.prepare("SELECT COUNT(*) AS n FROM messages WHERE recipient_id = ?").get(row.id) as { n: number }).n;
     return { removed: row.name, keptMessages };
   }).immediate();
+
+/**
+ * The account of the one live agent named `name` whose key is `key`, for `/wait` from an agent that has no account
+ * token. Only a key `register` generated counts: a key the caller chose may be one anyone could guess, and /wait is
+ * open to every account. `wait_key_hash` must still equal `key_hash`, so a key replaced since, by any release, or a
+ * removed agent, does not count. Undefined when no agent matches, or when more than one does.
+ */
+export function accountForAgentKey(db: Db, name: string, key: string): AccountId | undefined {
+  if (key.length < 1 || key.length > MAX_KEY_LENGTH) return undefined;
+  const rows = db
+    .prepare("SELECT account_id FROM agents WHERE name = ? AND key_hash = ? AND wait_key_hash = key_hash AND removed_at IS NULL LIMIT 2")
+    .all(name, hashKey(key)) as { account_id: number }[];
+  return rows.length === 1 ? rows[0].account_id : undefined;
+}

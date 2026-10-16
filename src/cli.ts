@@ -3,6 +3,7 @@ import { DEFAULT_HTTP_HOST, DEFAULT_HTTP_PORT, startHttp } from "./http.js";
 import { AccountError, addAccount, addToken, listAccounts, revokeToken } from "./accounts.js";
 import { OWNER_ACCOUNT, openDb } from "./db.js";
 import { unreadSummary } from "./messages.js";
+import { CALLBACK_PATH, oauthConfigFromEnv } from "./oauth.js";
 import { formatUnread } from "./wait.js";
 
 const [command, ...rest] = process.argv.slice(2);
@@ -29,8 +30,19 @@ if (command === "serve") {
   const host = opts.get("--host") ?? DEFAULT_HTTP_HOST;
   const publicUrl = opts.get("--public-url");
   if (publicUrl !== undefined && (!/^https?:\/\/[^\s'?#]+$/.test(publicUrl) || /\/mcp\/*$/.test(publicUrl))) usage();
-  const http = await startHttp(openDb(), { token, host, port, publicUrl });
+  const oauth = oauthConfigFromEnv(process.env, publicUrl);
+  const http = await startHttp(openDb(), { token, host, port, publicUrl, oauth });
   console.error(`memory-cp serve: listening on http://${host}:${http.port}/mcp`);
+  if (oauth) {
+    const allowed = oauth.allowedLogins.size;
+    console.error(
+      `memory-cp serve: sign-in with GitHub is on for ${allowed} allowed ${allowed === 1 ? "login" : "logins"}; the GitHub OAuth App's callback URL is ${oauth.publicUrl}${CALLBACK_PATH}`,
+    );
+  } else if (process.env.MEMORY_CP_GITHUB_CLIENT_ID || process.env.MEMORY_CP_GITHUB_CLIENT_SECRET) {
+    console.error(
+      "memory-cp serve: sign-in with GitHub is off: it needs MEMORY_CP_GITHUB_CLIENT_ID, MEMORY_CP_GITHUB_CLIENT_SECRET and --public-url",
+    );
+  }
   const shutdown = () => void http.close().then(() => process.exit(0));
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
