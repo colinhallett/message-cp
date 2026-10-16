@@ -66,6 +66,8 @@ function migrate(db: Db): void {
   // A removed agent keeps its row, so the messages addressed to it stay and its id is never reused.
   addColumn(db, "removed_at", "INTEGER");
   addColumn(db, "removed_name", "TEXT");
+  // Broadcast reads every live agent in name order; this keeps it from scanning the removed rows too.
+  db.exec("CREATE INDEX IF NOT EXISTS agents_live ON agents (name) WHERE removed_at IS NULL");
   db.exec(DROP_REMOVED);
 }
 
