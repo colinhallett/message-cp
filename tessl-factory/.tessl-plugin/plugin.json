@@ -4,6 +4,7 @@
   "private": true,
   "skills": [
     "skills/pr-shepherd-session",
-    "skills/chat-test"
+    "skills/chat-test",
+    "skills/prod-check"
   ]
 }
