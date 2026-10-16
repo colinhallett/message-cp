@@ -81,6 +81,18 @@ describe("memory-cp wait", () => {
   });
 });
 
+describe("memory-cp hive", () => {
+  it("is an unknown command", async () => {
+    const child = spawn(tsx, [join(root, "src/cli.ts"), "hive", "--config", "hive.json"], {
+      env: { ...process.env, MEMORY_CP_DB: dbFile },
+    });
+    let stderr = "";
+    child.stderr.on("data", (d) => (stderr += d));
+    expect(await new Promise((res) => child.on("close", res))).toBe(2);
+    expect(stderr).toContain("unknown command 'hive'");
+  });
+});
+
 describe("register result", () => {
   it("returns the wait command for the agent, next to the existing fields", async () => {
     process.env.MEMORY_CP_DB = dbFile;

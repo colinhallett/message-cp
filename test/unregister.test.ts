@@ -64,7 +64,7 @@ describe("unregister", () => {
   it("with its own name and key removes the caller the same way", async () => {
     const a = await agent("alice");
     expect((await call(a.client, "unregister", { name: "alice", key: a.key })).isError).toBe(false);
-    expect((await call(a.client, "remember", { text: "x" })).text).toMatch(REGISTER_FIRST);
+    expect((await call(a.client, "read_inbox")).text).toMatch(REGISTER_FIRST);
   });
 
   it("removes another agent only with its key", async () => {
@@ -118,39 +118,6 @@ describe("unregister", () => {
     expect((await call(c.client, "read_inbox", { unread_only: false })).json).toEqual([]);
     expect((await call(b.client, "read_inbox")).json).toHaveLength(1);
   });
-
-  it("keeps memories and posted tasks, and releases claimed tasks", async () => {
-    const a = await agent("alice");
-    const b = await agent("bob");
-    await call(a.client, "remember", { text: "shared knowledge" });
-    const posted = (await call(a.client, "post_task", { title: "mine", details: "d" })).json.id;
-    const theirs = (await call(b.client, "post_task", { title: "bobs", details: "d" })).json.id;
-    await call(a.client, "claim_task", { id: theirs });
-    const done = (await call(b.client, "post_task", { title: "finished", details: "d" })).json.id;
-    await call(a.client, "claim_task", { id: done });
-    await call(a.client, "complete_task", { id: done, result: "ok" });
-
-    await call(a.client, "unregister");
-
-    expect(count("SELECT COUNT(*) AS n FROM memories WHERE author = 'alice'")).toBe(1);
-    expect((await call(b.client, "get_task", { id: posted })).json.poster).toBe("alice");
-    const released = (await call(b.client, "get_task", { id: theirs })).json;
-    expect(released).toMatchObject({ status: "open" });
-    expect(released.assignee ?? null).toBeNull();
-    const finished = (await call(b.client, "get_task", { id: done })).json;
-    expect(finished).toMatchObject({ status: "done", assignee: "alice" });
-    expect((await call(b.client, "claim_task", { id: theirs })).isError).toBe(false);
-  });
-
-  it("lets a task be completed after its poster was removed, without a completion message", async () => {
-    const a = await agent("alice");
-    const b = await agent("bob");
-    const id = (await call(a.client, "post_task", { title: "t", details: "d" })).json.id;
-    await call(b.client, "claim_task", { id });
-    await call(a.client, "unregister");
-    expect((await call(b.client, "complete_task", { id, result: "done" })).isError).toBe(false);
-    expect(count("SELECT COUNT(*) AS n FROM messages")).toBe(0);
-  });
 });
 
 describe("a session whose agent was removed", () => {
@@ -161,8 +128,8 @@ describe("a session whose agent was removed", () => {
     await call(other, "register", { name: "alice", bio: "x", key: a.key });
     expect((await call(a.client, "read_inbox")).isError).toBe(false); // a takeover keeps the registration
     await call(other, "unregister");
-    expect((await call(a.client, "remember", { text: "x" })).text).toMatch(REGISTER_FIRST);
-    expect((await call(other, "remember", { text: "x" })).text).toMatch(REGISTER_FIRST);
+    expect((await call(a.client, "read_inbox")).text).toMatch(REGISTER_FIRST);
+    expect((await call(other, "read_inbox")).text).toMatch(REGISTER_FIRST);
   });
 
   it("never acts as a different agent registered under the same name", async () => {
@@ -172,10 +139,9 @@ describe("a session whose agent was removed", () => {
     const newcomer = await agent("alice");
     expect(newcomer.key).not.toBe(a.key);
     await call(newcomer.client, "send_message", { to: "bob", body: "from the new alice" });
-    for (const tool of ["read_inbox", "remember", "list_tasks"]) {
-      expect((await call(a.client, tool, tool === "remember" ? { text: "x" } : {})).text).toMatch(REGISTER_FIRST);
-    }
-    expect(count("SELECT COUNT(*) AS n FROM memories")).toBe(0);
+    expect((await call(a.client, "read_inbox")).text).toMatch(REGISTER_FIRST);
+    expect((await call(a.client, "send_message", { to: "bob", body: "x" })).text).toMatch(REGISTER_FIRST);
+    expect(count("SELECT COUNT(*) AS n FROM messages")).toBe(1);
   });
 
   it("is not fooled by a new registration that reuses the id and the timestamp", async () => {
@@ -214,90 +180,5 @@ describe("a session whose agent was removed", () => {
     const b = await agent("bob");
     await call(b.client, "unregister", { name: "worker", key: "k" });
     expect((await call(w, "read_inbox")).text).toMatch(REGISTER_FIRST);
-  });
-});
-
-describe("forget_memories", () => {
-  async function seed() {
-    const a = await agent("alice");
-    const b = await agent("bob");
-    const ids: Record<string, number> = {};
-    const add = async (c: Client, key: string, text: string, tags: string[]) => {
-      ids[key] = (await call(c, "remember", { text, tags })).json.id;
-    };
-    await add(a.client, "a1", "deploy notes for staging", ["ops", "old"]);
-    await add(a.client, "a2", "deploy notes for prod", ["ops"]);
-    await add(b.client, "b1", "lunch plans", ["old"]);
-    await add(b.client, "b2", "staging is flaky", ["ops", "old"]);
-    return { a, b, ids };
-  }
-  const recallIds = async (c: Client, args: Record<string, unknown>) =>
-    (await call(c, "recall", { ...args, limit: 100 })).json.map((m: { id: number }) => m.id).sort();
-
-  it("previews by default and deletes nothing", async () => {
-    const { b, ids } = await seed();
-    const res = await call(b.client, "forget_memories", { tags: ["old"] });
-    expect(res.json).toEqual({ dryRun: true, matched: 3, ids: [ids.b2, ids.b1, ids.a1] });
-    expect(count("SELECT COUNT(*) AS n FROM memories")).toBe(4);
-  });
-
-  it("deletes exactly what recall finds with the same filters, and recall no longer finds them", async () => {
-    const { b, ids } = await seed();
-    const filters = [
-      { tags: ["ops", "old"] },
-      { author: "ALICE" },
-      { query: "staging" },
-      { query: "staging", tags: ["old"], author: "bob" },
-    ];
-    for (const f of filters) {
-      const preview = await call(b.client, "forget_memories", f);
-      expect(preview.json.ids.slice().sort()).toEqual(await recallIds(b.client, f));
-    }
-    const res = await call(b.client, "forget_memories", { tags: ["old"], dry_run: false });
-    expect(res.json).toEqual({ dryRun: false, deleted: 3 });
-    expect(await recallIds(b.client, { tags: ["old"] })).toEqual([]);
-    expect(await recallIds(b.client, { query: "staging" })).toEqual([]); // the full-text index too
-    expect(await recallIds(b.client, {})).toEqual([ids.a2]);
-    expect(count("SELECT COUNT(*) AS n FROM memory_tags WHERE tag = 'old'")).toBe(0);
-  });
-
-  it("has no paging limit and lists at most 100 ids in a preview", async () => {
-    const a = await agent("alice");
-    for (let i = 0; i < 130; i++) await call(a.client, "remember", { text: `bulk ${i}`, tags: ["bulk"] });
-    const preview = await call(a.client, "forget_memories", { tags: ["bulk"] });
-    expect(preview.json.matched).toBe(130);
-    expect(preview.json.ids).toHaveLength(100);
-    expect((await call(a.client, "forget_memories", { tags: ["bulk"], dry_run: false })).json.deleted).toBe(130);
-    expect(count("SELECT COUNT(*) AS n FROM memories")).toBe(0);
-  });
-
-  it("refuses to run without a filter that survives clean-up", async () => {
-    const { a } = await seed();
-    for (const args of [{}, { tags: [] }, { query: "" }, { query: "   " }, { tags: [], query: " \n " }]) {
-      for (const dry_run of [true, false]) {
-        const res = await call(a.client, "forget_memories", { ...args, dry_run });
-        expect(res.isError).toBe(true);
-      }
-    }
-    expect(count("SELECT COUNT(*) AS n FROM memories")).toBe(4);
-  });
-
-  it("matches nothing and deletes nothing when no memory matches", async () => {
-    const { a } = await seed();
-    expect((await call(a.client, "forget_memories", { tags: ["none"], dry_run: false })).json).toEqual({ dryRun: false, deleted: 0 });
-    expect(count("SELECT COUNT(*) AS n FROM memories")).toBe(4);
-  });
-
-  it("needs a registered session", async () => {
-    await seed();
-    const anon = await connect();
-    const res = await call(anon, "forget_memories", { tags: ["old"], dry_run: false });
-    expect(res.text).toMatch(REGISTER_FIRST);
-    expect(count("SELECT COUNT(*) AS n FROM memories")).toBe(4);
-  });
-
-  it("leaves forget working for single ids", async () => {
-    const { a, ids } = await seed();
-    expect((await call(a.client, "forget", { id: ids.a1 })).json).toEqual({ forgotten: ids.a1 });
   });
 });
