@@ -59,8 +59,12 @@ const MAX_FORM_BYTES = 16 * 1024;
 const MAX_REDIRECT_URIS = 5;
 const MAX_URI_LENGTH = 512;
 const GITHUB_TIMEOUT_MS = 10_000;
-/** Binds a sign-in to the browser that started it, so a link to someone else's /authorize cannot sign them in. */
-const BROWSER_COOKIE = "memory_cp_signin";
+/**
+ * Binds the GitHub leg of a sign-in to the browser that started it, so GitHub's answer for one person's sign-in,
+ * handed to another browser, does nothing. One cookie per sign-in, named after a prefix of its state, so two at
+ * once in one browser do not overwrite each other.
+ */
+const browserCookie = (githubState: string) => `memory_cp_signin_${githubState.slice(0, 8)}`;
 export const CALLBACK_PATH = "/oauth/github/callback";
 const NAME_PATTERN = /^[A-Za-z0-9_-]{1,32}$/;
 
@@ -338,7 +342,9 @@ export class OAuth {
     to.searchParams.set("redirect_uri", this.callbackUrl);
     to.searchParams.set("state", githubState);
     to.searchParams.set("allow_signup", "false");
-    redirect(res, to.href, { "Set-Cookie": `${BROWSER_COOKIE}=${browser}; ${this.cookieAttributes}; Max-Age=${PENDING_TTL_MS / 1000}` });
+    redirect(res, to.href, {
+      "Set-Cookie": `${browserCookie(githubState)}=${browser}; ${this.cookieAttributes}; Max-Age=${PENDING_TTL_MS / 1000}`,
+    });
   }
 
   /** Who the GitHub code belongs to, as GitHub's user id and current login. GitHub's token is dropped here. */
@@ -369,7 +375,7 @@ export class OAuth {
    * The account of GitHub user `id`: the one already tied to that id, else the owner's for the owner's login if no
    * GitHub user has it yet, else a new one. Called only for an allowed login.
    */
-  private accountOf(id: number, login: string): AccountId {
+  private accountForGithubUser(id: number, login: string): AccountId {
     return this.db.transaction((): AccountId => {
       const now = Date.now();
       const linked = this.db.prepare("SELECT account_id FROM github_users WHERE github_id = ?").get(id) as { account_id: number } | undefined;
@@ -381,10 +387,11 @@ export class OAuth {
       const ownerFree = !this.db.prepare("SELECT 1 FROM github_users WHERE account_id = ?").get(OWNER_ACCOUNT);
       if (this.config.ownerLogin === login.toLowerCase() && ownerFree) account = OWNER_ACCOUNT;
       else {
-        // Named after the login if that is free, so `account list` is readable; the GitHub id otherwise.
+        // Named after the login if that is free, so `account list` is readable; after the GitHub id otherwise, with a
+        // suffix in the unlikely case the operator already made an account of that name.
         const taken = (name: string) => !!this.db.prepare("SELECT 1 FROM accounts WHERE name = ?").get(name);
-        const name = NAME_PATTERN.test(login) && !taken(login) ? login : `github-${id}`;
-        if (taken(name)) throw new Error(`account name ${name} is taken`);
+        let name = NAME_PATTERN.test(login) && !taken(login) ? login : `github-${id}`;
+        for (let n = 2; taken(name); n++) name = `github-${id}-${n}`;
         account = (this.db.prepare("INSERT INTO accounts (name, created_at) VALUES (?, ?) RETURNING id").get(name, now) as { id: number }).id;
       }
       this.db.prepare("INSERT INTO github_users (github_id, account_id, login, linked_at) VALUES (?, ?, ?, ?)").run(id, account, login, now);
@@ -403,7 +410,10 @@ export class OAuth {
           | undefined)
       : undefined;
     if (!pending) return page(res, 400, "this sign-in is unknown or has expired. Start again from your MCP client.");
-    const browser = cookie(req, BROWSER_COOKIE);
+    const name = browserCookie(githubState!);
+    // The cookie has done its job either way.
+    res.setHeader("Set-Cookie", `${name}=; ${this.cookieAttributes}; Max-Age=0`);
+    const browser = cookie(req, name);
     if (!browser || !sameHash(hash(browser), pending.browser_hash)) {
       return page(res, 400, "this sign-in was started in another browser. Start again from your MCP client.");
     }
@@ -420,7 +430,7 @@ export class OAuth {
     if (!this.config.allowedLogins.has(user.login.toLowerCase())) {
       return fail("access_denied", `The GitHub login ${user.login} is not allowed on this server.`);
     }
-    const account = this.accountOf(user.id, user.login);
+    const account = this.accountForGithubUser(user.id, user.login);
     const issued = secret();
     const now = Date.now();
     const stored = this.db.transaction(() => {
@@ -435,29 +445,31 @@ export class OAuth {
     const to = new URL(pending.redirect_uri);
     to.searchParams.set("code", issued);
     if (pending.client_state !== null) to.searchParams.set("state", pending.client_state);
-    redirect(res, to.href, { "Set-Cookie": `${BROWSER_COOKIE}=; ${this.cookieAttributes}; Max-Age=0` });
+    redirect(res, to.href);
   }
 
-  /** A new access and refresh token for `account`, replacing those of `grant` when it is a refresh. */
+  /**
+   * A new access and refresh token for `account`, replacing those of `grant` when it is a refresh. A refresh never
+   * extends the sign-in: it ends REFRESH_TOKEN_TTL_MS after the person signed in with GitHub, and they sign in again.
+   */
   private issue(account: AccountId, clientId: string, grant?: number): Record<string, unknown> {
     const access = secret();
     const refresh = secret();
     const now = Date.now();
-    const args = [hash(access), now + ACCESS_TOKEN_TTL_MS, hash(refresh), now + REFRESH_TOKEN_TTL_MS];
     if (grant === undefined) {
       this.db
         .prepare(
           `INSERT INTO oauth_grants (account_id, client_id, access_hash, access_expires_at, refresh_hash, refresh_expires_at, created_at)
            VALUES (?, ?, ?, ?, ?, ?, ?)`,
         )
-        .run(account, clientId, ...args, now);
+        .run(account, clientId, hash(access), now + ACCESS_TOKEN_TTL_MS, hash(refresh), now + REFRESH_TOKEN_TTL_MS, now);
       this.db
         .prepare("DELETE FROM oauth_grants WHERE account_id = ? AND id NOT IN (SELECT id FROM oauth_grants WHERE account_id = ? ORDER BY id DESC LIMIT ?)")
         .run(account, account, MAX_GRANTS_PER_ACCOUNT);
     } else {
       this.db
-        .prepare("UPDATE oauth_grants SET access_hash = ?, access_expires_at = ?, refresh_hash = ?, refresh_expires_at = ? WHERE id = ?")
-        .run(...args, grant);
+        .prepare("UPDATE oauth_grants SET access_hash = ?, access_expires_at = MIN(?, refresh_expires_at), refresh_hash = ? WHERE id = ?")
+        .run(hash(access), now + ACCESS_TOKEN_TTL_MS, hash(refresh), grant);
     }
     return { access_token: access, token_type: "Bearer", expires_in: ACCESS_TOKEN_TTL_MS / 1000, refresh_token: refresh };
   }

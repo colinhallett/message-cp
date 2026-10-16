@@ -279,6 +279,11 @@ describe("sign-in with GitHub", () => {
     const mcp = (t: string) => fetch(`${base}/wait?agent=nobody`, { headers: { Authorization: `Bearer ${t}` } });
     expect((await mcp(first.access_token)).status).toBe(401);
     expect((await mcp(second.access_token)).status).toBe(404);
+    // A refresh does not make the sign-in last longer than the first one did.
+    const ends = () => (db.prepare("SELECT refresh_expires_at AS t FROM oauth_grants").get() as { t: number }).t;
+    const before = ends();
+    await tokenRequest({ grant_type: "refresh_token", client_id: clientId, refresh_token: second.refresh_token });
+    expect(ends()).toBe(before);
     // Another client cannot use it.
     const other = (await (await rawRegister()).json()) as { client_id: string };
     expect((await tokenRequest({ grant_type: "refresh_token", client_id: other.client_id, refresh_token: second.refresh_token })).status).toBe(400);
@@ -455,11 +460,18 @@ describe("waking an agent signed in with GitHub", () => {
   });
 
   it("refuses a name and key that two accounts both hold", async () => {
-    registerAgent(db, OWNER_ACCOUNT, "twin", "x", "same-key");
-    expect((await waitWithKey("twin", "same-key")).status).toBe(204);
+    const key = "k".repeat(64);
+    registerAgent(db, OWNER_ACCOUNT, "twin", "x", key);
+    expect((await waitWithKey("twin", key)).status).toBe(204);
     addAccount(db, "other");
-    registerAgent(db, 2, "twin", "y", "same-key");
-    expect((await waitWithKey("twin", "same-key")).status).toBe(401);
+    registerAgent(db, 2, "twin", "y", key);
+    expect((await waitWithKey("twin", key)).status).toBe(401);
+  });
+
+  it("does not take a key shorter than a generated one", async () => {
+    registerAgent(db, OWNER_ACCOUNT, "short", "x", "k");
+    sendMessage(db, OWNER_ACCOUNT, "short", "short", "x");
+    expect((await waitWithKey("short", "k")).status).toBe(401);
   });
 
   it("gives a waitCommand and instructions that read the key from the agent's file, and the command wakes", async () => {

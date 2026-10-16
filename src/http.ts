@@ -34,6 +34,8 @@ export interface HttpOptions {
 
 /** The header an agent signed in by OAuth sends its own key in on GET /wait, having no token that lasts. */
 export const AGENT_KEY_HEADER = "x-memory-cp-agent-key";
+/** The shortest key /wait accepts in that header: as long as the 64 hex characters `register` generates. */
+export const MIN_WAIT_KEY_LENGTH = 64;
 
 export interface HttpServer {
   server: Server;
@@ -183,17 +185,22 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
     }
   };
 
-  /** With sign-in on, an agent without a token may wait on itself alone, with its name and its own key. */
+  /**
+   * With sign-in on, an agent without a token may wait on itself alone, with its name and its own key. Anyone can
+   * try this, across every account, so only a key as long as a generated one counts: short keys an agent chose itself
+   * cannot be guessed here.
+   */
   const keyAccount = (req: IncomingMessage, path: string): AccountId | undefined => {
     const key = req.headers[AGENT_KEY_HEADER];
     if (!oauth || path !== "/wait" || typeof key !== "string" || req.headers.authorization !== undefined) return undefined;
+    if (key.length < MIN_WAIT_KEY_LENGTH) return undefined;
     const name = new URL(req.url ?? "", "http://x").searchParams.get("agent");
     return name ? accountForAgentKey(db, name, key) : undefined;
   };
 
   const handle = async (req: IncomingMessage, res: ServerResponse) => {
     const path = (req.url ?? "").split("?")[0];
-    // Sign-in's own endpoints are the only ones a request without a token can reach.
+    // Sign-in's own endpoints need no token; everything else does, but for an agent's /wait on itself with its key.
     if (oauth && (await oauth.handle(req, res, path))) return;
     // The token is the first thing a request meets, and decides the account everything after it acts as.
     const account = accountOf(db, req.headers.authorization, options.token, oauth) ?? keyAccount(req, path);
