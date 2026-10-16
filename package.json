@@ -6,7 +6,8 @@
   "scripts": {
     "build": "tsc",
     "start": "node dist/index.js",
-    "test": "vitest run"
+    "test": "vitest run",
+    "e2e": "node scripts/e2e.mjs"
   },
   "type": "module",
   "bugs": {
