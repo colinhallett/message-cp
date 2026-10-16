@@ -61,13 +61,17 @@ export class Session {
 }
 
 /** One server per session. */
-export function createServer(db: Db, session = new Session(OWNER_ACCOUNT), options: { remote?: boolean; publicUrl?: string } = {}): McpServer {
+export function createServer(
+  db: Db,
+  session = new Session(OWNER_ACCOUNT),
+  options: { remote?: boolean; publicUrl?: string; agentKeyWait?: boolean } = {},
+): McpServer {
   const remote = options.remote ?? false;
   session.attach(db);
   const account = session.account;
   const server = new McpServer(
     { name: "memory-cp", version: "0.1.0" },
-    { instructions: instructions(process.env, remote, options.publicUrl) },
+    { instructions: instructions(process.env, remote, options.publicUrl, options.agentKeyWait) },
   );
 
   // Wraps a tool: bumps last-seen for a registered session and turns ToolError into an error result.
@@ -101,7 +105,8 @@ export function createServer(db: Db, session = new Session(OWNER_ACCOUNT), optio
       const { result, identity } = registerWithIdentity(db, account, name, bio, key);
       session.bind(identity);
       if (!remote) return { ...result, waitCommand: waitCommand(result.name) };
-      return options.publicUrl ? { ...result, waitCommand: httpWaitCommand(options.publicUrl, result.name) } : result;
+      if (!options.publicUrl) return result;
+      return { ...result, waitCommand: httpWaitCommand(options.publicUrl, result.name, options.agentKeyWait) };
     }),
   );
 

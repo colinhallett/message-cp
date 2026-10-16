@@ -242,3 +242,16 @@ export const removeAgent = (db: Db, account: AccountId, name: string, key?: stri
     const keptMessages = (db.prepare("SELECT COUNT(*) AS n FROM messages WHERE recipient_id = ?").get(row.id) as { n: number }).n;
     return { removed: row.name, keptMessages };
   }).immediate();
+
+/**
+ * The account of the one live agent named `name` whose key is `key`, for `/wait` from an agent that has no account
+ * token. Undefined when no agent matches, or when more than one does: keys can be chosen by the caller, so two
+ * accounts can each hold the same name and key, and then neither can be told apart from the other.
+ */
+export function accountForAgentKey(db: Db, name: string, key: string): AccountId | undefined {
+  if (key.length < 1 || key.length > MAX_KEY_LENGTH) return undefined;
+  const rows = db
+    .prepare("SELECT account_id FROM agents WHERE name = ? AND key_hash = ? AND removed_at IS NULL LIMIT 2")
+    .all(name, hashKey(key)) as { account_id: number }[];
+  return rows.length === 1 ? rows[0].account_id : undefined;
+}
