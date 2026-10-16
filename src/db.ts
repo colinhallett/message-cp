@@ -1,6 +1,6 @@
 import Database from "better-sqlite3";
 import { randomBytes } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, existsSync, fsyncSync, mkdirSync, openSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -93,13 +93,24 @@ DROP TABLE IF EXISTS hive_runs;
 /** The copy of the database the accounts migration leaves next to it, taken just before it rebuilds `agents`. */
 export const preAccountsCopy = (path: string) => `${path}.before-accounts`;
 
+/** Flushes `path`, a file or a directory, to disk. */
+function fsyncPath(path: string): void {
+  const fd = openSync(path, "r");
+  try {
+    fsyncSync(fd);
+  } finally {
+    closeSync(fd);
+  }
+}
+
 /**
- * Copies the database at `path` to `preAccountsCopy(path)`, owner-only whatever the umask, unless that copy exists.
- * The copy is written under another name and renamed into place, so it is never seen half-written.
+ * Copies the database at `path` to `preAccountsCopy(path)`, owner-only whatever the umask, replacing any copy there:
+ * it runs only when the migration is about to happen, so an existing copy is stale or from a migration that never
+ * committed. The copy is written under another name, flushed, renamed into place and the directory flushed, so it is
+ * never seen half-written and is on disk before the rebuild can commit.
  */
 function copyBeforeAccounts(path: string): void {
   const copy = preAccountsCopy(path);
-  if (existsSync(copy)) return;
   const partial = `${copy}.${randomBytes(6).toString("hex")}.partial`;
   writeFileSync(partial, "", { mode: 0o600, flag: "wx" });
   try {
@@ -114,7 +125,9 @@ function copyBeforeAccounts(path: string): void {
       source.close();
     }
     chmodSync(partial, 0o600);
+    fsyncPath(partial);
     renameSync(partial, copy);
+    fsyncPath(dirname(copy));
   } catch (err) {
     rmSync(partial, { force: true });
     throw err;

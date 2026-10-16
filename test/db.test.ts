@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -176,6 +176,15 @@ describe("openDb", () => {
       db.close();
       openDb(file).close();
       expect(statSync(preAccountsCopy(file)).mtimeMs).toBe(first);
+    });
+
+    it("replaces a copy left from a migration that never committed", () => {
+      const file = oldDatabase();
+      writeFileSync(preAccountsCopy(file), "stale");
+      openDb(file).close();
+      const saved = new Database(preAccountsCopy(file), { readonly: true });
+      expect(saved.prepare("SELECT name FROM agents ORDER BY name").pluck().all()).toEqual(["alice", "Bob"]);
+      saved.close();
     });
 
     it("leaves a release from before accounts unable to register, rather than registering across accounts", () => {
