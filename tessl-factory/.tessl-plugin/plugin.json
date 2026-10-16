@@ -5,6 +5,7 @@
   "skills": [
     "skills/pr-shepherd-session",
     "skills/chat-test",
-    "skills/prod-check"
+    "skills/prod-check",
+    "skills/planner"
   ]
 }
