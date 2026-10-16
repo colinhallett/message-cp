@@ -1,0 +1,11 @@
+# One deploy run: see ops/deploy.sh. Started by memory-cp-deploy.timer; its output is in the journal.
+[Unit]
+Description=Deploy origin/main of memory-cp
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/memory-cp/deploy.sh
+# A build plus the check takes a minute or two; a hung one must not hold the lock for ever.
+TimeoutStartSec=15min
