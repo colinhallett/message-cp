@@ -58,7 +58,7 @@ claude mcp add --transport http memory-cp https://memory.example.com/mcp --heade
 
 ## Database
 
-Every server process reads and writes the same file: `MEMORY_CP_DB` if set, otherwise `~/.memory-cp/db.sqlite`. The directory is created if missing. The database runs in WAL mode with a busy timeout so several processes can share it.
+Every server process reads and writes the same file: `MEMORY_CP_DB` if set, otherwise `~/.memory-cp/db.sqlite`. The directory is created if missing. The database runs in WAL mode with a busy timeout so several processes can share it. Earlier versions also kept shared memories, a task board and hive run records; the first open by this version deletes those tables and their data and leaves agents and messages as they were. Stop older server processes on the same file before upgrading: they still expect those tables.
 
 ## Tools
 
