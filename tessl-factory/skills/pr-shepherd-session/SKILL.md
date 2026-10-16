@@ -3,9 +3,10 @@ name: pr-shepherd-session
 description: >-
   Stay with one pull request that Tessl opened for a Linear issue, from when it
   is labelled until it is merged or closed: answer review feedback, fix failing
-  checks and conflicts on the existing branch, and say when it is ready. Checks
-  the PR again every 90 seconds instead of waiting to be woken. Opens no new
-  pull request.
+  checks and conflicts on the existing branch, and squash-merge it once Code
+  Review approves its head and the tests pass on that head, or hand it to the
+  owner when it changes the factory's own files. Checks the PR again every 90
+  seconds instead of waiting to be woken. Opens no new pull request.
 ---
 
 # PR shepherd session
@@ -37,18 +38,19 @@ comment (see "Ending") and stop.
 ## Reading the record
 
 - **The PR:** `gh pr view <n> --json
-  number,state,headRefName,headRefOid,baseRefName,mergeable,labels,body,comments,reviews`
-  and every review thread with `gh api graphql` on `pullRequest {
-  reviewThreads(first: 100) { nodes { id isResolved comments(first: 100) {
-  nodes { author { login } body createdAt } } } pageInfo { hasNextPage
-  endCursor } } }`, paging until done. Check runs on the head: `gh pr checks
+  number,state,headRefName,headRefOid,baseRefName,mergeable,isCrossRepository,labels,body,comments,reviews`,
+  the changed files with `gh pr diff <n> --name-only`, and every review
+  thread with `gh api graphql` on `pullRequest { reviewThreads(first: 100) {
+  nodes { id isResolved comments(first: 100) { nodes { author { login } body
+  createdAt } } } pageInfo { hasNextPage endCursor } } }`, paging until done. Check runs on the head: `gh pr checks
   <n>`. If a read fails, treat this pass as having nothing to do and try again
   on the next one.
 - **The issue:** its id is in the PR body's `Closes <id>` line. On a
   `tessl/<id>` branch, the two ids must agree. Read it from Linear:
   `$LINEAR_API_URL/graphql` with `Authorization: Bearer $LINEAR_TOKEN`,
-  `issue(id: "<id>") { identifier url state { type } delegate { id }
-  assignee { name } creator { name } }`. Never call `api.linear.app`
+  `issue(id: "<id>") { id identifier url state { type } delegate { id }
+  assignee { name } creator { name } team { states { nodes { id name type
+  position } } } }`. Never call `api.linear.app`
   directly. Write request bodies to a file, never through shell
   interpolation.
 
@@ -101,12 +103,52 @@ Repeat:
    rounds stop converging: the same concern comes back after you answered it,
    or you have pushed fixes five times and feedback keeps coming.
 5. **Nothing is outstanding and the checks are green.** Read the reviews
-   again first: a review posted since your last read means situation 3. If the PR has no
-   ready comment for the current head, post one: `PR ready for review:
-   <pr url>` plus the marker. Keep looping, because the owner may still leave
-   feedback or merge.
+   again first: a review posted since your last read means situation 3. Then
+   run the gate (see "The merge gate") and merge, or hand the PR to the owner.
 6. **Nothing is outstanding and checks or a review are still running.** Keep
    looping.
+
+## The merge gate
+
+No CI workflow runs on this repository, so an empty or short check list on
+GitHub is not evidence that the tests pass. Your own run of the commands below
+is the test gate. Work through these in order for the head commit `<sha>` you
+read this pass. When an item does not hold, stop the gate, go back to the
+situation it points to, and keep looping.
+
+1. **Code Review approves this head.** Code Review is `tessl-reviewer` (`tessl-reviewer[bot]` in
+   the REST API). Take
+   its latest review whose state is not `COMMENTED` (its `COMMENTED` reviews
+   only carry inline threads). It must be `APPROVED` with `commit.oid` equal to
+   `<sha>`. If it is on an older commit, or there is none yet, a review is
+   still running: situation 6.
+2. **Nobody is waiting.** No review thread is unresolved, no person's comment
+   is unanswered (as situation 3 defines it), and no person's latest review is
+   `CHANGES_REQUESTED`. Otherwise: situation 3.
+3. **The base is in.** `git fetch origin <base>` and `git merge-base
+   --is-ancestor origin/<base> <sha>`. If the base is not in, merge it in and
+   push (situation 3). That makes a new head, which needs its own review.
+4. **The tests pass here.** With `HEAD` at `<sha>` and a clean worktree, run
+   `npm ci`, `npm run build`, `npm test` and `npm run e2e`, in that order.
+   Every one must exit 0. A failure is a failed check: situation 3.
+   Once all four have passed on `<sha>` this session, later passes on the
+   same head need not run them again.
+5. **GitHub can merge it.** Read the PR again: the head is still `<sha>`,
+   `mergeable` is `MERGEABLE`, and `isCrossRepository` is `false`. A new head
+   means start again on the next pass. `CONFLICTING` means situation 3.
+   `UNKNOWN` means GitHub is still working it out, so try again next pass.
+6. **Only the owner merges factory files.** If any changed file is
+   `DIRECTION.md`, `AGENTS.md` or `tessl.json`, or is under `tessl-factory/`
+   or `.tessl/`, do not merge. If the PR has no ready comment for this head,
+   post one: `PR ready, and it needs the owner to merge: it changes <those
+   files>. <pr url>` plus the marker. Keep looping, because the owner may
+   still leave feedback or merge.
+7. **Merge.** `gh pr merge <n> --squash --match-head-commit <sha>`. If it
+   fails, do nothing else this pass. Read the record again on the next pass.
+   If it succeeds, move the Linear issue to the team's state of type
+   `completed` with the lowest `position`, using `issueUpdate(id, input:
+   {stateId})` with the request body written to a file, unless the issue is
+   already `completed`. Then stop: the PR is merged (situation 1).
 
 ## When the work moves away from the plan
 
@@ -128,7 +170,11 @@ the marker. Do not post it when you stop because the PR was merged or closed.
    behind, merge the base in.
 4. You push only onto the head you read this pass, and you push after every
    commit.
-5. You never merge or enable auto-merge.
+5. You merge only through "The merge gate", with `--squash
+   --match-head-commit` on the head that passed it. You never enable GitHub
+   auto-merge, never merge past a failed or skipped gate step, never merge a
+   PR from a fork, and never merge a PR that changes the owner's files listed
+   in gate step 6.
 6. You wait only with the foreground 90-second wait in "The loop" between passes. You never wait
    inside a pass, never wait in the background, and never run past 43 minutes.
 7. A red check, a failing test or a broken build is never declined. Before you
