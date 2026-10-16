@@ -100,7 +100,7 @@ export const registerWithIdentity = (
       throw new ToolError(`Bio is too long: at most ${MAX_BIO_LENGTH} characters.`);
     }
     if (key !== undefined) validateKey(key);
-    const existing = db.prepare("SELECT key_hash FROM agents WHERE name = ?").get(name) as
+    const existing = db.prepare("SELECT key_hash FROM agents WHERE name = ? AND removed_at IS NULL").get(name) as
       | { key_hash: string | null }
       | undefined;
     if (existing && existing.key_hash !== null && (key === undefined || !sameHash(hashKey(key), existing.key_hash))) {
@@ -154,7 +154,7 @@ export const MAX_LIST_LIMIT = 200;
 export function listAgents(db: Db, limit = DEFAULT_LIST_LIMIT, offset = 0): Agent[] {
   const rows = db
     .prepare(
-      "SELECT name, bio, registered_at, last_seen FROM agents ORDER BY name LIMIT ? OFFSET ?",
+      "SELECT name, bio, registered_at, last_seen FROM agents WHERE removed_at IS NULL ORDER BY name LIMIT ? OFFSET ?",
     )
     .all(Math.min(limit, MAX_LIST_LIMIT), offset) as Row[];
   return rows.map(toAgent);
@@ -162,14 +162,14 @@ export function listAgents(db: Db, limit = DEFAULT_LIST_LIMIT, offset = 0): Agen
 
 export function getAgent(db: Db, name: string): Agent | undefined {
   const row = db
-    .prepare("SELECT name, bio, registered_at, last_seen FROM agents WHERE name = ?")
+    .prepare("SELECT name, bio, registered_at, last_seen FROM agents WHERE name = ? AND removed_at IS NULL")
     .get(name) as Row | undefined;
   return row && toAgent(row);
 }
 
 /** The identity of the agent registered under `name` right now, if any. */
 export function identityOf(db: Db, name: string): Identity | undefined {
-  const row = db.prepare("SELECT id, registered_at, instance FROM agents WHERE name = ?").get(name) as
+  const row = db.prepare("SELECT id, registered_at, instance FROM agents WHERE name = ? AND removed_at IS NULL").get(name) as
     | IdentityRow
     | undefined;
   return row && toIdentity(row);
@@ -178,41 +178,56 @@ export function identityOf(db: Db, name: string): Identity | undefined {
 /** The name of the agent `identity` still belongs to, or undefined once that registration was removed. */
 export function nameOfIdentity(db: Db, identity: Identity): string | undefined {
   const row = db
-    .prepare("SELECT name FROM agents WHERE id = ? AND registered_at = ? AND instance IS ?")
+    .prepare("SELECT name FROM agents WHERE id = ? AND registered_at = ? AND instance IS ? AND removed_at IS NULL")
     .get(identity.id, identity.registeredAt, identity.instance) as { name: string } | undefined;
   return row?.name;
 }
 
 export function touchAgent(db: Db, name: string): void {
-  db.prepare("UPDATE agents SET last_seen = ? WHERE name = ?").run(Date.now(), name);
+  db.prepare("UPDATE agents SET last_seen = ? WHERE name = ? AND removed_at IS NULL").run(Date.now(), name);
 }
 
 export interface Unregistered {
   removed: string;
-  deletedMessages: number;
+  keptMessages: number;
 }
 
 /**
- * Removes the agent `name`: its registration and the messages addressed to it. An agent with a key is removed
- * only with that key, unless `own` is the identity of the caller's session: then that exact registration is removed, or nothing
- * if it is already gone, so a name registered by someone else in the meantime is never touched.
- * One IMMEDIATE transaction, because foreign keys are off and the schema's cascade never runs.
+ * The name a removed agent's row is given, so the real name is free again. `:` is outside the name pattern, so no
+ * one can register it, and the id makes it unique.
+ */
+const removedName = (id: number) => `removed:${id}`;
+
+// Match no key and no session's instance, so a release from before removals were kept, run on this database, can
+// neither take over or remove a removed agent's row by name nor act as it from a session that was registered as it,
+// and so cannot read or delete the messages kept with it.
+const REMOVED_KEY_HASH = "removed";
+const REMOVED_INSTANCE = "removed";
+
+/**
+ * Removes the agent `name` from the directory and frees its name. The row stays, marked removed, with its real name
+ * in `removed_name`, so the messages addressed to it are kept and its id is never given to a new agent. An agent
+ * with a key is removed only with that key, unless `own` is the identity of the caller's session: then that exact
+ * registration is removed, or nothing if it is already gone, so a name registered by someone else in the meantime is
+ * never touched.
  */
 export const removeAgent = (db: Db, name: string, key?: string, own?: Identity): Unregistered =>
   db.transaction((): Unregistered => {
     const row = (
       own
         ? db
-            .prepare("SELECT id, name, key_hash FROM agents WHERE id = ? AND registered_at = ? AND instance IS ?")
+            .prepare("SELECT id, name, key_hash FROM agents WHERE id = ? AND registered_at = ? AND instance IS ? AND removed_at IS NULL")
             .get(own.id, own.registeredAt, own.instance)
-        : db.prepare("SELECT id, name, key_hash FROM agents WHERE name = ?").get(name)
+        : db.prepare("SELECT id, name, key_hash FROM agents WHERE name = ? AND removed_at IS NULL").get(name)
     ) as { id: number; name: string; key_hash: string | null } | undefined;
     if (!row) throw new ToolError(own ? NOT_REGISTERED : `No agent named '${name}'.`);
     if (row.key_hash !== null && !own) {
       if (key === undefined) throw new ToolError(`Agent '${row.name}' has a key. Pass its key to remove it.`);
       if (!sameHash(hashKey(key), row.key_hash)) throw new ToolError(`Wrong key for agent '${row.name}'.`);
     }
-    const deletedMessages = db.prepare("DELETE FROM messages WHERE recipient_id = ?").run(row.id).changes;
-    db.prepare("DELETE FROM agents WHERE id = ?").run(row.id);
-    return { removed: row.name, deletedMessages };
+    db.prepare(
+      "UPDATE agents SET name = ?, removed_name = name, removed_at = ?, key_hash = ?, instance = ? WHERE id = ?",
+    ).run(removedName(row.id), Date.now(), REMOVED_KEY_HASH, REMOVED_INSTANCE, row.id);
+    const keptMessages = (db.prepare("SELECT COUNT(*) AS n FROM messages WHERE recipient_id = ?").get(row.id) as { n: number }).n;
+    return { removed: row.name, keptMessages };
   }).immediate();

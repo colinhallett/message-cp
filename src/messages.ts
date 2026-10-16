@@ -50,12 +50,12 @@ export function sendMessage(db: Db, from: string, to: string, body: string): Sen
       let recipients: { id: number; name: string }[];
       if (broadcast) {
         recipients = db
-          .prepare("SELECT id, name FROM agents WHERE name <> ? ORDER BY name")
+          .prepare("SELECT id, name FROM agents WHERE name <> ? AND removed_at IS NULL ORDER BY name")
           .all(from) as typeof recipients;
       } else {
         const agent = getAgent(db, to);
         if (!agent) throw new ToolError(`No agent named '${to}'.`);
-        recipients = db.prepare("SELECT id, name FROM agents WHERE name = ?").all(agent.name) as typeof recipients;
+        recipients = db.prepare("SELECT id, name FROM agents WHERE name = ? AND removed_at IS NULL").all(agent.name) as typeof recipients;
       }
       const insert = db.prepare(
         "INSERT INTO messages (recipient_id, sender, body, broadcast, created_at) VALUES (?, ?, ?, ?, ?)",
@@ -84,7 +84,7 @@ export function readInbox(
         .prepare(
           `SELECT m.id, m.sender, m.body, m.broadcast, m.created_at, m.read_at
            FROM messages m JOIN agents a ON a.id = m.recipient_id
-           WHERE a.name = ? ${unreadOnly ? "AND m.read_at IS NULL" : ""}
+           WHERE a.name = ? AND a.removed_at IS NULL ${unreadOnly ? "AND m.read_at IS NULL" : ""}
            ORDER BY m.id LIMIT ? OFFSET ?`,
         )
         .all(name, Math.min(limit, MAX_INBOX_LIMIT), offset) as Row[];
@@ -114,7 +114,7 @@ export function unreadSummary(db: Db, name: string): Unread | undefined {
   const rows = db
     .prepare(
       `SELECT m.sender, COUNT(*) AS n FROM messages m JOIN agents a ON a.id = m.recipient_id
-       WHERE a.name = ? AND m.read_at IS NULL GROUP BY m.sender ORDER BY MIN(m.id)`,
+       WHERE a.name = ? AND a.removed_at IS NULL AND m.read_at IS NULL GROUP BY m.sender ORDER BY MIN(m.id)`,
     )
     .all(agent.name) as { sender: string; n: number }[];
   return { count: rows.reduce((sum, r) => sum + r.n, 0), senders: rows.map((r) => r.sender) };
