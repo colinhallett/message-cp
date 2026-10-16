@@ -1,0 +1,11 @@
+# Checks origin/main every two minutes, so a merge is live within about five.
+[Unit]
+Description=Deploy origin/main of memory-cp every two minutes
+
+[Timer]
+OnBootSec=1min
+OnUnitInactiveSec=2min
+AccuracySec=10s
+
+[Install]
+WantedBy=timers.target
