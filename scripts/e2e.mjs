@@ -108,7 +108,14 @@ async function main() {
   }
 
   const suffix = randomBytes(4).toString("hex");
-  const agents = ["a", "b"].map((x) => ({ name: `e2e-${suffix}-${x}`, client: undefined, key: undefined, gone: false }));
+  // Keys are made here, not by the server, so cleanup can remove an agent even if its register reply was lost.
+  const agents = ["a", "b"].map((x) => ({
+    name: `e2e-${suffix}-${x}`,
+    key: randomBytes(24).toString("hex"),
+    client: undefined,
+    registering: false,
+    gone: false,
+  }));
   const [sender, receiver] = agents;
   const body = `e2e check ${suffix}`;
   let failure;
@@ -166,8 +173,8 @@ async function main() {
           new StreamableHTTPClientTransport(mcpUrl, { requestInit: { headers: { Authorization: `Bearer ${server.token}` } } }),
         );
         agent.client = client;
-        agent.key = (await call(agent, "register", { name: agent.name, bio: "memory-cp end-to-end check" })).key;
-        if (!agent.key) throw new Error(`register returned no key for ${agent.name}`);
+        agent.registering = true;
+        await call(agent, "register", { name: agent.name, bio: "memory-cp end-to-end check", key: agent.key });
       }
       return agents.map((a) => a.name).join(", ");
     });
@@ -180,6 +187,8 @@ async function main() {
 
     await step("GET /wait answers 200 soon after the first agent sends a message", async () => {
       const pending = wait(receiver.name, WAKE_MS + 5000);
+      // If the send fails, nothing awaits `pending`; stopping the server then rejects it, which must not crash the run.
+      pending.catch(() => {});
       // Give the request time to reach the server, so it is held when the message arrives.
       await new Promise((r) => setTimeout(r, 500));
       await call(sender, "send_message", { to: receiver.name, body });
@@ -223,7 +232,7 @@ async function main() {
 
   // Leave nothing behind: remove any agent a failed step left registered, by name and key, from a fresh session
   // if its own session is unusable, then end every session.
-  for (const agent of agents.filter((a) => a.key && !a.gone)) {
+  for (const agent of agents.filter((a) => a.registering && !a.gone)) {
     let cleanup;
     try {
       cleanup = new Client({ name: "memory-cp-e2e", version: "0" });
@@ -232,12 +241,12 @@ async function main() {
           requestInit: { headers: { Authorization: `Bearer ${server.token}` } },
         }),
       );
-      parse(
-        await cleanup.callTool({ name: "unregister", arguments: { name: agent.name, key: agent.key } }, undefined, {
-          timeout: CALL_TIMEOUT_MS,
-        }),
-        "unregister",
-      );
+      const result = await cleanup.callTool({ name: "unregister", arguments: { name: agent.name, key: agent.key } }, undefined, {
+        timeout: CALL_TIMEOUT_MS,
+      });
+      // An agent that is already gone (a register that never landed, an unregister whose reply was lost) is cleaned up.
+      if (result.isError && /^No agent named /.test(result.content?.[0]?.text ?? "")) continue;
+      parse(result, "unregister");
       console.error(`     cleanup: unregistered ${agent.name}`);
     } catch (err) {
       console.error(`FAIL cleanup: could not unregister ${agent.name}: ${describe(err)}`);
