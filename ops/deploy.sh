@@ -12,7 +12,8 @@
 #      and deletes the failed release.
 # A rollback is finished only once the restored release passes its check; until then $ROOT/rollback-pending exists.
 # A run that ends between 4 and 6 (a reboot, a timeout), or a rollback whose restart or check failed, leaves current
-# pointing past live-sha or rollback-pending in place; the next run restores live-sha first, then deploys main.
+# pointing past live-sha or rollback-pending in place; the next run restores live-sha first, and deploys main only once
+# that restored release has restarted and passed its check.
 # failed-sha holds back only an unchanged main: a run that sees main elsewhere removes it.
 # It keeps the five releases that went live most recently. The database and /etc/memory-cp.env are never inside
 # $ROOT/releases and nothing here writes them. Everything it prints goes to the journal; it never prints the token.
@@ -120,12 +121,15 @@ LIVE=$(cat "$ROOT/live-sha" 2>/dev/null || true)
 FAILED=$(cat "$ROOT/failed-sha" 2>/dev/null || true)
 CURRENT=$(basename "$(readlink "$ROOT/current" 2>/dev/null || true)")
 
-# Points current back at $LIVE, restarts it and checks it. rollback-pending stays until that check passes, so a
-# rollback that was interrupted or whose restart or check failed is tried again by the next run.
+# Points current back at $LIVE, restarts it and checks it. rollback-pending stays until the restart succeeds and the
+# check passes, so a rollback that was interrupted or whose restart or check failed is tried again by the next run.
 restore_live() {
   touch "$ROOT/rollback-pending"
   switch_to "$LIVE"
-  systemctl restart "$SERVICE" || log "systemctl restart $SERVICE failed"
+  if ! systemctl restart "$SERVICE"; then
+    log "systemctl restart $SERVICE failed; the next run tries again"
+    return 1
+  fi
   if check "$LIVE"; then
     rm -f "$ROOT/rollback-pending"
     log "$LIVE is serving again and passes its check"
@@ -135,13 +139,13 @@ restore_live() {
   fi
 }
 
-RESTORED=ok
 # An earlier run switched current but never finished its check, or did not finish a rollback: put back the release
 # that passed one.
 if [ "$CURRENT" != "$LIVE" ] || [ -e "$ROOT/rollback-pending" ]; then
   if [ -n "$LIVE" ] && [ -d "$ROOT/releases/$LIVE" ]; then
     log "current is $CURRENT and live-sha is $LIVE, and no check has passed since; restoring $LIVE"
-    restore_live || RESTORED=failed
+    # Nothing new is deployed until the last release that passed a check is serving again.
+    restore_live || exit 1
   elif [ -L "$ROOT/current" ]; then
     log "current is $CURRENT, which was never checked, and nothing has passed a check; stopping $SERVICE"
     rm "$ROOT/current"
@@ -154,13 +158,11 @@ fi
 
 if [ "$SHA" = "$FAILED" ]; then
   log "origin/main is still $SHA, which failed; waiting for main to move"
-  [ "$RESTORED" = ok ] || exit 1
   exit 0
 fi
 # main has moved since that failure, so the failure no longer holds back its sha if main comes back to it.
 rm -f "$ROOT/failed-sha"
 if [ "$SHA" = "$LIVE" ]; then
-  [ "$RESTORED" = ok ] || exit 1
   exit 0
 fi
 

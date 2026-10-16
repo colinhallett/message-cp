@@ -3,7 +3,7 @@
 # `systemctl` runs `node current/dist/cli.js serve` in the background. It deploys a good commit, then a commit
 # whose server builds but fails `npm run e2e`, and checks that the good release is live and serving again, that a
 # run interrupted before its check or rollback is undone by the next one, and that a failed sha is tried again once
-# main has moved away from it and back.
+# main has moved away from it and back, and that nothing new is deployed while a rollback has not passed its check.
 #
 #   ops/try-deploy.sh            (from a clone of this repo; needs git, node, npm, curl, flock)
 #
@@ -42,6 +42,8 @@ chmod 600 "$WORK/etc/memory-cp.env"
 cat >"$WORK/bin/systemctl" <<EOF
 #!/usr/bin/env bash
 set -eu
+# Scenario 9 makes restarts fail, as a broken unit would.
+[ "\$1" = restart ] && [ -e $WORK/var/restart-fails ] && exit 1
 pid=$WORK/var/server.pid
 if [ -f "\$pid" ]; then kill "\$(cat "\$pid")" 2>/dev/null || true; rm -f "\$pid"; sleep 1; fi
 [ "\$1" = restart ] || exit 0
@@ -113,6 +115,20 @@ git -C "$WORK/origin.git" update-ref refs/heads/main "$BAD"
 if deploy; then fail "the bad commit deployed the second time"; fi
 [ "$(live)" = "$GOOD" ] || fail "current is $(live) after the second rollback, not $GOOD"
 [ "$(cat "$ROOT/failed-sha")" = "$BAD" ] || fail "failed-sha does not record $BAD again"
+
+say "9. while a rollback's restart fails, a new commit on main is not deployed"
+touch "$WORK/var/restart-fails" "$ROOT/rollback-pending"
+git -C "$WORK/src" checkout --quiet "$GOOD" -- src/http.ts
+commit -am "A good commit after the bad one"
+git -C "$WORK/src" push --quiet "$WORK/origin.git" HEAD:refs/heads/main
+NEXT=$(git -C "$WORK/origin.git" rev-parse main)
+if deploy; then fail "a run whose rollback restart failed succeeded"; fi
+[ -e "$ROOT/rollback-pending" ] || fail "rollback-pending was removed although the restart failed"
+[ -d "$ROOT/releases/$NEXT" ] && fail "$NEXT was built before the rollback finished"
+rm "$WORK/var/restart-fails"
+deploy || fail "the run after the restart was fixed failed"
+[ -e "$ROOT/rollback-pending" ] && fail "rollback-pending is still there"
+[ "$(live)" = "$NEXT" ] || fail "current is $(live), not $NEXT"
 
 [ -d "$ROOT/releases/$BAD" ] && fail "the failed release was kept"
 grep -qF "$(grep TOKEN "$WORK/etc/memory-cp.env" | cut -d= -f2)" "$WORK/var/server.log" && fail "the server log has the token"
