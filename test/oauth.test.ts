@@ -5,6 +5,7 @@ import type { OAuthClientInformationMixed, OAuthTokens } from "@modelcontextprot
 import { createHash, randomBytes } from "node:crypto";
 import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { spawn } from "node:child_process";
+import { connect, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -13,7 +14,7 @@ import { registerAgent } from "../src/agents.js";
 import { OWNER_ACCOUNT, openDb, type Db } from "../src/db.js";
 import { startHttp, type HttpServer } from "../src/http.js";
 import { sendMessage } from "../src/messages.js";
-import { MAX_PENDING, MAX_UNUSED_CLIENTS, oauthConfigFromEnv, type OAuthConfig } from "../src/oauth.js";
+import { MAX_IN_FLIGHT, MAX_PENDING, MAX_UNUSED_CLIENTS, oauthConfigFromEnv, type OAuthConfig } from "../src/oauth.js";
 import { startFakeGitHub, type FakeGitHub } from "./fixtures/fake-github.js";
 
 const TOKEN = "s3cret-token";
@@ -289,6 +290,17 @@ describe("sign-in with GitHub", () => {
     expect((await tokenRequest({ grant_type: "refresh_token", client_id: other.client_id, refresh_token: second.refresh_token })).status).toBe(400);
   });
 
+  it("says in expires_in when a refreshed access token ends with the sign-in", async () => {
+    await startServer();
+    const { clientId, code, verifier } = await rawCode();
+    const first = (await (await tokenRequest({ grant_type: "authorization_code", client_id: clientId, code, code_verifier: verifier, redirect_uri: REDIRECT })).json()) as Record<string, string>;
+    // Ten minutes of the sign-in are left.
+    db.prepare("UPDATE oauth_grants SET refresh_expires_at = ?").run(Date.now() + 10 * 60 * 1000);
+    const second = (await (await tokenRequest({ grant_type: "refresh_token", client_id: clientId, refresh_token: first.refresh_token })).json()) as { expires_in: number };
+    expect(second.expires_in).toBeGreaterThan(590);
+    expect(second.expires_in).toBeLessThanOrEqual(600);
+  });
+
   it("stores tokens, codes and states only as hashes", async () => {
     await startServer();
     const { client, provider } = await signIn({ id: 1, login: "octo" });
@@ -413,6 +425,25 @@ describe("client registration", () => {
       expect((await rawRegister([uri])).status).toBe(400);
     }
     expect((await rawRegister([])).status).toBe(400);
+  });
+
+  it("handles only so many requests at once, so slow bodies cannot hold every connection", async () => {
+    const sockets: Socket[] = [];
+    try {
+      // Each starts a registration and never finishes its body.
+      for (let i = 0; i < MAX_IN_FLIGHT; i++) {
+        const socket = connect(port, "127.0.0.1");
+        sockets.push(socket);
+        await new Promise<void>((resolve) => socket.once("connect", () => resolve()));
+        socket.write("POST /oauth/register HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: 100\r\n\r\n{");
+      }
+      await expect.poll(async () => (await rawRegister()).status).toBe(503);
+      const busy = await rawRegister();
+      expect(busy.headers.get("retry-after")).toBe("5");
+    } finally {
+      for (const socket of sockets) socket.destroy();
+    }
+    await expect.poll(async () => (await rawRegister()).status).toBe(201);
   });
 
   it("caps unused registrations, and deletes them once they expire", async () => {

@@ -59,6 +59,13 @@ const MAX_FORM_BYTES = 16 * 1024;
 const MAX_REDIRECT_URIS = 5;
 const MAX_URI_LENGTH = 512;
 const GITHUB_TIMEOUT_MS = 10_000;
+/** How long registration and the token endpoint wait for a request body before giving up on the connection. */
+export const BODY_TIMEOUT_MS = 10_000;
+/**
+ * Most registrations, callbacks and token requests handled at once. Anyone can call them, and each can hold a
+ * connection while its body arrives or while GitHub answers, so past this they get 503 and the connection is closed.
+ */
+export const MAX_IN_FLIGHT = 64;
 /**
  * Binds the GitHub leg of a sign-in to the browser that started it, so GitHub's answer for one person's sign-in,
  * handed to another browser, does nothing. One cookie per sign-in, named after a prefix of its state, so two at
@@ -145,13 +152,19 @@ function redirectError(res: ServerResponse, redirectUri: string, state: string |
   redirect(res, url.href);
 }
 
+/** The request body, up to MAX_FORM_BYTES; a body that has not all arrived within BODY_TIMEOUT_MS ends the connection. */
 async function readRaw(req: IncomingMessage): Promise<string> {
   const chunks: Buffer[] = [];
   let size = 0;
-  for await (const chunk of req) {
-    size += (chunk as Buffer).length;
-    if (size > MAX_FORM_BYTES) throw new RangeError("body too large");
-    chunks.push(chunk as Buffer);
+  const timer = setTimeout(() => req.destroy(new Error("request body timed out")), BODY_TIMEOUT_MS);
+  try {
+    for await (const chunk of req) {
+      size += (chunk as Buffer).length;
+      if (size > MAX_FORM_BYTES) throw new RangeError("body too large");
+      chunks.push(chunk as Buffer);
+    }
+  } finally {
+    clearTimeout(timer);
   }
   return Buffer.concat(chunks).toString("utf8");
 }
@@ -170,6 +183,7 @@ export class OAuth {
   readonly resourceMetadataUrl: string;
   private readonly callbackUrl: string;
   private readonly cookieAttributes: string;
+  private inFlight = 0;
 
   constructor(
     private readonly db: Db,
@@ -212,12 +226,25 @@ export class OAuth {
       res.end();
       return true;
     }
-    if (route === "resource") this.resourceMetadata(res);
-    else if (route === "metadata") this.metadata(res);
-    else if (route === "register") await this.register(req, res);
-    else if (route === "authorize") this.authorize(req, res);
-    else if (route === "callback") await this.callback(req, res);
-    else await this.token(req, res);
+    if (route === "resource" || route === "metadata" || route === "authorize") {
+      if (route === "resource") this.resourceMetadata(res);
+      else if (route === "metadata") this.metadata(res);
+      else this.authorize(req, res);
+      return true;
+    }
+    // The rest wait on a body or on GitHub, so only so many run at once.
+    if (this.inFlight >= MAX_IN_FLIGHT) {
+      json(res, 503, { error: "temporarily_unavailable", error_description: "The server is busy; try again shortly." }, { "Retry-After": "5", Connection: "close" });
+      return true;
+    }
+    this.inFlight++;
+    try {
+      if (route === "register") await this.register(req, res);
+      else if (route === "callback") await this.callback(req, res);
+      else await this.token(req, res);
+    } finally {
+      this.inFlight--;
+    }
     return true;
   }
 
@@ -430,17 +457,25 @@ export class OAuth {
     if (!this.config.allowedLogins.has(user.login.toLowerCase())) {
       return fail("access_denied", `The GitHub login ${user.login} is not allowed on this server.`);
     }
-    const account = this.accountForGithubUser(user.id, user.login);
     const issued = secret();
     const now = Date.now();
-    const stored = this.db.transaction(() => {
-      prune(this.db, now);
-      if (count(this.db, "SELECT COUNT(*) AS n FROM oauth_codes") >= MAX_CODES) return false;
-      this.db
-        .prepare("INSERT INTO oauth_codes (hash, account_id, client_id, redirect_uri, code_challenge, expires_at) VALUES (?, ?, ?, ?, ?, ?)")
-        .run(hash(issued), account, pending.client_id, pending.redirect_uri, pending.code_challenge, now + CODE_TTL_MS);
-      return true;
-    }).immediate();
+    let stored: boolean;
+    try {
+      const account = this.accountForGithubUser(user.id, user.login);
+      stored = this.db.transaction(() => {
+        prune(this.db, now);
+        if (count(this.db, "SELECT COUNT(*) AS n FROM oauth_codes") >= MAX_CODES) return false;
+        this.db
+          .prepare("INSERT INTO oauth_codes (hash, account_id, client_id, redirect_uri, code_challenge, expires_at) VALUES (?, ?, ?, ?, ?, ?)")
+          .run(hash(issued), account, pending.client_id, pending.redirect_uri, pending.code_challenge, now + CODE_TTL_MS);
+        return true;
+      }).immediate();
+    } catch (err) {
+      // The pending sign-in is already used up, so a busy database still hands the client an error it can start again from.
+      const code = (err as { code?: unknown } | null)?.code;
+      if (typeof code !== "string" || !code.startsWith("SQLITE_BUSY")) throw err;
+      return fail("temporarily_unavailable", "The server is busy; start the sign-in again.");
+    }
     if (!stored) return fail("temporarily_unavailable", "Too many sign-ins are under way; try again in a few minutes.");
     const to = new URL(pending.redirect_uri);
     to.searchParams.set("code", issued);
@@ -456,6 +491,7 @@ export class OAuth {
     const access = secret();
     const refresh = secret();
     const now = Date.now();
+    let expiresAt = now + ACCESS_TOKEN_TTL_MS;
     if (grant === undefined) {
       this.db
         .prepare(
@@ -467,11 +503,14 @@ export class OAuth {
         .prepare("DELETE FROM oauth_grants WHERE account_id = ? AND id NOT IN (SELECT id FROM oauth_grants WHERE account_id = ? ORDER BY id DESC LIMIT ?)")
         .run(account, account, MAX_GRANTS_PER_ACCOUNT);
     } else {
-      this.db
-        .prepare("UPDATE oauth_grants SET access_hash = ?, access_expires_at = MIN(?, refresh_expires_at), refresh_hash = ? WHERE id = ?")
-        .run(hash(access), now + ACCESS_TOKEN_TTL_MS, hash(refresh), grant);
+      // Near the end of the sign-in the access token ends with it, and expires_in says so.
+      expiresAt = (
+        this.db
+          .prepare("UPDATE oauth_grants SET access_hash = ?, access_expires_at = MIN(?, refresh_expires_at), refresh_hash = ? WHERE id = ? RETURNING access_expires_at")
+          .get(hash(access), expiresAt, hash(refresh), grant) as { access_expires_at: number }
+      ).access_expires_at;
     }
-    return { access_token: access, token_type: "Bearer", expires_in: ACCESS_TOKEN_TTL_MS / 1000, refresh_token: refresh };
+    return { access_token: access, token_type: "Bearer", expires_in: Math.max(0, Math.floor((expiresAt - now) / 1000)), refresh_token: refresh };
   }
 
   /** The token endpoint: an authorization code, or a refresh token, for a new pair of tokens. */
@@ -479,8 +518,10 @@ export class OAuth {
     let q: URLSearchParams;
     try {
       q = new URLSearchParams(await readRaw(req));
-    } catch {
-      return oauthError(res, 413, "invalid_request", "The request is too large.");
+    } catch (err) {
+      return err instanceof RangeError
+        ? oauthError(res, 413, "invalid_request", "The request is too large.")
+        : oauthError(res, 400, "invalid_request", "The request body did not arrive.");
     }
     const clientId = q.get("client_id");
     if (!this.redirectUris(clientId)) return oauthError(res, 401, "invalid_client", "Unknown client.");
