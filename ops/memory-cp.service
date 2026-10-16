@@ -7,7 +7,8 @@ Wants=network-online.target
 [Service]
 User=memory-cp
 Group=memory-cp
-# MEMORY_CP_HTTP_TOKEN, MEMORY_CP_PUBLIC_URL and MEMORY_CP_DB; the file is root's, mode 0600.
+# MEMORY_CP_HTTP_TOKEN, MEMORY_CP_PUBLIC_URL, MEMORY_CP_DB and, for sign-in with GitHub, MEMORY_CP_GITHUB_*;
+# the file is root's, mode 0600.
 EnvironmentFile=/etc/memory-cp.env
 WorkingDirectory=/opt/memory-cp/current
 ExecStart=/usr/bin/env node /opt/memory-cp/current/dist/cli.js serve --port 8787 --public-url ${MEMORY_CP_PUBLIC_URL}
