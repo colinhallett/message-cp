@@ -159,8 +159,10 @@ looping.
    `--admin` or `--auto`. If it fails, do nothing else this pass and read the
    record again on the next; if it fails the same way on `<sha>` a second
    time, say on the PR what the error was, once, and keep looping. If it
-   succeeds, read the issue again and, unless it is already `completed`, move
-   it to the team's `completed` state with the lowest `position` with
+   succeeds, read the issue again. If it is already `completed` or
+   `canceled`, leave its state as it is: a person who canceled it while the
+   merge ran has decided. Otherwise move it to the team's `completed` state
+   with the lowest `position` with
    `issueUpdate(id, input: {stateId})`, the request body written to a file.
    If that call fails, try once more, then post on the PR that the merge
    happened and the issue still needs moving to Done. Then stop: the PR is
