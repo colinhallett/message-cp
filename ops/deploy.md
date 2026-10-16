@@ -30,6 +30,17 @@ The database (`MEMORY_CP_DB`) and `/etc/memory-cp.env` are outside `releases/`, 
 
 A rollback switches the code, not the database. A release that is started and then fails its check has already opened the database, and its startup migrations have run, so a rolled-back release must still work on the database as the newer one left it. Keep migrations additive (add tables and columns; drop them only in a release after the one that stopped using them), as `src/db.ts` does. If a bad release did damage data, restore the night's backup (see `restore.md`).
 
+### The accounts release cannot be rolled back automatically
+
+The release that added accounts is the one exception. Its first open rebuilds the `agents` table so that names are unique per account, and every earlier release's `register` (`INSERT ... ON CONFLICT(name)`) fails on the rebuilt table. If that release fails its check, `deploy.sh` rolls back as usual and the restored release starts and answers `/mcp`, but cannot register agents, so its check fails too and `rollback-pending` stays. Worse, an earlier release reads agents by name alone, so once a second account exists it would show every account's agents in `list_agents`, `get_agent` and `/wait`. Do not leave an earlier release serving the rebuilt file, and stop any stdio server on it too. Recover by hand, at once:
+
+1. Stop the timer and the server: `systemctl stop memory-cp-deploy.timer memory-cp.service`.
+2. Put back the database as it was before the rebuild. The release copied it to `<MEMORY_CP_DB>.before-accounts` (mode 0600) just before rebuilding; anything written after that is lost. Swap it in with the steps in `restore.md` from step 4, using that copy instead of `/tmp/restore.sqlite`, and keeping the `-wal` and `-shm` files with the old file. Then move the copy into `$OLD` too (`mv "$DB.before-accounts" "$OLD/"`): the next accounts release copies the file again only if no copy is there, and a stale one would be all a second recovery had. If the copy is missing or fails `PRAGMA integrity_check`, use the night's backup (`restore.md`, from step 1).
+3. Switch back to the previous release: `ln -sfn releases/$(cat /opt/memory-cp/live-sha) /opt/memory-cp/current.new && mv -T /opt/memory-cp/current.new /opt/memory-cp/current`, then `rm -f /opt/memory-cp/rollback-pending` and `systemctl start memory-cp.service`.
+4. Check it with `MEMORY_CP_HTTP_TOKEN=... npm run e2e -- --url "$MEMORY_CP_PUBLIC_URL"` from that release, and leave the timer stopped until a fixed release is on `main`: with the timer on, the next run deploys `main` again once `main` moves past `failed-sha`.
+
+Once the accounts release is live, delete `<MEMORY_CP_DB>.before-accounts` when you no longer need it; nothing reads it.
+
 ## Install
 
 As root, on a machine with Node 22.12 or later, git, curl, `flock` and `setpriv` (util-linux), and a C++ toolchain (`build-essential` on Debian and Ubuntu) in case `better-sqlite3` has no prebuilt binary for the server's Node:

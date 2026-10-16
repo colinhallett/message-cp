@@ -164,20 +164,20 @@ describe("get_agent", () => {
 
 describe("session identity", () => {
   it("tells an unregistered session to call register first", () => {
-    expect(() => new Session().require()).toThrow(ToolError);
-    expect(() => new Session().require()).toThrow(/Call `register` first/);
+    expect(() => new Session(OWNER_ACCOUNT).require()).toThrow(ToolError);
+    expect(() => new Session(OWNER_ACCOUNT).require()).toThrow(/Call `register` first/);
   });
 
   it("is not stored in the database: a second process starts unregistered", async () => {
     const one = await connect();
     await call(one, "register", { name: "alice", bio: "x" });
-    const session = new Session();
+    const session = new Session(OWNER_ACCOUNT);
     createServer(openDb(dbFile), session);
     expect(() => session.require()).toThrow(ToolError);
   });
 
   it("returns the registered name after register", async () => {
-    const session = new Session();
+    const session = new Session(OWNER_ACCOUNT);
     const server = createServer(db, session);
     const [a, b] = InMemoryTransport.createLinkedPair();
     const client = new Client({ name: "test", version: "0" });

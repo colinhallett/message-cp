@@ -16,7 +16,7 @@ export const OWNER_ACCOUNT = 1;
 export type AccountId = number;
 
 // Agent names are unique within an account, so two accounts can each have a `planner`. NOCASE makes them unique
-// regardless of case while keeping the first-registered spelling. The rebuild in migrate() creates the same table.
+// regardless of case while keeping the first-registered spelling. The rebuild in addAccounts() creates the same table.
 const agentsTable = (table: string) => `
 CREATE TABLE IF NOT EXISTS ${table} (
   id INTEGER PRIMARY KEY,
@@ -108,6 +108,7 @@ function copyBeforeAccounts(path: string): void {
     // nobody can change while the caller holds the write lock.
     const source = new Database(path);
     try {
+      source.pragma("busy_timeout = 5000");
       source.prepare("VACUUM INTO ?").run(partial);
     } finally {
       source.close();

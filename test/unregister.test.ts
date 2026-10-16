@@ -24,7 +24,7 @@ afterEach(async () => {
 });
 
 // Each call is a separate server with its own connection to the one file, like a separate process.
-async function connect(session = new Session()): Promise<Client> {
+async function connect(session = new Session(OWNER_ACCOUNT)): Promise<Client> {
   const server = createServer(openDb(dbFile), session);
   const [a, b] = InMemoryTransport.createLinkedPair();
   const client = new Client({ name: "test", version: "0" });
@@ -155,7 +155,7 @@ describe("unregister", () => {
   });
 
   it("keeps a removed agent out of reach of a release that does not know about removals", async () => {
-    const session = new Session();
+    const session = new Session(OWNER_ACCOUNT);
     const a = await connect(session);
     await call(a, "register", { name: "alice", bio: "x" });
     const stale = session.registration!;
@@ -211,7 +211,7 @@ describe("a session whose agent was removed", () => {
 
   it("self-unregister never removes a different agent that took the name after the check", async () => {
     const a = await agent("alice");
-    const session = new Session();
+    const session = new Session(OWNER_ACCOUNT);
     const c = await connect(session);
     await call(c, "register", { name: "carol", bio: "x" });
     const stale = session.registration!;
@@ -226,7 +226,7 @@ describe("a session whose agent was removed", () => {
 
   it("also applies to a session started from MEMORY_CP_AGENT", async () => {
     const env = { MEMORY_CP_AGENT: "worker", MEMORY_CP_AGENT_KEY: "k" };
-    const session = new Session();
+    const session = new Session(OWNER_ACCOUNT);
     session.bind(registerFromEnv(db, OWNER_ACCOUNT, env)!.identity);
     const w = await connect(session);
     expect((await call(w, "read_inbox")).isError).toBe(false);

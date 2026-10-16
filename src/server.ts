@@ -27,7 +27,8 @@ export class Session {
   private identity: Identity | undefined;
   private db: Db | undefined;
 
-  constructor(readonly account: AccountId = OWNER_ACCOUNT) {}
+  /** No default, so a caller has to say which account a session acts as. */
+  constructor(readonly account: AccountId) {}
 
   /** The database the identity is checked against. `createServer` calls this. */
   attach(db: Db): void {
@@ -60,7 +61,7 @@ export class Session {
 }
 
 /** One server per session. */
-export function createServer(db: Db, session = new Session(), options: { remote?: boolean; publicUrl?: string } = {}): McpServer {
+export function createServer(db: Db, session = new Session(OWNER_ACCOUNT), options: { remote?: boolean; publicUrl?: string } = {}): McpServer {
   const remote = options.remote ?? false;
   session.attach(db);
   const account = session.account;
