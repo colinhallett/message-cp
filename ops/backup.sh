@@ -35,8 +35,8 @@ fi
 url="$(tr -d '[:space:]' <"$url_file")"
 # Checked so it can go into curl's config safely; the message names the file, never the URL.
 # Plain http is allowed only to this machine, for testing: the URL's path is the credential.
-[[ "$url" =~ ^(https://|http://(127\.0\.0\.1|localhost)[:/])[^\"\\]+/$ ]] ||
-  fail "$url_file must hold one https URL ending in /"
+[[ "$url" =~ ^(https://[^/]|http://(127\.0\.0\.1|localhost)(:[0-9]+)?/)[^\"\\]*/o/$ ]] ||
+  fail "$url_file must hold one https URL ending in /o/"
 
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT

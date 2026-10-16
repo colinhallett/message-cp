@@ -21,17 +21,19 @@ Backups are `memory-cp-<UTC date>.sqlite.gz` objects in the backup bucket (see [
    ```
 
 3. **Stop** everything that opens the database: `serve`, and any `hive` or stdio server using the same file. With `serve` under systemd: `systemctl stop <serve unit>`. Do not restore under a running server; it keeps its own handle and WAL.
-4. **Swap** the files, keeping the old ones. `DB` is the server's `MEMORY_CP_DB`, else `~<serve user>/.memory-cp/db.sqlite`:
+4. **Swap** the files, keeping the old ones. Set `DB` to the file the server uses (the backup unit's drop-in names the same one):
 
    ```sh
-   DB=/var/lib/memory-cp/db.sqlite
-   OLD="$DB.pre-restore-$(date -u +%FT%H%M)"
-   mkdir "$OLD" && mv "$DB" "$OLD/"
-   for f in "$DB-wal" "$DB-shm"; do [ ! -e "$f" ] || mv "$f" "$OLD/"; done
-   install -m 0600 -o <serve user> -g <serve group> /tmp/restore.sqlite "$DB"
+   DB=<database>    # serve's MEMORY_CP_DB, such as /var/lib/memory-cp/db.sqlite; without one, ~<serve user>/.memory-cp/db.sqlite
+   OLD="$DB.pre-restore-$(date -u +%FT%H%M%S)"
+   mkdir "$OLD" &&
+     mv "$DB" "$OLD/" &&
+     { [ ! -e "$DB-wal" ] || mv "$DB-wal" "$OLD/"; } &&
+     { [ ! -e "$DB-shm" ] || mv "$DB-shm" "$OLD/"; } &&
+     install -m 0600 -o <serve user> -g <serve group> /tmp/restore.sqlite "$DB"
    ```
 
-   Move the `-wal` and `-shm` files with the database: a WAL left behind from the old file would be replayed onto the restored one.
+   The commands are joined with `&&`, so the restored file is installed only once the old files are all in `$OLD`; if any step fails, nothing after it runs. Move the `-wal` and `-shm` files with the database: a WAL left behind from the old file would be replayed onto the restored one.
 5. **Start** `serve` again (`systemctl start <serve unit>`), then check from an agent that `list_agents` shows the agents and `read_inbox` works. The server switches the file back to WAL mode when it opens it.
 6. **Clean up** `/tmp/restore.sqlite`, the `.gz` and, once you are satisfied, `$OLD`.
 
