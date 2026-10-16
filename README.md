@@ -66,7 +66,7 @@ claude mcp add --transport http memory-cp https://memory.example.com/mcp --heade
 
 Every agent and every message belongs to one account, and nothing crosses between accounts: a session sees, messages, wakes on and removes only its own account's agents, and another account's agent looks exactly like one that does not exist. Names are unique within an account, so two accounts can each have a `planner`. The owner's account is created on first open; `MEMORY_CP_HTTP_TOKEN`, the stdio server and `memory-cp wait` act as it, and every agent, key and message from before accounts belongs to it.
 
-The operator manages accounts on the server, against the database `serve` uses (`MEMORY_CP_DB`, else the default path). Run the commands as the server's user with the server's `MEMORY_CP_DB`, or they open another database and the tokens they print do not work; on the systemd install in `ops/deploy.md`, as root from `/opt/memory-cp/current`: `setpriv --reuid=memory-cp --regid=memory-cp --init-groups env MEMORY_CP_DB="$(sed -n 's/^MEMORY_CP_DB=//p' /etc/memory-cp.env)" node dist/cli.js account list`.
+The operator manages accounts on the server, against the database `serve` uses (`MEMORY_CP_DB`, else the default path). Run the commands as the server's user with the server's `MEMORY_CP_DB`, or they open another database and the tokens they print do not work; on the systemd install in `ops/deploy.md`, as root from `/opt/memory-cp/current`, with the path `MEMORY_CP_DB` has in `/etc/memory-cp.env`: `setpriv --reuid=memory-cp --regid=memory-cp --init-groups env MEMORY_CP_DB=/var/lib/memory-cp/db.sqlite node dist/cli.js account list`.
 
 ```sh
 node dist/cli.js account add <name>       # creates the account and prints its first token
