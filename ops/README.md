@@ -1,4 +1,9 @@
-# Nightly database backup
+# Operations
+
+- **Deploys.** The server deploys `main` itself and rolls back a release that fails its check: see [deploy.md](deploy.md).
+- **Backups.** Below, and restoring in [restore.md](restore.md).
+
+## Nightly database backup
 
 `backup.sh` copies a consistent snapshot of the memory-cp database to an Oracle Object Storage bucket once a night, at 02:30 UTC. Restoring is in [restore.md](restore.md). Only the database is backed up.
 
@@ -8,7 +13,7 @@
 - **Failure.** Any failure exits non-zero, so it shows in `journalctl -u memory-cp-backup` and `systemctl --failed`. The URL is never logged: it is passed to `curl` on stdin, not on its command line, and messages name the file it came from.
 - **Local copy.** Built in a temporary directory that is deleted when the script exits, whether the upload worked or not.
 
-## Install
+### Install
 
 Needs `sqlite3` (3.27 or later, for `VACUUM INTO`), `curl` and `gzip` on the server (`apt install sqlite3 curl`), and systemd 247 or later for `LoadCredential=`.
 
