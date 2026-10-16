@@ -25,7 +25,11 @@ afterEach(() => {
   db.close();
 });
 
-/** Starts `memory-cp wait <name>` as its own process on the test database. */
+/**
+ * Starts `memory-cp wait <name>` as its own process on the test database. Starting src/cli.ts
+ * through tsx takes ~0.4 s on its own but can exceed 5 s while the full suite runs, so the two
+ * tests that wait for mail set a 20 s timeout; they timed out under that load at vitest's default.
+ */
 function startWait(name: string) {
   const child = spawn(tsx, [join(root, "src/cli.ts"), "wait", name], {
     env: { ...process.env, MEMORY_CP_DB: dbFile },
@@ -48,7 +52,7 @@ describe("memory-cp wait", () => {
     expect(w.out().trim()).toBe("1 unread message from b");
     expect(w.out()).not.toContain("secret body");
     expect(unreadSummary(db, "a")).toEqual({ count: 1, senders: ["b"] });
-  });
+  }, 20_000);
 
   it("keeps waiting until a message arrives from another process", async () => {
     registerAgent(db, "a", "x");
@@ -63,7 +67,7 @@ describe("memory-cp wait", () => {
     expect(await w.exited).toBe(0);
     expect(w.out().trim()).toMatch(/^3 unread messages from b, c$/);
     expect(readInbox(db, "a").map((m) => m.body)).toEqual(["one", "two", "three"]);
-  });
+  }, 20_000);
 
   it("does not fire for read mail or mail to someone else", async () => {
     registerAgent(db, "a", "x");
