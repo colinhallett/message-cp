@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { registerAgent } from "../src/agents.js";
-import { openDb, type Db } from "../src/db.js";
+import { OWNER_ACCOUNT, openDb, type Db } from "../src/db.js";
 import { readInbox, sendMessage, unreadSummary } from "../src/messages.js";
 import { createServer } from "../src/server.js";
 
@@ -44,38 +44,38 @@ function startWait(name: string) {
 
 describe("memory-cp wait", () => {
   it("exits at once when mail is already waiting, and leaves it unread", async () => {
-    registerAgent(db, "a", "x");
-    registerAgent(db, "b", "x");
-    sendMessage(db, "b", "a", "secret body");
+    registerAgent(db, OWNER_ACCOUNT, "a", "x");
+    registerAgent(db, OWNER_ACCOUNT, "b", "x");
+    sendMessage(db, OWNER_ACCOUNT, "b", "a", "secret body");
     const w = startWait("a");
     expect(await w.exited).toBe(0);
     expect(w.out().trim()).toBe("1 unread message from b");
     expect(w.out()).not.toContain("secret body");
-    expect(unreadSummary(db, "a")).toEqual({ count: 1, senders: ["b"] });
+    expect(unreadSummary(db, OWNER_ACCOUNT, "a")).toEqual({ count: 1, senders: ["b"] });
   }, 20_000);
 
   it("keeps waiting until a message arrives from another process", async () => {
-    registerAgent(db, "a", "x");
-    registerAgent(db, "b", "x");
-    registerAgent(db, "c", "x");
+    registerAgent(db, OWNER_ACCOUNT, "a", "x");
+    registerAgent(db, OWNER_ACCOUNT, "b", "x");
+    registerAgent(db, OWNER_ACCOUNT, "c", "x");
     const w = startWait("a");
     const early = await Promise.race([w.exited, new Promise((r) => setTimeout(() => r("waiting"), 2500))]);
     expect(early).toBe("waiting");
-    sendMessage(db, "b", "a", "one");
-    sendMessage(db, "c", "a", "two");
-    sendMessage(db, "b", "a", "three");
+    sendMessage(db, OWNER_ACCOUNT, "b", "a", "one");
+    sendMessage(db, OWNER_ACCOUNT, "c", "a", "two");
+    sendMessage(db, OWNER_ACCOUNT, "b", "a", "three");
     expect(await w.exited).toBe(0);
     expect(w.out().trim()).toMatch(/^3 unread messages from b, c$/);
-    expect(readInbox(db, "a").map((m) => m.body)).toEqual(["one", "two", "three"]);
+    expect(readInbox(db, OWNER_ACCOUNT, "a").map((m) => m.body)).toEqual(["one", "two", "three"]);
   }, 20_000);
 
   it("does not fire for read mail or mail to someone else", async () => {
-    registerAgent(db, "a", "x");
-    registerAgent(db, "b", "x");
-    sendMessage(db, "b", "a", "old");
-    readInbox(db, "a");
-    sendMessage(db, "a", "b", "not for a");
-    expect(unreadSummary(db, "a")).toEqual({ count: 0, senders: [] });
+    registerAgent(db, OWNER_ACCOUNT, "a", "x");
+    registerAgent(db, OWNER_ACCOUNT, "b", "x");
+    sendMessage(db, OWNER_ACCOUNT, "b", "a", "old");
+    readInbox(db, OWNER_ACCOUNT, "a");
+    sendMessage(db, OWNER_ACCOUNT, "a", "b", "not for a");
+    expect(unreadSummary(db, OWNER_ACCOUNT, "a")).toEqual({ count: 0, senders: [] });
   });
 
   it("exits non-zero naming an agent that is not registered", async () => {

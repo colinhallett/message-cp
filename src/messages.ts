@@ -1,5 +1,5 @@
 import { ToolError, getAgent } from "./agents.js";
-import type { Db } from "./db.js";
+import type { AccountId, Db } from "./db.js";
 
 export interface Message {
   from: string;
@@ -33,10 +33,11 @@ function countCodePoints(s: string): number {
 }
 
 /**
- * Stores one delivery per recipient: the named agent, or for `all` every agent registered right now
- * except the sender. Read state therefore belongs to each recipient.
+ * Stores one delivery per recipient: the named agent, or for `all` every agent of the account registered right now
+ * except the sender. Read state therefore belongs to each recipient. A message belongs to its recipient's account,
+ * which is always the sender's.
  */
-export function sendMessage(db: Db, from: string, to: string, body: string): SendResult {
+export function sendMessage(db: Db, account: AccountId, from: string, to: string, body: string): SendResult {
   if (body.trim().length === 0) throw new ToolError("Message body is empty.");
   // Count characters (code points), not UTF-16 code units, to match what the tool advertises.
   // A code point is at most 2 code units, so anything over twice the limit is too long without iterating.
@@ -50,12 +51,14 @@ export function sendMessage(db: Db, from: string, to: string, body: string): Sen
       let recipients: { id: number; name: string }[];
       if (broadcast) {
         recipients = db
-          .prepare("SELECT id, name FROM agents WHERE name <> ? AND removed_at IS NULL ORDER BY name")
-          .all(from) as typeof recipients;
+          .prepare("SELECT id, name FROM agents WHERE account_id = ? AND name <> ? AND removed_at IS NULL ORDER BY name")
+          .all(account, from) as typeof recipients;
       } else {
-        const agent = getAgent(db, to);
+        const agent = getAgent(db, account, to);
         if (!agent) throw new ToolError(`No agent named '${to}'.`);
-        recipients = db.prepare("SELECT id, name FROM agents WHERE name = ? AND removed_at IS NULL").all(agent.name) as typeof recipients;
+        recipients = db
+          .prepare("SELECT id, name FROM agents WHERE account_id = ? AND name = ? AND removed_at IS NULL")
+          .all(account, agent.name) as typeof recipients;
       }
       const insert = db.prepare(
         "INSERT INTO messages (recipient_id, sender, body, broadcast, created_at) VALUES (?, ?, ?, ?, ?)",
@@ -73,6 +76,7 @@ export function sendMessage(db: Db, from: string, to: string, body: string): Sen
  */
 export function readInbox(
   db: Db,
+  account: AccountId,
   name: string,
   unreadOnly = true,
   limit = DEFAULT_INBOX_LIMIT,
@@ -84,10 +88,10 @@ export function readInbox(
         .prepare(
           `SELECT m.id, m.sender, m.body, m.broadcast, m.created_at, m.read_at
            FROM messages m JOIN agents a ON a.id = m.recipient_id
-           WHERE a.name = ? AND a.removed_at IS NULL ${unreadOnly ? "AND m.read_at IS NULL" : ""}
+           WHERE a.account_id = ? AND a.name = ? AND a.removed_at IS NULL ${unreadOnly ? "AND m.read_at IS NULL" : ""}
            ORDER BY m.id LIMIT ? OFFSET ?`,
         )
-        .all(name, Math.min(limit, MAX_INBOX_LIMIT), offset) as Row[];
+        .all(account, name, Math.min(limit, MAX_INBOX_LIMIT), offset) as Row[];
       const mark = db.prepare("UPDATE messages SET read_at = ? WHERE id = ? AND read_at IS NULL");
       const now = Date.now();
       for (const r of rows) mark.run(now, r.id);
@@ -107,15 +111,15 @@ export interface Unread {
 }
 
 /** How many unread messages `name` has and who sent them, without reading or marking anything. Undefined if there is no such agent. */
-export function unreadSummary(db: Db, name: string): Unread | undefined {
-  const agent = getAgent(db, name);
+export function unreadSummary(db: Db, account: AccountId, name: string): Unread | undefined {
+  const agent = getAgent(db, account, name);
   if (!agent) return undefined;
   // One query, so the count and the senders always describe the same messages.
   const rows = db
     .prepare(
       `SELECT m.sender, COUNT(*) AS n FROM messages m JOIN agents a ON a.id = m.recipient_id
-       WHERE a.name = ? AND a.removed_at IS NULL AND m.read_at IS NULL GROUP BY m.sender ORDER BY MIN(m.id)`,
+       WHERE a.account_id = ? AND a.name = ? AND a.removed_at IS NULL AND m.read_at IS NULL GROUP BY m.sender ORDER BY MIN(m.id)`,
     )
-    .all(agent.name) as { sender: string; n: number }[];
+    .all(account, agent.name) as { sender: string; n: number }[];
   return { count: rows.reduce((sum, r) => sum + r.n, 0), senders: rows.map((r) => r.sender) };
 }

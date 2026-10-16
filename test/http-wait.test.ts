@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { registerAgent } from "../src/agents.js";
-import { openDb, type Db } from "../src/db.js";
+import { OWNER_ACCOUNT, openDb, type Db } from "../src/db.js";
 import { startHttp, type HttpServer } from "../src/http.js";
 import { sendMessage } from "../src/messages.js";
 import { httpWaitCommand } from "../src/wait.js";
@@ -16,8 +16,8 @@ let http: HttpServer;
 
 beforeEach(async () => {
   db = openDb(join(mkdtempSync(join(tmpdir(), "memory-cp-httpwait-")), "db.sqlite"));
-  registerAgent(db, "alice", "receiver");
-  registerAgent(db, "bob", "sender");
+  registerAgent(db, OWNER_ACCOUNT, "alice", "receiver");
+  registerAgent(db, OWNER_ACCOUNT, "bob", "sender");
   http = await startHttp(db, { token: TOKEN, port: 0, waitHoldMs: 1500 });
 });
 
@@ -33,7 +33,7 @@ const wait = (agent: string, token: string | null = TOKEN) =>
 
 describe("GET /wait", () => {
   it("answers at once when mail is already waiting, without marking it read", async () => {
-    sendMessage(db, "bob", "alice", "secret body");
+    sendMessage(db, OWNER_ACCOUNT, "bob", "alice", "secret body");
     const res = await wait("alice");
     expect(res.status).toBe(200);
     expect(await res.text()).toBe("1 unread message from bob\n");
@@ -43,7 +43,7 @@ describe("GET /wait", () => {
   it("answers when a message arrives while it waits", async () => {
     const pending = wait("alice");
     await new Promise((r) => setTimeout(r, 300));
-    sendMessage(db, "bob", "alice", "hi");
+    sendMessage(db, OWNER_ACCOUNT, "bob", "alice", "hi");
     const res = await pending;
     expect(res.status).toBe(200);
     expect(await res.text()).toBe("1 unread message from bob\n");
@@ -72,7 +72,7 @@ describe("GET /wait", () => {
       req.end();
     });
     await new Promise((r) => setTimeout(r, 200));
-    sendMessage(db, "bob", "alice", "hi");
+    sendMessage(db, OWNER_ACCOUNT, "bob", "alice", "hi");
     expect((await wait("alice")).status).toBe(200);
     await http.close();
   });
@@ -95,7 +95,7 @@ describe("the curl command", () => {
     expect(cmd).not.toContain(TOKEN);
     const p = run(cmd, { MEMORY_CP_HTTP_TOKEN: TOKEN });
     await new Promise((r) => setTimeout(r, 2500)); // past one 204 round
-    sendMessage(db, "bob", "alice", "hi");
+    sendMessage(db, OWNER_ACCOUNT, "bob", "alice", "hi");
     expect(await p.exited).toBe(0);
     expect(p.out()).toBe("1 unread message from bob\n");
   }, 20_000);
@@ -105,7 +105,7 @@ describe("the curl command", () => {
     const { mkdirSync, writeFileSync } = await import("node:fs");
     mkdirSync(join(home, ".memory-cp"));
     writeFileSync(join(home, ".memory-cp/http-token"), `${TOKEN}\n`);
-    sendMessage(db, "bob", "alice", "hi");
+    sendMessage(db, OWNER_ACCOUNT, "bob", "alice", "hi");
     const p = run(command("alice"), { HOME: home });
     expect(await p.exited).toBe(0);
   });

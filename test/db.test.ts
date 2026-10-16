@@ -1,10 +1,12 @@
 import { spawn } from "node:child_process";
-import { mkdtempSync, readFileSync, statSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import Database from "better-sqlite3";
-import { openDb } from "../src/db.js";
+import { OWNER_ACCOUNT, openDb, preAccountsCopy } from "../src/db.js";
+import { getAgent, registerAgent } from "../src/agents.js";
+import { readInbox } from "../src/messages.js";
 
 const OPEN_DB = join(import.meta.dirname, "fixtures", "open-db.ts");
 const SCHEMA_BEFORE_REMOVAL = join(import.meta.dirname, "fixtures", "schema-before-removal.sql");
@@ -40,6 +42,12 @@ describe("openDb", () => {
       expect(statSync(file).mode & 0o777).toBe(0o600);
     }
   }, 60_000);
+
+  it("makes no copy for a new database", () => {
+    const file = join(mkdtempSync(join(tmpdir(), "memory-cp-")), "db.sqlite");
+    openDb(file).close();
+    expect(existsSync(preAccountsCopy(file))).toBe(false);
+  });
 
   describe("on a database from before memories, tasks and the hive were removed", () => {
     const REMOVED = ["memories", "memories_fts", "memory_tags", "tasks", "task_tags", "hive_runs"];
@@ -104,8 +112,8 @@ describe("openDb", () => {
     it("lets a broadcast read only the live agents", () => {
       const db = openDb(oldDatabase());
       const plan = db
-        .prepare("EXPLAIN QUERY PLAN SELECT id, name FROM agents WHERE name <> ? AND removed_at IS NULL ORDER BY name")
-        .all("x") as { detail: string }[];
+        .prepare("EXPLAIN QUERY PLAN SELECT id, name FROM agents WHERE account_id = ? AND name <> ? AND removed_at IS NULL ORDER BY name")
+        .all(OWNER_ACCOUNT, "x") as { detail: string }[];
       expect(plan.map((p) => p.detail).join("\n")).toMatch(/USING INDEX agents_live/);
       db.close();
     });
@@ -124,7 +132,72 @@ describe("openDb", () => {
       for (const table of REMOVED) {
         expect(db.prepare("SELECT name FROM sqlite_master WHERE name = ?").get(table)).toBeUndefined();
       }
+      expect(db.prepare("SELECT DISTINCT account_id FROM agents").pluck().all()).toEqual([OWNER_ACCOUNT]);
       db.close();
+      // One copy, and no half-written one left behind by a process that lost the race.
+      const dir = join(file, "..");
+      expect(readdirSync(dir).filter((f) => f.includes("before-accounts"))).toEqual(["db.sqlite.before-accounts"]);
+      expect(statSync(preAccountsCopy(file)).mode & 0o777).toBe(0o600);
     }, 60_000);
+
+    it("gives every agent and message to the owner's account, and copies the file first, owner-only", () => {
+      const file = oldDatabase();
+      const before = new Database(file, { readonly: true });
+      const kept = snapshot(before);
+      before.close();
+      const umask = process.umask(0o022);
+      let db;
+      try {
+        db = openDb(file);
+      } finally {
+        process.umask(umask);
+      }
+      expect(snapshot(db)).toEqual(kept);
+      expect(db.prepare("SELECT DISTINCT account_id FROM agents").pluck().all()).toEqual([OWNER_ACCOUNT]);
+      expect(getAgent(db, OWNER_ACCOUNT, "bob")?.bio).toBe("b");
+      expect(readInbox(db, OWNER_ACCOUNT, "Bob").map((m) => m.body)).toEqual(["hello"]);
+      // alice's key still protects her.
+      expect(() => registerAgent(db, OWNER_ACCOUNT, "alice", "x", "wrong")).toThrow(/has a key/);
+      db.close();
+
+      const copy = preAccountsCopy(file);
+      expect(statSync(copy).mode & 0o777).toBe(0o600);
+      const saved = new Database(copy, { readonly: true });
+      expect(snapshot(saved)).toEqual(kept);
+      saved.close();
+    });
+
+    it("copies only once: a later open leaves the copy as it was", () => {
+      const file = oldDatabase();
+      openDb(file).close();
+      const first = statSync(preAccountsCopy(file)).mtimeMs;
+      const db = openDb(file);
+      registerAgent(db, OWNER_ACCOUNT, "carol", "c");
+      db.close();
+      openDb(file).close();
+      expect(statSync(preAccountsCopy(file)).mtimeMs).toBe(first);
+    });
+
+    it("replaces a copy left from a migration that never committed", () => {
+      const file = oldDatabase();
+      writeFileSync(preAccountsCopy(file), "stale");
+      openDb(file).close();
+      const saved = new Database(preAccountsCopy(file), { readonly: true });
+      expect(saved.prepare("SELECT name FROM agents ORDER BY name").pluck().all()).toEqual(["alice", "Bob"]);
+      saved.close();
+    });
+
+    it("leaves a release from before accounts unable to register, rather than registering across accounts", () => {
+      const db = openDb(oldDatabase());
+      // What an earlier release runs: its ON CONFLICT(name) matches no unique constraint any more.
+      expect(() =>
+        db
+          .prepare(
+            "INSERT INTO agents (name, bio, registered_at, last_seen) VALUES ('x', '', 0, 0) ON CONFLICT(name) DO UPDATE SET bio = 'y'",
+          )
+          .run(),
+      ).toThrow(/ON CONFLICT clause does not match/);
+      db.close();
+    });
   });
 });

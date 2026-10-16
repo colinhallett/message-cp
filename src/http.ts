@@ -1,8 +1,9 @@
-import { randomUUID, timingSafeEqual, createHash } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { createServer as createHttpServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
-import type { Db } from "./db.js";
+import { accountForToken } from "./accounts.js";
+import type { AccountId, Db } from "./db.js";
 import { unreadSummary } from "./messages.js";
 import { Session, createServer } from "./server.js";
 import { DEFAULT_WAIT_HOLD_MS, formatUnread } from "./wait.js";
@@ -14,6 +15,7 @@ const MAX_BODY_BYTES = 4 * 1024 * 1024;
 export const DEFAULT_MAX_SESSIONS = 256;
 
 export interface HttpOptions {
+  /** The owner's token (MEMORY_CP_HTTP_TOKEN). Tokens created with `memory-cp token add` work as well, as their account. */
   token: string;
   host?: string;
   port?: number;
@@ -38,14 +40,16 @@ export interface HttpServer {
 interface Live {
   transport: StreamableHTTPServerTransport;
   lastUsed: number;
+  /** The account whose token started the session; only that account's tokens can use it. */
+  account: AccountId;
 }
 
-/** Constant-time comparison: both sides are hashed so the lengths match. */
-function tokenMatches(header: string | undefined, token: string): boolean {
+/** The account the request's bearer token belongs to, checked afresh on every request so a revoked token stops at once. */
+function accountOf(db: Db, header: string | undefined, ownerToken: string): AccountId | undefined {
   const m = /^bearer +(.*)$/i.exec(header ?? "");
-  const a = createHash("sha256").update(m?.[1] ?? "").digest();
-  const b = createHash("sha256").update(token).digest();
-  return timingSafeEqual(a, b) && m !== null;
+  // Hash something even without a header, so a refusal takes about as long either way.
+  const account = accountForToken(db, m?.[1] ?? "", ownerToken);
+  return m === null ? undefined : account;
 }
 
 function reply(res: ServerResponse, status: number, message: string, headers: Record<string, string> = {}): void {
@@ -94,9 +98,9 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
   sweep.unref();
 
   /** One check for mail; a lock held past the busy timeout counts as no mail this time, as in `memory-cp wait`. */
-  const poll = (name: string) => {
+  const poll = (account: AccountId, name: string) => {
     try {
-      return unreadSummary(db, name);
+      return unreadSummary(db, account, name);
     } catch (err) {
       const code = (err as { code?: unknown } | null)?.code;
       if (typeof code !== "string" || !code.startsWith("SQLITE_BUSY")) throw err;
@@ -104,11 +108,14 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
     }
   };
 
-  /** Answers 200 with the unread summary as soon as the agent has mail, 204 after `waitHoldMs` without any. */
-  const wait = async (req: IncomingMessage, res: ServerResponse) => {
+  /**
+   * Answers 200 with the unread summary as soon as the account's agent has mail, 204 after `waitHoldMs` without any.
+   * Another account's agent is answered like an unknown one.
+   */
+  const wait = async (req: IncomingMessage, res: ServerResponse, account: AccountId) => {
     if (req.method !== "GET") return reply(res, 405, "Method not allowed", { Allow: "GET" });
     const name = new URL(req.url ?? "", "http://x").searchParams.get("agent");
-    const first = name ? poll(name) : undefined;
+    const first = name ? poll(account, name) : undefined;
     if (!first) return reply(res, 404, "No such agent");
     // Mail that is already there is answered at once, whatever the cap.
     if (first.count > 0) {
@@ -126,7 +133,7 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
     });
     const deadline = Date.now() + waitHoldMs;
     try {
-      await hold(first, name!, deadline, res, () => gone, (w) => (wake = w));
+      await hold(first, account, name!, deadline, res, () => gone, (w) => (wake = w));
     } finally {
       waiting--;
     }
@@ -134,13 +141,14 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
 
   const hold = async (
     first: NonNullable<ReturnType<typeof poll>>,
+    account: AccountId,
     name: string,
     deadline: number,
     res: ServerResponse,
     isGone: () => boolean,
     setWake: (w: () => void) => void,
   ) => {
-    for (let unread: typeof first | undefined = first; ; unread = poll(name)) {
+    for (let unread: typeof first | undefined = first; ; unread = poll(account, name)) {
       if (isGone()) return;
       if (!unread) return reply(res, 404, "No such agent");
       if (unread.count > 0) {
@@ -164,12 +172,13 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
   };
 
   const handle = async (req: IncomingMessage, res: ServerResponse) => {
-    // The token is the first thing a request meets.
-    if (!tokenMatches(req.headers.authorization, options.token)) {
+    // The token is the first thing a request meets, and decides the account everything after it acts as.
+    const account = accountOf(db, req.headers.authorization, options.token);
+    if (account === undefined) {
       return reply(res, 401, "Unauthorized", { "WWW-Authenticate": "Bearer" });
     }
     const path = (req.url ?? "").split("?")[0];
-    if (path === "/wait") return wait(req, res);
+    if (path === "/wait") return wait(req, res, account);
     if (path !== "/mcp") return reply(res, 404, "Not found");
     if (req.method !== "POST" && req.method !== "GET" && req.method !== "DELETE") {
       return reply(res, 405, "Method not allowed", { Allow: "GET, POST, DELETE" });
@@ -185,13 +194,13 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
     const reserved = !id && req.method === "POST";
     if (reserved) initializing++;
     try {
-      await serve(req, res, id);
+      await serve(req, res, id, account);
     } finally {
       if (reserved) initializing--;
     }
   };
 
-  const serve = async (req: IncomingMessage, res: ServerResponse, id: string | undefined) => {
+  const serve = async (req: IncomingMessage, res: ServerResponse, id: string | undefined, account: AccountId) => {
     let body: unknown;
     if (req.method === "POST") {
       try {
@@ -203,7 +212,8 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
 
     if (id) {
       const live = sessions.get(id);
-      if (!live) return reply(res, 404, "Unknown session");
+      // Another account's session looks like one that does not exist.
+      if (!live || live.account !== account) return reply(res, 404, "Unknown session");
       live.lastUsed = Date.now();
       await live.transport.handleRequest(req, res, body);
       live.lastUsed = Date.now();
@@ -213,7 +223,7 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
     if (req.method !== "POST" || !isInitializeRequest(body)) {
       return reply(res, 400, "Send an initialize request first");
     }
-    const live: Live = { lastUsed: Date.now(), transport: undefined as never };
+    const live: Live = { lastUsed: Date.now(), transport: undefined as never, account };
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: () => randomUUID(),
       onsessioninitialized: (sid) => {
@@ -224,7 +234,7 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
     transport.onclose = () => {
       if (transport.sessionId) sessions.delete(transport.sessionId);
     };
-    await createServer(db, new Session(), { remote: true, publicUrl: options.publicUrl }).connect(transport);
+    await createServer(db, new Session(account), { remote: true, publicUrl: options.publicUrl }).connect(transport);
     await transport.handleRequest(req, res, body);
   };
 

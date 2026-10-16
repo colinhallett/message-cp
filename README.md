@@ -45,10 +45,10 @@ Cursor (`.cursor/mcp.json`):
 MEMORY_CP_HTTP_TOKEN=<long random secret> node dist/cli.js serve --port 8787
 ```
 
-- **Token.** `serve` refuses to start unless `MEMORY_CP_HTTP_TOKEN` is non-empty. Every request must send `Authorization: Bearer <token>`; anything else gets 401 and nothing is touched. There is one token for the install; agents still prove who they are with their key when they register.
+- **Token.** `serve` refuses to start unless `MEMORY_CP_HTTP_TOKEN` is non-empty. Every request must send `Authorization: Bearer <token>`: `MEMORY_CP_HTTP_TOKEN`, which is the owner's account, or a token made with `memory-cp account add` or `token add`, which is that token's account (see [Accounts](#accounts)). Anything else, a revoked token included, gets 401 and nothing is touched. Agents still prove who they are with their key when they register.
 - **Address.** It binds to `127.0.0.1` on port 8787 unless `--host` / `--port` say otherwise. It speaks plain HTTP: **exposing it without HTTPS sends the token and every message in the clear.** Put a reverse proxy that terminates TLS (for example Caddy: `reverse_proxy 127.0.0.1:8787`) in front of it and expose only that.
-- **Sessions.** Each MCP session has its own identity: register in it and its tools act as that agent. A session ends when the client sends DELETE or after 30 minutes idle.
-- **`wait` over HTTP.** `GET /wait?agent=<name>` (same bearer token as `/mcp`) answers 200 with the same one-line summary as `memory-cp wait` as soon as that agent has unread mail, 204 after about four minutes without any (ask again), 404 for an unknown agent. It checks the database about once a second and never reads or marks anything. Start `serve` with `--public-url <the https URL clients use, without /mcp>` and the server's instructions and `register`'s `waitCommand` carry a ready-to-run `curl` loop; without it they leave the wait command out and remote agents call `read_inbox`. See "Waking a remote agent".
+- **Sessions.** Each MCP session has its own identity: register in it and its tools act as that agent. A session belongs to the account whose token started it; a request on it with another account's token gets 404, as if the session did not exist. A session ends when the client sends DELETE or after 30 minutes idle.
+- **`wait` over HTTP.** `GET /wait?agent=<name>` (same bearer token as `/mcp`) answers 200 with the same one-line summary as `memory-cp wait` as soon as that agent has unread mail, 204 after about four minutes without any (ask again), 404 for an unknown agent or one in another account. It checks the database about once a second and never reads or marks anything. Start `serve` with `--public-url <the https URL clients use, without /mcp>` and the server's instructions and `register`'s `waitCommand` carry a ready-to-run `curl` loop; without it they leave the wait command out and remote agents call `read_inbox`. See "Waking a remote agent".
 
 ### End-to-end check
 
@@ -62,9 +62,26 @@ Add it to Claude Code:
 claude mcp add --transport http memory-cp https://memory.example.com/mcp --header "Authorization: Bearer <token>"
 ```
 
+### Accounts
+
+Every agent and every message belongs to one account, and nothing crosses between accounts: a session sees, messages, wakes on and removes only its own account's agents, and another account's agent looks exactly like one that does not exist. Names are unique within an account, so two accounts can each have a `planner`. The owner's account is created on first open; `MEMORY_CP_HTTP_TOKEN`, the stdio server and `memory-cp wait` act as it, and every agent, key and message from before accounts belongs to it.
+
+The operator manages accounts on the server, against the database `serve` uses (`MEMORY_CP_DB`, else the default path). Run the commands as the server's user with the server's `MEMORY_CP_DB`, or they open another database and the tokens they print do not work; on the systemd install in `ops/deploy.md`, as root from `/opt/memory-cp/current`, with the path `MEMORY_CP_DB` has in `/etc/memory-cp.env`: `setpriv --reuid=memory-cp --regid=memory-cp --init-groups env MEMORY_CP_DB=/var/lib/memory-cp/db.sqlite node dist/cli.js account list`.
+
+```sh
+node dist/cli.js account add <name>       # creates the account and prints its first token
+node dist/cli.js account list             # names, creation times and the ids of working tokens; never a token
+node dist/cli.js token add <account>      # prints another token for the account
+node dist/cli.js token revoke <token id>  # stops that token working
+```
+
+A token is printed once, on stdout, when it is made, and only its hash is stored, so a lost token cannot be shown again: make another and revoke the old one. Revoking takes effect on the next request, including requests on sessions that token started; a `/wait` already being held may finish its hold. `MEMORY_CP_HTTP_TOKEN` is not in the database and is changed in the server's environment, as before. Accounts cannot be deleted yet.
+
 ## Database
 
 Every server process reads and writes the same file: `MEMORY_CP_DB` if set, otherwise `~/.memory-cp/db.sqlite`. The directory is created if missing. The database runs in WAL mode with a busy timeout so several processes can share it. Earlier versions also kept shared memories, a task board and hive run records; the first open by this version deletes those tables and their data and leaves agents and messages as they were. Stop older server processes on the same file before upgrading: they still expect those tables.
+
+The first open by a release with accounts rebuilds the `agents` table so that names are unique per account, and first copies the file to `<database>.before-accounts` (mode 0600). No release from before accounts can register an agent on the rebuilt table, and one that still runs reads agents by name across every account, so stop every older process on the file before upgrading and do not go back to one without restoring that copy: see `ops/deploy.md`.
 
 ## Tools
 
