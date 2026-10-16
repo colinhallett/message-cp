@@ -87,7 +87,7 @@ The working tree is a checkout of `main`. Record its commit with
   hasNextPage endCursor } nodes { id identifier title description createdAt
   state { name type } delegate { id name } assignee { name } labels { nodes {
   name } } comments(last: 20) { nodes { body createdAt user { name } } } } }`.
-  This includes the issues the hourly prod check files, labelled
+  This includes the issues the daily prod check files, labelled
   `prod-check`.
 - Recently closed: `issues(first: 100, filter: { team: { key: { eq: "COL" }
   }, state: { type: { in: ["completed", "canceled"] } }, updatedAt: { gt:

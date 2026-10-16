@@ -1,7 +1,7 @@
 ---
 name: prod-check
 description: >-
-  Hourly check of the live memory-cp server: run npm run e2e against it from a
+  Daily check of the live memory-cp server: run npm run e2e against it from a
   fresh checkout of main and, when it fails, file one Linear issue in COL
   labelled prod-check, or comment on the open one. Changes no code and opens no
   pull request.
@@ -117,7 +117,7 @@ in the run output.
 The report, used as the issue description or the comment:
 
 ```text
-The hourly prod check failed.
+The daily prod check failed.
 
 - Step: <step name>
 - Cause: <error code, or omit this line>
