@@ -4,7 +4,8 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { registerFromEnv, removeAgent } from "../src/agents.js";
+import { getAgent, registerFromEnv, removeAgent } from "../src/agents.js";
+import { unreadSummary } from "../src/messages.js";
 import { openDb, type Db } from "../src/db.js";
 import { Session, createServer } from "../src/server.js";
 
@@ -53,7 +54,7 @@ describe("unregister", () => {
     const a = await agent("alice");
     const res = await call(a.client, "unregister");
     expect(res.json.removed).toBe("alice");
-    expect(count("SELECT COUNT(*) AS n FROM agents")).toBe(0);
+    expect(count("SELECT COUNT(*) AS n FROM agents WHERE removed_at IS NULL")).toBe(0);
     const next = await call(a.client, "read_inbox");
     expect(next.isError).toBe(true);
     expect(next.text).toMatch(REGISTER_FIRST);
@@ -74,10 +75,10 @@ describe("unregister", () => {
       const res = await call(b.client, "unregister", args);
       expect(res.isError).toBe(true);
       expect(res.text).not.toContain(a.key);
-      expect(count("SELECT COUNT(*) AS n FROM agents WHERE name = 'alice'")).toBe(1);
+      expect(count("SELECT COUNT(*) AS n FROM agents WHERE name = 'alice' AND removed_at IS NULL")).toBe(1);
     }
     expect((await call(b.client, "unregister", { name: "alice", key: a.key })).json.removed).toBe("alice");
-    expect(count("SELECT COUNT(*) AS n FROM agents WHERE name = 'alice'")).toBe(0);
+    expect(count("SELECT COUNT(*) AS n FROM agents WHERE name = 'alice' AND removed_at IS NULL")).toBe(0);
     // bob is untouched
     expect((await call(b.client, "read_inbox")).isError).toBe(false);
     // and alice's own session is now unregistered
@@ -88,7 +89,7 @@ describe("unregister", () => {
     const b = await agent("bob");
     db.prepare("INSERT INTO agents (name, bio, registered_at, last_seen) VALUES ('old', '', 1, 1)").run();
     expect((await call(b.client, "unregister", { name: "old" })).isError).toBe(false);
-    expect(count("SELECT COUNT(*) AS n FROM agents WHERE name = 'old'")).toBe(0);
+    expect(count("SELECT COUNT(*) AS n FROM agents WHERE name = 'old' AND removed_at IS NULL")).toBe(0);
   });
 
   it("errors for an unknown name", async () => {
@@ -102,21 +103,73 @@ describe("unregister", () => {
     expect((await call(anon, "unregister")).text).toMatch(REGISTER_FIRST);
     expect((await call(anon, "unregister", { name: "alice" })).text).toMatch(REGISTER_FIRST);
     expect((await call(anon, "unregister", { name: "alice", key: "wrong" })).isError).toBe(true);
-    expect(count("SELECT COUNT(*) AS n FROM agents")).toBe(1);
+    expect(count("SELECT COUNT(*) AS n FROM agents WHERE removed_at IS NULL")).toBe(1);
     expect((await call(anon, "unregister", { name: "alice", key: a.key })).isError).toBe(false);
-    expect(count("SELECT COUNT(*) AS n FROM agents")).toBe(0);
+    expect(count("SELECT COUNT(*) AS n FROM agents WHERE removed_at IS NULL")).toBe(0);
   });
 
-  it("deletes its inbox, so a new agent that reuses the id starts empty", async () => {
+  it("keeps the messages addressed to the agent, unchanged, and shows them to no one", async () => {
+    const a = await agent("alice");
+    const b = await agent("bob");
+    await call(b.client, "send_message", { to: "alice", body: "read one" });
+    await call(a.client, "read_inbox");
+    await call(b.client, "send_message", { to: "alice", body: "unread one" });
+    await call(b.client, "send_message", { to: "all", body: "to everyone" });
+    await call(a.client, "send_message", { to: "bob", body: "keep me" });
+    const id = (db.prepare("SELECT id FROM agents WHERE name = 'alice'").get() as { id: number }).id;
+    const messages = () => db.prepare("SELECT * FROM messages ORDER BY id").all();
+    const before = messages();
+
+    const res = await call(a.client, "unregister");
+    expect(res.json).toEqual({ removed: "alice", keptMessages: 3 });
+    expect(messages()).toEqual(before);
+    expect(db.prepare("SELECT name, removed_name FROM agents WHERE id = ?").get(id)).toEqual({
+      name: `removed:${id}`,
+      removed_name: "alice",
+    });
+
+    // The name is free at once, in any case, and the new agent starts with an empty inbox.
+    const again = await agent("ALICE");
+    expect((await call(again.client, "read_inbox", { unread_only: false })).json).toEqual([]);
+    expect(messages()).toEqual(before);
+    expect((await call(b.client, "read_inbox")).json).toHaveLength(1);
+  });
+
+  it("makes the agent invisible to every tool", async () => {
     const a = await agent("alice");
     const b = await agent("bob");
     await call(b.client, "send_message", { to: "alice", body: "hello" });
-    await call(a.client, "send_message", { to: "bob", body: "keep me" });
     await call(a.client, "unregister");
-    expect(count("SELECT COUNT(*) AS n FROM messages WHERE recipient_id NOT IN (SELECT id FROM agents)")).toBe(0);
-    const c = await agent("carol");
-    expect((await call(c.client, "read_inbox", { unread_only: false })).json).toEqual([]);
-    expect((await call(b.client, "read_inbox")).json).toHaveLength(1);
+    expect((await call(b.client, "list_agents")).json.map((x: { name: string }) => x.name)).toEqual(["bob"]);
+    expect((await call(b.client, "get_agent", { name: "alice" })).isError).toBe(true);
+    expect((await call(b.client, "send_message", { to: "alice", body: "x" })).isError).toBe(true);
+    expect((await call(b.client, "send_message", { to: "all", body: "x" })).json).toEqual({ delivered: 0, recipients: [] });
+    expect((await call(b.client, "unregister", { name: "alice" })).text).toMatch(/No agent named/);
+    expect((await call(a.client, "read_inbox")).text).toMatch(REGISTER_FIRST);
+    expect(unreadSummary(db, "alice")).toBeUndefined();
+    // Nor can anyone reach the row by its placeholder name.
+    const id = (db.prepare("SELECT id FROM agents WHERE removed_name = 'alice'").get() as { id: number }).id;
+    expect(getAgent(db, `removed:${id}`)).toBeUndefined();
+    expect(unreadSummary(db, `removed:${id}`)).toBeUndefined();
+    expect((await call(b.client, "register", { name: `removed:${id}`, bio: "x" })).isError).toBe(true);
+  });
+
+  it("keeps a removed agent out of reach of a release that does not know about removals", async () => {
+    const session = new Session();
+    const a = await connect(session);
+    await call(a, "register", { name: "alice", bio: "x" });
+    const stale = session.registration!;
+    const b = await agent("bob");
+    await call(b.client, "send_message", { to: "alice", body: "hello" });
+    await call(a, "unregister");
+    // The previous release finds an agent by name, checking its key, or by a session's (id, registered_at, instance).
+    // Neither reaches the row any more, so it can neither read nor delete the messages kept with it.
+    const row = db.prepare("SELECT name, key_hash FROM agents WHERE id = ?").get(stale.id) as { name: string; key_hash: string };
+    expect(row.name).toBe(`removed:${stale.id}`);
+    expect(row.key_hash).not.toMatch(/^[0-9a-f]{64}$/);
+    expect(
+      db.prepare("SELECT id FROM agents WHERE id = ? AND registered_at = ? AND instance IS ?").get(stale.id, stale.registeredAt, stale.instance),
+    ).toBeUndefined();
   });
 });
 
@@ -146,7 +199,7 @@ describe("a session whose agent was removed", () => {
 
   it("is not fooled by a new registration that reuses the id and the timestamp", async () => {
     const a = await agent("alice");
-    const row = db.prepare("SELECT id, registered_at FROM agents WHERE name = 'alice'").get() as { id: number; registered_at: number };
+    const row = db.prepare("SELECT id, registered_at FROM agents WHERE name = 'alice' AND removed_at IS NULL").get() as { id: number; registered_at: number };
     db.prepare("DELETE FROM agents WHERE id = ?").run(row.id);
     db.prepare("INSERT INTO agents (id, name, bio, registered_at, last_seen, instance) VALUES (?, 'alice', '', ?, ?, 'other')").run(
       row.id,

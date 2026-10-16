@@ -67,7 +67,8 @@ describe("openDb", () => {
     }
 
     const snapshot = (db: Database.Database) => ({
-      agents: db.prepare("SELECT * FROM agents ORDER BY id").all(),
+      // The columns the old schema had; later releases add columns of their own.
+      agents: db.prepare("SELECT id, name, bio, registered_at, last_seen, key_hash, instance FROM agents ORDER BY id").all(),
       messages: db.prepare("SELECT * FROM messages ORDER BY id").all(),
     });
 
@@ -88,6 +89,15 @@ describe("openDb", () => {
       expect(db.prepare("SELECT type, name FROM sqlite_master WHERE tbl_name IN ('agents', 'messages') ORDER BY name").all()).toEqual(
         otherObjects,
       );
+      db.close();
+    });
+
+    it("adds the columns for removed agents, empty, and changes no existing row", () => {
+      const db = openDb(oldDatabase());
+      expect(db.prepare("SELECT removed_at, removed_name FROM agents ORDER BY id").all()).toEqual([
+        { removed_at: null, removed_name: null },
+        { removed_at: null, removed_name: null },
+      ]);
       db.close();
     });
 
