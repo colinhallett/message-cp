@@ -52,10 +52,13 @@ The working tree is a checkout of `main`. Record its commit with
    closed in the last 30 days, and the open pull requests. Do not file work
    that one of them already covers or that was cancelled on purpose. If an
    open issue already covers it, leave it to the owner; do not comment on it.
+   A `prod-check` issue is a report, not a fix: a fix ticket for it is a
+   duplicate only when an open or recently closed issue already says
+   `Traces to: <that identifier>`.
 4. **The owner's files are the owner's.** Work that would change
    `DIRECTION.md`, `AGENTS.md`, `tessl.json`, anything under `tessl-factory/`
    or `.tessl/` is never delegated. File it in Backlog with no delegate and no
-   assignee, starting with the note in "Owner tickets" below.
+   assignee, as in "Filing", step 4.
 5. **One write starts the work.** Every update to a delegated issue in Todo
    starts an Implement run. So a delegated ticket is created in Backlog first,
    then set to Todo with its description and delegate in one `issueUpdate`,
@@ -76,19 +79,23 @@ The working tree is a checkout of `main`. Record its commit with
 - The COL team: `teams(filter: { key: { eq: "COL" } }) { nodes { id states {
   nodes { id name type position } } } }`.
 - Open issues: `issues(first: 100, filter: { team: { key: { eq: "COL" } },
-  state: { type: { nin: ["completed", "canceled"] } } }) { nodes { id
-  identifier title description state { name type } delegate { id name }
-  assignee { name } labels { nodes { name } } relations { nodes { type
-  relatedIssue { identifier } } } } }`. This includes the issues the hourly
-  prod check files, labelled `prod-check`.
-- Recently closed: the same query with `state: { type: { in: ["completed",
-  "canceled"] } }, updatedAt: { gt: "<30 days ago, ISO>" }`.
+  state: { type: { nin: ["completed", "canceled"] } } }) { pageInfo {
+  hasNextPage endCursor } nodes { id identifier title description createdAt
+  state { name type } delegate { id name } assignee { name } labels { nodes {
+  name } } comments(last: 20) { nodes { body createdAt user { name } } } } }`.
+  This includes the issues the hourly prod check files, labelled
+  `prod-check`.
+- Recently closed: `issues(first: 100, filter: { team: { key: { eq: "COL" }
+  }, state: { type: { in: ["completed", "canceled"] } }, updatedAt: { gt:
+  "<30 days ago, ISO>" } }) { pageInfo { hasNextPage endCursor } nodes {
+  identifier title description state { type } labels { nodes { name } } } }`.
 - The Tessl delegate's id: `viewer { id name }`. Your token acts as Tessl.
 - Recent merges: `gh pr list --state merged --limit 30 --json
   number,title,mergedAt,body,files`, and open PRs: `gh pr list --state open
-  --json number,title,headRefName`.
+  --json number,title,headRefName,files`.
 
-Page any connection whose `pageInfo.hasNextPage` is true.
+Page any connection whose `pageInfo.hasNextPage` is true, passing `after:
+"<endCursor>"`.
 
 ## Deciding what to file
 
@@ -164,15 +171,16 @@ For each ticket, in order:
 2. Create it in the team's `backlog` state with the lowest `position`, with
    no delegate:
    `issueCreate(input: {teamId, title, description, estimate, stateId})`.
-   If Linear rejects `estimate`, say so in the run output and file without
-   it; do not change the team's settings.
+   If Linear rejects `estimate`, file it as an owner ticket (step 4) instead
+   of delegating it, and say so in the run output; do not change the team's
+   settings.
 3. **Delegated ticket:** in one call,
    `issueUpdate(id, input: {description, delegateId, stateId})` with the same
    description, the Tessl delegate's id, and the team's `unstarted` state
    with the lowest `position` (Todo). That update starts Implement. Make no
    further write to the issue.
 4. **Owner ticket** (rule 4): leave it in Backlog. Its description starts
-   with:
+   with this note, followed by the template:
 
    ```text
    For the owner: this changes <the owner's file>, which the factory may
@@ -180,9 +188,11 @@ For each ticket, in order:
    the factory to build it.
    ```
 
-If a run ends between steps 2 and 3, the next run finds the Backlog issue
-with the `<!-- tessl-planner -->` marker and no delegate. Finish it with step
-3 if rule 1 still allows, or leave it in Backlog and say so.
+If a run ends between steps 2 and 3, the next run finds a Backlog issue
+with the `<!-- tessl-planner -->` marker, no delegate, and a description that
+does not start with `For the owner:`. Finish it with step 3 if rule 1 still
+allows, counting it toward this run's two, or leave it in Backlog and say so.
+Never delegate one whose description starts with `For the owner:`.
 
 ## The weekly summary
 
@@ -195,23 +205,27 @@ it exists, do not write another.
 Cover the seven days up to now:
 
 - **Merged:** each PR merged, as `#<n> <title>` with its `Closes` issue.
-- **Deployed:** the factory cannot read the server's deploy log. Write what
-  it can see: whether `ops/deploy.sh` is on `main` (then a merge is deployed,
-  or rolled back, within minutes), and any open `prod-check` issue. Say
-  plainly that `journalctl -u memory-cp-deploy` on the server is the record.
-- **Production check:** each COL issue labelled `prod-check` created or
-  commented on in the window, with its identifier, the failed step from its
+- **Deployed:** the factory cannot read the server. If `ops/deploy.sh` is
+  not on `main`, write "Deploys are not automated yet." If it is, write that
+  each merge above is deployed or rolled back within minutes, that the server
+  itself is the record (see `ops/deploy.md` on `main` for where it logs), and
+  whether a `prod-check` issue was open this week.
+- **Production check:** each COL issue labelled `prod-check`, open or
+  closed in the last 30 days, that was created or commented on in the window, with its identifier, the failed step from its
   title and its state. Nothing more from its comments.
-- **Waiting on you:** open COL issues in Backlog with the
-  `<!-- tessl-planner -->` marker, open issues with a comment carrying
-  `<!-- tessl-factory -->` that asks a question nobody answered, and open
-  PRs that change the owner's files.
+- **Waiting on you:** open COL issues in Backlog whose description starts
+  `For the owner:`, open issues whose newest comment carries
+  `<!-- tessl-factory -->` and asks a question, and open PRs whose `files`
+  include one of the owner's files (rule 4).
 - **Factory runs:** the number of launch runs this week for memory-cp. List
-  the schedules with `tessl schedule list --json --all`, keep those whose
+  the schedules with `tessl schedule list --json --all` (Implement and the
+  Shepherd are listed there too, with cron `event`), keep those whose
   `attributes.config.repoUrl` is `https://github.com/colinhallett/memory-cp`,
   and for each count the runs from `tessl schedule runs <id> --json --limit
-  200` whose `attributes.createdAt` is in the window. Give the total and the
-  count per schedule label. If a count fails, say which and give the rest.
+  100` (the most it returns) whose `attributes.createdAt` is in the window.
+  If all 100 are in the window, write "100 or more" for that schedule. Give
+  the total and the count per schedule label. If a count fails, say which and
+  give the rest.
 - **Filed today:** the tickets this run filed.
 
 No tokens, no message bodies, no environment values, no failure output
