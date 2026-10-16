@@ -163,9 +163,9 @@
     },
     "prod-check": {
       "action": "prod-check",
-      "cron": "17 * * * *",
+      "cron": "17 7 * * *",
       "timezone": "UTC",
-      "description": "Hourly e2e check of the live server; files or comments on one prod-check issue in COL when it fails"
+      "description": "Daily e2e check of the live server; files or comments on one prod-check issue in COL when it fails"
     }
   }
 }
