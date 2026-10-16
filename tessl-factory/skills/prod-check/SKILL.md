@@ -74,12 +74,13 @@ The team is `COL`. Find the open check issue:
 ```graphql
 issues(filter: { team: { key: { eq: "COL" } }, labels: { name: { eq: "prod-check" } },
   state: { type: { nin: ["completed", "canceled"] } } }) {
-  nodes { id identifier url createdAt
+  nodes { id identifier number url createdAt
     comments(last: 20, orderBy: createdAt) { nodes { body createdAt } } }
 }
 ```
 
-If there is more than one, use the oldest and say so in the run output.
+If there is more than one, use the one with the lowest `number` and say so
+in the run output.
 
 **On a pass:**
 
@@ -107,11 +108,11 @@ If there is more than one, use the oldest and say so in the run output.
     the owner to decide.
 
   Then run the lookup again. Another run may have filed one at the same
-  time. If an open `prod-check` issue older than yours exists, comment your
-  report on the oldest and cancel yours with `issueUpdate(id, input:
-  {stateId})`, using the team's state of type `canceled` with the lowest
-  `position`.
-  Each failed run then leaves one open issue, however runs overlap.
+  time. If an open `prod-check` issue with a lower `number` than yours
+  exists, comment your report on the lowest and cancel yours with
+  `issueUpdate(id, input: {stateId})`, using the team's state of type
+  `canceled` with the lowest `position`. Issue numbers are unique in the
+  team, so overlapping runs always agree on one open issue.
 
 The report, used as the issue description or the comment:
 
