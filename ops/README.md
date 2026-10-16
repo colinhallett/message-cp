@@ -1,94 +1,57 @@
-# Deploying `main` to the server
+# Operations
 
-The server deploys itself. Every two minutes `memory-cp-deploy.timer` runs `deploy.sh`, which fetches `origin/main` with a read-only deploy key and, if it is new, builds it, switches it in, restarts `memory-cp.service` and runs `npm run e2e` against the public URL. A release that fails `npm ci`, `npm run build` or that check is rolled back to the previous one, and its sha is written to `failed-sha` so it is not tried again until `main` moves. A release is live only once it has passed the check: its sha is then written to `live-sha`, and a run that ends between switching and checking (a reboot, a timeout) is undone by the next run, which puts `live-sha` back before anything else. A merge is live, or rolled back, within about five minutes.
+- **Deploys.** The server deploys `main` itself and rolls back a release that fails its check: see [deploy.md](deploy.md).
+- **Backups.** Below, and restoring in [restore.md](restore.md).
 
-| File | What it is |
-| --- | --- |
-| `deploy.sh` | One deploy run, as root. Installed as `/opt/memory-cp/deploy.sh`. |
-| `memory-cp-deploy.service`, `memory-cp-deploy.timer` | Run `deploy.sh` two minutes after the last run ended. |
-| `memory-cp.service` | `memory-cp serve` from `/opt/memory-cp/current`, as the `memory-cp` user. Replaces the server's existing unit. |
-| `try-deploy.sh` | Tries all of it on any Linux machine, without root or systemd (see below). |
+## Nightly database backup
 
-## Layout
+`backup.sh` copies a consistent snapshot of the memory-cp database to an Oracle Object Storage bucket once a night, at 02:30 UTC. Restoring is in [restore.md](restore.md). Only the database is backed up.
 
-```text
-/opt/memory-cp/
-  deploy.sh             this directory's deploy.sh (root's; a deploy never changes it)
-  repo.git/             bare clone of the GitHub repo; only ever fetched
-  releases/<sha>/       one built release per commit, root's and read-only to the server; the newest five are kept
-  current -> releases/<sha>   the live release; switching it is the deploy, switching it back is the rollback
-  live-sha              the last sha that passed its check
-  failed-sha            the last sha that failed, not retried until main moves; its release is deleted
-  deploy.lock           flock(1) lock: two runs never overlap
-  build-home/           HOME and npm cache for builds (memory-cp-build's)
-  check-home/           HOME and npm cache for the check (memory-cp's)
-/etc/memory-cp.env      MEMORY_CP_HTTP_TOKEN, MEMORY_CP_PUBLIC_URL, MEMORY_CP_DB (root, 0600)
-```
+- **Snapshot.** `VACUUM INTO`, SQLite's online copy, so the snapshot is one point in time while `serve` keeps writing. Copying the file of a database in WAL mode is not safe and is never done. The snapshot must pass `PRAGMA integrity_check` before it is uploaded.
+- **Object.** `memory-cp-<UTC date>.sqlite.gz`, for example `memory-cp-2026-10-17.sqlite.gz`. A second run on the same day writes a new version of that day's object. The bucket's lifecycle rules keep 30 days.
+- **Credential.** A pre-authenticated request (PAR) on the bucket that only allows object writes. It cannot list, read or delete backups. It can overwrite an object, so the bucket keeps object versions: an overwrite adds a version and the earlier ones stay. The server needs no OCI CLI or API key; the upload is `curl -T`.
+- **Failure.** Any failure exits non-zero, so it shows in `journalctl -u memory-cp-backup` and `systemctl --failed`. The URL is never logged: it is passed to `curl` on stdin, not on its command line, and messages name the file it came from.
+- **Local copy.** Built in a temporary directory that is deleted when the script exits, whether the upload worked or not.
 
-The database (`MEMORY_CP_DB`) and `/etc/memory-cp.env` are outside `releases/`, and no deploy writes them; `deploy.sh` refuses to run if `MEMORY_CP_DB` points inside a release. The token is read from `/etc/memory-cp.env` by root and given to the check in its environment, never on a command line, and nothing prints it. Builds run as `memory-cp-build`, a user that can read neither the token nor the database, so a dependency's install script cannot either; the check runs as `memory-cp`, the server's user. Everything `deploy.sh` prints goes to the journal: `journalctl -u memory-cp-deploy`.
+### Install
 
-## Install
+Needs `sqlite3` (3.27 or later, for `VACUUM INTO`), `curl` and `gzip` on the server (`apt install sqlite3 curl`), and systemd 247 or later for `LoadCredential=`.
 
-As root, on a machine with Node 22.12 or later, git, curl, `flock` and `setpriv` (util-linux), and a C++ toolchain (`build-essential` on Debian and Ubuntu) in case `better-sqlite3` has no prebuilt binary for the server's Node:
-
-1. A user for the server, one for builds, and the directories:
+1. In the OCI console (or with the OCI CLI on the owner's machine, not the server), create the bucket with object versioning on, and give it lifecycle rules that delete objects and previous object versions after 30 days. Create a pre-authenticated request with access type **Permit object writes** on the whole bucket. Its URL ends in `/o/`. Every PAR has an expiry date: pick a far one and note it, because after it every backup fails with a 4xx until the URL in step 2 is replaced.
+2. On the server, as root, store the URL where only root can read it:
 
    ```sh
-   useradd --system --home-dir /var/lib/memory-cp --create-home --shell /usr/sbin/nologin memory-cp
-   useradd --system --no-create-home --shell /usr/sbin/nologin memory-cp-build
-   chmod 700 /var/lib/memory-cp
-   mkdir -p /opt/memory-cp
+   install -d -m 0700 /etc/memory-cp
+   install -m 0600 /dev/null /etc/memory-cp/backup-url
+   cat > /etc/memory-cp/backup-url   # paste the URL, then Ctrl-D
+   clear                             # the URL is now in the scrollback
    ```
 
-2. A read-only deploy key. Generate it, then add the `.pub` on GitHub under the repository's Settings → Deploy keys, with "Allow write access" left off:
+3. Install the script and units:
 
    ```sh
-   install -d -m 700 /root/.ssh
-   ssh-keygen -t ed25519 -N '' -C memory-cp-deploy -f /root/.ssh/memory-cp-deploy
-   ssh-keyscan github.com >> /root/.ssh/known_hosts
+   install -m 0755 ops/backup.sh /usr/local/bin/memory-cp-backup
+   install -m 0644 ops/memory-cp-backup.service ops/memory-cp-backup.timer /etc/systemd/system/
    ```
 
-3. The bare clone, fetching with that key:
+4. Run the backup as the account that runs `serve` and owns the database, with the same `MEMORY_CP_DB` if `serve` sets one. `systemctl edit memory-cp-backup.service` and add:
 
-   ```sh
-   GIT_SSH_COMMAND='ssh -i /root/.ssh/memory-cp-deploy -o IdentitiesOnly=yes' \
-     git clone --bare git@github.com:colinhallett/memory-cp.git /opt/memory-cp/repo.git
-   git --git-dir=/opt/memory-cp/repo.git config core.sshCommand 'ssh -i /root/.ssh/memory-cp-deploy -o IdentitiesOnly=yes'
+   ```ini
+   [Service]
+   User=memory-cp
+   Environment=MEMORY_CP_DB=/var/lib/memory-cp/db.sqlite
    ```
 
-4. `/etc/memory-cp.env`, if the server does not have it yet (keep the existing token and database path if it does, and add `MEMORY_CP_PUBLIC_URL`):
+   (Without `MEMORY_CP_DB` it backs up `~/.memory-cp/db.sqlite` of that user, as the server does.)
+5. Enable the timer and run one backup now:
 
    ```sh
-   MEMORY_CP_HTTP_TOKEN=<the token agents use>
-   MEMORY_CP_PUBLIC_URL=https://memory.example.com
-   MEMORY_CP_DB=/var/lib/memory-cp/db.sqlite
-   ```
-
-   `chown root:root /etc/memory-cp.env && chmod 600 /etc/memory-cp.env`. `MEMORY_CP_PUBLIC_URL` is the https URL clients use, without `/mcp`; the check runs against it, through Caddy.
-
-5. The script and units, from a checkout of this repository:
-
-   ```sh
-   install -m 755 ops/deploy.sh /opt/memory-cp/deploy.sh
-   install -m 644 ops/memory-cp.service ops/memory-cp-deploy.service ops/memory-cp-deploy.timer /etc/systemd/system/
    systemctl daemon-reload
+   systemctl enable --now memory-cp-backup.timer
+   systemctl start memory-cp-backup.service
+   journalctl -u memory-cp-backup -n 5    # memory-cp-backup: uploaded memory-cp-<date>.sqlite.gz (<n> bytes)
    ```
 
-   `memory-cp.service` replaces the server's existing unit of that name. Compare it first and carry over anything the old one needed (a different port or user, for example); Caddy keeps proxying to `127.0.0.1:8787`. It finds `node` on systemd's default PATH (`/usr/local/bin`, `/usr/bin`, ...); if node lives elsewhere, put its absolute path in `ExecStart`.
+   Then check that the object is in the bucket. `systemctl list-timers memory-cp-backup.timer` shows the next run.
 
-6. The first deploy, then the timer:
-
-   ```sh
-   systemctl enable memory-cp.service
-   systemctl start memory-cp-deploy.service    # builds main, starts the server, runs the check
-   journalctl -u memory-cp-deploy -n 50
-   systemctl enable --now memory-cp-deploy.timer
-   ```
-
-   If the first deploy fails there is nothing to roll back to, so the server stays stopped until a commit passes.
-
-To see what is live: `cat /opt/memory-cp/live-sha`. A failure while the registry, the network or Caddy was down also lands in `failed-sha`; to retry that sha without a new commit, `rm /opt/memory-cp/failed-sha`. To roll back by hand, stop the timer first (`systemctl stop memory-cp-deploy.timer`), since a run puts `live-sha` back and deploys `main` again.
-
-## Trying it
-
-`ops/try-deploy.sh` runs `deploy.sh` for real, without root or systemd: a bare git repo stands in for GitHub, and a stand-in `systemctl` starts the server from `current` on port 18787 (`PORT=` to change it). It deploys this checkout's HEAD and checks it, runs again and does nothing, then pushes a commit whose server answers every authorised request with 500 and checks that it fails `npm run e2e`, is rolled back and deleted, is not retried, and that the previous release passes the check again; last, it points `current` at an unchecked release, as a killed run would leave it, and checks that the next run restores the good one. It exits 0 when all of that holds and keeps its work directory for inspection.
+To run it by hand outside systemd, point it at the URL file: `MEMORY_CP_BACKUP_URL_FILE=/path/to/url ops/backup.sh`.
