@@ -71,6 +71,10 @@ The working tree is a checkout of `main`. Record its commit with
 7. **Nothing private.** A ticket or summary never contains a token, a
    message body, an environment value or the text of a prod-check failure
    beyond what its issue already says.
+8. **One planner at a time.** The schedule cannot limit its own
+   concurrency, so check for another run before any write, as in "Only one
+   run". Two runs that read the same count would each file up to two
+   tickets, or both post the weekly summary.
 
 ## Reading the record
 
@@ -88,7 +92,10 @@ The working tree is a checkout of `main`. Record its commit with
 - Recently closed: `issues(first: 100, filter: { team: { key: { eq: "COL" }
   }, state: { type: { in: ["completed", "canceled"] } }, updatedAt: { gt:
   "<30 days ago, ISO>" } }) { pageInfo { hasNextPage endCursor } nodes {
-  identifier title description state { type } labels { nodes { name } } } }`.
+  identifier title description createdAt state { type } labels { nodes {
+  name } } comments(last: 20) { nodes { createdAt } } } }`. The weekly
+  summary uses `createdAt` and the comment dates to place a closed
+  `prod-check` issue in its window.
 - The Tessl delegate's id: `viewer { id name }`. Your token acts as Tessl.
 - Recent merges: `gh pr list --state merged --limit 30 --json
   number,title,mergedAt,body,files`, and open PRs: `gh pr list --state open
@@ -96,6 +103,20 @@ The working tree is a checkout of `main`. Record its commit with
 
 Page any connection whose `pageInfo.hasNextPage` is true, passing `after:
 "<endCursor>"`.
+
+## Only one run
+
+Do this after reading the record and again just before the first write
+(`issueCreate`, `issueUpdate` or `documentCreate`). Find the `planner`
+schedule in `tessl schedule list --json --all` (label `planner`,
+`attributes.config.repoUrl` is `https://github.com/colinhallett/memory-cp`)
+and read `tessl schedule runs <id> --json --limit 20`. Another run is in
+progress when its `id` is not `$TESSL_LAUNCH_RUN_ID` and its
+`attributes.status` is `pending` or `running`. If one is in progress and its
+`attributes.createdAt` is earlier than yours, or equal and its `id` sorts
+before yours, write nothing: say in the run output that run `<id>` is
+already planning, and stop. If `TESSL_LAUNCH_RUN_ID` is unset or the runs
+cannot be read, write nothing and say why.
 
 ## Deciding what to file
 
@@ -147,7 +168,9 @@ Traces to: <"DIRECTION.md: <quoted line>" or "<issue identifier>">
 
 * Run it for real through <the real entry point: `memory-cp ...`,
   `npm run e2e -- --url ...`, the MCP tool over stdio or HTTP>, and put the
-  command and its output in the PR description.
+  command and its output in the PR description, with every message body
+  and token replaced by `<redacted>` (a failing `npm run e2e` prints the
+  body it sent).
 * `npm run build` and `npm test` pass.
 * A legibility review and a fresh-eyes subagent review of the diff before
   opening the PR.
