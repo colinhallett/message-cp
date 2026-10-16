@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { addAccount } from "../src/accounts.js";
-import { registerAgent } from "../src/agents.js";
+import { registerAgent, removeAgent } from "../src/agents.js";
 import { OWNER_ACCOUNT, openDb, type Db } from "../src/db.js";
 import { startHttp, type HttpServer } from "../src/http.js";
 import { sendMessage } from "../src/messages.js";
@@ -491,18 +491,33 @@ describe("waking an agent signed in with GitHub", () => {
   });
 
   it("refuses a name and key that two accounts both hold", async () => {
-    const key = "k".repeat(64);
-    registerAgent(db, OWNER_ACCOUNT, "twin", "x", key);
-    expect((await waitWithKey("twin", key)).status).toBe(204);
+    const { key } = registerAgent(db, OWNER_ACCOUNT, "twin", "x");
+    expect((await waitWithKey("twin", key!)).status).toBe(204);
     addAccount(db, "other");
-    registerAgent(db, 2, "twin", "y", key);
-    expect((await waitWithKey("twin", key)).status).toBe(401);
+    registerAgent(db, 2, "twin", "y");
+    // A generated key is never repeated, so the other account's row is given the same one by hand.
+    db.prepare("UPDATE agents SET key_hash = (SELECT key_hash FROM agents WHERE account_id = 1 AND name = 'twin'), wait_key_hash = (SELECT key_hash FROM agents WHERE account_id = 1 AND name = 'twin') WHERE account_id = 2").run();
+    expect((await waitWithKey("twin", key!)).status).toBe(401);
   });
 
-  it("does not take a key shorter than a generated one", async () => {
-    registerAgent(db, OWNER_ACCOUNT, "short", "x", "k");
-    sendMessage(db, OWNER_ACCOUNT, "short", "short", "x");
-    expect((await waitWithKey("short", "k")).status).toBe(401);
+  it("takes only a key register generated, not one the agent chose, however long", async () => {
+    for (const [i, key] of ["k", "k".repeat(64), "k".repeat(256)].entries()) {
+      registerAgent(db, OWNER_ACCOUNT, `chosen${i}`, "x", key);
+      sendMessage(db, OWNER_ACCOUNT, `chosen${i}`, `chosen${i}`, "x");
+      expect((await waitWithKey(`chosen${i}`, key)).status).toBe(401);
+    }
+  });
+
+  it("keeps a generated key working when the agent is taken over with it, and not once the name is registered again with a chosen one", async () => {
+    const { key } = registerAgent(db, OWNER_ACCOUNT, "alice", "x");
+    sendMessage(db, OWNER_ACCOUNT, "alice", "alice", "x");
+    registerAgent(db, OWNER_ACCOUNT, "alice", undefined, key);
+    expect((await waitWithKey("alice", key!)).status).toBe(200);
+    removeAgent(db, OWNER_ACCOUNT, "alice", key);
+    registerAgent(db, OWNER_ACCOUNT, "alice", "x", "k".repeat(64));
+    sendMessage(db, OWNER_ACCOUNT, "alice", "alice", "x");
+    expect((await waitWithKey("alice", "k".repeat(64))).status).toBe(401);
+    expect((await waitWithKey("alice", key!)).status).toBe(401);
   });
 
   it("gives a waitCommand and instructions that read the key from the agent's file, and the command wakes", async () => {

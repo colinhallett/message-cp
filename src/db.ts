@@ -223,6 +223,8 @@ function migrate(db: Db, path: string): void {
   db.exec(DROP_REMOVED);
   db.prepare("INSERT OR IGNORE INTO accounts (id, name, created_at) VALUES (?, 'owner', ?)").run(OWNER_ACCOUNT, Date.now());
   addAccounts(db, path);
+  // The key hash again, only when `register` generated the key; /wait takes a key without a token only then.
+  addColumn(db, "wait_key_hash", "TEXT");
   // Broadcast reads every live agent of one account in name order; this keeps it from scanning the removed rows too.
   db.exec("CREATE INDEX IF NOT EXISTS agents_live ON agents (account_id, name) WHERE removed_at IS NULL");
 }

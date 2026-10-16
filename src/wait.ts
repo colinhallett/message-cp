@@ -72,7 +72,7 @@ export function httpWaitCommand(publicUrl: string, name: string, agentKey = fals
 }
 
 /** How an agent signed in with GitHub, which has no token of its own to give the command, lets it wait. */
-export const AGENT_KEY_HINT = `If you signed in through the browser and have no memory-cp token, the command uses your agent key instead: before you start it, save the key register returned to ${AGENT_KEY_DIR}/<your-name> (mode 0600) with a file-writing tool, not in a shell command, so the key stays out of the command line. Only a key register generated (64 characters) works for this.`;
+export const AGENT_KEY_HINT = `If you signed in through the browser and have no memory-cp token, the command uses your agent key instead: before you start it, save the key register returned to ${AGENT_KEY_DIR}/<your-name> (mode 0600) with a file-writing tool, not in a shell command, so the key stays out of the command line. Only a key register generated works for this, not one you chose.`;
 
 /** What a connecting session is told about being woken by messages. */
 export function instructions(env: NodeJS.ProcessEnv = process.env, remote = false, publicUrl?: string, agentKeyWait = false): string {

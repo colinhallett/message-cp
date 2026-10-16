@@ -34,8 +34,6 @@ export interface HttpOptions {
 
 /** The header an agent signed in by OAuth sends its own key in on GET /wait, having no token that lasts. */
 export const AGENT_KEY_HEADER = "x-memory-cp-agent-key";
-/** The shortest key /wait accepts in that header: as long as the 64 hex characters `register` generates. */
-export const MIN_WAIT_KEY_LENGTH = 64;
 
 export interface HttpServer {
   server: Server;
@@ -187,13 +185,12 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
 
   /**
    * With sign-in on, an agent without a token may wait on itself alone, with its name and its own key. Anyone can
-   * try this, across every account, so only a key as long as a generated one counts: short keys an agent chose itself
-   * cannot be guessed here.
+   * try this, across every account, so only a key `register` generated counts: a key an agent chose itself may be
+   * one anyone could guess.
    */
   const keyAccount = (req: IncomingMessage, path: string): AccountId | undefined => {
     const key = req.headers[AGENT_KEY_HEADER];
     if (!oauth || path !== "/wait" || typeof key !== "string" || req.headers.authorization !== undefined) return undefined;
-    if (key.length < MIN_WAIT_KEY_LENGTH) return undefined;
     const name = new URL(req.url ?? "", "http://x").searchParams.get("agent");
     return name ? accountForAgentKey(db, name, key) : undefined;
   };
