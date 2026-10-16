@@ -50,6 +50,12 @@ MEMORY_CP_HTTP_TOKEN=<long random secret> node dist/cli.js serve --port 8787
 - **Sessions.** Each MCP session has its own identity: register in it and its tools act as that agent. A session ends when the client sends DELETE or after 30 minutes idle.
 - **`wait` over HTTP.** `GET /wait?agent=<name>` (same bearer token as `/mcp`) answers 200 with the same one-line summary as `memory-cp wait` as soon as that agent has unread mail, 204 after about four minutes without any (ask again), 404 for an unknown agent. It checks the database about once a second and never reads or marks anything. Start `serve` with `--public-url <the https URL clients use, without /mcp>` and the server's instructions and `register`'s `waitCommand` carry a ready-to-run `curl` loop; without it they leave the wait command out and remote agents call `read_inbox`. See "Waking a remote agent".
 
+### End-to-end check
+
+`npm run e2e` (after `npm run build`) starts `dist/cli.js serve` on a free port with a temporary database and a generated token, then checks it the way remote agents use it: no token or a wrong token gets 401; two MCP clients register over streamable HTTP; `GET /wait` has no mail for the second agent, then answers 200 soon after the first sends it a message; `read_inbox` returns that message and `/wait` stops reporting mail; both agents unregister and `list_agents` no longer shows them. It stops the server and exits 0, or names the failed step and exits 1.
+
+`MEMORY_CP_HTTP_TOKEN=<token> npm run e2e -- --url https://memory.example.com` runs the same checks against a running server. Its agents are named `e2e-<random>-a` and `-b` and are unregistered before it exits, even after a failure. It needs only the runtime dependencies, and it never prints the token.
+
 Add it to Claude Code:
 
 ```sh
