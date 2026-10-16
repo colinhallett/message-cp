@@ -110,6 +110,15 @@ describe("shared database", () => {
   }, 60_000);
 });
 
+describe("tools", () => {
+  it("are only the registration and messaging tools", async () => {
+    const { tools } = await (await connect()).listTools();
+    expect(tools.map((t) => t.name).sort()).toEqual(
+      ["get_agent", "list_agents", "read_inbox", "register", "send_message", "unregister"],
+    );
+  });
+});
+
 describe("register", () => {
   it("takes over an existing name instead of creating a second agent", async () => {
     const one = await connect();

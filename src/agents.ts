@@ -189,14 +189,12 @@ export function touchAgent(db: Db, name: string): void {
 
 export interface Unregistered {
   removed: string;
-  releasedTasks: number;
   deletedMessages: number;
 }
 
 /**
- * Removes the agent `name`: its registration and the messages addressed to it. Tasks it claimed go back to
- * open; memories it wrote and tasks it posted stay. An agent with a key is removed only with that key,
- * unless `own` is the identity of the caller's session: then that exact registration is removed, or nothing
+ * Removes the agent `name`: its registration and the messages addressed to it. An agent with a key is removed
+ * only with that key, unless `own` is the identity of the caller's session: then that exact registration is removed, or nothing
  * if it is already gone, so a name registered by someone else in the meantime is never touched.
  * One IMMEDIATE transaction, because foreign keys are off and the schema's cascade never runs.
  */
@@ -215,11 +213,6 @@ export const removeAgent = (db: Db, name: string, key?: string, own?: Identity):
       if (!sameHash(hashKey(key), row.key_hash)) throw new ToolError(`Wrong key for agent '${row.name}'.`);
     }
     const deletedMessages = db.prepare("DELETE FROM messages WHERE recipient_id = ?").run(row.id).changes;
-    const releasedTasks = db
-      .prepare(
-        "UPDATE tasks SET status = 'open', assignee = NULL, claimed_at = NULL WHERE status = 'claimed' AND assignee = ?",
-      )
-      .run(row.name).changes;
     db.prepare("DELETE FROM agents WHERE id = ?").run(row.id);
-    return { removed: row.name, releasedTasks, deletedMessages };
+    return { removed: row.name, deletedMessages };
   }).immediate();

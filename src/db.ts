@@ -33,62 +33,6 @@ CREATE TABLE IF NOT EXISTS messages (
 );
 CREATE INDEX IF NOT EXISTS messages_inbox ON messages (recipient_id, read_at, id);
 CREATE INDEX IF NOT EXISTS messages_history ON messages (recipient_id, id);
-
--- Shared memories. The author is kept as text, like a message sender, so it survives whatever happens to the agent row.
--- AUTOINCREMENT so a forgotten id is never handed to a later memory.
-CREATE TABLE IF NOT EXISTS memories (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  author TEXT NOT NULL COLLATE NOCASE,
-  text TEXT NOT NULL,
-  created_at INTEGER NOT NULL
-);
-CREATE INDEX IF NOT EXISTS memories_author ON memories (author, id);
-CREATE INDEX IF NOT EXISTS memories_recent ON memories (created_at, id);
-
-CREATE TABLE IF NOT EXISTS memory_tags (
-  memory_id INTEGER NOT NULL,
-  tag TEXT NOT NULL,
-  PRIMARY KEY (tag, memory_id)
-) WITHOUT ROWID;
-CREATE INDEX IF NOT EXISTS memory_tags_memory ON memory_tags (memory_id);
-
--- Keyword index over memory text, kept in step by the triggers below.
-CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(text, content='memories', content_rowid='id');
-
-CREATE TRIGGER IF NOT EXISTS memories_ai AFTER INSERT ON memories BEGIN
-  INSERT INTO memories_fts (rowid, text) VALUES (new.id, new.text);
-END;
-CREATE TRIGGER IF NOT EXISTS memories_ad AFTER DELETE ON memories BEGIN
-  INSERT INTO memories_fts (memories_fts, rowid, text) VALUES ('delete', old.id, old.text);
-  DELETE FROM memory_tags WHERE memory_id = old.id;
-END;
--- Memories are added and deleted, never edited.
-CREATE TRIGGER IF NOT EXISTS memories_no_update BEFORE UPDATE ON memories BEGIN
-  SELECT RAISE(ABORT, 'memories cannot be edited');
-END;
-
--- Shared task board. poster and assignee are kept as text, like a message sender.
-CREATE TABLE IF NOT EXISTS tasks (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  title TEXT NOT NULL,
-  details TEXT NOT NULL,
-  status TEXT NOT NULL CHECK (status IN ('open', 'claimed', 'done')),
-  poster TEXT NOT NULL COLLATE NOCASE,
-  assignee TEXT COLLATE NOCASE,
-  result TEXT,
-  created_at INTEGER NOT NULL,
-  claimed_at INTEGER,
-  completed_at INTEGER
-);
-CREATE INDEX IF NOT EXISTS tasks_status ON tasks (status, id);
-CREATE INDEX IF NOT EXISTS tasks_assignee ON tasks (assignee, id);
-
-CREATE TABLE IF NOT EXISTS task_tags (
-  task_id INTEGER NOT NULL,
-  tag TEXT NOT NULL,
-  PRIMARY KEY (tag, task_id)
-) WITHOUT ROWID;
-CREATE INDEX IF NOT EXISTS task_tags_task ON task_tags (task_id);
 `;
 
 // CREATE TABLE IF NOT EXISTS leaves an existing table alone, so columns added later are added here, only when missing.
@@ -103,10 +47,23 @@ function addColumn(db: Db, column: string, definition: string): void {
   }
 }
 
+// Shared memories, the task board and the hive's run log were removed, so their tables go too.
+// Dropping a table drops its indexes and triggers; the full-text index is a table of its own.
+// IF EXISTS makes this a no-op once done, and harmless when several processes open the file at once.
+const DROP_REMOVED = `
+DROP TABLE IF EXISTS memories_fts;
+DROP TABLE IF EXISTS memory_tags;
+DROP TABLE IF EXISTS memories;
+DROP TABLE IF EXISTS task_tags;
+DROP TABLE IF EXISTS tasks;
+DROP TABLE IF EXISTS hive_runs;
+`;
+
 function migrate(db: Db): void {
   addColumn(db, "key_hash", "TEXT");
   // A random token per registration, so a session can tell its agent from a later one that reuses the id or name.
   addColumn(db, "instance", "TEXT");
+  db.exec(DROP_REMOVED);
 }
 
 // Several processes switching a new file to WAL at once make the losers fail with SQLITE_BUSY straight away,
