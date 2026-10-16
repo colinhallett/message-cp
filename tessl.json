@@ -18,6 +18,12 @@
       "environment": "factory-memory-cp-shepherd",
       "agent": "claude",
       "model": "claude-opus-5-5"
+    },
+    "chat-test": {
+      "skill": "file:tessl-factory#chat-test",
+      "environment": "memory-cp-chat-test",
+      "agent": "claude",
+      "model": "claude-opus-5-5"
     }
   },
   "triggers": {
@@ -142,15 +148,10 @@
       "description": "Agent Retro test loop: run by hand with tessl schedule trigger; the cron only fires on 29 February"
     },
     "chat-test": {
-      "action": {
-        "skill": "file:tessl-factory#chat-test",
-        "environment": "memory-cp-chat-test",
-        "agent": "claude",
-        "model": "claude-opus-5-5"
-      },
+      "action": "chat-test",
       "cron": "0 3 29 2 *",
       "timezone": "UTC",
-      "description": "Chat test: a factory run registers on memory-cp and chats with claude-c. Run by hand with tessl schedule trigger; the cron only fires on 29 February"
+      "description": "Chat test over memory-cp; run by hand with tessl schedule trigger"
     }
   }
 }
