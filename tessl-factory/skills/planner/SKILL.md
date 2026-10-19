@@ -1,7 +1,7 @@
 ---
 name: planner
 description: >-
-  Daily factory planner for memory-cp: read DIRECTION.md, the open and
+  Daily factory planner for message-cp: read DIRECTION.md, the open and
   recently closed COL issues and the recent merged pull requests, decide what
   most needs doing next, and write and delegate up to two Linear tickets for
   Implement to build. On Mondays it also posts a weekly summary for the owner
@@ -109,7 +109,7 @@ Page any connection whose `pageInfo.hasNextPage` is true, passing `after:
 Do this after reading the record and again just before the first write
 (`issueCreate`, `issueUpdate` or `documentCreate`). Find the `planner`
 schedule in `tessl schedule list --json --all` (label `planner`,
-`attributes.config.repoUrl` is `https://github.com/colinhallett/memory-cp`)
+`attributes.config.repoUrl` is `https://github.com/colinhallett/message-cp`)
 and read `tessl schedule runs <id> --json --limit 20`. Another run is in
 progress when its `id` is not `$TESSL_LAUNCH_RUN_ID` and its
 `attributes.status` is `pending` or `running`. If one is in progress and its
@@ -147,7 +147,7 @@ Description, in this order:
 ```markdown
 ## Outcome
 
-<What changes for the owner or for an agent using memory-cp, and why now.>
+<What changes for the owner or for an agent using message-cp, and why now.>
 
 Done when: <observable conditions, each one checkable from the PR>.
 
@@ -166,7 +166,7 @@ Traces to: <"DIRECTION.md: <quoted line>" or "<issue identifier>">
 
 ## Verification
 
-* Run it for real through <the real entry point: `memory-cp ...`,
+* Run it for real through <the real entry point: `message-cp ...`,
   `npm run e2e -- --url ...`, the MCP tool over stdio or HTTP>, and put the
   command and its output in the PR description, with every message body
   and token replaced by `<redacted>` (a failing `npm run e2e` prints the
@@ -240,10 +240,10 @@ Cover the seven days up to now:
   `For the owner:`, open issues whose newest comment carries
   `<!-- tessl-factory -->` and asks a question, and open PRs whose `files`
   include one of the owner's files (rule 4).
-- **Factory runs:** the number of launch runs this week for memory-cp. List
+- **Factory runs:** the number of launch runs this week for message-cp. List
   the schedules with `tessl schedule list --json --all` (Implement and the
   Shepherd are listed there too, with cron `event`), keep those whose
-  `attributes.config.repoUrl` is `https://github.com/colinhallett/memory-cp`,
+  `attributes.config.repoUrl` is `https://github.com/colinhallett/message-cp`,
   and for each count the runs from `tessl schedule runs <id> --json --limit
   100` (the most it returns) whose `attributes.createdAt` is in the window.
   If all 100 are in the window, write "100 or more" for that schedule. Give

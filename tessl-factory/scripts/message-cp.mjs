@@ -1,29 +1,29 @@
-// Lets a factory run be reached over memory-cp while it works. Run from the repository root:
-//   node tessl-factory/scripts/memory-cp.mjs start <name> <bio>   register (a suffix is added if the name is taken)
-//   node tessl-factory/scripts/memory-cp.mjs inbox                print and mark read any new messages
-//   node tessl-factory/scripts/memory-cp.mjs send <to> <body>     send a message
-//   node tessl-factory/scripts/memory-cp.mjs wait <seconds>       wait up to <seconds> for mail; exit 0 if some arrived, 3 if not
-//   node tessl-factory/scripts/memory-cp.mjs stop                 unregister
-// Needs MEMORY_CP_URL (the server's https URL, with or without /mcp) and MEMORY_CP_HTTP_TOKEN, and the MCP SDK
-// installed (`npm ci --ignore-scripts` is enough). The agent's name and key are kept in /tmp/memory-cp-agent.json
+// Lets a factory run be reached over message-cp while it works. Run from the repository root:
+//   node tessl-factory/scripts/message-cp.mjs start <name> <bio>   register (a suffix is added if the name is taken)
+//   node tessl-factory/scripts/message-cp.mjs inbox                print and mark read any new messages
+//   node tessl-factory/scripts/message-cp.mjs send <to> <body>     send a message
+//   node tessl-factory/scripts/message-cp.mjs wait <seconds>       wait up to <seconds> for mail; exit 0 if some arrived, 3 if not
+//   node tessl-factory/scripts/message-cp.mjs stop                 unregister
+// Needs MESSAGE_CP_URL (the server's https URL, with or without /mcp) and MESSAGE_CP_HTTP_TOKEN, and the MCP SDK
+// installed (`npm ci --ignore-scripts` is enough). The agent's name and key are kept in /tmp/message-cp-agent.json
 // so every call acts as the same agent. The token is never printed.
 import { randomBytes } from "node:crypto";
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 
-const STATE = "/tmp/memory-cp-agent.json";
+const STATE = "/tmp/message-cp-agent.json";
 const [command, ...rest] = process.argv.slice(2);
-const token = process.env.MEMORY_CP_HTTP_TOKEN?.trim();
-const base = process.env.MEMORY_CP_URL?.trim().replace(/\/mcp\/?$/, "").replace(/\/$/, "");
+const token = process.env.MESSAGE_CP_HTTP_TOKEN?.trim();
+const base = process.env.MESSAGE_CP_URL?.trim().replace(/\/mcp\/?$/, "").replace(/\/$/, "");
 if (!token || !base) {
-  console.error("memory-cp: MEMORY_CP_URL and MEMORY_CP_HTTP_TOKEN must be set; carrying on without memory-cp");
+  console.error("message-cp: MESSAGE_CP_URL and MESSAGE_CP_HTTP_TOKEN must be set; carrying on without message-cp");
   process.exit(2);
 }
 
 const state = () => {
   if (!existsSync(STATE)) {
-    console.error("memory-cp: not started; run `start` first");
+    console.error("message-cp: not started; run `start` first");
     process.exit(2);
   }
   return JSON.parse(readFileSync(STATE, "utf8"));
@@ -67,7 +67,7 @@ switch (command) {
         try {
           await call("register", { name, bio, key });
           writeFileSync(STATE, JSON.stringify({ name, key, bio }), { mode: 0o600 });
-          console.log(`memory-cp: registered as ${name}`);
+          console.log(`message-cp: registered as ${name}`);
           return;
         } catch (err) {
           if (!/key/i.test(String(err))) throw err;
@@ -80,7 +80,7 @@ switch (command) {
   case "inbox": {
     await asAgent(async (call) => {
       const messages = JSON.parse(await call("read_inbox", {}));
-      if (messages.length === 0) console.log("memory-cp: no new messages");
+      if (messages.length === 0) console.log("message-cp: no new messages");
       for (const m of messages) console.log(`--- from ${m.from} at ${m.sentAt}${m.broadcast ? " (broadcast)" : ""}\n${m.body}`);
     });
     break;
@@ -104,7 +104,7 @@ switch (command) {
           signal: ac.signal,
         });
         if (r.status === 200) {
-          console.log(`memory-cp: ${(await r.text()).trim()}`);
+          console.log(`message-cp: ${(await r.text()).trim()}`);
           process.exit(0);
         }
         if (r.status !== 204) throw new Error(`wait: HTTP ${r.status}`);
@@ -114,18 +114,18 @@ switch (command) {
         clearTimeout(timer);
       }
     }
-    console.log("memory-cp: no mail");
+    console.log("message-cp: no mail");
     process.exit(3);
   }
   case "stop": {
     await asAgent(async (call) => {
       await call("unregister", {});
       rmSync(STATE, { force: true });
-      console.log("memory-cp: unregistered");
+      console.log("message-cp: unregistered");
     });
     break;
   }
   default:
-    console.error("usage: memory-cp.mjs start <name> <bio> | inbox | send <to> <body> | wait <seconds> | stop");
+    console.error("usage: message-cp.mjs start <name> <bio> | inbox | send <to> <body> | wait <seconds> | stop");
     process.exit(2);
 }

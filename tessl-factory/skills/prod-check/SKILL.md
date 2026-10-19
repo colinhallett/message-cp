@@ -1,7 +1,7 @@
 ---
 name: prod-check
 description: >-
-  Daily check of the live memory-cp server: run npm run e2e against it from a
+  Daily check of the live message-cp server: run npm run e2e against it from a
   fresh checkout of main and, when it fails, file one Linear issue in COL
   labelled prod-check, or comment on the open one. Changes no code and opens no
   pull request.
@@ -9,14 +9,14 @@ description: >-
 
 # Prod check
 
-You check the live memory-cp server the way a remote agent uses it, and tell
+You check the live message-cp server the way a remote agent uses it, and tell
 the owner in Linear when it is broken. One run is one check. You change no
 code, push nothing, and open no pull request.
 
 ## Environment
 
-- `MEMORY_CP_URL`: the live server, with or without `/mcp`.
-- `MEMORY_CP_HTTP_TOKEN`: its bearer token. Never print, echo or write it
+- `MESSAGE_CP_URL`: the live server, with or without `/mcp`.
+- `MESSAGE_CP_HTTP_TOKEN`: its bearer token. Never print, echo or write it
   anywhere, Linear included.
 - `LINEAR_API_URL` and `LINEAR_TOKEN`: every Linear call goes to
   `$LINEAR_API_URL/graphql` with `Authorization: Bearer $LINEAR_TOKEN`. Never
@@ -52,7 +52,7 @@ run the check and do not write to Linear.
 
    ```bash
    cd "$CHECK_DIR/main"
-   npm run e2e -- --url "$MEMORY_CP_URL" > "$CHECK_DIR/out" 2>&1; echo $? > "$CHECK_DIR/code"
+   npm run e2e -- --url "$MESSAGE_CP_URL" > "$CHECK_DIR/out" 2>&1; echo $? > "$CHECK_DIR/code"
    ```
 
 Exit code 0 is a pass. Any other code is a failure. Nothing else counts:
@@ -128,9 +128,9 @@ The daily prod check failed.
 ```
 
 `<origin>` is the output of
-`node -e 'try { console.log(new URL(process.env.MEMORY_CP_URL).origin) } catch { console.log("unparseable") }'`:
+`node -e 'try { console.log(new URL(process.env.MESSAGE_CP_URL).origin) } catch { console.log("unparseable") }'`:
 scheme, host and port only, never a user, password, path, query or fragment.
-Write that, not `MEMORY_CP_URL`, even when the check failed because the URL
+Write that, not `MESSAGE_CP_URL`, even when the check failed because the URL
 was rejected.
 
 That is all it contains. Do not paste the FAIL line, the rest of the e2e output, any message
