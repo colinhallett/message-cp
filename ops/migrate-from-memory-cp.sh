@@ -8,7 +8,7 @@
 # Nothing is deleted: every old file and directory is renamed aside to <path>.pre-message-cp, and undo renames it back.
 # Nothing it prints holds a token, a key or a URL: env files are rewritten with sed, never printed, and the backup URL
 # file is copied, never read.
-set -euo pipefail
+set -Eeuo pipefail
 umask 077
 
 OLD=memory-cp NEW=message-cp ASIDE=.pre-message-cp
@@ -51,13 +51,24 @@ stop_old() {
 }
 
 move() {
-  local url_file=${1:-}
+  local url_file=${1:-} p n q origin
   [ -n "$url_file" ] || fail "usage: $0 move <file holding the message-cp-backups bucket's write URL>"
   [ -f "$url_file" ] && [ -s "$url_file" ] || fail "$url_file is missing or empty"
-  [ "$(stat -c %u%a "$url_file")" = 0600 ] || fail "$url_file must be root's and mode 0600"
+  [ "$(stat -c %u:%g:%a "$url_file")" = 0:0:600 ] || fail "$url_file must be root:root and mode 0600"
   [ -d /opt/$OLD ] && [ -f /etc/$OLD.env ] || fail "no /opt/$OLD and /etc/$OLD.env: is this a server installed by the old ops/?"
-  for p in "${PATHS[@]}"; do
-    if [ -e "$(new_name "$p")" ]; then fail "$(new_name "$p") exists already; nothing was changed"; fi
+  # A leftover .partial copy from an earlier attempt would make cp -a nest the new copy inside it.
+  for p in "${PATHS[@]}" "${OLD_UNITS[@]/#/$UNITS/}"; do
+    n=$(new_name "$p")
+    for q in "$n" "$n.partial" "$n.d" "$p$ASIDE"; do
+      if [ -e "$q" ]; then fail "$q exists already; nothing was changed"; fi
+    done
+  done
+  # Every old path is copied once, so the file systems holding them need that much free.
+  local need=0 have
+  for p in /opt/$OLD /var/lib/$OLD; do
+    need=$(du -sk "$p" | cut -f1)
+    have=$(df -Pk "$p" | awk 'NR == 2 { print $4 }')
+    [ "$have" -gt $((need + need / 10)) ] || fail "$p needs $((need / 1024)) MiB free beside it to be copied; $((have / 1024)) MiB is"
   done
   for u in $NEW $NEW-build; do
     if getent passwd $u >/dev/null || getent group $u >/dev/null; then fail "user or group $u exists already; nothing was changed"; fi
@@ -90,7 +101,6 @@ move() {
   say "3/7 copying each old path to its new name, then setting the old one aside as *$ASIDE"
   # The copy keeps owners, modes and timestamps, and is taken with everything stopped, so the database and its WAL
   # are copied together at rest. The old path is renamed aside only once its copy is complete.
-  local p n
   for p in "${PATHS[@]}"; do
     [ -e "$p" ] || continue
     n=$(new_name "$p")
@@ -98,6 +108,10 @@ move() {
     mv -T "$n.partial" "$n"
     mv -T "$p" "$p$ASIDE"
   done
+  # The lock held since step 1 is on the file now set aside; take the new one too, so a message-cp deploy started by
+  # hand before step 7 waits.
+  exec 8>/opt/$NEW/deploy.lock
+  flock 8
   # current is a relative link (releases/<sha>), so it points into the copy. Without MEMORY_CP_DB the database was
   # ~/.memory-cp/db.sqlite in the server's home; its copy takes the new default name.
   if [ -d "$LIB/.$OLD" ] && [ ! -e "$LIB/.$NEW" ]; then mv -T "$LIB/.$OLD" "$LIB/.$NEW"; fi
@@ -111,6 +125,9 @@ move() {
   # repo.git fetches with the deploy key named in its config; ~/.ssh/config may name it too.
   if [ -d /opt/$NEW/repo.git ]; then
     git --git-dir=/opt/$NEW/repo.git config core.sshCommand "ssh -i /root/.ssh/$NEW-deploy -o IdentitiesOnly=yes"
+    # GitHub serves a renamed repository at its old URL too, so this changes the name only.
+    origin=$(git --git-dir=/opt/$NEW/repo.git remote get-url origin)
+    git --git-dir=/opt/$NEW/repo.git remote set-url origin "${origin/\/$OLD.git/\/$NEW.git}"
   fi
   if [ -f /root/.ssh/config ] && grep -q "$OLD-deploy" /root/.ssh/config; then
     cp -a /root/.ssh/config /root/.ssh/config$ASIDE
@@ -120,12 +137,19 @@ move() {
   install -m 0700 -d /etc/$NEW
   install -m 0600 -o root -g root "$url_file" /etc/$NEW/backup-url
 
-  say "5/7 installing the new deploy script and units, carrying over drop-ins"
+  say "5/7 installing the new deploy and backup scripts; carrying the units and their drop-ins over"
   install -m 0755 "$SRC/ops/deploy.sh" /opt/$NEW/deploy.sh
   install -m 0755 "$SRC/ops/backup.sh" /usr/local/bin/$NEW-backup
   local u
   for u in "${OLD_UNITS[@]}"; do
-    install -m 0644 "$SRC/ops/$(new_name "$u")" $UNITS/
+    # The old unit, with its names rewritten, so any edit made to it (a port, node's path) is kept; a unit the old
+    # install never had (the backup, when it was not set up) comes from this checkout.
+    if [ -f "$UNITS/$u" ]; then
+      sed -E "s/MEMORY_CP_/MESSAGE_CP_/g; s/$OLD/$NEW/g" "$UNITS/$u" >"$UNITS/$(new_name "$u")"
+      chmod 644 "$UNITS/$(new_name "$u")"
+    else
+      install -m 0644 "$SRC/ops/$(new_name "$u")" $UNITS/
+    fi
     # A drop-in (systemctl edit) names the old user and MEMORY_CP_DB, such as the backup unit's User= and database.
     if [ -d "$UNITS/$u.d" ]; then
       cp -a "$UNITS/$u.d" "$UNITS/$(new_name "$u").d"
@@ -148,9 +172,14 @@ move() {
   fi
   systemctl daemon-reload
   # A failed old unit stays listed until this, even with its file renamed aside.
-  systemctl reset-failed 2>/dev/null || true
+  systemctl reset-failed "$OLD*" "$NEW*" 2>/dev/null || true
 
   say "6/7 starting $NEW.service and checking it"
+  # The server creates an empty database where none is, and that would pass the check below; make sure it is there.
+  local db_file
+  db_file=$(env_value /etc/$NEW.env MESSAGE_CP_DB)
+  db_file=${db_file:-$LIB/.$NEW/db.sqlite}
+  [ -s "$db_file" ] || fail "no database at $db_file, where $NEW.service will look; run '$0 undo'"
   systemctl enable $NEW.service
   systemctl start $NEW.service
   local url token
@@ -164,15 +193,21 @@ move() {
     sleep 1
   done
   [ "$code" = 401 ] || fail "${url%/}/mcp did not answer 401 (last status: ${code:-none}); run '$0 undo'"
-  # The check runs as the server's user from the live release, as deploy.sh's does; the token is in its environment only.
-  (cd /opt/$NEW/current && env -i PATH="$PATH" HOME=/opt/$NEW/check-home npm_config_cache=/opt/$NEW/check-home/.npm \
-    MESSAGE_CP_HTTP_TOKEN="$token" setpriv --reuid=$NEW --regid=$NEW --init-groups -- npm run --silent e2e -- --url "$url") ||
-    fail "npm run e2e against $url failed; run '$0 undo'"
+  # The check runs as the server's user from the live release, as deploy.sh's does. The token is exported, never put in
+  # an argument list, and the rest of root's environment is dropped first.
+  (
+    path=$PATH
+    cd /opt/$NEW/current
+    while read -r name; do unset "$name" 2>/dev/null || true; done < <(compgen -e)
+    export PATH=$path HOME=/opt/$NEW/check-home npm_config_cache=/opt/$NEW/check-home/.npm MESSAGE_CP_HTTP_TOKEN=$token
+    exec setpriv --reuid=$NEW --regid=$NEW --init-groups -- npm run --silent e2e -- --url "$url"
+  ) || fail "npm run e2e against $url failed; run '$0 undo'"
 
   say "7/7 running one backup, then enabling the backup and deploy timers"
-  systemctl start $NEW-backup.service || fail "the first backup failed: journalctl -u $NEW-backup; the timers are still off"
+  systemctl start $NEW-backup.service ||
+    fail "the server is moved and serving, but the first backup failed: see journalctl -u $NEW-backup and ops/migrate-from-memory-cp.md; the timers are still off"
   systemctl enable --now $NEW-backup.timer
-  exec 9>&-
+  exec 8>&- 9>&-
   systemctl enable --now $NEW-deploy.timer
   say "done. The old files are kept as *$ASIDE; run '$0 check' for anything still named $OLD."
 }
@@ -184,18 +219,28 @@ move() {
 undo() {
   local p n u stamp
   stamp=$(date -u +%FT%H%M%S)
+  trap 'say "undo stopped part-way; fix what failed and run \"$0 undo\" again: it carries on from where it stopped"' ERR
   for u in $NEW-deploy.timer $NEW-backup.timer; do systemctl disable --now $u 2>/dev/null || true; done
   if [ -d /opt/$NEW ]; then exec 9>/opt/$NEW/deploy.lock; flock 9; fi
   for u in $NEW-deploy.service $NEW-backup.service $NEW.service; do systemctl stop $u 2>/dev/null || true; done
   systemctl disable $NEW.service 2>/dev/null || true
   for p in "${PATHS[@]}"; do
     n=$(new_name "$p")
+    # The move stopped between copying this path and setting it aside: the old path is the one the server used.
+    if [ -e "$p" ] && [ ! -e "$p$ASIDE" ]; then
+      if [ -e "$n" ]; then mv -T "$n" "$n.undone-$stamp"; fi
+      if [ -e "$n.partial" ]; then mv -T "$n.partial" "$n.partial.undone-$stamp"; fi
+      continue
+    fi
     case "$p" in
       /opt/$OLD | /var/lib/$OLD | /etc/$OLD.env)
+        # A copy the move did not finish holds nothing the old path does not.
+        if [ -e "$n.partial" ]; then mv -T "$n.partial" "$n.partial.undone-$stamp"; fi
         if [ -e "$n" ] && [ -e "$p$ASIDE" ]; then mv -T "$p$ASIDE" "$p$ASIDE.undone-$stamp"; fi
         if [ -e "$n" ]; then mv -T "$n" "$p"; elif [ -e "$p$ASIDE" ]; then mv -T "$p$ASIDE" "$p"; fi
         ;;
       *)
+        if [ -e "$n.partial" ]; then mv -T "$n.partial" "$n.partial.undone-$stamp"; fi
         if [ -e "$n" ] && [ -e "$p$ASIDE" ]; then mv -T "$n" "$n.undone-$stamp"; fi
         if [ -e "$p$ASIDE" ]; then mv -T "$p$ASIDE" "$p"; elif [ -e "$n" ]; then mv -T "$n" "$p"; fi
         ;;
@@ -213,7 +258,8 @@ undo() {
   if [ -e /root/.ssh/config$ASIDE ]; then mv -T /root/.ssh/config$ASIDE /root/.ssh/config; fi
   for u in "${OLD_UNITS[@]}"; do
     rm -f "$UNITS/$(new_name "$u")"
-    rm -rf "$UNITS/$(new_name "$u").d"
+    # A drop-in may hold an edit made since the move, so it is kept, renamed aside.
+    if [ -e "$UNITS/$(new_name "$u").d" ]; then mv -T "$UNITS/$(new_name "$u").d" "$UNITS/$(new_name "$u").d.undone-$stamp"; fi
     if [ -e "$UNITS/$u$ASIDE" ]; then mv -T "$UNITS/$u$ASIDE" "$UNITS/$u"; fi
     if [ -e "$UNITS/$u.d$ASIDE" ]; then mv -T "$UNITS/$u.d$ASIDE" "$UNITS/$u.d"; fi
   done
@@ -227,7 +273,7 @@ undo() {
     if getent group $NEW-build >/dev/null; then groupmod -n $OLD-build $NEW-build; fi
   fi
   systemctl daemon-reload
-  systemctl reset-failed 2>/dev/null || true
+  systemctl reset-failed "$OLD*" "$NEW*" 2>/dev/null || true
   systemctl enable --now $OLD.service
   # The timers are left off: start them once the old server is checked (see ops/migrate-from-memory-cp.md).
   exec 9>&-
@@ -237,7 +283,7 @@ undo() {
 # Lists what is still named memory-cp. The *.pre-message-cp copies kept aside and the source of older releases are
 # expected; anything else, a memory-cp unit systemd still knows, or a memory-cp user makes it exit 1.
 check() {
-  local bad=0 f
+  local bad=0 f u
   say "files named *$OLD* on the root file system:"
   while IFS= read -r f; do
     case "$f" in
@@ -255,7 +301,9 @@ check() {
   else
     echo "  none"
   fi
-  if getent passwd $OLD $OLD-build >/dev/null; then echo "  STILL IN USE: user $OLD or $OLD-build"; bad=1; fi
+  for u in $OLD $OLD-build; do
+    if getent passwd $u >/dev/null || getent group $u >/dev/null; then echo "  STILL IN USE: user or group $u"; bad=1; fi
+  done
   return $bad
 }
 
