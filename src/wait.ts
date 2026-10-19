@@ -28,7 +28,8 @@ export const DEFAULT_WAIT_HOLD_MS = 4 * 60 * 1000;
 const CURL_MAX_TIME_S = DEFAULT_WAIT_HOLD_MS / 1000 + 60;
 
 // Plain POSIX sh and curl, nothing to install. The token comes from MESSAGE_CP_HTTP_TOKEN, else the old
-// MEMORY_CP_HTTP_TOKEN, else ~/.message-cp/http-token, else the old ~/.memory-cp/http-token, and reaches curl on
+// MEMORY_CP_HTTP_TOKEN (an empty variable counts as unset), else ~/.message-cp/http-token, else the old
+// ~/.memory-cp/http-token when the new file cannot be read, and reaches curl on
 // stdin (`-H @-`), so it is never in an argument list. $1 is the /wait URL, $2 the agent name.
 // A 204 (no mail yet) or a failed request asks again; 401 and 404 end it, since asking again cannot help.
 const CURL_LOOP = `t="\${MESSAGE_CP_HTTP_TOKEN:-\${MEMORY_CP_HTTP_TOKEN:-$(cat ~/.message-cp/http-token 2>/dev/null || cat ~/.memory-cp/http-token 2>/dev/null)}}"

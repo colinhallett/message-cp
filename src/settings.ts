@@ -4,8 +4,8 @@ import { join } from "node:path";
 
 /**
  * A setting from the environment: `MESSAGE_CP_<name>` when it is set, else the old `MEMORY_CP_<name>`, which keeps
- * working for installs set up before the rename. A new name that is set wins even when empty, so the caller still
- * sees, and can refuse, the empty value it was given.
+ * working for installs set up before the rename. A new name that is set wins even when empty: `serve` and
+ * MESSAGE_CP_AGENT then refuse the empty value as before, and an empty MESSAGE_CP_DB means the default path.
  */
 export function setting(name: string, env: NodeJS.ProcessEnv = process.env): string | undefined {
   return env[`MESSAGE_CP_${name}`] ?? env[`MEMORY_CP_${name}`];
