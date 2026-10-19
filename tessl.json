@@ -4,9 +4,6 @@
   "dependencies": {
     "tessl-labs/factory-setup": {
       "version": "0.3.0"
-    },
-    "colin/ticket-to-pr-implement": {
-      "version": "1.0.0"
     }
   },
   "actions": {
