@@ -32,7 +32,7 @@ export interface ChannelSummary {
 }
 
 /** The agent a channel tool acts for: its current name and the id of its row in `agents`. */
-export interface Poster {
+export interface Member {
   id: number;
   name: string;
 }
@@ -47,7 +47,12 @@ interface PostRow {
   created_at: number;
 }
 
-const toPost = (r: PostRow): Post => ({ id: r.id, from: r.sender, sentAt: new Date(r.created_at).toISOString(), body: r.body });
+const toPost = (r: PostRow): Post => ({
+  id: r.id,
+  from: r.sender,
+  sentAt: new Date(r.created_at).toISOString(),
+  body: r.body,
+});
 
 // The agent-name pattern; unlike agent names, `all` is an ordinary channel name.
 function validateChannelName(name: string): void {
@@ -74,75 +79,71 @@ function advance(db: Db, agent: number, channel: number, postId: number): void {
 }
 
 /**
- * Appends a post to the account's channel `channel`, creating the channel if this is its first post. If the poster had
+ * Appends a post to the account's channel `channel`, creating the channel if this is its first post. If the member had
  * read everything before it, its read position moves past its own post, so the channel stays read for it.
  */
-export function post(db: Db, account: AccountId, poster: Poster, channel: string, body: string): PostResult {
+export function post(db: Db, account: AccountId, member: Member, channel: string, body: string): PostResult {
   validateChannelName(channel);
   validateBody(body, "Post");
   return db
     .transaction((): PostResult => {
       const now = Date.now();
-      db.prepare("INSERT INTO channels (account_id, name, created_at) VALUES (?, ?, ?) ON CONFLICT(account_id, name) DO NOTHING").run(
-        account,
-        channel,
-        now,
-      );
-      const ch = findChannel(db, account, channel);
-      const last = (db.prepare("SELECT MAX(id) AS id FROM channel_posts WHERE channel_id = ?").get(ch.id) as { id: number | null }).id;
-      const read = (
-        db.prepare("SELECT last_read_id FROM channel_reads WHERE agent_id = ? AND channel_id = ?").get(poster.id, ch.id) as
-          | { last_read_id: number }
-          | undefined
-      )?.last_read_id;
+      db.prepare("INSERT INTO channels (account_id, name, created_at) VALUES (?, ?, ?) ON CONFLICT(account_id, name) DO NOTHING")
+        .run(account, channel, now);
+      const found = findChannel(db, account, channel);
+      const last = db.prepare("SELECT MAX(id) AS id FROM channel_posts WHERE channel_id = ?").get(found.id) as { id: number | null };
+      const read = db
+        .prepare("SELECT last_read_id FROM channel_reads WHERE agent_id = ? AND channel_id = ?")
+        .get(member.id, found.id) as { last_read_id: number } | undefined;
       const id = Number(
         db
           .prepare("INSERT INTO channel_posts (channel_id, sender_id, sender, body, created_at) VALUES (?, ?, ?, ?, ?)")
-          .run(ch.id, poster.id, poster.name, body, now).lastInsertRowid,
+          .run(found.id, member.id, member.name, body, now).lastInsertRowid,
       );
-      if (last === null || (read !== undefined && read >= last)) advance(db, poster.id, ch.id, id);
-      return { channel: ch.name, id, sentAt: new Date(now).toISOString() };
+      if (last.id === null || (read !== undefined && read.last_read_id >= last.id)) advance(db, member.id, found.id, id);
+      return { channel: found.name, id, sentAt: new Date(now).toISOString() };
     })
     .immediate();
 }
 
 /**
  * One page of `channel`, oldest first. By default the posts after the reader's read position, which then moves past
- * the last one returned; an agent that has never read the channel starts at its first post. With `unreadOnly` false,
+ * the last one returned; an agent that has never read the channel starts at its first post. The reader's own posts are
+ * included, so a page reads in order, though they never count as unread. With `unreadOnly` false,
  * the whole history paged by `offset`, leaving the read position where it was.
  */
 export function readChannel(
   db: Db,
   account: AccountId,
-  reader: Poster,
+  reader: Member,
   channel: string,
   unreadOnly = true,
   limit = DEFAULT_CHANNEL_LIMIT,
   offset = 0,
 ): ChannelPage {
   if (unreadOnly && offset !== 0) throw new ToolError("offset pages through history: pass unread_only false with it.");
-  return db
-    .transaction((): ChannelPage => {
-      const ch = findChannel(db, account, channel);
-      const pageSize = Math.min(limit, MAX_CHANNEL_LIMIT);
-      let rows: PostRow[];
-      if (unreadOnly) {
-        rows = db
-          .prepare(
-            `SELECT p.id, p.sender, p.body, p.created_at FROM channel_posts p
-             LEFT JOIN channel_reads r ON r.channel_id = p.channel_id AND r.agent_id = ?
-             WHERE p.channel_id = ? AND p.id > COALESCE(r.last_read_id, 0) ORDER BY p.id LIMIT ?`,
-          )
-          .all(reader.id, ch.id, pageSize) as PostRow[];
-        if (rows.length > 0) advance(db, reader.id, ch.id, rows[rows.length - 1].id);
-      } else {
-        rows = db
-          .prepare("SELECT id, sender, body, created_at FROM channel_posts WHERE channel_id = ? ORDER BY id LIMIT ? OFFSET ?")
-          .all(ch.id, pageSize, offset) as PostRow[];
-      }
-      return { channel: ch.name, posts: rows.map(toPost) };
-    })
-    .immediate();
+  const read = db.transaction((): ChannelPage => {
+    const found = findChannel(db, account, channel);
+    const pageSize = Math.min(limit, MAX_CHANNEL_LIMIT);
+    let rows: PostRow[];
+    if (unreadOnly) {
+      rows = db
+        .prepare(
+          `SELECT p.id, p.sender, p.body, p.created_at FROM channel_posts p
+           LEFT JOIN channel_reads r ON r.channel_id = p.channel_id AND r.agent_id = ?
+           WHERE p.channel_id = ? AND p.id > COALESCE(r.last_read_id, 0) ORDER BY p.id LIMIT ?`,
+        )
+        .all(reader.id, found.id, pageSize) as PostRow[];
+      if (rows.length > 0) advance(db, reader.id, found.id, rows[rows.length - 1].id);
+    } else {
+      rows = db
+        .prepare("SELECT id, sender, body, created_at FROM channel_posts WHERE channel_id = ? ORDER BY id LIMIT ? OFFSET ?")
+        .all(found.id, pageSize, offset) as PostRow[];
+    }
+    return { channel: found.name, posts: rows.map(toPost) };
+  });
+  // Only reading unread posts writes, by moving the read position; history needs no write lock.
+  return unreadOnly ? read.immediate() : read();
 }
 
 /**
@@ -152,7 +153,7 @@ export function readChannel(
 export function listChannels(
   db: Db,
   account: AccountId,
-  reader: Poster,
+  reader: Member,
   limit = DEFAULT_CHANNEL_LIMIT,
   offset = 0,
 ): ChannelSummary[] {
