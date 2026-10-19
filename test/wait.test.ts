@@ -23,7 +23,6 @@ beforeEach(() => {
 
 afterEach(() => {
   delete process.env.MESSAGE_CP_DB;
-  delete process.env.MEMORY_CP_DB;
   db.close();
 });
 
@@ -120,13 +119,7 @@ describe("register result", () => {
 });
 
 describe("waitCommand", () => {
-  it("passes the old MEMORY_CP_DB on under the new name, so a MESSAGE_CP_DB in the caller's shell cannot win", () => {
-    const cmd = waitCommand("zed", { MEMORY_CP_DB: dbFile });
-    expect(cmd).toMatch(new RegExp(`^MESSAGE_CP_DB=${dbFile} node `));
-    expect(cmd).not.toContain("MEMORY_CP_DB");
-  });
-
-  it("prefers MESSAGE_CP_DB when both names are set", () => {
-    expect(waitCommand("zed", { MESSAGE_CP_DB: dbFile, MEMORY_CP_DB: "/elsewhere/db.sqlite" })).toContain(`MESSAGE_CP_DB=${dbFile} `);
+  it("passes MESSAGE_CP_DB on, so a MESSAGE_CP_DB in the caller's shell cannot win", () => {
+    expect(waitCommand("zed", { MESSAGE_CP_DB: dbFile })).toMatch(new RegExp(`^MESSAGE_CP_DB=${dbFile} node `));
   });
 });

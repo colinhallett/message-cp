@@ -2,7 +2,6 @@
 
 - **Deploys.** The server deploys `main` itself and rolls back a release that fails its check: see [deploy.md](deploy.md).
 - **Backups.** Below, and restoring in [restore.md](restore.md).
-- **Moving from the old names.** A server installed by `ops/` before the rename to message-cp: [migrate-from-memory-cp.md](migrate-from-memory-cp.md).
 
 ## Nightly database backup
 

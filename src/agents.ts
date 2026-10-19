@@ -132,7 +132,7 @@ export const registerWithIdentity = (
   }).immediate();
 
 /**
- * The agent a supervisor chose for this process through MESSAGE_CP_AGENT and MESSAGE_CP_AGENT_KEY (or the old MEMORY_CP_ names):
+ * The agent a supervisor chose for this process through MESSAGE_CP_AGENT and MESSAGE_CP_AGENT_KEY:
  * created or claimed with that key. Throws ToolError if the agent has a different key.
  */
 export function agentFromEnv(db: Db, account: AccountId, env: NodeJS.ProcessEnv = process.env): string | undefined {
@@ -149,7 +149,7 @@ export function registerFromEnv(
   const key = setting("AGENT_KEY", env);
   if (name === undefined && key === undefined) return undefined;
   if (!name || !key) {
-    throw new ToolError("MESSAGE_CP_AGENT and MESSAGE_CP_AGENT_KEY (or the old MEMORY_CP_AGENT and MEMORY_CP_AGENT_KEY) must be set together.");
+    throw new ToolError("MESSAGE_CP_AGENT and MESSAGE_CP_AGENT_KEY must be set together.");
   }
   const { result, identity } = registerWithIdentity(db, account, name, undefined, key);
   return { name: result.name, identity };

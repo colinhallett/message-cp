@@ -1,8 +1,7 @@
 // End-to-end check of a message-cp HTTP server, used the way remote agents use it.
 //
 //   npm run e2e                                   starts dist/cli.js serve (run `npm run build` first) and checks it
-//   MESSAGE_CP_HTTP_TOKEN=... npm run e2e -- --url https://host  checks a live server instead (the old
-//                                                 MEMORY_CP_HTTP_TOKEN works too; the new name wins if both are set)
+//   MESSAGE_CP_HTTP_TOKEN=... npm run e2e -- --url https://host  checks a live server instead
 //
 // Prints one line per step it saw pass and exits 0, or names the step that failed and exits 1 (2 for bad usage).
 // It never prints the token, and of message bodies only the one it sent. The agents it registers are named
@@ -139,8 +138,7 @@ function parse(result, tool) {
 async function main() {
   let server;
   if (liveUrl) {
-    // ops/deploy.sh's check sets only the old name, so it keeps being read.
-    const token = process.env.MESSAGE_CP_HTTP_TOKEN ?? process.env.MEMORY_CP_HTTP_TOKEN;
+    const token = process.env.MESSAGE_CP_HTTP_TOKEN;
     if (!token) {
       console.error("e2e: set MESSAGE_CP_HTTP_TOKEN to the server's token to check it with --url");
       process.exit(2);
