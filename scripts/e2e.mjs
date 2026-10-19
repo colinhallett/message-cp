@@ -1,7 +1,8 @@
-// End-to-end check of a memory-cp HTTP server, used the way remote agents use it.
+// End-to-end check of a message-cp HTTP server, used the way remote agents use it.
 //
 //   npm run e2e                                   starts dist/cli.js serve (run `npm run build` first) and checks it
-//   MEMORY_CP_HTTP_TOKEN=... npm run e2e -- --url https://host   checks a live server instead
+//   MESSAGE_CP_HTTP_TOKEN=... npm run e2e -- --url https://host  checks a live server instead (the old
+//                                                 MEMORY_CP_HTTP_TOKEN works too; the new name wins if both are set)
 //
 // Prints one line per step it saw pass and exits 0, or names the step that failed and exits 1 (2 for bad usage).
 // It never prints the token, and of message bodies only the one it sent. The agents it registers are named
@@ -56,7 +57,7 @@ const liveUrl = (() => {
     process.exit(2);
   }
   if (url.username || url.password || url.search || url.hash) {
-    console.error("e2e: --url must not carry credentials, a query or a fragment; pass the token in MEMORY_CP_HTTP_TOKEN");
+    console.error("e2e: --url must not carry credentials, a query or a fragment; pass the token in MESSAGE_CP_HTTP_TOKEN");
     process.exit(2);
   }
   return `${url.origin}${url.pathname.replace(/\/+$/, "").replace(/\/mcp$/, "")}`;
@@ -77,10 +78,11 @@ async function step(name, fn) {
 async function startLocal() {
   const cli = fileURLToPath(new URL("../dist/cli.js", import.meta.url));
   if (!existsSync(cli)) throw new Error(`${cli} is missing; run npm run build first`);
-  const dir = mkdtempSync(join(tmpdir(), "memory-cp-e2e-"));
+  const dir = mkdtempSync(join(tmpdir(), "message-cp-e2e-"));
   const token = randomBytes(32).toString("hex");
   const child = spawn(process.execPath, [cli, "serve", "--port", "0"], {
-    env: { ...process.env, MEMORY_CP_DB: join(dir, "db.sqlite"), MEMORY_CP_HTTP_TOKEN: token },
+    // The new names, which the server reads first, so none set in the caller's shell can point it at a real database.
+    env: { ...process.env, MESSAGE_CP_DB: join(dir, "db.sqlite"), MESSAGE_CP_HTTP_TOKEN: token },
     stdio: ["ignore", "ignore", "pipe"],
   });
   const exited = new Promise((resolve) => child.once("exit", resolve));
@@ -137,9 +139,10 @@ function parse(result, tool) {
 async function main() {
   let server;
   if (liveUrl) {
-    const token = process.env.MEMORY_CP_HTTP_TOKEN;
+    // ops/deploy.sh's check sets only the old name, so it keeps being read.
+    const token = process.env.MESSAGE_CP_HTTP_TOKEN ?? process.env.MEMORY_CP_HTTP_TOKEN;
     if (!token) {
-      console.error("e2e: set MEMORY_CP_HTTP_TOKEN to the server's token to check it with --url");
+      console.error("e2e: set MESSAGE_CP_HTTP_TOKEN to the server's token to check it with --url");
       process.exit(2);
     }
     server = { url: liveUrl, token, stop: async () => {} };
@@ -207,14 +210,14 @@ async function main() {
 
     await step("two MCP clients connect over streamable HTTP and register", async () => {
       for (const agent of agents) {
-        const client = new Client({ name: "memory-cp-e2e", version: "0" });
+        const client = new Client({ name: "message-cp-e2e", version: "0" });
         await client.connect(
           new StreamableHTTPClientTransport(mcpUrl, { requestInit: { headers: { Authorization: `Bearer ${server.token}` } } }),
           { timeout: CALL_TIMEOUT_MS },
         );
         agent.client = client;
         agent.registering = true;
-        await call(agent, "register", { name: agent.name, bio: "memory-cp end-to-end check", key: agent.key });
+        await call(agent, "register", { name: agent.name, bio: "message-cp end-to-end check", key: agent.key });
       }
       return agents.map((a) => a.name).join(", ");
     });
@@ -275,7 +278,7 @@ async function main() {
   for (const agent of agents.filter((a) => a.registering && !a.gone)) {
     let cleanup;
     try {
-      cleanup = new Client({ name: "memory-cp-e2e", version: "0" });
+      cleanup = new Client({ name: "message-cp-e2e", version: "0" });
       await cleanup.connect(
         new StreamableHTTPClientTransport(new URL(`${server.url}/mcp`), {
           requestInit: { headers: { Authorization: `Bearer ${server.token}` } },

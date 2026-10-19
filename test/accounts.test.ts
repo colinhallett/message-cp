@@ -8,7 +8,7 @@ import { AccountError, accountForToken, addAccount, addToken, listAccounts, revo
 import { OWNER_ACCOUNT, openDb, type Db } from "../src/db.js";
 import { startHttp, type HttpServer } from "../src/http.js";
 
-// Two accounts on one HTTP server: the owner's (MEMORY_CP_HTTP_TOKEN) and a friend's (a token from `account add`).
+// Two accounts on one HTTP server: the owner's (MESSAGE_CP_HTTP_TOKEN) and a friend's (a token from `account add`).
 const OWNER_TOKEN = "owner-token";
 let db: Db;
 let http: HttpServer;
@@ -16,7 +16,7 @@ let friendToken: string;
 let open: Client[] = [];
 
 beforeEach(async () => {
-  db = openDb(join(mkdtempSync(join(tmpdir(), "memory-cp-accounts-")), "db.sqlite"));
+  db = openDb(join(mkdtempSync(join(tmpdir(), "message-cp-accounts-")), "db.sqlite"));
   friendToken = addAccount(db, "friend").token;
   http = await startHttp(db, { token: OWNER_TOKEN, port: 0, waitHoldMs: 1500 });
 });
@@ -231,7 +231,7 @@ describe("account and token management", () => {
     expect(() => revokeToken(db, id)).toThrow(AccountError);
   });
 
-  it("resolves MEMORY_CP_HTTP_TOKEN to the owner's account and an account's token to that account", () => {
+  it("resolves MESSAGE_CP_HTTP_TOKEN to the owner's account and an account's token to that account", () => {
     expect(accountForToken(db, OWNER_TOKEN, OWNER_TOKEN)).toBe(OWNER_ACCOUNT);
     expect(accountForToken(db, friendToken, OWNER_TOKEN)).toBe(listAccounts(db)[1].id);
     expect(accountForToken(db, "nope", OWNER_TOKEN)).toBeUndefined();

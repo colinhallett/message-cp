@@ -15,7 +15,7 @@ let http: HttpServer;
 let open: Client[] = [];
 
 beforeEach(async () => {
-  db = openDb(join(mkdtempSync(join(tmpdir(), "memory-cp-http-")), "db.sqlite"));
+  db = openDb(join(mkdtempSync(join(tmpdir(), "message-cp-http-")), "db.sqlite"));
   http = await startHttp(db, { token: TOKEN, port: 0 });
 });
 

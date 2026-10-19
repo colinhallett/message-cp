@@ -15,7 +15,7 @@ const MAX_BODY_BYTES = 4 * 1024 * 1024;
 export const DEFAULT_MAX_SESSIONS = 256;
 
 export interface HttpOptions {
-  /** The owner's token (MEMORY_CP_HTTP_TOKEN). Tokens created with `memory-cp token add` work as well, as their account. */
+  /** The owner's token (MESSAGE_CP_HTTP_TOKEN). Tokens created with `message-cp token add` work as well, as their account. */
   token: string;
   host?: string;
   port?: number;
@@ -97,7 +97,7 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
   );
   sweep.unref();
 
-  /** One check for mail; a lock held past the busy timeout counts as no mail this time, as in `memory-cp wait`. */
+  /** One check for mail; a lock held past the busy timeout counts as no mail this time, as in `message-cp wait`. */
   const poll = (account: AccountId, name: string) => {
     try {
       return unreadSummary(db, account, name);
@@ -240,7 +240,7 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
 
   const server = createHttpServer((req, res) => {
     handle(req, res).catch((err) => {
-      console.error(`memory-cp serve: ${err instanceof Error ? err.message : String(err)}`);
+      console.error(`message-cp serve: ${err instanceof Error ? err.message : String(err)}`);
       if (!res.headersSent) reply(res, 500, "Internal error");
       else res.end();
     });

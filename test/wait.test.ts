@@ -9,6 +9,7 @@ import { registerAgent } from "../src/agents.js";
 import { OWNER_ACCOUNT, openDb, type Db } from "../src/db.js";
 import { readInbox, sendMessage, unreadSummary } from "../src/messages.js";
 import { createServer } from "../src/server.js";
+import { waitCommand } from "../src/wait.js";
 
 const root = resolve(import.meta.dirname, "..");
 const tsx = join(root, "node_modules/.bin/tsx");
@@ -16,23 +17,24 @@ let dbFile: string;
 let db: Db;
 
 beforeEach(() => {
-  dbFile = join(mkdtempSync(join(tmpdir(), "memory-cp-wait-")), "db.sqlite");
+  dbFile = join(mkdtempSync(join(tmpdir(), "message-cp-wait-")), "db.sqlite");
   db = openDb(dbFile);
 });
 
 afterEach(() => {
+  delete process.env.MESSAGE_CP_DB;
   delete process.env.MEMORY_CP_DB;
   db.close();
 });
 
 /**
- * Starts `memory-cp wait <name>` as its own process on the test database. Starting src/cli.ts
+ * Starts `message-cp wait <name>` as its own process on the test database. Starting src/cli.ts
  * through tsx takes ~0.4 s on its own but can exceed 5 s while the full suite runs, so the two
  * tests that wait for mail set a 20 s timeout; they timed out under that load at vitest's default.
  */
 function startWait(name: string) {
   const child = spawn(tsx, [join(root, "src/cli.ts"), "wait", name], {
-    env: { ...process.env, MEMORY_CP_DB: dbFile },
+    env: { ...process.env, MESSAGE_CP_DB: dbFile },
   });
   let stdout = "";
   let stderr = "";
@@ -42,7 +44,7 @@ function startWait(name: string) {
   return { child, exited, out: () => stdout, err: () => stderr };
 }
 
-describe("memory-cp wait", () => {
+describe("message-cp wait", () => {
   it("exits at once when mail is already waiting, and leaves it unread", async () => {
     registerAgent(db, OWNER_ACCOUNT, "a", "x");
     registerAgent(db, OWNER_ACCOUNT, "b", "x");
@@ -85,10 +87,10 @@ describe("memory-cp wait", () => {
   });
 });
 
-describe("memory-cp hive", () => {
+describe("message-cp hive", () => {
   it("is an unknown command", async () => {
     const child = spawn(tsx, [join(root, "src/cli.ts"), "hive", "--config", "hive.json"], {
-      env: { ...process.env, MEMORY_CP_DB: dbFile },
+      env: { ...process.env, MESSAGE_CP_DB: dbFile },
     });
     let stderr = "";
     child.stderr.on("data", (d) => (stderr += d));
@@ -99,7 +101,7 @@ describe("memory-cp hive", () => {
 
 describe("register result", () => {
   it("returns the wait command for the agent, next to the existing fields", async () => {
-    process.env.MEMORY_CP_DB = dbFile;
+    process.env.MESSAGE_CP_DB = dbFile;
     const server = createServer(db);
     const [a, b] = InMemoryTransport.createLinkedPair();
     const client = new Client({ name: "test", version: "0" });
@@ -111,8 +113,20 @@ describe("register result", () => {
     expect(result.name).toBe("zed");
     expect(result.key).toBeTruthy();
     expect(result.waitCommand).toMatch(/cli\.js wait zed$/);
-    expect(result.waitCommand).toContain(`MEMORY_CP_DB=${dbFile}`);
+    expect(result.waitCommand).toContain(`MESSAGE_CP_DB=${dbFile}`);
     expect(client.getInstructions()).toBeTruthy();
     await client.close();
+  });
+});
+
+describe("waitCommand", () => {
+  it("passes the old MEMORY_CP_DB on under the new name, so a MESSAGE_CP_DB in the caller's shell cannot win", () => {
+    const cmd = waitCommand("zed", { MEMORY_CP_DB: dbFile });
+    expect(cmd).toMatch(new RegExp(`^MESSAGE_CP_DB=${dbFile} node `));
+    expect(cmd).not.toContain("MEMORY_CP_DB");
+  });
+
+  it("prefers MESSAGE_CP_DB when both names are set", () => {
+    expect(waitCommand("zed", { MESSAGE_CP_DB: dbFile, MEMORY_CP_DB: "/elsewhere/db.sqlite" })).toContain(`MESSAGE_CP_DB=${dbFile} `);
   });
 });

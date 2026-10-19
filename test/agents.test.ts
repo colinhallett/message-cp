@@ -16,7 +16,7 @@ let db: Db;
 const clients: Client[] = [];
 
 beforeEach(() => {
-  dir = mkdtempSync(join(tmpdir(), "memory-cp-"));
+  dir = mkdtempSync(join(tmpdir(), "message-cp-"));
   dbFile = join(dir, "db.sqlite");
   db = openDb(dbFile);
 });
@@ -48,13 +48,13 @@ async function call(client: Client, name: string, args: Record<string, unknown> 
 const agentRows = () => db.prepare("SELECT name, bio FROM agents").all();
 
 describe("shared database", () => {
-  it("creates the directory and file named by MEMORY_CP_DB", () => {
+  it("creates the directory and file named by MESSAGE_CP_DB", () => {
     const nested = join(dir, "a", "b", "db.sqlite");
-    process.env.MEMORY_CP_DB = nested;
+    process.env.MESSAGE_CP_DB = nested;
     try {
       openDb().close();
     } finally {
-      delete process.env.MEMORY_CP_DB;
+      delete process.env.MESSAGE_CP_DB;
     }
     expect(existsSync(nested)).toBe(true);
   });
@@ -97,7 +97,7 @@ describe("shared database", () => {
         new StdioClientTransport({
           command: "npx",
           args: ["tsx", join(import.meta.dirname, "../src/index.ts")],
-          env: { ...process.env, MEMORY_CP_DB: dbFile } as Record<string, string>,
+          env: { ...process.env, MESSAGE_CP_DB: dbFile } as Record<string, string>,
         }),
       );
       clients.push(client);
@@ -276,7 +276,7 @@ describe("agent keys", () => {
 
   describe("from the environment", () => {
     it("creates the agent with the given key and acts as it", async () => {
-      expect(agentFromEnv(db, OWNER_ACCOUNT, { MEMORY_CP_AGENT: "worker-1", MEMORY_CP_AGENT_KEY: "k1" })).toBe("worker-1");
+      expect(agentFromEnv(db, OWNER_ACCOUNT, { MESSAGE_CP_AGENT: "worker-1", MESSAGE_CP_AGENT_KEY: "k1" })).toBe("worker-1");
       expect(row("worker-1").key_hash).not.toBeNull();
       const other = await connect();
       expect((await call(other, "register", { name: "worker-1", bio: "x", key: "k1" })).isError).toBe(false);
@@ -285,32 +285,32 @@ describe("agent keys", () => {
 
     it("claims an agent that has no key and refuses one with a different key", () => {
       db.prepare("INSERT INTO agents (account_id, name, bio, registered_at, last_seen) VALUES (1, 'old', 'b', 0, 0)").run();
-      const env = { MEMORY_CP_AGENT: "old", MEMORY_CP_AGENT_KEY: "k1" };
+      const env = { MESSAGE_CP_AGENT: "old", MESSAGE_CP_AGENT_KEY: "k1" };
       agentFromEnv(db, OWNER_ACCOUNT, env);
       expect(row("old").key_hash).not.toBeNull();
-      expect(() => agentFromEnv(db, OWNER_ACCOUNT, { ...env, MEMORY_CP_AGENT_KEY: "k2" })).toThrow(/has a key/);
+      expect(() => agentFromEnv(db, OWNER_ACCOUNT, { ...env, MESSAGE_CP_AGENT_KEY: "k2" })).toThrow(/has a key/);
       expect(row("old").bio).toBe("b");
     });
 
     it("needs both variables, or neither", () => {
       expect(agentFromEnv(db, OWNER_ACCOUNT, {})).toBeUndefined();
-      expect(() => agentFromEnv(db, OWNER_ACCOUNT, { MEMORY_CP_AGENT: "a" })).toThrow(ToolError);
-      expect(() => agentFromEnv(db, OWNER_ACCOUNT, { MEMORY_CP_AGENT_KEY: "k" })).toThrow(ToolError);
+      expect(() => agentFromEnv(db, OWNER_ACCOUNT, { MESSAGE_CP_AGENT: "a" })).toThrow(ToolError);
+      expect(() => agentFromEnv(db, OWNER_ACCOUNT, { MESSAGE_CP_AGENT_KEY: "k" })).toThrow(ToolError);
     });
 
     it("rejects empty values instead of starting anonymous", () => {
-      expect(() => agentFromEnv(db, OWNER_ACCOUNT, { MEMORY_CP_AGENT: "", MEMORY_CP_AGENT_KEY: "" })).toThrow(ToolError);
-      expect(() => agentFromEnv(db, OWNER_ACCOUNT, { MEMORY_CP_AGENT: "" })).toThrow(ToolError);
+      expect(() => agentFromEnv(db, OWNER_ACCOUNT, { MESSAGE_CP_AGENT: "", MESSAGE_CP_AGENT_KEY: "" })).toThrow(ToolError);
+      expect(() => agentFromEnv(db, OWNER_ACCOUNT, { MESSAGE_CP_AGENT: "" })).toThrow(ToolError);
     });
 
     it("refuses with a ToolError when the stored hash is malformed", () => {
       db.prepare("INSERT INTO agents (account_id, name, bio, registered_at, last_seen, key_hash) VALUES (1, 'bad', 'b', 0, 0, 'xyz')").run();
-      expect(() => agentFromEnv(db, OWNER_ACCOUNT, { MEMORY_CP_AGENT: "bad", MEMORY_CP_AGENT_KEY: "k" })).toThrow(/has a key/);
+      expect(() => agentFromEnv(db, OWNER_ACCOUNT, { MESSAGE_CP_AGENT: "bad", MESSAGE_CP_AGENT_KEY: "k" })).toThrow(/has a key/);
     });
 
     it("refuses a takeover when the stored hash is an empty string", () => {
       db.prepare("INSERT INTO agents (account_id, name, bio, registered_at, last_seen, key_hash) VALUES (1, 'empty', 'b', 0, 0, '')").run();
-      expect(() => agentFromEnv(db, OWNER_ACCOUNT, { MEMORY_CP_AGENT: "empty", MEMORY_CP_AGENT_KEY: "k" })).toThrow(/has a key/);
+      expect(() => agentFromEnv(db, OWNER_ACCOUNT, { MESSAGE_CP_AGENT: "empty", MESSAGE_CP_AGENT_KEY: "k" })).toThrow(/has a key/);
       expect(() => registerAgent(db, OWNER_ACCOUNT, "empty", "x", "k")).toThrow(/has a key/);
       expect((db.prepare("SELECT key_hash FROM agents WHERE name='empty'").get() as { key_hash: string }).key_hash).toBe("");
     });
@@ -344,13 +344,13 @@ describe("agent keys", () => {
         new StdioClientTransport({
           command: "npx",
           args: ["tsx", join(import.meta.dirname, "../src/index.ts")],
-          env: { ...process.env, MEMORY_CP_DB: dbFile, ...env } as Record<string, string>,
+          env: { ...process.env, MESSAGE_CP_DB: dbFile, ...env } as Record<string, string>,
         }),
       );
       clients.push(client);
       return client;
     };
-    const worker = await start({ MEMORY_CP_AGENT: "worker-1", MEMORY_CP_AGENT_KEY: "secret" });
+    const worker = await start({ MESSAGE_CP_AGENT: "worker-1", MESSAGE_CP_AGENT_KEY: "secret" });
     const intruder = await start({});
     await call(intruder, "register", { name: "peer", bio: "x" });
     expect((await call(worker, "send_message", { to: "peer", body: "hello" })).isError).toBe(false);

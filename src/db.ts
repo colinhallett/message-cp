@@ -1,17 +1,17 @@
 import Database from "better-sqlite3";
 import { randomBytes } from "node:crypto";
 import { chmodSync, closeSync, existsSync, fsyncSync, mkdirSync, openSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname } from "node:path";
+import { homeFile, setting } from "./settings.js";
 
 export type Db = Database.Database;
 
 /** The one database file shared by every server process on this machine. */
-export function dbPath(): string {
-  return process.env.MEMORY_CP_DB || join(homedir(), ".memory-cp", "db.sqlite");
+export function dbPath(env: NodeJS.ProcessEnv = process.env): string {
+  return setting("DB", env) || homeFile("db.sqlite");
 }
 
-/** The account the migration creates: the token in MEMORY_CP_HTTP_TOKEN, stdio and `memory-cp wait` act as it. */
+/** The account the migration creates: the token in MESSAGE_CP_HTTP_TOKEN, stdio and `message-cp wait` act as it. */
 export const OWNER_ACCOUNT = 1;
 export type AccountId = number;
 

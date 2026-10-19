@@ -14,7 +14,7 @@ let db: Db;
 const clients: Client[] = [];
 
 beforeEach(() => {
-  dbFile = join(mkdtempSync(join(tmpdir(), "memory-cp-unreg-")), "db.sqlite");
+  dbFile = join(mkdtempSync(join(tmpdir(), "message-cp-unreg-")), "db.sqlite");
   db = openDb(dbFile);
 });
 
@@ -224,8 +224,8 @@ describe("a session whose agent was removed", () => {
     expect((await call(a.client, "read_inbox")).isError).toBe(false);
   });
 
-  it("also applies to a session started from MEMORY_CP_AGENT", async () => {
-    const env = { MEMORY_CP_AGENT: "worker", MEMORY_CP_AGENT_KEY: "k" };
+  it("also applies to a session started from MESSAGE_CP_AGENT", async () => {
+    const env = { MESSAGE_CP_AGENT: "worker", MESSAGE_CP_AGENT_KEY: "k" };
     const session = new Session(OWNER_ACCOUNT);
     session.bind(registerFromEnv(db, OWNER_ACCOUNT, env)!.identity);
     const w = await connect(session);
