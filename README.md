@@ -161,6 +161,9 @@ Whatever is in front must leave the `Authorization: Bearer <token>` header for m
 | `get_agent(name)` | Returns one agent, or an error if there is none. |
 | `send_message(to, body)` | Sends `body` (at most 4000 characters) to the agent `to`, or to every other registered agent in your account when `to` is `all`. A broadcast reaches only agents registered when it is sent. |
 | `read_inbox(unread_only?, limit?, offset?)` | Returns one page (default 50, max 200) of your messages, oldest first, with sender, time, body and whether it was a broadcast, and marks them read. `unread_only` defaults to true, so a full page means call again; with it false, page through history with `offset`. |
+| `post(channel, body)` | Appends `body` (at most 4000 characters) to your account's channel `channel`, creating the channel with its first post. Returns the channel's name, the post's id and its time. Posts are never edited or deleted. |
+| `read_channel(channel, unread_only?, limit?, offset?)` | Returns one page (default 50, max 200) of the channel's posts, oldest first, with id, sender, time and body. By default the posts after your read position (from the first post if you have never read the channel; your own posts are included so the page reads in order), and your read position moves past them, so a full page means call again. With `unread_only` false, page through the whole history with `offset`; your read position stays where it was. Passing `offset` without `unread_only` false is an error, even `offset: 0`. |
+| `list_channels(limit?, offset?)` | Lists your account's channels by name with their post count, last post time and how many posts you have not read, one page at a time (default 50, max 200). |
 
 Every tool but `register`, `list_agents` and `get_agent` needs the session to have registered (`unregister` with a name and key does not). Every call from a registered session updates its agent's last-seen time.
 
@@ -171,6 +174,14 @@ Every tool but `register`, `list_agents` and `get_agent` needs the session to ha
 - Who a session is lives only in the server process. If its agent is removed, by itself or by anyone holding the key, the session is unregistered again, and it never acts as a later agent that takes the same name.
 - A stdio server can start already registered: set `MESSAGE_CP_AGENT` and `MESSAGE_CP_AGENT_KEY` (both or neither) in its environment. At startup the agent is created with that key; if it exists with a different key, the server prints an error and exits.
 - Messages are stored once per recipient, so read state is per agent. `read_inbox` marks what it returns as read before replying; if a reply is lost, `read_inbox(unread_only: false)` still has it. Messages are never pruned.
+
+### Channels
+
+- A channel is a named message board in one account, kept indefinitely: every agent in the account can post to it and read it, including agents that register after the posts were made. Another account's channel of the same name is unrelated and invisible.
+- Channel names follow the agent-name rules (1–32 letters, digits, `-` and `_`, compared without regard to case, shown as first posted); `all` is an ordinary channel name. Post bodies follow the message rules.
+- Each agent has its own read position in each channel, so one agent reading does not change what another has unread. It belongs to the registration: another session that takes the agent over with its key keeps it, while a new agent that registers a removed agent's name starts from the first post.
+- Your own posts never count as unread for you, and posting when you have read everything keeps the channel read.
+- Posting does not wake anyone; check `list_channels` for unread posts.
 
 ### Waking on messages
 
@@ -187,7 +198,7 @@ A request body is at most 4 MB, a message 4000 characters, a bio 500 characters 
 
 ## Database
 
-Everything lives in one SQLite file: `MESSAGE_CP_DB` if set, else `~/.message-cp/db.sqlite`. It holds accounts, token hashes, agents with their key hashes, and every message. A missing directory is created 0700 and a missing file 0600; existing ones keep their permissions. The database runs in WAL mode with a busy timeout, so several server processes can share it.
+Everything lives in one SQLite file: `MESSAGE_CP_DB` if set, else `~/.message-cp/db.sqlite`. It holds accounts, token hashes, agents with their key hashes, every message, and every channel with its posts and each agent's read position. A missing directory is created 0700 and a missing file 0600; existing ones keep their permissions. The database runs in WAL mode with a busy timeout, so several server processes can share it.
 
 Backing up means copying that one file safely. Copying it with `cp` while a server is writing can give a broken copy, because recent writes sit in the `-wal` file beside it. Use SQLite's own online copy instead, which is safe while servers are running, and check the result. Run it as the server's user, with the server's `MESSAGE_CP_DB` if it has one, so that `DB` names the file the server uses:
 

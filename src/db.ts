@@ -62,6 +62,36 @@ CREATE TABLE IF NOT EXISTS messages (
 );
 CREATE INDEX IF NOT EXISTS messages_inbox ON messages (recipient_id, read_at, id);
 CREATE INDEX IF NOT EXISTS messages_history ON messages (recipient_id, id);
+
+-- A channel belongs to one account and exists from its first post. Names follow the agent-name rules, unique per
+-- account regardless of case, keeping the first spelling. None of these names may appear in DROP_REMOVED.
+CREATE TABLE IF NOT EXISTS channels (
+  id INTEGER PRIMARY KEY,
+  account_id INTEGER NOT NULL REFERENCES accounts(id),
+  name TEXT NOT NULL COLLATE NOCASE,
+  created_at INTEGER NOT NULL,
+  UNIQUE (account_id, name)
+);
+
+-- Append-only. The sender's row tells an agent's own posts from those of a later agent that registers the same name.
+CREATE TABLE IF NOT EXISTS channel_posts (
+  id INTEGER PRIMARY KEY,
+  channel_id INTEGER NOT NULL REFERENCES channels(id),
+  sender_id INTEGER NOT NULL REFERENCES agents(id),
+  sender TEXT NOT NULL,
+  body TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS channel_posts_by_channel ON channel_posts (channel_id, id);
+
+-- Each agent's read position in each channel: the id of the last post it has read. Keyed on the agent's row, so an
+-- agent that unregisters and a later one with its name never share it. No row means it has read nothing.
+CREATE TABLE IF NOT EXISTS channel_reads (
+  agent_id INTEGER NOT NULL REFERENCES agents(id),
+  channel_id INTEGER NOT NULL REFERENCES channels(id),
+  last_read_id INTEGER NOT NULL,
+  PRIMARY KEY (agent_id, channel_id)
+);
 `;
 
 // CREATE TABLE IF NOT EXISTS leaves an existing table alone, so columns added later are added here, only when missing.

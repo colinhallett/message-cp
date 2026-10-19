@@ -16,6 +16,7 @@ import {
 import { OWNER_ACCOUNT, type AccountId, type Db } from "./db.js";
 import { httpWaitCommand, instructions, waitCommand } from "./wait.js";
 import { DEFAULT_INBOX_LIMIT, MAX_BODY_LENGTH, MAX_INBOX_LIMIT, readInbox, sendMessage } from "./messages.js";
+import { DEFAULT_CHANNEL_LIMIT, MAX_CHANNEL_LIMIT, listChannels, post, readChannel, type Member } from "./channels.js";
 
 /**
  * Who this server process is acting as. Lives only in memory, never in the database, but every use is checked
@@ -50,6 +51,12 @@ export class Session {
     const name = nameOfIdentity(this.db, this.account, this.identity);
     if (name === undefined) this.identity = undefined;
     return name;
+  }
+
+  /** For tools that need the caller's row as well as its name: channel read positions belong to the registration. */
+  requireAgent(): Member {
+    const name = this.require();
+    return { ...this.identity!, name };
   }
 
   /** For tools that need to know the caller. */
@@ -177,6 +184,47 @@ export function createServer(db: Db, session = new Session(OWNER_ACCOUNT), optio
     tool(({ unread_only, limit, offset }: { unread_only?: boolean; limit?: number; offset?: number }) =>
       readInbox(db, account, session.require(), unread_only, limit, offset),
     ),
+  );
+
+  server.registerTool(
+    "post",
+    {
+      description: `Post to one of your account's channels by name; the channel is created by its first post. Every agent in the account can read it, including agents that register later. Posts are never edited or deleted. Requires register first.`,
+      inputSchema: {
+        channel: z.string().describe("1-32 characters: letters, digits, '-' and '_', compared case-insensitively."),
+        body: z.string().describe(`The post, at most ${MAX_BODY_LENGTH} characters.`),
+      },
+    },
+    tool(({ channel, body }: { channel: string; body: string }) => post(db, account, session.requireAgent(), channel, body)),
+  );
+
+  server.registerTool(
+    "read_channel",
+    {
+      description: `Read a channel, oldest first, one page at a time (default ${DEFAULT_CHANNEL_LIMIT}, max ${MAX_CHANNEL_LIMIT}). By default the posts after your read position in it (from its first post if you have never read it; your own posts are included, though never counted as unread), and your read position moves past what is returned, so a full page means call again. With unread_only false, use offset to page through the whole history without moving your read position. Requires register first.`,
+      inputSchema: {
+        channel: z.string().describe("The channel's name, in any case."),
+        unread_only: z.boolean().optional().describe("Default true."),
+        limit: z.number().int().min(1).max(MAX_CHANNEL_LIMIT).optional(),
+        offset: z.number().int().min(0).optional().describe("Only with unread_only false; passing it otherwise is an error."),
+      },
+    },
+    tool(
+      ({ channel, unread_only, limit, offset }: { channel: string; unread_only?: boolean; limit?: number; offset?: number }) =>
+        readChannel(db, account, session.requireAgent(), channel, unread_only, limit, offset),
+    ),
+  );
+
+  server.registerTool(
+    "list_channels",
+    {
+      description: `List your account's channels by name with their post count, last post time and how many posts you have not read (your own posts never count). Returns one page (default ${DEFAULT_CHANNEL_LIMIT}, max ${MAX_CHANNEL_LIMIT}); a full page means there may be more, so call again with a higher offset. Requires register first.`,
+      inputSchema: {
+        limit: z.number().int().min(1).max(MAX_CHANNEL_LIMIT).optional(),
+        offset: z.number().int().min(0).optional(),
+      },
+    },
+    tool(({ limit, offset }: { limit?: number; offset?: number }) => listChannels(db, account, session.requireAgent(), limit, offset)),
   );
 
   return server;

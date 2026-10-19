@@ -32,18 +32,23 @@ function countCodePoints(s: string): number {
   return n;
 }
 
+/** Throws unless `body` is a valid message: not empty or only whitespace, at most MAX_BODY_LENGTH characters. */
+export function validateBody(body: string, kind = "Message"): void {
+  if (body.trim().length === 0) throw new ToolError(`${kind} body is empty.`);
+  // Count characters (code points), not UTF-16 code units, to match what the tool advertises.
+  // A code point is at most 2 code units, so anything over twice the limit is too long without iterating.
+  if (body.length > 2 * MAX_BODY_LENGTH || countCodePoints(body) > MAX_BODY_LENGTH) {
+    throw new ToolError(`${kind} is too long: at most ${MAX_BODY_LENGTH} characters.`);
+  }
+}
+
 /**
  * Stores one delivery per recipient: the named agent, or for `all` every agent of the account registered right now
  * except the sender. Read state therefore belongs to each recipient. A message belongs to its recipient's account,
  * which is always the sender's.
  */
 export function sendMessage(db: Db, account: AccountId, from: string, to: string, body: string): SendResult {
-  if (body.trim().length === 0) throw new ToolError("Message body is empty.");
-  // Count characters (code points), not UTF-16 code units, to match what the tool advertises.
-  // A code point is at most 2 code units, so anything over twice the limit is too long without iterating.
-  if (body.length > 2 * MAX_BODY_LENGTH || countCodePoints(body) > MAX_BODY_LENGTH) {
-    throw new ToolError(`Message is too long: at most ${MAX_BODY_LENGTH} characters.`);
-  }
+  validateBody(body);
   const broadcast = to.toLowerCase() === "all";
   // IMMEDIATE takes the write lock up front, so the recipient list cannot change under us.
   return db
