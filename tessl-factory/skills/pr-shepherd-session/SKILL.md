@@ -151,7 +151,11 @@ looping.
 4. **The tests pass here.** Start this step only before 38 minutes (see
    "Time"). With `HEAD` at `<sha>` and a clean worktree, run `npm ci`, `npm
    run build`, `npm test` and `npm run e2e`, in that order. Every one must
-   exit 0. Record the outcome for `<sha>`: a pass on `<sha>` need not be run
+   exit 0. If `npm ci` fails only because `better-sqlite3`'s install script
+   cannot build (`not found: make`, or no C compiler), run `npm ci
+   --ignore-scripts` instead: the package ships prebuilt binaries, and the
+   README documents this install. That counts as `npm ci` passing; any other
+   `npm ci` failure does not. Record the outcome for `<sha>`: a pass on `<sha>` need not be run
    again this session. A failure is a failed check, the same as a red check on
    GitHub: say on the PR which command failed and how, and fix it (situation
    3). Do not run the commands again on `<sha>` unless you have new reason to
