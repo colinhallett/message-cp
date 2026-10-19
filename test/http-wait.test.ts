@@ -112,28 +112,10 @@ describe("the curl command", () => {
   };
 
   it("reads the token from ~/.message-cp/http-token when the variable is unset", async () => {
-    // The old file holds a wrong token, so this passes only if the new one is read first.
-    const home = await homeWith({ ".message-cp/http-token": TOKEN, ".memory-cp/http-token": "old" });
+    const home = await homeWith({ ".message-cp/http-token": TOKEN });
     sendMessage(db, OWNER_ACCOUNT, "bob", "alice", "hi");
     const p = run(command("alice"), { HOME: home });
     expect(await p.exited).toBe(0);
-  });
-
-  it("still reads the old ~/.memory-cp/http-token when there is no new one", async () => {
-    const home = await homeWith({ ".memory-cp/http-token": TOKEN });
-    sendMessage(db, OWNER_ACCOUNT, "bob", "alice", "hi");
-    const p = run(command("alice"), { HOME: home });
-    expect(await p.exited).toBe(0);
-  });
-
-  it("still reads the old MEMORY_CP_HTTP_TOKEN, and prefers MESSAGE_CP_HTTP_TOKEN when both are set", async () => {
-    const home = await homeWith({});
-    sendMessage(db, OWNER_ACCOUNT, "bob", "alice", "hi");
-    const old = run(command("alice"), { MEMORY_CP_HTTP_TOKEN: TOKEN, HOME: home });
-    expect(await old.exited).toBe(0);
-    const both = run(command("alice"), { MESSAGE_CP_HTTP_TOKEN: "nope", MEMORY_CP_HTTP_TOKEN: TOKEN, HOME: home });
-    expect(await both.exited).toBe(1);
-    expect(both.err()).toContain("401");
   });
 
   it("ends non-zero on a refused token or a missing agent, and with no token at all", async () => {

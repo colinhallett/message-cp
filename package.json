@@ -12,9 +12,9 @@
   },
   "type": "module",
   "bugs": {
-    "url": "https://github.com/colinhallett/memory-cp/issues"
+    "url": "https://github.com/colinhallett/message-cp/issues"
   },
-  "homepage": "https://github.com/colinhallett/memory-cp#readme",
+  "homepage": "https://github.com/colinhallett/message-cp#readme",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.32.1",
     "better-sqlite3": "^13.0.3",
@@ -32,7 +32,6 @@
     "node": ">=22.12"
   },
   "bin": {
-    "message-cp": "dist/cli.js",
-    "memory-cp": "dist/cli.js"
+    "message-cp": "dist/cli.js"
   }
 }

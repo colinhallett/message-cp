@@ -11,7 +11,7 @@ const shellQuote = (s: string) => (/^[A-Za-z0-9_\/.:@%+=,-]+$/.test(s) ? s : `'$
 
 /** The shell command that exits once `name` has unread mail, reading the same database as this server. */
 export function waitCommand(name: string, env: NodeJS.ProcessEnv = process.env): string {
-  // Set under the new name, so a MESSAGE_CP_DB in the caller's shell cannot point the command at another database.
+  // Carries this server's database path, so a different MESSAGE_CP_DB in the caller's shell cannot point the command elsewhere.
   const path = setting("DB", env);
   const db = path ? `MESSAGE_CP_DB=${shellQuote(resolve(path))} ` : "";
   return `${db}node ${shellQuote(cliPath)} wait ${shellQuote(name)}`;
@@ -27,12 +27,11 @@ export const DEFAULT_WAIT_HOLD_MS = 4 * 60 * 1000;
 // curl gives up a little after the server would have answered, so a dead connection cannot hang the loop.
 const CURL_MAX_TIME_S = DEFAULT_WAIT_HOLD_MS / 1000 + 60;
 
-// Plain POSIX sh and curl, nothing to install. The token comes from MESSAGE_CP_HTTP_TOKEN, else the old
-// MEMORY_CP_HTTP_TOKEN (an empty variable counts as unset), else ~/.message-cp/http-token, else the old
-// ~/.memory-cp/http-token when the new file cannot be read, and reaches curl on
+// Plain POSIX sh and curl, nothing to install. The token comes from MESSAGE_CP_HTTP_TOKEN (an empty variable counts
+// as unset), else ~/.message-cp/http-token, and reaches curl on
 // stdin (`-H @-`), so it is never in an argument list. $1 is the /wait URL, $2 the agent name.
 // A 204 (no mail yet) or a failed request asks again; 401 and 404 end it, since asking again cannot help.
-const CURL_LOOP = `t="\${MESSAGE_CP_HTTP_TOKEN:-\${MEMORY_CP_HTTP_TOKEN:-$(cat ~/.message-cp/http-token 2>/dev/null || cat ~/.memory-cp/http-token 2>/dev/null)}}"
+const CURL_LOOP = `t="\${MESSAGE_CP_HTTP_TOKEN:-$(cat ~/.message-cp/http-token 2>/dev/null)}"
 [ -n "$t" ] || { echo "message-cp wait: set MESSAGE_CP_HTTP_TOKEN or write the token to ~/.message-cp/http-token" >&2; exit 1; }
 while :; do
 r=$(printf "Authorization: Bearer %s\\n" "$t" | curl -sS -m ${CURL_MAX_TIME_S} -H @- -g -G --data-urlencode "agent=$2" -w "%{http_code}" "$1")
