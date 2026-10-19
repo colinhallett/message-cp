@@ -73,7 +73,9 @@
         "event.pull_request.head.ref": {
           "matches": "^tessl/"
         },
-        "event.pull_request.state": "open"
+        "event.pull_request.state": "open",
+        "event.pull_request.head.repo.full_name": "colinhallett/message-cp",
+        "event.pull_request.user.login": "tessl-helper[bot]"
       },
       "concurrency": {
         "keys": [
@@ -100,10 +102,13 @@
         },
         "event.pull_request.state": "open",
         "event.sender.login": {
-          "not": {
-            "equals": "tessl-helper[bot]"
-          }
-        }
+          "in": [
+            "colinhallett",
+            "tessl-reviewer[bot]"
+          ]
+        },
+        "event.pull_request.head.repo.full_name": "colinhallett/message-cp",
+        "event.pull_request.user.login": "tessl-helper[bot]"
       },
       "concurrency": {
         "debounce": "90s",
