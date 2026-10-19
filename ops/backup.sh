@@ -1,35 +1,35 @@
 #!/usr/bin/env bash
-# Nightly backup of the memory-cp database to object storage. See ops/README.md to install, ops/restore.md to restore.
+# Nightly backup of the message-cp database to object storage. See ops/README.md to install, ops/restore.md to restore.
 #
 # Takes a consistent snapshot with VACUUM INTO (safe while serve is writing; a plain copy of a WAL database is not),
-# checks it, gzips it to memory-cp-<UTC date>.sqlite.gz and PUTs it to a write-only pre-authenticated request URL.
+# checks it, gzips it to message-cp-<UTC date>.sqlite.gz and PUTs it to a write-only pre-authenticated request URL.
 # The local copy is always deleted. Any failure exits non-zero. The upload URL is never printed or put on a command line.
 #
 # Environment:
-#   MEMORY_CP_DB                 database to back up, else ~/.memory-cp/db.sqlite (the server's own default)
-#   MEMORY_CP_BACKUP_URL_FILE    file holding the bucket's write URL (ending in /o/), else $CREDENTIALS_DIRECTORY/backup-url,
+#   MESSAGE_CP_DB                 database to back up, else ~/.message-cp/db.sqlite (the server's own default)
+#   MESSAGE_CP_BACKUP_URL_FILE    file holding the bucket's write URL (ending in /o/), else $CREDENTIALS_DIRECTORY/backup-url,
 #                                which is where the systemd unit's LoadCredential= puts it
 set -euo pipefail
 
-say() { echo "memory-cp-backup: $*" >&2; }
+say() { echo "message-cp-backup: $*" >&2; }
 fail() { say "$*"; exit 1; }
 
 for tool in sqlite3 gzip curl; do
   command -v "$tool" >/dev/null || fail "$tool is not installed"
 done
 
-[ -n "${MEMORY_CP_DB:-}" ] || [ -n "${HOME:-}" ] || fail "set MEMORY_CP_DB, or User= in the unit so HOME is set"
-db="${MEMORY_CP_DB:-$HOME/.memory-cp/db.sqlite}"
+[ -n "${MESSAGE_CP_DB:-}" ] || [ -n "${HOME:-}" ] || fail "set MESSAGE_CP_DB, or User= in the unit so HOME is set"
+db="${MESSAGE_CP_DB:-$HOME/.message-cp/db.sqlite}"
 [ -f "$db" ] || fail "no database at $db"
 # Run as the database's owner: sqlite3 may create the -wal and -shm files, and ones owned by another user lock the server out.
 [ -O "$db" ] || fail "run as the user that owns $db"
 
-if [ -n "${MEMORY_CP_BACKUP_URL_FILE:-}" ]; then
-  url_file="$MEMORY_CP_BACKUP_URL_FILE"
+if [ -n "${MESSAGE_CP_BACKUP_URL_FILE:-}" ]; then
+  url_file="$MESSAGE_CP_BACKUP_URL_FILE"
 elif [ -n "${CREDENTIALS_DIRECTORY:-}" ]; then
   url_file="$CREDENTIALS_DIRECTORY/backup-url"
 else
-  fail "set MEMORY_CP_BACKUP_URL_FILE, or run from memory-cp-backup.service"
+  fail "set MESSAGE_CP_BACKUP_URL_FILE, or run from message-cp-backup.service"
 fi
 [ -r "$url_file" ] || fail "cannot read the upload URL file $url_file"
 url="$(tr -d '[:space:]' <"$url_file")"
@@ -41,7 +41,7 @@ url="$(tr -d '[:space:]' <"$url_file")"
 
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
-name="memory-cp-$(date -u +%F).sqlite.gz"
+name="message-cp-$(date -u +%F).sqlite.gz"
 snap="$work/snapshot.sqlite"
 
 # VACUUM INTO reads the database in one read transaction, so writers carry on and the snapshot is one point in time.

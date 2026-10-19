@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # Deploys the newest commit on origin/main and rolls it back if it fails its check.
 #
-# Run as root by memory-cp-deploy.service (memory-cp-deploy.timer starts it every two minutes). One run:
+# Run as root by message-cp-deploy.service (message-cp-deploy.timer starts it every two minutes). One run:
 #   1. fetches origin/main into $ROOT/repo.git (a bare clone; it only fetches, never pushes);
 #   2. stops if that sha is the live release or the last one that failed;
 #   3. builds it in $ROOT/releases/<sha> (npm ci, npm run build) as $BUILD_USER, which never sees the token;
-#   4. points the $ROOT/current symlink at it and restarts memory-cp.service;
+#   4. points the $ROOT/current symlink at it and restarts message-cp.service;
 #   5. runs the release's `npm run e2e -- --url <public URL>` as $SERVER_USER, with the token in its environment only;
 #   6. records the sha in $ROOT/live-sha once that passes; on any failure, records its sha in $ROOT/failed-sha so it
 #      is not tried again until main moves, points current back at the previous release, restarts and checks it,
@@ -15,18 +15,18 @@
 # pointing past live-sha or rollback-pending in place; the next run restores live-sha first, and deploys main only once
 # that restored release has restarted and passed its check.
 # failed-sha holds back only an unchanged main: a run that sees main elsewhere removes it.
-# It keeps the five releases that went live most recently. The database and /etc/memory-cp.env are never inside
+# It keeps the five releases that went live most recently. The database and /etc/message-cp.env are never inside
 # $ROOT/releases and nothing here writes them. Everything it prints goes to the journal; it never prints the token.
 set -euo pipefail
 umask 022
 
-ROOT=${MEMORY_CP_ROOT:-/opt/memory-cp}
-ENV_FILE=${MEMORY_CP_ENV_FILE:-/etc/memory-cp.env}
-SERVICE=${MEMORY_CP_SERVICE:-memory-cp}
+ROOT=${MESSAGE_CP_ROOT:-/opt/message-cp}
+ENV_FILE=${MESSAGE_CP_ENV_FILE:-/etc/message-cp.env}
+SERVICE=${MESSAGE_CP_SERVICE:-message-cp}
 # Builds run as BUILD_USER, so dependencies' install scripts cannot read the server's token or database; the check
 # runs as SERVER_USER, which already holds both. Empty runs that step as the caller (only for try-deploy.sh).
-BUILD_USER=${MEMORY_CP_BUILD_USER-memory-cp-build}
-SERVER_USER=${MEMORY_CP_SERVER_USER-memory-cp}
+BUILD_USER=${MESSAGE_CP_BUILD_USER-message-cp-build}
+SERVER_USER=${MESSAGE_CP_SERVER_USER-message-cp}
 KEEP=5
 READY_SECONDS=60
 
@@ -52,13 +52,13 @@ env_value() {
 }
 
 # `as_user <user> <home> cmd...` runs cmd as <user> with only PATH, HOME, the npm cache and, if the caller set it,
-# MEMORY_CP_HTTP_TOKEN in its environment. The token travels in the environment, never in an argument list.
+# MESSAGE_CP_HTTP_TOKEN in its environment. The token travels in the environment, never in an argument list.
 as_user() (
-  user=$1 home=$2 token=${MEMORY_CP_HTTP_TOKEN-} path=$PATH
+  user=$1 home=$2 token=${MESSAGE_CP_HTTP_TOKEN-} path=$PATH
   shift 2
   while read -r name; do unset "$name" 2>/dev/null || true; done < <(compgen -e)
   export PATH=$path HOME=$home npm_config_cache=$home/.npm
-  if [ -n "$token" ]; then export MEMORY_CP_HTTP_TOKEN=$token; fi
+  if [ -n "$token" ]; then export MESSAGE_CP_HTTP_TOKEN=$token; fi
   if [ -n "$user" ]; then
     exec setpriv --reuid="$user" --regid="$user" --init-groups -- "$@"
   fi
@@ -92,20 +92,20 @@ write_state() {
 # Runs release <sha>'s end-to-end check against the public URL. The token goes in its environment only.
 check() {
   wait_ready || return 1
-  (cd "$ROOT/releases/$1" && MEMORY_CP_HTTP_TOKEN=$TOKEN as_user "$SERVER_USER" "$ROOT/check-home" \
+  (cd "$ROOT/releases/$1" && MESSAGE_CP_HTTP_TOKEN=$TOKEN as_user "$SERVER_USER" "$ROOT/check-home" \
     npm run --silent e2e -- --url "$PUBLIC_URL")
 }
 
-TOKEN=$(env_value MEMORY_CP_HTTP_TOKEN)
-PUBLIC_URL=$(env_value MEMORY_CP_PUBLIC_URL)
+TOKEN=$(env_value MESSAGE_CP_HTTP_TOKEN)
+PUBLIC_URL=$(env_value MESSAGE_CP_PUBLIC_URL)
 PUBLIC_URL=${PUBLIC_URL%/}
 if [ -z "$TOKEN" ] || [ -z "$PUBLIC_URL" ]; then
-  log "$ENV_FILE must set MEMORY_CP_HTTP_TOKEN and MEMORY_CP_PUBLIC_URL"
+  log "$ENV_FILE must set MESSAGE_CP_HTTP_TOKEN and MESSAGE_CP_PUBLIC_URL"
   exit 1
 fi
-case "$(env_value MEMORY_CP_DB)" in
+case "$(env_value MESSAGE_CP_DB)" in
   "$ROOT"/releases/* | "$ROOT"/current/*)
-    log "MEMORY_CP_DB must be outside $ROOT/releases: a release directory is replaced and deleted"
+    log "MESSAGE_CP_DB must be outside $ROOT/releases: a release directory is replaced and deleted"
     exit 1
     ;;
 esac

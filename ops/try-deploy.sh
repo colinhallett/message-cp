@@ -11,8 +11,8 @@
 set -euo pipefail
 
 SRC=$(cd "$(dirname "$0")/.." && pwd)
-WORK=$(mktemp -d "${TMPDIR:-/tmp}/memory-cp-try-deploy.XXXXXX")
-ROOT=$WORK/opt/memory-cp
+WORK=$(mktemp -d "${TMPDIR:-/tmp}/message-cp-try-deploy.XXXXXX")
+ROOT=$WORK/opt/message-cp
 PORT=${PORT:-18787}
 echo "try-deploy: working in $WORK"
 
@@ -31,14 +31,14 @@ git -C "$WORK/src" push --quiet "$WORK/origin.git" HEAD:refs/heads/main
 mkdir -p "$ROOT" "$WORK/etc" "$WORK/var" "$WORK/bin"
 git clone --quiet --bare "$WORK/origin.git" "$ROOT/repo.git"
 cp "$SRC/ops/deploy.sh" "$ROOT/deploy.sh"
-cat >"$WORK/etc/memory-cp.env" <<EOF
-MEMORY_CP_HTTP_TOKEN=$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')
-MEMORY_CP_PUBLIC_URL=http://127.0.0.1:$PORT
-MEMORY_CP_DB=$WORK/var/db.sqlite
+cat >"$WORK/etc/message-cp.env" <<EOF
+MESSAGE_CP_HTTP_TOKEN=$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')
+MESSAGE_CP_PUBLIC_URL=http://127.0.0.1:$PORT
+MESSAGE_CP_DB=$WORK/var/db.sqlite
 EOF
-chmod 600 "$WORK/etc/memory-cp.env"
+chmod 600 "$WORK/etc/message-cp.env"
 
-# `systemctl restart|stop memory-cp`, as the memory-cp.service unit would do it.
+# `systemctl restart|stop message-cp`, as the message-cp.service unit would do it.
 cat >"$WORK/bin/systemctl" <<EOF
 #!/usr/bin/env bash
 set -eu
@@ -47,17 +47,17 @@ set -eu
 pid=$WORK/var/server.pid
 if [ -f "\$pid" ]; then kill "\$(cat "\$pid")" 2>/dev/null || true; rm -f "\$pid"; sleep 1; fi
 [ "\$1" = restart ] || exit 0
-set -a; . $WORK/etc/memory-cp.env; set +a
+set -a; . $WORK/etc/message-cp.env; set +a
 cd $ROOT/current
 # Closing fd 9 matters: deploy.sh holds its lock on it, and systemd would not hand it to the service.
-nohup node dist/cli.js serve --port $PORT --public-url "\$MEMORY_CP_PUBLIC_URL" >>$WORK/var/server.log 2>&1 9>&- &
+nohup node dist/cli.js serve --port $PORT --public-url "\$MESSAGE_CP_PUBLIC_URL" >>$WORK/var/server.log 2>&1 9>&- &
 echo \$! >"\$pid"
 EOF
 chmod +x "$WORK/bin/systemctl"
-trap '"$WORK/bin/systemctl" stop memory-cp' EXIT
+trap '"$WORK/bin/systemctl" stop message-cp' EXIT
 
 deploy() {
-  PATH=$WORK/bin:$PATH MEMORY_CP_ROOT=$ROOT MEMORY_CP_ENV_FILE=$WORK/etc/memory-cp.env MEMORY_CP_BUILD_USER='' MEMORY_CP_SERVER_USER='' \
+  PATH=$WORK/bin:$PATH MESSAGE_CP_ROOT=$ROOT MESSAGE_CP_ENV_FILE=$WORK/etc/message-cp.env MESSAGE_CP_BUILD_USER='' MESSAGE_CP_SERVER_USER='' \
     "$ROOT/deploy.sh"
 }
 live() { basename "$(readlink "$ROOT/current")"; }
@@ -89,7 +89,7 @@ deploy || fail "the run after a failure failed"
 
 say "5. the restored release serves: npm run e2e against it"
 # shellcheck disable=SC1091
-(cd "$ROOT/current" && set -a && . "$WORK/etc/memory-cp.env" && set +a && npm run --silent e2e -- --url "$MEMORY_CP_PUBLIC_URL") \
+(cd "$ROOT/current" && set -a && . "$WORK/etc/message-cp.env" && set +a && npm run --silent e2e -- --url "$MESSAGE_CP_PUBLIC_URL") \
   || fail "the restored release does not pass its check"
 
 say "6. a run that ended before its check is undone by the next run"
@@ -101,7 +101,7 @@ deploy || fail "the run after an interrupted one failed"
 
 say "7. a rollback that did not pass its check is tried again by the next run"
 # As if a rollback's restart failed: current is live-sha, but rollback-pending says the rollback is not finished.
-"$WORK/bin/systemctl" stop memory-cp
+"$WORK/bin/systemctl" stop message-cp
 touch "$ROOT/rollback-pending"
 deploy || fail "the run after an unfinished rollback failed"
 [ -e "$ROOT/rollback-pending" ] && fail "rollback-pending is still there"
@@ -131,6 +131,6 @@ deploy || fail "the run after the restart was fixed failed"
 [ "$(live)" = "$NEXT" ] || fail "current is $(live), not $NEXT"
 
 [ -d "$ROOT/releases/$BAD" ] && fail "the failed release was kept"
-grep -qF "$(grep TOKEN "$WORK/etc/memory-cp.env" | cut -d= -f2)" "$WORK/var/server.log" && fail "the server log has the token"
+grep -qF "$(grep TOKEN "$WORK/etc/message-cp.env" | cut -d= -f2)" "$WORK/var/server.log" && fail "the server log has the token"
 echo
 echo "try-deploy: good $GOOD deployed; bad $BAD rolled back to it; all checks passed"

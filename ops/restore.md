@@ -1,21 +1,21 @@
 # Restoring the database from a backup
 
-Backups are `memory-cp-<UTC date>.sqlite.gz` objects in the backup bucket (see [README.md](README.md)). The server's upload URL can only write, so fetch the backup from the owner's machine, with the OCI console or CLI.
+Backups are `message-cp-<UTC date>.sqlite.gz` objects in the backup bucket (see [README.md](README.md)). The server's upload URL can only write, so fetch the backup from the owner's machine, with the OCI console or CLI.
 
 1. **Fetch** the newest backup (or the day you want) and copy it to the server:
 
    ```sh
-   oci os object list --bucket-name <bucket> --prefix memory-cp- --query 'data[].name' # newest is last
-   oci os object get --bucket-name <bucket> --name memory-cp-<date>.sqlite.gz --file memory-cp-<date>.sqlite.gz
-   scp memory-cp-<date>.sqlite.gz <server>:/tmp/
+   oci os object list --bucket-name <bucket> --prefix message-cp- --query 'data[].name' # newest is last
+   oci os object get --bucket-name <bucket> --name message-cp-<date>.sqlite.gz --file message-cp-<date>.sqlite.gz
+   scp message-cp-<date>.sqlite.gz <server>:/tmp/
    ```
 
-   If that object fails the check below (it was overwritten with something else), fetch an earlier version of it: `oci os object list-object-versions --bucket-name <bucket> --prefix memory-cp-<date>` lists them, and `oci os object get` takes `--version-id`.
+   If that object fails the check below (it was overwritten with something else), fetch an earlier version of it: `oci os object list-object-versions --bucket-name <bucket> --prefix message-cp-<date>` lists them, and `oci os object get` takes `--version-id`.
 
 2. **Check** it opens and is intact before touching the live database. On the server:
 
    ```sh
-   gunzip -c /tmp/memory-cp-<date>.sqlite.gz > /tmp/restore.sqlite
+   gunzip -c /tmp/message-cp-<date>.sqlite.gz > /tmp/restore.sqlite
    sqlite3 /tmp/restore.sqlite 'PRAGMA integrity_check;'                     # must print: ok
    sqlite3 /tmp/restore.sqlite 'SELECT count(*) FROM agents; SELECT count(*) FROM messages;'
    ```
@@ -24,7 +24,7 @@ Backups are `memory-cp-<UTC date>.sqlite.gz` objects in the backup bucket (see [
 4. **Swap** the files, keeping the old ones. Set `DB` to the file the server uses (the backup unit's drop-in names the same one):
 
    ```sh
-   DB=<database>    # serve's MEMORY_CP_DB, such as /var/lib/memory-cp/db.sqlite; without one, ~<serve user>/.memory-cp/db.sqlite
+   DB=<database>    # serve's MESSAGE_CP_DB, such as /var/lib/message-cp/db.sqlite; without one, ~<serve user>/.message-cp/db.sqlite
    OLD="$DB.pre-restore-$(date -u +%FT%H%M%S)"
    mkdir "$OLD" &&
      mv "$DB" "$OLD/" &&

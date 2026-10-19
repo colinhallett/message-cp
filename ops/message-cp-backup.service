@@ -1,0 +1,14 @@
+[Unit]
+Description=Back up the message-cp database to object storage
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/message-cp-backup
+# The upload URL stays in a root-only file; systemd hands this run a private copy readable by User= alone.
+LoadCredential=backup-url:/etc/message-cp/backup-url
+# User= (the account that runs serve and owns the database) and, if serve sets it, Environment=MESSAGE_CP_DB=
+# go in a drop-in: systemctl edit message-cp-backup.service. See ops/README.md.
+PrivateTmp=yes
+NoNewPrivileges=yes
