@@ -7,6 +7,7 @@
     "skills/chat-test",
     "skills/prod-check",
     "skills/planner",
-    "skills/findings-triage"
+    "skills/findings-triage",
+    "skills/vm-check"
   ]
 }
