@@ -37,17 +37,40 @@ env_value() {
 
 # Stops the old units, so nothing writes the database or /opt while files move. The deploy timer goes first, so no
 # new run starts; flock then waits for a run already under way to finish, and holding the lock keeps out one started
-# by hand. No message-cp deploy can start until step 7 enables its timer.
+# by hand. The old deploy.sh is then made unexecutable, so no run can start at all, and any run that started before
+# that but had not yet reached the lock (it exits there) is waited out: once step 3 sets /opt/memory-cp aside, the
+# lock held is on the file set aside, and a run reaching deploy.sh's mkdir then would recreate /opt/memory-cp.
+# Nothing is copied unless every old unit has stopped and nothing runs as the server's user.
+# No message-cp deploy can start until step 7 enables its timer.
 stop_old() {
-  local u
+  local u i state
   for u in $OLD-deploy.timer $OLD-backup.timer; do systemctl disable --now $u 2>/dev/null || true; done
   if [ -d /opt/$OLD ]; then
     exec 9>/opt/$OLD/deploy.lock
     say "waiting for any deploy run under way to finish"
     flock 9
   fi
+  # A unit that does not exist cannot be stopped; whether each one has stopped is checked below.
   for u in $OLD-deploy.service $OLD-backup.service $OLD.service; do systemctl stop $u 2>/dev/null || true; done
   systemctl disable $OLD.service 2>/dev/null || true
+  if [ -f /opt/$OLD/deploy.sh ]; then chmod a-x /opt/$OLD/deploy.sh; fi
+  for ((i = 0; i < 30; i++)); do
+    pgrep -f "/opt/$OLD/deploy.sh" >/dev/null || break
+    sleep 1
+  done
+  if pgrep -f "/opt/$OLD/deploy.sh" >/dev/null; then
+    fail "a deploy run of /opt/$OLD/deploy.sh is still running; nothing was copied. Run '$0 undo' to start the old server again"
+  fi
+  for u in $OLD-deploy.service $OLD-backup.service $OLD.service; do
+    state=$(systemctl show -p ActiveState --value $u 2>/dev/null || true)
+    case "$state" in
+      "" | inactive | failed) ;;
+      *) fail "$u is still $state after systemctl stop; nothing was copied. Run '$0 undo' to start the old server again" ;;
+    esac
+  done
+  if pgrep -u $OLD >/dev/null; then
+    fail "processes still run as $OLD (a stdio server, say: pgrep -u $OLD -a); nothing was copied. Stop them and run '$0 undo', then move again"
+  fi
 }
 
 move() {
@@ -232,6 +255,8 @@ undo() {
       if [ -e "$n.partial" ]; then mv -T "$n.partial" "$n.partial.undone-$stamp"; fi
       continue
     fi
+    # Both the old path and its copy set aside: something recreated the old path after the move set it aside.
+    if [ -e "$p" ]; then mv -T "$p" "$p.recreated-$stamp"; fi
     case "$p" in
       /opt/$OLD | /var/lib/$OLD | /etc/$OLD.env)
         # A copy the move did not finish holds nothing the old path does not.
@@ -255,6 +280,8 @@ undo() {
   fi
   # deploy.sh in /opt was replaced by the new one; the old one is in the copy taken before the move.
   if [ -f /opt/$OLD$ASIDE.undone-$stamp/deploy.sh ]; then install -m 0755 /opt/$OLD$ASIDE.undone-$stamp/deploy.sh /opt/$OLD/deploy.sh; fi
+  # Step 1 made it unexecutable; a move that stopped before step 3 left it so in /opt/memory-cp.
+  if [ -f /opt/$OLD/deploy.sh ]; then chmod 755 /opt/$OLD/deploy.sh; fi
   if [ -e /root/.ssh/config$ASIDE ]; then mv -T /root/.ssh/config$ASIDE /root/.ssh/config; fi
   for u in "${OLD_UNITS[@]}"; do
     rm -f "$UNITS/$(new_name "$u")"
