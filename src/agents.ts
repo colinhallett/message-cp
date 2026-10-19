@@ -23,7 +23,7 @@ interface Row {
   last_seen: number;
 }
 
-const NAME_PATTERN = /^[A-Za-z0-9_-]{1,32}$/;
+export const NAME_PATTERN = /^[A-Za-z0-9_-]{1,32}$/;
 const MAX_BIO_LENGTH = 500;
 
 function toAgent(row: Row): Agent {
