@@ -109,7 +109,7 @@ export function createServer(db: Db, session = new Session(OWNER_ACCOUNT), optio
     "unregister",
     {
       description:
-        "Remove an agent from the directory and free its name. The messages addressed to it are kept in the database but no tool shows them again, not even to a new agent that registers the same name; keptMessages says how many. With no arguments it removes you, and this session is unregistered until it calls `register` again. With name and key it removes that agent, only if the key matches (an agent that has no key can be removed by name alone); name and key work even from a session that has not registered. Any other session still acting as the removed agent is unregistered too. A process started with MESSAGE_CP_AGENT registers that agent again when it starts.",
+        "Remove an agent from the directory and free its name. The messages addressed to it are kept in the database but no tool shows them again, not even to a new agent that registers the same name; keptMessages says how many. With no arguments it removes you, and this session is unregistered until it calls `register` again. With name and key it removes that agent, only if the key matches (an agent that has no key can be removed by name alone); name and key work even from a session that has not registered. Any other session still acting as the removed agent is unregistered too. A process started with MESSAGE_CP_AGENT (or the old MEMORY_CP_AGENT) registers that agent again when it starts.",
       inputSchema: {
         name: z.string().optional().describe("The agent to remove. Omit to remove yourself."),
         key: z.string().optional().describe("That agent's key, required if it has one."),
