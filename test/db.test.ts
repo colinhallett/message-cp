@@ -20,7 +20,7 @@ function openTogether(file: string, count: number) {
     Array.from({ length: count }, () =>
       new Promise<{ code: number | null; stderr: string }>((resolve) => {
         const child = spawn(process.execPath, ["--import", "tsx", OPEN_DB], {
-          env: { ...process.env, MEMORY_CP_DB: file, START_AT: startAt },
+          env: { ...process.env, MESSAGE_CP_DB: file, START_AT: startAt },
         });
         let stderr = "";
         child.stderr.on("data", (d) => (stderr += d));
@@ -34,7 +34,7 @@ function openTogether(file: string, count: number) {
 describe("openDb", () => {
   it("lets many processes open the same new file at once", async () => {
     for (let round = 0; round < 3; round++) {
-      const file = join(mkdtempSync(join(tmpdir(), "memory-cp-")), "db.sqlite");
+      const file = join(mkdtempSync(join(tmpdir(), "message-cp-")), "db.sqlite");
       const results = await openTogether(file, 40);
       expect(results.filter((r) => r.code !== 0).map((r) => r.stderr)).toEqual([]);
 
@@ -46,7 +46,7 @@ describe("openDb", () => {
   }, 60_000);
 
   it("makes no copy for a new database", () => {
-    const file = join(mkdtempSync(join(tmpdir(), "memory-cp-")), "db.sqlite");
+    const file = join(mkdtempSync(join(tmpdir(), "message-cp-")), "db.sqlite");
     openDb(file).close();
     expect(existsSync(preAccountsCopy(file))).toBe(false);
   });
@@ -56,7 +56,7 @@ describe("openDb", () => {
 
     /** A file in the old schema with rows in every table, including a read and an unread message. */
     function oldDatabase(): string {
-      const file = join(mkdtempSync(join(tmpdir(), "memory-cp-")), "db.sqlite");
+      const file = join(mkdtempSync(join(tmpdir(), "message-cp-")), "db.sqlite");
       const db = new Database(file);
       db.exec(readFileSync(SCHEMA_BEFORE_REMOVAL, "utf8"));
       db.exec(`
@@ -209,7 +209,7 @@ describe("openDb", () => {
 
     /** A current file with two accounts, then the sign-in's tables and column, with a row in each. */
     function signInDatabase(): string {
-      const file = join(mkdtempSync(join(tmpdir(), "memory-cp-")), "db.sqlite");
+      const file = join(mkdtempSync(join(tmpdir(), "message-cp-")), "db.sqlite");
       const db = openDb(file);
       addAccount(db, "other");
       const other = db.prepare("SELECT id FROM accounts WHERE name = 'other'").pluck().get() as number;

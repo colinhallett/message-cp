@@ -12,7 +12,7 @@ try {
   if (registered) session.bind(registered.identity);
 } catch (err) {
   if (!(err instanceof ToolError)) throw err;
-  console.error(`memory-cp: ${err.message}`);
+  console.error(`message-cp: ${err.message}`);
   process.exit(1);
 }
 const server = createServer(db, session);

@@ -1,7 +1,7 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { OWNER_ACCOUNT, type AccountId, type Db } from "./db.js";
 
-// Accounts and their tokens. The operator manages them with `memory-cp account` and `memory-cp token` on the server.
+// Accounts and their tokens. The operator manages them with `message-cp account` and `message-cp token` on the server.
 // A token is shown once, when it is created; only its hash is stored.
 
 export class AccountError extends Error {}
@@ -75,8 +75,8 @@ export function revokeToken(db: Db, id: number): string {
 }
 
 /**
- * The account a bearer token belongs to: the owner's for `ownerToken` (MEMORY_CP_HTTP_TOKEN), else the account of a
- * token created with `memory-cp`, as long as it has not been revoked. Undefined for anything else.
+ * The account a bearer token belongs to: the owner's for `ownerToken` (MESSAGE_CP_HTTP_TOKEN), else the account of a
+ * token created with `message-cp`, as long as it has not been revoked. Undefined for anything else.
  */
 export function accountForToken(db: Db, token: string, ownerToken: string): AccountId | undefined {
   const hash = hashToken(token);

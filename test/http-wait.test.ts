@@ -15,7 +15,7 @@ let db: Db;
 let http: HttpServer;
 
 beforeEach(async () => {
-  db = openDb(join(mkdtempSync(join(tmpdir(), "memory-cp-httpwait-")), "db.sqlite"));
+  db = openDb(join(mkdtempSync(join(tmpdir(), "message-cp-httpwait-")), "db.sqlite"));
   registerAgent(db, OWNER_ACCOUNT, "alice", "receiver");
   registerAgent(db, OWNER_ACCOUNT, "bob", "sender");
   http = await startHttp(db, { token: TOKEN, port: 0, waitHoldMs: 1500 });
@@ -93,29 +93,55 @@ describe("the curl command", () => {
   it("exits 0 with the summary once a message is sent, and keeps the token off the command line", async () => {
     const cmd = command("alice");
     expect(cmd).not.toContain(TOKEN);
-    const p = run(cmd, { MEMORY_CP_HTTP_TOKEN: TOKEN });
+    const p = run(cmd, { MESSAGE_CP_HTTP_TOKEN: TOKEN });
     await new Promise((r) => setTimeout(r, 2500)); // past one 204 round
     sendMessage(db, OWNER_ACCOUNT, "bob", "alice", "hi");
     expect(await p.exited).toBe(0);
     expect(p.out()).toBe("1 unread message from bob\n");
   }, 20_000);
 
-  it("reads the token from ~/.memory-cp/http-token when the variable is unset", async () => {
-    const home = mkdtempSync(join(tmpdir(), "memory-cp-home-"));
+  /** A HOME with the given files under it, each holding `contents` plus a newline. */
+  const homeWith = async (files: Record<string, string>) => {
+    const home = mkdtempSync(join(tmpdir(), "message-cp-home-"));
     const { mkdirSync, writeFileSync } = await import("node:fs");
-    mkdirSync(join(home, ".memory-cp"));
-    writeFileSync(join(home, ".memory-cp/http-token"), `${TOKEN}\n`);
+    for (const [file, contents] of Object.entries(files)) {
+      mkdirSync(join(home, file, ".."), { recursive: true });
+      writeFileSync(join(home, file), `${contents}\n`);
+    }
+    return home;
+  };
+
+  it("reads the token from ~/.message-cp/http-token when the variable is unset", async () => {
+    // The old file holds a wrong token, so this passes only if the new one is read first.
+    const home = await homeWith({ ".message-cp/http-token": TOKEN, ".memory-cp/http-token": "old" });
     sendMessage(db, OWNER_ACCOUNT, "bob", "alice", "hi");
     const p = run(command("alice"), { HOME: home });
     expect(await p.exited).toBe(0);
   });
 
+  it("still reads the old ~/.memory-cp/http-token when there is no new one", async () => {
+    const home = await homeWith({ ".memory-cp/http-token": TOKEN });
+    sendMessage(db, OWNER_ACCOUNT, "bob", "alice", "hi");
+    const p = run(command("alice"), { HOME: home });
+    expect(await p.exited).toBe(0);
+  });
+
+  it("still reads the old MEMORY_CP_HTTP_TOKEN, and prefers MESSAGE_CP_HTTP_TOKEN when both are set", async () => {
+    const home = await homeWith({});
+    sendMessage(db, OWNER_ACCOUNT, "bob", "alice", "hi");
+    const old = run(command("alice"), { MEMORY_CP_HTTP_TOKEN: TOKEN, HOME: home });
+    expect(await old.exited).toBe(0);
+    const both = run(command("alice"), { MESSAGE_CP_HTTP_TOKEN: "nope", MEMORY_CP_HTTP_TOKEN: TOKEN, HOME: home });
+    expect(await both.exited).toBe(1);
+    expect(both.err()).toContain("401");
+  });
+
   it("ends non-zero on a refused token or a missing agent, and with no token at all", async () => {
-    const home = mkdtempSync(join(tmpdir(), "memory-cp-home-"));
-    const bad = run(command("alice"), { MEMORY_CP_HTTP_TOKEN: "nope", HOME: home });
+    const home = mkdtempSync(join(tmpdir(), "message-cp-home-"));
+    const bad = run(command("alice"), { MESSAGE_CP_HTTP_TOKEN: "nope", HOME: home });
     expect(await bad.exited).toBe(1);
     expect(bad.err()).toContain("401");
-    const missing = run(command("nobody"), { MEMORY_CP_HTTP_TOKEN: TOKEN, HOME: home });
+    const missing = run(command("nobody"), { MESSAGE_CP_HTTP_TOKEN: TOKEN, HOME: home });
     expect(await missing.exited).toBe(1);
     expect(missing.err()).toContain("404");
     const none = run(command("alice"), { HOME: home });

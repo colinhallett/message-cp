@@ -3,13 +3,14 @@ import { DEFAULT_HTTP_HOST, DEFAULT_HTTP_PORT, startHttp } from "./http.js";
 import { AccountError, addAccount, addToken, listAccounts, revokeToken } from "./accounts.js";
 import { OWNER_ACCOUNT, openDb } from "./db.js";
 import { unreadSummary } from "./messages.js";
+import { setting } from "./settings.js";
 import { formatUnread } from "./wait.js";
 
 const [command, ...rest] = process.argv.slice(2);
 
 if (command === "serve") {
   const usage = () => {
-    console.error("usage: memory-cp serve [--host <address>] [--port <port>] [--public-url <url>]");
+    console.error("usage: message-cp serve [--host <address>] [--port <port>] [--public-url <url>]");
     process.exit(2);
   };
   const opts = new Map<string, string>();
@@ -19,9 +20,9 @@ if (command === "serve") {
     if ((name !== "--host" && name !== "--port" && name !== "--public-url") || opts.has(name) || !value || value.startsWith("--")) usage();
     opts.set(name, value!);
   }
-  const token = process.env.MEMORY_CP_HTTP_TOKEN;
+  const token = setting("HTTP_TOKEN");
   if (!token) {
-    console.error("memory-cp serve: set MEMORY_CP_HTTP_TOKEN to a non-empty value; every request must carry it.");
+    console.error("message-cp serve: set MESSAGE_CP_HTTP_TOKEN to a non-empty value; every request must carry it.");
     process.exit(2);
   }
   const port = opts.has("--port") ? Number(opts.get("--port")) : DEFAULT_HTTP_PORT;
@@ -30,14 +31,14 @@ if (command === "serve") {
   const publicUrl = opts.get("--public-url");
   if (publicUrl !== undefined && (!/^https?:\/\/[^\s'?#]+$/.test(publicUrl) || /\/mcp\/*$/.test(publicUrl))) usage();
   const http = await startHttp(openDb(), { token, host, port, publicUrl });
-  console.error(`memory-cp serve: listening on http://${host}:${http.port}/mcp`);
+  console.error(`message-cp serve: listening on http://${host}:${http.port}/mcp`);
   const shutdown = () => void http.close().then(() => process.exit(0));
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
 } else if (command === "wait") {
   const name = rest[0];
   if (!name) {
-    console.error("usage: memory-cp wait <name>");
+    console.error("usage: message-cp wait <name>");
     process.exit(2);
   }
   const db = openDb();
@@ -54,7 +55,7 @@ if (command === "serve") {
       continue;
     }
     if (!unread) {
-      console.error(`memory-cp wait: no agent named '${name}'.`);
+      console.error(`message-cp wait: no agent named '${name}'.`);
       process.exit(1);
     }
     if (unread.count > 0) {
@@ -66,7 +67,7 @@ if (command === "serve") {
         ),
       );
       // A summary that was not delivered must not look like a successful wake-up.
-      if (err) console.error(`memory-cp wait: could not write the summary: ${err.message}`);
+      if (err) console.error(`message-cp wait: could not write the summary: ${err.message}`);
       process.exit(err ? 1 : 0);
     }
     await new Promise((r) => setTimeout(r, 1000));
@@ -76,7 +77,7 @@ if (command === "serve") {
   // hash is stored; everything else goes to stderr.
   const usage = () => {
     console.error(
-      "usage: memory-cp account add <name> | memory-cp account list | memory-cp token add <account> | memory-cp token revoke <token id>",
+      "usage: message-cp account add <name> | message-cp account list | message-cp token add <account> | message-cp token revoke <token id>",
     );
     process.exit(2);
   };
@@ -84,7 +85,7 @@ if (command === "serve") {
   if (extra !== undefined) usage();
   const db = openDb();
   const printToken = (t: { id: number; account: string; token: string }) => {
-    console.error(`memory-cp: token ${t.id} for account '${t.account}'. It is shown only now; keep it.`);
+    console.error(`message-cp: token ${t.id} for account '${t.account}'. It is shown only now; keep it.`);
     console.log(t.token);
   };
   try {
@@ -97,17 +98,17 @@ if (command === "serve") {
     else if (command === "token" && action === "revoke" && arg) {
       const id = Number(arg);
       if (!/^[0-9]+$/.test(arg) || !Number.isSafeInteger(id)) usage();
-      console.error(`memory-cp: revoked token ${id} of account '${revokeToken(db, id)}'.`);
+      console.error(`message-cp: revoked token ${id} of account '${revokeToken(db, id)}'.`);
     } else usage();
   } catch (err) {
     if (!(err instanceof AccountError)) throw err;
-    console.error(`memory-cp: ${err.message}`);
+    console.error(`message-cp: ${err.message}`);
     process.exit(1);
   }
   db.close();
 } else if (command === undefined) {
   await import("./index.js");
 } else {
-  console.error(`memory-cp: unknown command '${command}'. Commands: serve, wait, account, token`);
+  console.error(`message-cp: unknown command '${command}'. Commands: serve, wait, account, token`);
   process.exit(2);
 }

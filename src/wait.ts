@@ -1,5 +1,6 @@
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { setting } from "./settings.js";
 
 /** The CLI that sits next to the running server: `dist/cli.js` for a built checkout. */
 const cliPath = fileURLToPath(new URL("./cli.js", import.meta.url));
@@ -10,7 +11,9 @@ const shellQuote = (s: string) => (/^[A-Za-z0-9_\/.:@%+=,-]+$/.test(s) ? s : `'$
 
 /** The shell command that exits once `name` has unread mail, reading the same database as this server. */
 export function waitCommand(name: string, env: NodeJS.ProcessEnv = process.env): string {
-  const db = env.MEMORY_CP_DB ? `MEMORY_CP_DB=${shellQuote(resolve(env.MEMORY_CP_DB))} ` : "";
+  // Set under the new name, so a MESSAGE_CP_DB in the caller's shell cannot point the command at another database.
+  const path = setting("DB", env);
+  const db = path ? `MESSAGE_CP_DB=${shellQuote(resolve(path))} ` : "";
   return `${db}node ${shellQuote(cliPath)} wait ${shellQuote(name)}`;
 }
 
@@ -24,18 +27,20 @@ export const DEFAULT_WAIT_HOLD_MS = 4 * 60 * 1000;
 // curl gives up a little after the server would have answered, so a dead connection cannot hang the loop.
 const CURL_MAX_TIME_S = DEFAULT_WAIT_HOLD_MS / 1000 + 60;
 
-// Plain POSIX sh and curl, nothing to install. The token comes from the environment or ~/.memory-cp/http-token and
-// reaches curl on stdin (`-H @-`), so it is never in an argument list. $1 is the /wait URL, $2 the agent name.
+// Plain POSIX sh and curl, nothing to install. The token comes from MESSAGE_CP_HTTP_TOKEN, else the old
+// MEMORY_CP_HTTP_TOKEN (an empty variable counts as unset), else ~/.message-cp/http-token, else the old
+// ~/.memory-cp/http-token when the new file cannot be read, and reaches curl on
+// stdin (`-H @-`), so it is never in an argument list. $1 is the /wait URL, $2 the agent name.
 // A 204 (no mail yet) or a failed request asks again; 401 and 404 end it, since asking again cannot help.
-const CURL_LOOP = `t="\${MEMORY_CP_HTTP_TOKEN:-$(cat ~/.memory-cp/http-token 2>/dev/null)}"
-[ -n "$t" ] || { echo "memory-cp wait: set MEMORY_CP_HTTP_TOKEN or write the token to ~/.memory-cp/http-token" >&2; exit 1; }
+const CURL_LOOP = `t="\${MESSAGE_CP_HTTP_TOKEN:-\${MEMORY_CP_HTTP_TOKEN:-$(cat ~/.message-cp/http-token 2>/dev/null || cat ~/.memory-cp/http-token 2>/dev/null)}}"
+[ -n "$t" ] || { echo "message-cp wait: set MESSAGE_CP_HTTP_TOKEN or write the token to ~/.message-cp/http-token" >&2; exit 1; }
 while :; do
 r=$(printf "Authorization: Bearer %s\\n" "$t" | curl -sS -m ${CURL_MAX_TIME_S} -H @- -g -G --data-urlencode "agent=$2" -w "%{http_code}" "$1")
 b=\${r%???}; c=\${r#"$b"}
 case $c in
 200) printf "%s" "$b"; exit 0;;
-401) echo "memory-cp wait: the server refused the token (401)" >&2; exit 1;;
-404) echo "memory-cp wait: 404: no agent named $2, or the server URL is wrong" >&2; exit 1;;
+401) echo "message-cp wait: the server refused the token (401)" >&2; exit 1;;
+404) echo "message-cp wait: 404: no agent named $2, or the server URL is wrong" >&2; exit 1;;
 204) ;;
 *) sleep 5;;
 esac
@@ -52,13 +57,13 @@ export function instructions(env: NodeJS.ProcessEnv = process.env, remote = fals
   // A remote agent cannot run `wait`, which reads the database file on the server's machine; it can ask /wait if
   // the server knows the URL clients reach it at.
   if (remote && !publicUrl) {
-    return "memory-cp does not push messages; an agent has to ask for them. Call read_inbox to check for mail.";
+    return "message-cp does not push messages; an agent has to ask for them. Call read_inbox to check for mail.";
   }
   const command = remote
     ? httpWaitCommand(publicUrl!, NAME_PLACEHOLDER)
-    : waitCommand(env.MEMORY_CP_AGENT || NAME_PLACEHOLDER, env);
+    : waitCommand(setting("AGENT", env) || NAME_PLACEHOLDER, env);
   return [
-    "memory-cp does not push messages; an agent has to ask for them.",
+    "message-cp does not push messages; an agent has to ask for them.",
     `To be woken when a message arrives, register and then run this as a background command (in Claude Code, a Bash call with run_in_background): ${command}`,
     "It exits as soon as you have unread mail and prints how many and from whom, without reading them.",
     "When it fires, call read_inbox first and only then start the command again; starting it before reading fires at once on the same message.",

@@ -14,7 +14,7 @@ let db: Db;
 const clients: Client[] = [];
 
 beforeEach(() => {
-  dbFile = join(mkdtempSync(join(tmpdir(), "memory-cp-msg-")), "db.sqlite");
+  dbFile = join(mkdtempSync(join(tmpdir(), "message-cp-msg-")), "db.sqlite");
   db = openDb(dbFile);
 });
 
@@ -191,7 +191,7 @@ describe("separate server processes", () => {
         new StdioClientTransport({
           command: "npx",
           args: ["tsx", join(import.meta.dirname, "../src/index.ts")],
-          env: { ...process.env, MEMORY_CP_DB: dbFile } as Record<string, string>,
+          env: { ...process.env, MESSAGE_CP_DB: dbFile } as Record<string, string>,
         }),
       );
       clients.push(client);
