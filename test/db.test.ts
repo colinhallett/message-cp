@@ -250,7 +250,7 @@ describe("openDb", () => {
 
       openDb(file).close();
       const db = openDb(file); // a second open is harmless
-      // Their indexes, oauth_grants_client and oauth_grants_account included, belong to them and go too.
+      // Dropping the tables drops their indexes, oauth_grants_client and oauth_grants_account.
       expect(db.prepare(`SELECT name FROM sqlite_master WHERE tbl_name IN (${placeholders})`).all(...SIGN_IN)).toEqual([]);
       expect(everythingElse(db)).toEqual(kept);
       expect(db.prepare("SELECT wait_key_hash FROM agents WHERE wait_key_hash IS NOT NULL").pluck().all()).toEqual(["wait-hash"]);

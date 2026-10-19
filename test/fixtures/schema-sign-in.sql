@@ -1,4 +1,5 @@
--- The tables the GitHub sign-in (2647be5) added to src/db.ts's SCHEMA, before it was removed. Used to test the upgrade.
+-- The tables the GitHub sign-in (2647be5) added to src/db.ts's SCHEMA, and the column its migrate() added, before it was removed.
+-- Used to test the upgrade.
 ALTER TABLE agents ADD COLUMN wait_key_hash TEXT;
 
 CREATE TABLE IF NOT EXISTS github_users (
