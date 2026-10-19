@@ -37,9 +37,10 @@ env_value() {
 
 # Stops the old units, so nothing writes the database or /opt while files move. The deploy timer goes first, so no
 # new run starts; flock then waits for a run already under way to finish, and holding the lock keeps out one started
-# by hand. The old deploy.sh is then made unexecutable, so no run can start at all, and any run that started before
-# that but had not yet reached the lock (it exits there) is waited out: once step 3 sets /opt/memory-cp aside, the
-# lock held is on the file set aside, and a run reaching deploy.sh's mkdir then would recreate /opt/memory-cp.
+# by hand. The old deploy.sh is then renamed aside (keeping its mode), so no run can start at all, however it is
+# invoked, and any run that started before that but had not yet reached the lock (it exits there) is waited out: once
+# step 3 sets /opt/memory-cp aside, the lock held is on the file set aside, and a run reaching deploy.sh's mkdir then
+# would recreate /opt/memory-cp.
 # Nothing is copied unless every old unit has stopped and nothing runs as the server's user.
 # No message-cp deploy can start until step 7 enables its timer.
 stop_old() {
@@ -53,7 +54,7 @@ stop_old() {
   # A unit that does not exist cannot be stopped; whether each one has stopped is checked below.
   for u in $OLD-deploy.service $OLD-backup.service $OLD.service; do systemctl stop $u 2>/dev/null || true; done
   systemctl disable $OLD.service 2>/dev/null || true
-  if [ -f /opt/$OLD/deploy.sh ]; then chmod a-x /opt/$OLD/deploy.sh; fi
+  if [ -f /opt/$OLD/deploy.sh ]; then mv -T /opt/$OLD/deploy.sh /opt/$OLD/deploy.sh$ASIDE; fi
   for ((i = 0; i < 30; i++)); do
     pgrep -f "/opt/$OLD/deploy.sh" >/dev/null || break
     sleep 1
@@ -86,6 +87,7 @@ move() {
       if [ -e "$q" ]; then fail "$q exists already; nothing was changed"; fi
     done
   done
+  if [ -e /opt/$OLD/deploy.sh$ASIDE ]; then fail "/opt/$OLD/deploy.sh$ASIDE exists already; nothing was changed"; fi
   # Every old path is copied once, so the file systems holding them need that much free.
   local need=0 have
   for p in /opt/$OLD /var/lib/$OLD; do
@@ -278,10 +280,8 @@ undo() {
   if [ -d /opt/$OLD/repo.git ]; then
     git --git-dir=/opt/$OLD/repo.git config core.sshCommand "ssh -i /root/.ssh/$OLD-deploy -o IdentitiesOnly=yes"
   fi
-  # deploy.sh in /opt was replaced by the new one; the old one is in the copy taken before the move.
-  if [ -f /opt/$OLD$ASIDE.undone-$stamp/deploy.sh ]; then install -m 0755 /opt/$OLD$ASIDE.undone-$stamp/deploy.sh /opt/$OLD/deploy.sh; fi
-  # Step 1 made it unexecutable; a move that stopped before step 3 left it so in /opt/memory-cp.
-  if [ -f /opt/$OLD/deploy.sh ]; then chmod 755 /opt/$OLD/deploy.sh; fi
+  # Step 1 set the old deploy.sh aside in /opt/memory-cp, and that went into the copy; step 5 put the new one beside it.
+  if [ -f /opt/$OLD/deploy.sh$ASIDE ]; then mv -T /opt/$OLD/deploy.sh$ASIDE /opt/$OLD/deploy.sh; fi
   if [ -e /root/.ssh/config$ASIDE ]; then mv -T /root/.ssh/config$ASIDE /root/.ssh/config; fi
   for u in "${OLD_UNITS[@]}"; do
     rm -f "$UNITS/$(new_name "$u")"
