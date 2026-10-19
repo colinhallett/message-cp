@@ -30,9 +30,33 @@ anything yourself: you change no file, push nothing and open no pull request.
   project repair --json` (`linkedProject.id`).
 - `gh`, authenticated, for reading pull requests.
 
+Inside a factory run, `tessl finding update` and `tessl finding link add` may
+be refused (404) even though listing works. Treat both as best effort: try
+them, and if they fail, carry on. The triage log (below) is the record that
+must be written; a finding update is a convenience on top of it.
+
 If any of these is missing, stop and say which in the run output. Never print
 a token or write one anywhere. The working tree is a checkout of `main`;
 record `git rev-parse HEAD`, and check every claim about the code against it.
+
+## The triage log
+
+One Linear document on the COL team, titled exactly `Findings triage log`,
+records every decision. Find it with `documents(filter: { title: { eq:
+"Findings triage log" } }) { nodes { id content } }`; create it with
+`documentCreate(input: {teamId, title, content})` if it does not exist, and
+change it with `documentUpdate(id, input: {content})`, keeping every existing
+entry and adding yours at the end. One entry per decision, on one line:
+
+```text
+- <date> <finding id> "<finding title>": <resolved|ignored|owner|ticket> - <reason in one sentence> [<issue identifier and URL, if any>] (evidence seen: <latest observedAt of the finding>)
+```
+
+A finding is decided when the log has an entry for it whose `evidence seen` is
+not older than the finding's latest observation. Skip decided findings, except
+for the in-progress check below. A finding the retro has observed again since
+its entry is undecided again: decide it afresh, knowing what was decided
+before.
 
 ## The rules
 
@@ -58,13 +82,17 @@ Read `tessl finding list ... --state open` and `--state in-progress`, then
 the open COL issues and those closed in the last 30 days (the planner's
 "Reading the record" queries), `DIRECTION.md` and `AGENTS.md`.
 
-**In-progress findings first.** For each, read its linked tickets. If every
-linked COL issue is `completed` and its pull request merged, set the finding
-`resolved` and append to its analysis `Triage <date>: fixed by <issue
-identifier> (<pull request url>).` If a linked issue was canceled, set the
-finding back to `open` and treat it below. Otherwise leave it.
+**Ticketed findings first.** For each finding whose latest log entry is
+`ticket` or `owner`, or whose state is `in-progress`, read the linked COL
+issue (from the log, or the finding's links). If it is
+`completed` and its pull request merged, log `resolved - fixed by <issue>
+(<pull request url>)` and set the finding `resolved` (best effort). If it was
+canceled, the finding is undecided again: treat it below. Otherwise leave it.
 
-**Then each open finding**, choosing exactly one:
+**Then each undecided open finding**, choosing exactly one, and logging it:
+wherever the steps below say to set a state, append to the analysis or link
+a ticket on the finding, that is the best-effort update; the log entry is the
+one that must be written.
 
 - **Already done or obsolete.** `main` already does what the recommendation
   asks, or the code, tool or process the finding is about no longer exists.
@@ -92,6 +120,9 @@ finding back to `open` and treat it below. Otherwise leave it.
 
 If rule 3 stops you filing, leave the remaining findings `open` for the next
 run and say so.
+
+Write the log entry for a finding right after acting on it, not at the end,
+so a run that stops part-way leaves a true record.
 
 ## Ending
 
