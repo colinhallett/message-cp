@@ -27,8 +27,16 @@ export interface ChannelPage {
 export interface ChannelSummary {
   name: string;
   posts: number;
-  lastPostAt: string;
+  /** Null for a channel that was joined before anyone posted to it. */
+  lastPostAt: string | null;
   unread: number;
+  /** Whether the reader has joined the channel, so that its unread posts wake the reader. */
+  joined: boolean;
+}
+
+export interface Membership {
+  channel: string;
+  joined: boolean;
 }
 
 /** The agent a channel tool acts for: its registration (`id` is its row in `agents`) and its current name. */
@@ -85,6 +93,13 @@ function advance(db: Db, agent: number, channel: number, postId: number): void {
   ).run(agent, channel, postId);
 }
 
+/** Creates the account's channel `channel` if it does not exist yet, and returns it. */
+function ensureChannel(db: Db, account: AccountId, channel: string, now: number): { id: number; name: string } {
+  db.prepare("INSERT INTO channels (account_id, name, created_at) VALUES (?, ?, ?) ON CONFLICT(account_id, name) DO NOTHING")
+    .run(account, channel, now);
+  return findChannel(db, account, channel);
+}
+
 /**
  * Appends a post to the account's channel `channel`, creating the channel if this is its first post. If the member had
  * read everything before it, its read position moves past its own post, so the channel stays read for it.
@@ -96,9 +111,7 @@ export function post(db: Db, account: AccountId, member: Member, channel: string
     .transaction((): PostResult => {
       checkLive(db, account, member);
       const now = Date.now();
-      db.prepare("INSERT INTO channels (account_id, name, created_at) VALUES (?, ?, ?) ON CONFLICT(account_id, name) DO NOTHING")
-        .run(account, channel, now);
-      const found = findChannel(db, account, channel);
+      const found = ensureChannel(db, account, channel, now);
       const last = db.prepare("SELECT MAX(id) AS id FROM channel_posts WHERE channel_id = ?").get(found.id) as { id: number | null };
       const read = db
         .prepare("SELECT last_read_id FROM channel_reads WHERE agent_id = ? AND channel_id = ?")
@@ -110,6 +123,39 @@ export function post(db: Db, account: AccountId, member: Member, channel: string
       );
       if (last.id === null || (read !== undefined && read.last_read_id >= last.id)) advance(db, member.id, found.id, id);
       return { channel: found.name, id, sentAt: new Date(now).toISOString() };
+    })
+    .immediate();
+}
+
+/**
+ * Joins `member` to the account's channel `channel`, creating the channel if nobody has posted to it yet, so that its
+ * unread posts wake the member. A channel the member has never read is joined at its latest post, so its history
+ * does not wake it; one it has read before keeps its read position.
+ */
+export function joinChannel(db: Db, account: AccountId, member: Member, channel: string): Membership {
+  validateChannelName(channel);
+  return db
+    .transaction((): Membership => {
+      checkLive(db, account, member);
+      const found = ensureChannel(db, account, channel, Date.now());
+      db.prepare(
+        `INSERT INTO channel_reads (agent_id, channel_id, last_read_id, joined)
+         SELECT ?, ?, COALESCE(MAX(id), 0), 1 FROM channel_posts WHERE channel_id = ?
+         ON CONFLICT(agent_id, channel_id) DO UPDATE SET joined = 1`,
+      ).run(member.id, found.id, found.id);
+      return { channel: found.name, joined: true };
+    })
+    .immediate();
+}
+
+/** Leaves the account's channel `channel`, so its posts no longer wake `member`. The read position stays where it was. */
+export function leaveChannel(db: Db, account: AccountId, member: Member, channel: string): Membership {
+  return db
+    .transaction((): Membership => {
+      checkLive(db, account, member);
+      const found = findChannel(db, account, channel);
+      db.prepare("UPDATE channel_reads SET joined = 0 WHERE agent_id = ? AND channel_id = ?").run(member.id, found.id);
+      return { channel: found.name, joined: false };
     })
     .immediate();
 }
@@ -156,8 +202,8 @@ export function readChannel(
 }
 
 /**
- * One page of the account's channels by name, each with its post count, last post time and how many posts `reader`
- * has not read. The reader's own posts never count as unread.
+ * One page of the account's channels by name, each with its post count, last post time, how many posts `reader`
+ * has not read and whether `reader` has joined it. The reader's own posts never count as unread.
  */
 export function listChannels(
   db: Db,
@@ -171,19 +217,27 @@ export function listChannels(
     checkLive(db, account, reader);
     return db
       .prepare(
-        `SELECT c.name, COUNT(*) AS posts, MAX(p.created_at) AS last_post_at,
-                SUM(p.id > COALESCE(r.last_read_id, 0) AND p.sender_id <> ?) AS unread
+        `SELECT c.name, COUNT(p.id) AS posts, MAX(p.created_at) AS last_post_at,
+                COALESCE(SUM(p.id > COALESCE(r.last_read_id, 0) AND p.sender_id <> ?), 0) AS unread,
+                COALESCE(r.joined, 0) AS joined
          FROM (SELECT id, name FROM channels WHERE account_id = ? ORDER BY name LIMIT ? OFFSET ?) c
-         JOIN channel_posts p ON p.channel_id = c.id
+         LEFT JOIN channel_posts p ON p.channel_id = c.id
          LEFT JOIN channel_reads r ON r.channel_id = c.id AND r.agent_id = ?
          GROUP BY c.id ORDER BY c.name`,
       )
       .all(reader.id, account, Math.min(limit, MAX_CHANNEL_LIMIT), offset, reader.id) as {
       name: string;
       posts: number;
-      last_post_at: number;
+      last_post_at: number | null;
       unread: number;
+      joined: number;
     }[];
   })();
-  return rows.map((r) => ({ name: r.name, posts: r.posts, lastPostAt: new Date(r.last_post_at).toISOString(), unread: r.unread }));
+  return rows.map((r) => ({
+    name: r.name,
+    posts: r.posts,
+    lastPostAt: r.last_post_at === null ? null : new Date(r.last_post_at).toISOString(),
+    unread: r.unread,
+    joined: r.joined === 1,
+  }));
 }

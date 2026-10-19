@@ -16,7 +16,16 @@ import {
 import { OWNER_ACCOUNT, type AccountId, type Db } from "./db.js";
 import { httpWaitCommand, instructions, waitCommand } from "./wait.js";
 import { DEFAULT_INBOX_LIMIT, MAX_BODY_LENGTH, MAX_INBOX_LIMIT, readInbox, sendMessage } from "./messages.js";
-import { DEFAULT_CHANNEL_LIMIT, MAX_CHANNEL_LIMIT, listChannels, post, readChannel, type Member } from "./channels.js";
+import {
+  DEFAULT_CHANNEL_LIMIT,
+  MAX_CHANNEL_LIMIT,
+  joinChannel,
+  leaveChannel,
+  listChannels,
+  post,
+  readChannel,
+  type Member,
+} from "./channels.js";
 
 /**
  * Who this server process is acting as. Lives only in memory, never in the database, but every use is checked
@@ -97,7 +106,7 @@ export function createServer(db: Db, session = new Session(OWNER_ACCOUNT), optio
     "register",
     {
       description:
-        "Register this session as an agent with a name and short bio. A new name without a key you pass returns a generated key, once: keep it (if you pass your own key, nothing is returned). If the name exists (any case), this session takes that agent over and its bio is updated, but only with the agent's key; an agent registered before keys existed is claimed by the first call and gets a key.",
+        "Register this session as an agent with a name and short bio. A new name without a key you pass returns a generated key, once: keep it (if you pass your own key, nothing is returned). If the name exists (any case), this session takes that agent over and its bio is updated, but only with the agent's key; an agent registered before keys existed is claimed by the first call and gets a key. When the server can offer one, it returns waitCommand: run it in the background to be woken by unread messages and by unread posts in the channels you have joined; when it fires, call read_inbox if it names messages and read_channel for each channel it names, and only then start it again.",
       inputSchema: {
         name: z.string().describe("1-32 characters: letters, digits, '-' and '_'. 'all' is reserved."),
         bio: z.string().describe("A short description of who you are and what you work on."),
@@ -174,7 +183,7 @@ export function createServer(db: Db, session = new Session(OWNER_ACCOUNT), optio
   server.registerTool(
     "read_inbox",
     {
-      description: `Read your messages, oldest first, one page at a time (default ${DEFAULT_INBOX_LIMIT}, max ${MAX_INBOX_LIMIT}). By default only unread ones; everything returned is marked read, so a full page means there may be more: call again. With unread_only false, use offset to page through history. To be woken when mail arrives instead of polling, run the wait command that register returns in the background, and start it again after each read. Requires register first.`,
+      description: `Read your messages, oldest first, one page at a time (default ${DEFAULT_INBOX_LIMIT}, max ${MAX_INBOX_LIMIT}). By default only unread ones; everything returned is marked read, so a full page means there may be more: call again. With unread_only false, use offset to page through history. To be woken when mail arrives instead of polling, run the wait command that register returns in the background, and start it again after reading what it names. Requires register first.`,
       inputSchema: {
         unread_only: z.boolean().optional().describe("Default true."),
         limit: z.number().int().min(1).max(MAX_INBOX_LIMIT).optional(),
@@ -189,7 +198,7 @@ export function createServer(db: Db, session = new Session(OWNER_ACCOUNT), optio
   server.registerTool(
     "post",
     {
-      description: `Post to one of your account's channels by name; the channel is created by its first post. Every agent in the account can read it, including agents that register later. Posts are never edited or deleted. Requires register first.`,
+      description: `Post to one of your account's channels by name; the channel is created by its first post (or by join_channel). Posting does not join the channel. Every agent in the account can read it, including agents that register later. Posts are never edited or deleted. Requires register first.`,
       inputSchema: {
         channel: z.string().describe("1-32 characters: letters, digits, '-' and '_', compared case-insensitively."),
         body: z.string().describe(`The post, at most ${MAX_BODY_LENGTH} characters.`),
@@ -218,13 +227,31 @@ export function createServer(db: Db, session = new Session(OWNER_ACCOUNT), optio
   server.registerTool(
     "list_channels",
     {
-      description: `List your account's channels by name with their post count, last post time and how many posts you have not read (your own posts never count). Returns one page (default ${DEFAULT_CHANNEL_LIMIT}, max ${MAX_CHANNEL_LIMIT}); a full page means there may be more, so call again with a higher offset. Requires register first.`,
+      description: `List your account's channels by name with their post count, last post time (null if nobody has posted yet), how many posts you have not read (your own posts never count) and whether you have joined it. Returns one page (default ${DEFAULT_CHANNEL_LIMIT}, max ${MAX_CHANNEL_LIMIT}); a full page means there may be more, so call again with a higher offset. Requires register first.`,
       inputSchema: {
         limit: z.number().int().min(1).max(MAX_CHANNEL_LIMIT).optional(),
         offset: z.number().int().min(0).optional(),
       },
     },
     tool(({ limit, offset }: { limit?: number; offset?: number }) => listChannels(db, account, session.requireAgent(), limit, offset)),
+  );
+
+  server.registerTool(
+    "join_channel",
+    {
+      description: `Join one of your account's channels, so the wait command that register returns also wakes you for new posts there. A channel nobody has posted to yet is created. Joining a channel you have never read starts you at its latest post, so its history does not wake you (read_channel with unread_only false still pages through it); joining one you have read before keeps your read position. Requires register first.`,
+      inputSchema: { channel: z.string().describe("1-32 characters: letters, digits, '-' and '_', compared case-insensitively.") },
+    },
+    tool(({ channel }: { channel: string }) => joinChannel(db, account, session.requireAgent(), channel)),
+  );
+
+  server.registerTool(
+    "leave_channel",
+    {
+      description: `Leave one of your account's channels, so its posts no longer wake you. Your read position in it stays where it is, and you can still post to it and read it. Requires register first.`,
+      inputSchema: { channel: z.string().describe("The channel's name, in any case.") },
+    },
+    tool(({ channel }: { channel: string }) => leaveChannel(db, account, session.requireAgent(), channel)),
   );
 
   return server;

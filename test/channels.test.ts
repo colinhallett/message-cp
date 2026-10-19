@@ -8,7 +8,7 @@ import { addAccount } from "../src/accounts.js";
 import { identityOf, registerAgent, removeAgent } from "../src/agents.js";
 import { listChannels, post, readChannel } from "../src/channels.js";
 import { OWNER_ACCOUNT, openDb, type AccountId, type Db } from "../src/db.js";
-import { MAX_BODY_LENGTH } from "../src/messages.js";
+import { MAX_BODY_LENGTH, unreadSummary } from "../src/messages.js";
 import { Session, createServer } from "../src/server.js";
 
 let dbFile: string;
@@ -81,6 +81,8 @@ describe("post", () => {
       ["post", { channel: "dev", body: "hi" }],
       ["read_channel", { channel: "dev" }],
       ["list_channels", {}],
+      ["join_channel", { channel: "dev" }],
+      ["leave_channel", { channel: "dev" }],
     ] as const) {
       const r = await call(client, tool, args);
       expect(r.isError).toBe(true);
@@ -208,14 +210,120 @@ describe("list_channels", () => {
     const last = await ok(alice, "post", { channel: "alpha", body: "a2" });
     const list = await ok(bob, "list_channels");
     expect(list).toEqual([
-      { name: "alpha", posts: 2, lastPostAt: last.sentAt, unread: 2 },
-      { name: "zeta", posts: 1, lastPostAt: expect.any(String), unread: 1 },
+      { name: "alpha", posts: 2, lastPostAt: last.sentAt, unread: 2, joined: false },
+      { name: "zeta", posts: 1, lastPostAt: expect.any(String), unread: 1, joined: false },
     ]);
     expect((await ok(bob, "list_channels", { limit: 1, offset: 1 })).map((c: { name: string }) => c.name)).toEqual(["zeta"]);
   });
 });
 
+describe("join_channel and leave_channel", () => {
+  const joined = async (client: Client) =>
+    ((await ok(client, "list_channels")) as { name: string; joined: boolean }[]).filter((c) => c.joined).map((c) => c.name);
+  const summary = (name: string, account: AccountId = OWNER_ACCOUNT) => unreadSummary(db, account, name);
+
+  it("joins at the latest post a channel never read, so its history is not unread for waking but can still be paged", async () => {
+    const { client: alice } = await connect("alice");
+    await ok(alice, "post", { channel: "dev", body: "old1" });
+    await ok(alice, "post", { channel: "dev", body: "old2" });
+    const { client: bob } = await connect("bob");
+    expect(await ok(bob, "join_channel", { channel: "DEV" })).toEqual({ channel: "dev", joined: true });
+    expect(await joined(bob)).toEqual(["dev"]);
+    expect(summary("bob")).toMatchObject({ posts: 0, channels: [] });
+    expect(bodies(await ok(bob, "read_channel", { channel: "dev" }))).toEqual([]);
+    expect(bodies(await ok(bob, "read_channel", { channel: "dev", unread_only: false }))).toEqual(["old1", "old2"]);
+    await ok(alice, "post", { channel: "dev", body: "new" });
+    expect(summary("bob")).toMatchObject({ posts: 1, channels: ["dev"] });
+    expect(bodies(await ok(bob, "read_channel", { channel: "dev" }))).toEqual(["new"]);
+    expect(summary("bob")).toMatchObject({ posts: 0, channels: [] });
+  });
+
+  it("re-joining keeps the read position, and leaving never moves it", async () => {
+    const { client: alice } = await connect("alice");
+    const { client: bob } = await connect("bob");
+    await ok(alice, "post", { channel: "dev", body: "one" });
+    await ok(bob, "read_channel", { channel: "dev" });
+    await ok(alice, "post", { channel: "dev", body: "two" });
+    expect(await ok(bob, "leave_channel", { channel: "dev" })).toEqual({ channel: "dev", joined: false });
+    expect(await unreadIn(bob, "dev")).toBe(1);
+    await ok(alice, "post", { channel: "dev", body: "three" });
+    await ok(bob, "join_channel", { channel: "dev" });
+    expect(await unreadIn(bob, "dev")).toBe(2);
+    expect(summary("bob")).toMatchObject({ posts: 2, channels: ["dev"] });
+    await ok(bob, "join_channel", { channel: "dev" });
+    expect(bodies(await ok(bob, "read_channel", { channel: "dev" }))).toEqual(["two", "three"]);
+  });
+
+  it("only a joined channel wakes: posting does not join, leaving stops it, and own posts never count", async () => {
+    const { client: alice } = await connect("alice");
+    const { client: bob } = await connect("bob");
+    await ok(alice, "post", { channel: "dev", body: "a1" });
+    await ok(bob, "post", { channel: "dev", body: "b1" });
+    expect(await joined(alice)).toEqual([]);
+    expect(await joined(bob)).toEqual([]);
+    expect(summary("alice")).toMatchObject({ posts: 0 });
+    // Her first post gave alice a read position at a1, so joining keeps it and b1 is unread.
+    await ok(alice, "join_channel", { channel: "dev" });
+    expect(summary("alice")).toMatchObject({ posts: 1, channels: ["dev"] });
+    await ok(alice, "read_channel", { channel: "dev" });
+    await ok(alice, "post", { channel: "dev", body: "a2" });
+    expect(summary("alice")).toMatchObject({ posts: 0 });
+    await ok(bob, "post", { channel: "dev", body: "b2" });
+    expect(summary("alice")).toMatchObject({ posts: 1, channels: ["dev"] });
+    expect(summary("bob")).toMatchObject({ posts: 0 });
+    await ok(alice, "leave_channel", { channel: "dev" });
+    expect(summary("alice")).toMatchObject({ posts: 0, channels: [] });
+  });
+
+  it("creates a channel nobody has posted to, whose first post is then unread", async () => {
+    const { client: alice } = await connect("alice");
+    const { client: bob } = await connect("bob");
+    expect(await ok(bob, "join_channel", { channel: "deploys" })).toEqual({ channel: "deploys", joined: true });
+    expect(await ok(alice, "list_channels")).toEqual([{ name: "deploys", posts: 0, lastPostAt: null, unread: 0, joined: false }]);
+    await ok(alice, "post", { channel: "DEPLOYS", body: "first" });
+    expect(summary("bob")).toMatchObject({ posts: 1, channels: ["deploys"] });
+  });
+
+  it("checks the channel name, and leave names a channel that does not exist", async () => {
+    const { client } = await connect("alice");
+    expect((await call(client, "join_channel", { channel: "a b" })).text).toContain("Invalid channel name");
+    expect((await call(client, "leave_channel", { channel: "nowhere" })).text).toContain("No channel named 'nowhere'");
+    await ok(client, "post", { channel: "dev", body: "hi" });
+    expect(await ok(client, "leave_channel", { channel: "dev" })).toEqual({ channel: "dev", joined: false });
+  });
+
+  it("belongs to the registration: a new agent with a removed agent's name has joined nothing", async () => {
+    const { client: alice } = await connect("alice");
+    const bob = await connect("bob");
+    await ok(bob.client, "join_channel", { channel: "dev" });
+    const again = await connect("bob", OWNER_ACCOUNT, bob.key);
+    expect(await joined(again.client)).toEqual(["dev"]);
+    await ok(again.client, "unregister");
+    const { client: newBob } = await connect("bob");
+    await ok(alice, "post", { channel: "dev", body: "hi" });
+    expect(await joined(newBob)).toEqual([]);
+    expect(summary("bob")).toMatchObject({ posts: 0 });
+  });
+});
+
 describe("two accounts", () => {
+  it("join_channel: joining a name another account uses neither wakes on nor changes that account's channel", async () => {
+    const { client: owner } = await connect("alice");
+    const { client: theirs } = await connect("alice", friend);
+    const { client: theirBob } = await connect("bob", friend);
+    await ok(theirs, "post", { channel: "dev", body: "friend before" });
+    await ok(owner, "join_channel", { channel: "dev" });
+    await ok(theirs, "post", { channel: "dev", body: "friend after" });
+    expect(unreadSummary(db, OWNER_ACCOUNT, "alice")).toMatchObject({ posts: 0, channels: [] });
+    expect(bodies(await ok(owner, "read_channel", { channel: "dev", unread_only: false }))).toEqual([]);
+    await ok(theirBob, "join_channel", { channel: "dev" });
+    await ok(owner, "post", { channel: "dev", body: "owner post" });
+    expect(unreadSummary(db, friend, "bob")).toMatchObject({ posts: 0, channels: [] });
+    expect(await unreadIn(theirBob, "dev")).toBe(0);
+    await ok(theirs, "post", { channel: "dev", body: "friend again" });
+    expect(unreadSummary(db, friend, "bob")).toMatchObject({ posts: 1, channels: ["dev"] });
+  });
+
   it("post: the same channel name in another account is a separate channel", async () => {
     const { client: owner } = await connect("alice");
     const { client: theirs } = await connect("alice", friend);
@@ -245,7 +353,7 @@ describe("two accounts", () => {
     await ok(owner, "post", { channel: "dev", body: "o1" });
     await ok(owner, "post", { channel: "ops", body: "o2" });
     await ok(theirs, "post", { channel: "dev", body: "f1" });
-    expect(await ok(theirs, "list_channels")).toEqual([{ name: "dev", posts: 1, lastPostAt: expect.any(String), unread: 0 }]);
+    expect(await ok(theirs, "list_channels")).toEqual([{ name: "dev", posts: 1, lastPostAt: expect.any(String), unread: 0, joined: false }]);
     expect((await ok(owner, "list_channels")).map((c: { name: string; posts: number }) => [c.name, c.posts])).toEqual([
       ["dev", 1],
       ["ops", 1],

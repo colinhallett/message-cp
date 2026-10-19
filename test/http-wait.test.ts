@@ -4,7 +4,8 @@ import { request } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { registerAgent } from "../src/agents.js";
+import { identityOf, registerAgent } from "../src/agents.js";
+import { joinChannel, leaveChannel, post, readChannel, type Member } from "../src/channels.js";
 import { OWNER_ACCOUNT, openDb, type Db } from "../src/db.js";
 import { startHttp, type HttpServer } from "../src/http.js";
 import { sendMessage } from "../src/messages.js";
@@ -47,6 +48,22 @@ describe("GET /wait", () => {
     const res = await pending;
     expect(res.status).toBe(200);
     expect(await res.text()).toBe("1 unread message from bob\n");
+  });
+
+  it("answers when a post arrives in a joined channel, holds once it is read, and ignores a channel it left", async () => {
+    const member = (name: string): Member => ({ ...identityOf(db, OWNER_ACCOUNT, name)!, name });
+    joinChannel(db, OWNER_ACCOUNT, member("alice"), "build");
+    const pending = wait("alice");
+    await new Promise((r) => setTimeout(r, 300));
+    post(db, OWNER_ACCOUNT, member("bob"), "build", "secret post");
+    const res = await pending;
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe("1 unread post in #build\n");
+    readChannel(db, OWNER_ACCOUNT, member("alice"), "build");
+    expect((await wait("alice")).status).toBe(204);
+    leaveChannel(db, OWNER_ACCOUNT, member("alice"), "build");
+    post(db, OWNER_ACCOUNT, member("bob"), "build", "again");
+    expect((await wait("alice")).status).toBe(204);
   });
 
   it("answers 204 after the hold when there is no mail", async () => {

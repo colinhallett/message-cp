@@ -86,22 +86,24 @@ CREATE INDEX IF NOT EXISTS channel_posts_by_channel ON channel_posts (channel_id
 
 -- Each agent's read position in each channel: the id of the last post it has read. Keyed on the agent's row, so an
 -- agent that unregisters and a later one with its name never share it. No row means it has read nothing.
+-- \`joined\` is 1 while the agent has joined the channel, so that its unread posts wake the agent.
 CREATE TABLE IF NOT EXISTS channel_reads (
   agent_id INTEGER NOT NULL REFERENCES agents(id),
   channel_id INTEGER NOT NULL REFERENCES channels(id),
   last_read_id INTEGER NOT NULL,
+  joined INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (agent_id, channel_id)
 );
 `;
 
 // CREATE TABLE IF NOT EXISTS leaves an existing table alone, so columns added later are added here, only when missing.
-const hasColumn = (db: Db, column: string) =>
-  (db.prepare("PRAGMA table_info(agents)").all() as { name: string }[]).some((c) => c.name === column);
+const hasColumn = (db: Db, column: string, table = "agents") =>
+  (db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]).some((c) => c.name === column);
 
-function addColumn(db: Db, column: string, definition: string): void {
-  if (hasColumn(db, column)) return;
+function addColumn(db: Db, column: string, definition: string, table = "agents"): void {
+  if (hasColumn(db, column, table)) return;
   try {
-    db.exec(`ALTER TABLE agents ADD COLUMN ${column} ${definition}`);
+    db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
   } catch (err) {
     // Another process added it between our check and the ALTER.
     if (!(err instanceof Error && /duplicate column name/i.test(err.message))) throw err;
@@ -205,6 +207,7 @@ function migrate(db: Db, path: string): void {
   // A removed agent keeps its row, so the messages addressed to it stay and its id is never reused.
   addColumn(db, "removed_at", "INTEGER");
   addColumn(db, "removed_name", "TEXT");
+  addColumn(db, "joined", "INTEGER NOT NULL DEFAULT 0", "channel_reads");
   db.exec(DROP_REMOVED);
   db.prepare("INSERT OR IGNORE INTO accounts (id, name, created_at) VALUES (?, 'owner', ?)").run(OWNER_ACCOUNT, Date.now());
   addAccounts(db, path);
