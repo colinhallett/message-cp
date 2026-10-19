@@ -43,6 +43,18 @@ env_value() {
 # would recreate /opt/memory-cp.
 # Nothing is copied unless every old unit has stopped and nothing runs as the server's user.
 # No message-cp deploy can start until step 7 enables its timer.
+# Succeeds while any process has the old deploy.sh open. bash holds the script it runs open, so this finds a run
+# however it was started (the unit, `bash deploy.sh` from /opt/memory-cp, a relative path), and -ef compares the file
+# itself, so it still finds it once renamed aside.
+deploy_running() {
+  local script=/opt/$OLD/deploy.sh$ASIDE fd
+  [ -e "$script" ] || return 1
+  for fd in /proc/[0-9]*/fd/*; do
+    if [ "$fd" -ef "$script" ]; then return 0; fi
+  done 2>/dev/null
+  return 1
+}
+
 stop_old() {
   local u i state
   for u in $OLD-deploy.timer $OLD-backup.timer; do systemctl disable --now $u 2>/dev/null || true; done
@@ -56,11 +68,11 @@ stop_old() {
   systemctl disable $OLD.service 2>/dev/null || true
   if [ -f /opt/$OLD/deploy.sh ]; then mv -T /opt/$OLD/deploy.sh /opt/$OLD/deploy.sh$ASIDE; fi
   for ((i = 0; i < 30; i++)); do
-    pgrep -f "/opt/$OLD/deploy.sh" >/dev/null || break
+    deploy_running || break
     sleep 1
   done
-  if pgrep -f "/opt/$OLD/deploy.sh" >/dev/null; then
-    fail "a deploy run of /opt/$OLD/deploy.sh is still running; nothing was copied. Run '$0 undo' to start the old server again"
+  if deploy_running; then
+    fail "a run of the old deploy.sh is still running; nothing was copied. Run '$0 undo' to start the old server again"
   fi
   for u in $OLD-deploy.service $OLD-backup.service $OLD.service; do
     state=$(systemctl show -p ActiveState --value $u 2>/dev/null || true)
