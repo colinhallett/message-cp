@@ -12,11 +12,13 @@ People who run it themselves: alone, with one token, or for a small team, with a
 
 ## Current goal: an open-source package
 
-In this order, each a ticket of its own:
+In this order, each a ticket of its own. The old name goes completely; git history and closed pull requests keep it.
 
 1. **Remove the GitHub sign-in.** The OAuth endpoints, the GitHub flow, waking by agent key, and their tables go. Accounts and tokens stay.
 2. **Rename to message-cp.** Package, command, server name, environment variables and default paths. The old `memory-cp` command, `MEMORY_CP_*` variables and `~/.memory-cp/` paths keep working.
-3. **A README for strangers.** What it is, how to run it alone and for a team, the token model, and how to put your own sign-in in front.
+3. **Rename the server setup in ops/ to message-cp, with a procedure that moves a running install over.** The owner's server is moved with it.
+4. **Remove the old memory-cp names once the live server and the factory use the new ones.** After this, nothing in the repository says memory-cp.
+5. **A README for strangers.** What it is, how to run it alone and for a team, the token model, and how to put your own sign-in in front.
 
 Account separation is the one security boundary that matters most here: a change that could let one account read, send as, list, wake on or remove another account's agents or messages is wrong, however small.
 
