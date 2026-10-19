@@ -8,7 +8,7 @@ import { homeFile, setting } from "../src/settings.js";
 
 describe("setting", () => {
   it("reads MESSAGE_CP_<name>, and nothing else", () => {
-    expect(setting("DB", { MESSAGE_CP_DB: "/new" })).toBe("/new");
+    expect(setting("DB", { MESSAGE_CP_DB: "/db" })).toBe("/db");
     expect(setting("DB", { DB: "/other" })).toBeUndefined();
     expect(setting("DB", {})).toBeUndefined();
   });
@@ -27,7 +27,7 @@ describe("homeFile", () => {
 
 describe("environment", () => {
   it("dbPath reads MESSAGE_CP_DB", () => {
-    expect(dbPath({ MESSAGE_CP_DB: "/new/db.sqlite" })).toBe("/new/db.sqlite");
+    expect(dbPath({ MESSAGE_CP_DB: "/srv/db.sqlite" })).toBe("/srv/db.sqlite");
   });
 
   it("agentFromEnv reads MESSAGE_CP_AGENT and MESSAGE_CP_AGENT_KEY", () => {

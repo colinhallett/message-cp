@@ -11,7 +11,7 @@ const shellQuote = (s: string) => (/^[A-Za-z0-9_\/.:@%+=,-]+$/.test(s) ? s : `'$
 
 /** The shell command that exits once `name` has unread mail, reading the same database as this server. */
 export function waitCommand(name: string, env: NodeJS.ProcessEnv = process.env): string {
-  // Set explicitly, so a MESSAGE_CP_DB in the caller's shell cannot point the command at another database.
+  // Carries this server's database path, so a different MESSAGE_CP_DB in the caller's shell cannot point the command elsewhere.
   const path = setting("DB", env);
   const db = path ? `MESSAGE_CP_DB=${shellQuote(resolve(path))} ` : "";
   return `${db}node ${shellQuote(cliPath)} wait ${shellQuote(name)}`;

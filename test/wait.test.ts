@@ -119,7 +119,7 @@ describe("register result", () => {
 });
 
 describe("waitCommand", () => {
-  it("passes MESSAGE_CP_DB on, so a MESSAGE_CP_DB in the caller's shell cannot win", () => {
+  it("pins the server's MESSAGE_CP_DB in the command", () => {
     expect(waitCommand("zed", { MESSAGE_CP_DB: dbFile })).toMatch(new RegExp(`^MESSAGE_CP_DB=${dbFile} node `));
   });
 });
