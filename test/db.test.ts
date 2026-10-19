@@ -5,11 +5,13 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import Database from "better-sqlite3";
 import { OWNER_ACCOUNT, openDb, preAccountsCopy } from "../src/db.js";
+import { addAccount, addToken } from "../src/accounts.js";
 import { getAgent, registerAgent } from "../src/agents.js";
-import { readInbox } from "../src/messages.js";
+import { readInbox, sendMessage } from "../src/messages.js";
 
 const OPEN_DB = join(import.meta.dirname, "fixtures", "open-db.ts");
 const SCHEMA_BEFORE_REMOVAL = join(import.meta.dirname, "fixtures", "schema-before-removal.sql");
+const SCHEMA_SIGN_IN = join(import.meta.dirname, "fixtures", "schema-sign-in.sql");
 
 /** Starts `count` real processes that open `file` at the same instant; resolves to each one's exit code and stderr. */
 function openTogether(file: string, count: number) {
@@ -197,6 +199,61 @@ describe("openDb", () => {
           )
           .run(),
       ).toThrow(/ON CONFLICT clause does not match/);
+      db.close();
+    });
+  });
+
+  describe("on a database the GitHub sign-in opened", () => {
+    const SIGN_IN = ["github_users", "oauth_clients", "oauth_pending", "oauth_codes", "oauth_grants"];
+    const placeholders = SIGN_IN.map(() => "?").join(", ");
+
+    /** A current file with two accounts, then the sign-in's tables and column, with a row in each. */
+    function signInDatabase(): string {
+      const file = join(mkdtempSync(join(tmpdir(), "memory-cp-")), "db.sqlite");
+      const db = openDb(file);
+      addAccount(db, "other");
+      const other = db.prepare("SELECT id FROM accounts WHERE name = 'other'").pluck().get() as number;
+      addToken(db, "owner");
+      registerAgent(db, OWNER_ACCOUNT, "alice", "a");
+      registerAgent(db, OWNER_ACCOUNT, "bob", "b");
+      registerAgent(db, other, "alice", "other a");
+      sendMessage(db, OWNER_ACCOUNT, "alice", "bob", "hello");
+      db.exec(readFileSync(SCHEMA_SIGN_IN, "utf8"));
+      db.exec(`
+        UPDATE agents SET wait_key_hash = 'wait-hash' WHERE name = 'alice' AND account_id = ${OWNER_ACCOUNT};
+        INSERT INTO github_users (github_id, account_id, login, linked_at) VALUES (7, ${other}, 'octocat', 1);
+        INSERT INTO oauth_clients (id, name, redirect_uris, created_at) VALUES ('c', 'client', '[]', 1);
+        INSERT INTO oauth_pending (state_hash, browser_hash, client_id, redirect_uri, code_challenge, expires_at) VALUES ('s', 'b', 'c', 'r', 'x', 1);
+        INSERT INTO oauth_codes (hash, account_id, client_id, redirect_uri, code_challenge, expires_at) VALUES ('h', ${other}, 'c', 'r', 'x', 1);
+        INSERT INTO oauth_grants (account_id, client_id, access_hash, access_expires_at, refresh_hash, refresh_expires_at, created_at)
+          VALUES (${other}, 'c', 'a', 1, 'r', 1, 1);
+      `);
+      db.close();
+      return file;
+    }
+
+    const everythingElse = (db: Database.Database) => ({
+      schema: db
+        .prepare(`SELECT type, name, sql FROM sqlite_master WHERE tbl_name NOT IN (${placeholders}) ORDER BY name`)
+        .all(...SIGN_IN),
+      accounts: db.prepare("SELECT * FROM accounts ORDER BY id").all(),
+      tokens: db.prepare("SELECT * FROM tokens ORDER BY id").all(),
+      agents: db.prepare("SELECT * FROM agents ORDER BY id").all(),
+      messages: db.prepare("SELECT * FROM messages ORDER BY id").all(),
+    });
+
+    it("drops the sign-in's tables and indexes, and leaves everything else, wait_key_hash included, as it was", () => {
+      const file = signInDatabase();
+      const before = new Database(file, { readonly: true });
+      const kept = everythingElse(before);
+      before.close();
+
+      openDb(file).close();
+      const db = openDb(file); // a second open is harmless
+      // Their indexes, oauth_grants_client and oauth_grants_account included, belong to them and go too.
+      expect(db.prepare(`SELECT name FROM sqlite_master WHERE tbl_name IN (${placeholders})`).all(...SIGN_IN)).toEqual([]);
+      expect(everythingElse(db)).toEqual(kept);
+      expect(db.prepare("SELECT wait_key_hash FROM agents WHERE wait_key_hash IS NOT NULL").pluck().all()).toEqual(["wait-hash"]);
       db.close();
     });
   });
