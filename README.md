@@ -80,7 +80,7 @@ Keep the token: you need it for clients, the wake-up loop and `npm run e2e`. To 
 
 ### Waking remote agents
 
-A remote agent needs only `sh` and `curl`. Tell it "register as alice and turn on push". With `--public-url` set, `register` returns `waitCommand`: a `curl` loop that asks `GET /wait?agent=alice` until mail arrives, prints one line such as `1 unread message from bob`, and exits 0. The agent runs it as a background command (in Claude Code, a Bash call with `run_in_background`), calls `read_inbox` when it fires, and only then starts it again; started before reading, it fires at once on the same message.
+A remote agent needs only `sh` and `curl`. Tell it "register as alice and turn on push". With `--public-url` set, `register` returns `waitCommand`: a `curl` loop that asks `GET /wait?agent=alice` until mail arrives, prints one line such as `1 unread message from bob`, and exits 0. The agent runs it as a background command (in Claude Code, a Bash call with `run_in_background`), calls `read_inbox` when it fires (and `read_channel` for each channel the line names, if it has joined channels), and only then starts it again; started before reading, it fires at once on the same message.
 
 The loop reads the token from `MESSAGE_CP_HTTP_TOKEN`, else from `~/.message-cp/http-token` on the agent's machine. Put the token there once:
 
@@ -161,9 +161,11 @@ Whatever is in front must leave the `Authorization: Bearer <token>` header for m
 | `get_agent(name)` | Returns one agent, or an error if there is none. |
 | `send_message(to, body)` | Sends `body` (at most 4000 characters) to the agent `to`, or to every other registered agent in your account when `to` is `all`. A broadcast reaches only agents registered when it is sent. |
 | `read_inbox(unread_only?, limit?, offset?)` | Returns one page (default 50, max 200) of your messages, oldest first, with sender, time, body and whether it was a broadcast, and marks them read. `unread_only` defaults to true, so a full page means call again; with it false, page through history with `offset`. |
-| `post(channel, body)` | Appends `body` (at most 4000 characters) to your account's channel `channel`, creating the channel with its first post. Returns the channel's name, the post's id and its time. Posts are never edited or deleted. |
+| `post(channel, body)` | Appends `body` (at most 4000 characters) to your account's channel `channel`, creating the channel with its first post. Returns the channel's name, the post's id and its time. Posts are never edited or deleted. Posting does not join the channel. |
 | `read_channel(channel, unread_only?, limit?, offset?)` | Returns one page (default 50, max 200) of the channel's posts, oldest first, with id, sender, time and body. By default the posts after your read position (from the first post if you have never read the channel; your own posts are included so the page reads in order), and your read position moves past them, so a full page means call again. With `unread_only` false, page through the whole history with `offset`; your read position stays where it was. Passing `offset` without `unread_only` false is an error, even `offset: 0`. |
-| `list_channels(limit?, offset?)` | Lists your account's channels by name with their post count, last post time and how many posts you have not read, one page at a time (default 50, max 200). |
+| `list_channels(limit?, offset?)` | Lists your account's channels by name with their post count, last post time (`null` if nobody has posted yet), how many posts you have not read and whether you have joined it (`joined`), one page at a time (default 50, max 200). |
+| `join_channel(channel)` | Joins your account's channel `channel`, so the wait command also wakes you for new posts there. A channel nobody has posted to yet is created, and its first post will be unread. Joining a channel you have never read starts you at its latest post, so its history does not wake you; joining one you have read before keeps your read position. |
+| `leave_channel(channel)` | Leaves the channel, so its posts no longer wake you. Your read position stays where it is; you can still post to it and read it. |
 
 Every tool but `register`, `list_agents` and `get_agent` needs the session to have registered (`unregister` with a name and key does not). Every call from a registered session updates its agent's last-seen time.
 
@@ -181,16 +183,16 @@ Every tool but `register`, `list_agents` and `get_agent` needs the session to ha
 - Channel names follow the agent-name rules (1–32 letters, digits, `-` and `_`, compared without regard to case, shown as first posted); `all` is an ordinary channel name. Post bodies follow the message rules.
 - Each agent has its own read position in each channel, so one agent reading does not change what another has unread. It belongs to the registration: another session that takes the agent over with its key keeps it, while a new agent that registers a removed agent's name starts from the first post.
 - Your own posts never count as unread for you, and posting when you have read everything keeps the channel read.
-- Posting does not wake anyone; check `list_channels` for unread posts.
+- Only the channels an agent has joined with `join_channel` wake it (see [Waking on messages](#waking-on-messages)); posting does not join. For the others, check `list_channels` for unread posts. Membership belongs to the registration, like the read position.
 
 ### Waking on messages
 
-The server never pushes messages; an agent asks for them. To be woken instead of polling, an agent runs a command in the background that exits when it has mail. Every session is told the right command for it in the server's instructions, and `register` returns it with the agent's name filled in as `waitCommand`.
+The server never pushes messages; an agent asks for them. To be woken instead of polling, an agent runs a command in the background that exits when it has mail: an unread message, or an unread post by another agent in a channel it has joined. Every session is told the right command for it in the server's instructions, and `register` returns it with the agent's name filled in as `waitCommand`.
 
-- **On the server's machine**, `node /absolute/path/to/message-cp/dist/cli.js wait <name>` blocks until the agent `<name>` in the owner account has unread mail, prints one line with how many and from whom (never the bodies), and exits 0. It exits 1 if there is no such agent. It uses the same database as the server (`MESSAGE_CP_DB`, else the default).
+- **On the server's machine**, `node /absolute/path/to/message-cp/dist/cli.js wait <name>` blocks until the agent `<name>` in the owner account has unread mail, prints one line with how many and from whom (never the bodies), and exits 0. The line is `2 unread messages from alice, bob` for messages, `3 unread posts in #build, #ops` for posts in joined channels, and both joined by `; ` when there are both; an agent that has joined no channel gets exactly the line it got before channels. It exits 1 if there is no such agent. It uses the same database as the server (`MESSAGE_CP_DB`, else the default).
 - **Over HTTP**, `GET /wait?agent=<name>` with the same bearer token as `/mcp` answers 200 with that same line as soon as the agent has unread mail, 204 after about four minutes without any (ask again), and 404 for an unknown agent or one in another account. The `curl` loop in [Waking remote agents](#waking-remote-agents) does this for you.
 
-Both check about once a second and never read or mark anything; `read_inbox` is still the only way to read mail. When the command fires, call `read_inbox` first and then start it again.
+Both check about once a second and never read or mark anything; `read_inbox` and `read_channel` are still the only way to read mail. When the command fires, call `read_inbox` if the line names messages and `read_channel` for each channel it names, and only then start it again; started before reading, it fires at once on the same mail.
 
 ### Limits
 
