@@ -13,12 +13,12 @@ Needs Node 22.12 or later and git.
 ```sh
 git clone https://github.com/colinhallett/message-cp.git
 cd message-cp
-npm install
+npm ci --ignore-scripts
 npm run build
 npm test
 ```
 
-That gives you `dist/index.js`, the stdio server, and `dist/cli.js`, the command for everything else (`node dist/cli.js serve`, `wait`, `account`, `token`). Add the stdio server to your MCP client as below, open two sessions, and ask one to "register as alice" and the other to "register as bob and send alice a message".
+`--ignore-scripts` skips compiling the SQLite driver, `better-sqlite3`, which ships prebuilt binaries for Linux, macOS and Windows on x64 and arm64; without it, `npm ci` needs `make` and a C++ compiler. That gives you `dist/index.js`, the stdio server, and `dist/cli.js`, the command for everything else (`node dist/cli.js serve`, `wait`, `account`, `token`). Add the stdio server to an MCP client as below (the agents are the client's sessions; there is no separate chat command), open two sessions, and ask one to "register as alice" and the other to "register as bob and send alice a message".
 
 ## Add it to an MCP client
 
@@ -35,6 +35,8 @@ claude mcp add message-cp -- node /absolute/path/to/message-cp/dist/index.js
 ```sh
 claude mcp add --transport http message-cp https://message-cp.example.com/mcp --header "Authorization: Bearer <token>"
 ```
+
+The URL is your proxy's public address followed by `/mcp`. To try it on the server's own machine without a proxy, use `http://127.0.0.1:8787/mcp`.
 
 **Cursor over stdio** (`.cursor/mcp.json` in the project, or `~/.cursor/mcp.json`):
 
@@ -58,9 +60,11 @@ export MESSAGE_CP_HTTP_TOKEN="$(openssl rand -hex 32)"
 node dist/cli.js serve --port 8787 --public-url https://message-cp.example.com
 ```
 
+Keep the token: you need it for clients, the wake-up loop and `npm run e2e`. To try `serve` on one machine without a domain, leave out `--public-url` and use `http://127.0.0.1:8787` wherever this README shows `https://message-cp.example.com`.
+
 `serve [--host <address>] [--port <port>] [--public-url <url>]` serves the same tools over MCP's streamable HTTP transport at `/mcp`, against the same database as the stdio server. Both can run at once on the same file, and agents on either see each other.
 
-- **Token.** `serve` refuses to start unless `MESSAGE_CP_HTTP_TOKEN` is set and non-empty. Every request must send `Authorization: Bearer <token>`, with that token or one made with `node dist/cli.js account add` or `token add` (see [Accounts and tokens](#accounts-and-tokens-for-a-team)). Anything else, a revoked token included, gets 401 and touches nothing. `MESSAGE_CP_HTTP_TOKEN` is the owner account's token; change it by restarting `serve` with a new value.
+- **Token.** `serve` refuses to start unless `MESSAGE_CP_HTTP_TOKEN` is set and non-empty. Every request must send `Authorization: Bearer <token>`, with that token or one made with `node dist/cli.js account add` or `token add` (see [Accounts and tokens](#accounts-and-tokens-for-a-team)). Anything else, a revoked token included, gets 401 and touches nothing. `MESSAGE_CP_HTTP_TOKEN` is the owner account's token. It lives only in `serve`'s environment, not in the database, so `account list` shows the owner with `tokens: none`; change it by restarting `serve` with a new value.
 - **Address.** It listens on `127.0.0.1:8787` unless `--host` and `--port` say otherwise, and speaks plain HTTP. **Exposed without HTTPS, the token and every message cross the network in the clear.** Put a reverse proxy that terminates TLS in front and expose only that. With [Caddy](https://caddyserver.com), which gets the certificate itself, this `Caddyfile` is enough:
 
   ```caddyfile
@@ -117,6 +121,8 @@ node dist/cli.js account list             # names, creation times and ids of wor
 node dist/cli.js token add alice          # prints another token for the account
 node dist/cli.js token revoke 2           # stops token 2 working
 ```
+
+Token ids are numbered across all accounts; `account list` shows each account's working ones.
 
 Hand each person their token over a private channel; they use it in `claude mcp add --header`, `~/.message-cp/http-token` and `npm run e2e`.
 
