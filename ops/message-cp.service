@@ -1,0 +1,19 @@
+# message-cp serve, run from the live release. deploy.sh points /opt/message-cp/current at a release and restarts this.
+[Unit]
+Description=message-cp HTTP server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=message-cp
+Group=message-cp
+# MESSAGE_CP_HTTP_TOKEN, MESSAGE_CP_PUBLIC_URL and MESSAGE_CP_DB; the file is root's, mode 0600.
+EnvironmentFile=/etc/message-cp.env
+WorkingDirectory=/opt/message-cp/current
+ExecStart=/usr/bin/env node /opt/message-cp/current/dist/cli.js serve --port 8787 --public-url ${MESSAGE_CP_PUBLIC_URL}
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

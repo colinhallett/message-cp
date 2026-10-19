@@ -1,6 +1,6 @@
 # Checks origin/main two minutes after the last run ended, so a merge is usually live within about five.
 [Unit]
-Description=Deploy origin/main of memory-cp every two minutes
+Description=Deploy origin/main of message-cp every two minutes
 
 [Timer]
 OnBootSec=1min

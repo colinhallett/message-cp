@@ -1,5 +1,5 @@
 [Unit]
-Description=Back up the memory-cp database nightly at 02:30 UTC
+Description=Back up the message-cp database nightly at 02:30 UTC
 
 [Timer]
 OnCalendar=*-*-* 02:30:00 UTC

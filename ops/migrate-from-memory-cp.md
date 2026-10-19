@@ -1,0 +1,99 @@
+# Moving a server from the memory-cp names to message-cp
+
+A server installed by the old `ops/` runs under memory-cp names. This moves it to the names the rest of `ops/` now uses, keeping the database, the token, the release history and the deploy key. `migrate-from-memory-cp.sh` does the work; this page says what it does, what it needs, and how to undo it. It is for one move, once; after it, the server is installed as [deploy.md](deploy.md) and [README.md](README.md) describe.
+
+| Old | New |
+| --- | --- |
+| users and groups `memory-cp`, `memory-cp-build` | `message-cp`, `message-cp-build` (renamed, same uid and gid) |
+| `/opt/memory-cp/` (`repo.git`, `releases/`, `current`, `live-sha`, `failed-sha`, `rollback-pending`, `deploy.lock`, `build-home/`, `check-home/`, `deploy.sh`) | `/opt/message-cp/`, the same inside |
+| `/var/lib/memory-cp/` (the server's home and database) | `/var/lib/message-cp/` |
+| `/etc/memory-cp.env` with `MEMORY_CP_*` | `/etc/message-cp.env` with `MESSAGE_CP_*`, the same values |
+| `/etc/memory-cp/backup-url` (the old bucket) | `/etc/message-cp/backup-url` (the new `message-cp-backups` bucket) |
+| `/usr/local/bin/memory-cp-backup` | `/usr/local/bin/message-cp-backup` |
+| `/root/.ssh/memory-cp-deploy` and `.pub` | `/root/.ssh/message-cp-deploy` and `.pub`, the same key |
+| `memory-cp.service`, `memory-cp-deploy.service` / `.timer`, `memory-cp-backup.service` / `.timer`, and their drop-ins | `message-cp.service`, `message-cp-deploy.service` / `.timer`, `message-cp-backup.service` / `.timer`, and their drop-ins |
+| backups `memory-cp-<date>.sqlite.gz` | `message-cp-<date>.sqlite.gz`, in the new bucket |
+
+**Users are renamed, not created.** `usermod -l` and `groupmod -n` keep the uid and gid, so every file the server or the builds own (the database and its `-wal` and `-shm`, `check-home`, `build-home`) keeps its owner without a `chown -R`, and undo is renaming them back. New users would have new ids, every file would have to be re-owned, and a file missed would lock the server out of it.
+
+**Nothing is deleted.** Each old path is copied to its new name (`cp -a`, keeping owners, modes and times), and only then renamed aside to `<old path>.pre-message-cp`. The copy is taken with the server, the backup and any deploy stopped, so the database, its WAL and its shared-memory file are copied together and at rest. The old units and drop-ins are renamed aside the same way. The old bucket and its backups are not touched.
+
+**Nothing secret is printed.** The env file is rewritten in place with `sed`, the backup URL file is copied with `install`, and the token reaches the check in its environment, as in `deploy.sh`. Every file holding a token, a key or a URL stays `root:root` and `0600` (directories `0700`), as before.
+
+## Before you start
+
+1. **The live release reads `MESSAGE_CP_*`.** The new env file has only the new names, and a rollback goes back to `live-sha`, so that release must be one from after the package rename (COL-50, #32). The script checks `live-sha`'s release and refuses otherwise; let `main` deploy first.
+2. **A new bucket, `message-cp-backups`.** Object Storage cannot rename a bucket, so backups under the new name go to a new one, set up as the old one was ([README.md](README.md), Install, step 1): private (no public access), object versioning on, lifecycle rules that delete objects and previous versions after 30 days, and a pre-authenticated request with access type **Permit object writes** on the whole bucket, with a far expiry. Its URL ends in `/o/`.
+3. **That URL in a root-only file on the server**, which the script installs as `/etc/message-cp/backup-url`:
+
+   ```sh
+   install -m 0600 -o root -g root /dev/null /root/message-cp-backup-url
+   cat > /root/message-cp-backup-url   # paste the URL, then Ctrl-D
+   clear                               # the URL is now in the scrollback
+   ```
+
+4. **A checkout of this repository** at the commit that added this page or later, on the server: the script installs `deploy.sh`, `backup.sh` and the units from it. For example `git clone --depth 1 https://github.com/colinhallett/message-cp.git /root/message-cp-src`.
+
+The server is down from step 1 of the move until step 6 passes: about a minute, plus however long a deploy run already under way takes to finish.
+
+## The move
+
+As root, from the checkout:
+
+```sh
+ops/migrate-from-memory-cp.sh move /root/message-cp-backup-url
+```
+
+It refuses to start, and changes nothing, if the URL file is missing, empty or not `root:root 0600`, if there is no old install, if any new name (a path, user or group) exists already, or if the live release does not read `MESSAGE_CP_*`. Then:
+
+1. **Stops everything that writes.** Stops and disables `memory-cp-deploy.timer` (and `memory-cp-backup.timer`), so no new deploy run starts; takes `/opt/memory-cp/deploy.lock` with `flock`, which waits until a run already under way has finished and keeps out one started by hand; then stops `memory-cp-deploy.service`, `memory-cp-backup.service` and `memory-cp.service`, and disables `memory-cp.service`. No message-cp deploy can run until step 7.
+2. **Renames the users**: `memory-cp` to `message-cp` (its group too, and its home from `/var/lib/memory-cp` to `/var/lib/message-cp`), and `memory-cp-build` to `message-cp-build`.
+3. **Copies and sets aside** each old path in the table, then the timer stamps in `/var/lib/systemd/timers/`. `current` is a relative link (`releases/<sha>`), so it points into the copy. A database at the server's default path (`~/.memory-cp/db.sqlite`, when `MEMORY_CP_DB` was unset) moves to the new default, `~/.message-cp/db.sqlite`.
+4. **Rewrites names inside the copies.** In `/etc/message-cp.env`: `MEMORY_CP_` keys become `MESSAGE_CP_`, and `/var/lib/memory-cp` and `/opt/memory-cp` in values become the new paths; the token and URL are unchanged. `repo.git`'s `core.sshCommand` names the moved key; so does `/root/.ssh/config` if it named the old one (kept as `config.pre-message-cp`). The new bucket's URL is installed as `/etc/message-cp/backup-url`.
+5. **Installs** `deploy.sh` as `/opt/message-cp/deploy.sh`, `backup.sh` as `/usr/local/bin/message-cp-backup` and the five units, from the checkout. Each old unit's drop-in directory (`systemctl edit`, such as the backup unit's `User=` and `MEMORY_CP_DB`) is copied to the new unit's, with `memory-cp` and `MEMORY_CP_` replaced. If the backup unit had none, it writes one with `User=message-cp` and the env file's `MESSAGE_CP_DB`.
+6. **Starts `message-cp.service` and checks it**: waits for `/mcp` to answer 401, then runs the live release's `npm run e2e -- --url <MESSAGE_CP_PUBLIC_URL>` as `message-cp`, as `deploy.sh` does.
+7. **Runs one backup**, which writes `message-cp-<date>.sqlite.gz` to the new bucket, then enables `message-cp-backup.timer` and `message-cp-deploy.timer`.
+
+Then check:
+
+```sh
+journalctl -u message-cp-backup -n 3          # message-cp-backup: uploaded message-cp-<date>.sqlite.gz (<n> bytes)
+systemctl list-timers 'message-cp-*'
+journalctl -u message-cp-deploy -f            # the next run (within two minutes) fetches with the moved key
+ops/migrate-from-memory-cp.sh check
+```
+
+`check` runs `find / -xdev -name '*memory-cp*'` and `systemctl list-units --all '*memory-cp*'`. It expects only the `*.pre-message-cp` copies and the `ops/memory-cp*` unit files inside an older release's source (they go when that release ages out of the newest five); it exits 1 on anything else, on any memory-cp unit systemd still knows, or on a memory-cp user. Check also that the object is in the new bucket, and, from an agent, that `list_agents` and `read_inbox` show what they did before, with the same token.
+
+Caddy needs no change: it proxies to `127.0.0.1:8787` as before. Agents need no change: the URL and tokens are the same.
+
+## If it fails part-way
+
+Every step before 6 is a rename, a copy or a rewrite of a copy, and the script stops at the first failure and says to run undo. If step 6 fails (the new server does not start or does not pass its check), it stops before enabling any timer. Either way, as root, from the same checkout:
+
+```sh
+ops/migrate-from-memory-cp.sh undo
+```
+
+It stops the new units, takes the new deploy lock, and puts the old names back:
+
+- **The database, `/opt` and the env file go back from their new copies**, since the new server may have written to them since the move (messages, `live-sha`); the copies taken before the move are kept as `<old path>.pre-message-cp.undone-<time>`. The env file's keys and paths are rewritten back to `MEMORY_CP_*`, and `/opt/memory-cp/deploy.sh` is put back from the copy taken before the move.
+- **Everything else goes back from what was set aside**: the old backup URL (the old bucket), the deploy key, `/root/.ssh/config`, the backup script, the timer stamps and the old units and drop-ins. The new copies of those are kept as `<new path>.undone-<time>`.
+- **The users are renamed back**, and the new units are removed.
+
+Then it starts `memory-cp.service` and leaves both timers off. Check the old server, then turn them on:
+
+```sh
+(set -a && . /etc/memory-cp.env && set +a && cd /opt/memory-cp/current && npm run e2e -- --url "$MEMORY_CP_PUBLIC_URL")
+systemctl enable --now memory-cp-deploy.timer memory-cp-backup.timer
+```
+
+Once you know why the move failed, delete the `*.undone-*` copies and run the move again.
+
+## Afterwards
+
+Leave the `*.pre-message-cp` copies until the new install has run for a while (a few deploys and nightly backups); nothing reads them. A later clean-up removes them, the old bucket once its backups have expired, and `/root/message-cp-backup-url`. If something turns up that still uses an old name, `undo` still works until those copies are removed.
+
+## Rehearsal
+
+This was rehearsed end to end in a disposable Ubuntu 24.04 container running systemd 255: installed with `main`'s `ops/` (an ssh-reachable bare repo standing in for GitHub, a local PUT server for the bucket), with two accounts' agents and messages in the WAL; moved while a deploy run was under way; checked; undone with new data written after the move; failed on purpose at step 6 and undone; and moved again. One thing could not run there: `LoadCredential=` does not work in that container, so the backup unit read its URL file through a drop-in that only the rehearsal added. The pull request that added this page has the commands and output.
