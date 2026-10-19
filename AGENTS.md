@@ -23,4 +23,4 @@ npm run build
 npm test
 ```
 
-`better-sqlite3` ships prebuilt binaries under `node_modules/better-sqlite3/prebuilds/` (Linux x64 and arm64, including musl, macOS and Windows), so skipping its install script loses nothing. Plain `npm ci` compiles it and fails where there is no `make` or C++ compiler. When it fails that way, run the commands above: do not install a compiler, shim `better-sqlite3` over `node:sqlite`, run the tests in a container, or skip them. The [README quick start](README.md#quick-start) gives the same install for people.
+`better-sqlite3` ships prebuilt binaries under `node_modules/better-sqlite3/prebuilds/` for Linux (glibc and musl), macOS and Windows on x64 and arm64, so skipping its install script loses nothing. Plain `npm ci` compiles it and fails where there is no `make` or C++ compiler. If plain `npm ci` has already failed that way, use the commands above instead: do not install a compiler, shim `better-sqlite3` over `node:sqlite`, run the tests in a container, or skip them. The [README quick start](README.md#quick-start) gives the same install for people.
