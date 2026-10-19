@@ -1,125 +1,217 @@
 # message-cp
 
-An MCP server that lets one owner's agents find each other. An agent registers a name and a short bio; every agent can list who is registered and when each was last active, and send messages. All sessions share one SQLite file, so an agent registered in one session is visible from every other. By default the server speaks stdio and opens no network port; `message-cp serve` serves the same tools over HTTP (see [Serving over HTTP](#serving-over-http)).
+A small messaging service for AI agents, run by you. It is an [MCP](https://modelcontextprotocol.io) server: each agent registers a name and a one-line bio, finds the other agents, sends them messages, and can be woken when mail arrives instead of polling for it. All agents share one SQLite file.
 
-## Build
+It suits one person running several agents on one machine (stdio, no network port), or a few people whose agents talk across machines (HTTP behind your own HTTPS proxy), each person with their own account and token. It does one job: no shared memory, no task board, no agent supervisor.
 
-Requires Node 22.12 or later.
+message-cp does not sign people in. Over HTTP it accepts only bearer tokens it issued; if you want another kind of sign-in, you put it in front (see [Putting your own sign-in in front](#putting-your-own-sign-in-in-front)).
+
+## Quick start
+
+Needs Node 22.12 or later and git.
 
 ```sh
-npm install
+git clone https://github.com/colinhallett/message-cp.git
+cd message-cp
+npm ci --ignore-scripts
 npm run build
 npm test
 ```
 
-The server starts with `node dist/index.js`.
+`--ignore-scripts` skips compiling the SQLite driver, `better-sqlite3`, which ships prebuilt binaries for Linux, macOS and Windows on x64 and arm64; without it, `npm ci` needs `make` and a C++ compiler. That gives you `dist/index.js`, the stdio server, and `dist/cli.js`, the command for everything else (`node dist/cli.js serve`, `wait`, `account`, `token`). Add the stdio server to an MCP client as below (the agents are the client's sessions; there is no separate chat command), open two sessions, and ask one to "register as alice" and the other to "register as bob and send alice a message".
 
-## Renamed from memory-cp
+## Add it to an MCP client
 
-This project was called memory-cp, and every old name still works, so an install set up with them needs no change:
+Use the absolute path to the built file, for example `"$(pwd)/dist/index.js"` from the clone.
 
-- The command is `message-cp`; `memory-cp` runs the same thing.
-- Each `MESSAGE_CP_*` variable is also read under its old name, `MEMORY_CP_*`. When both are set, the new name wins.
-- The default database is `~/.message-cp/db.sqlite`, but where that file does not exist and `~/.memory-cp/db.sqlite` does, the old file is used where it is; nothing is moved or copied. The wait command's token file works the same way: `~/.message-cp/http-token`, else `~/.memory-cp/http-token`.
-
-## Add it to an agent
-
-Use the absolute path to the built file.
-
-Claude Code:
+**Claude Code over stdio** (agents on this machine):
 
 ```sh
-claude mcp add message-cp -- node /absolute/path/to/dist/index.js
+claude mcp add message-cp -- node /absolute/path/to/message-cp/dist/index.js
 ```
 
-Cursor (`.cursor/mcp.json`):
+**Claude Code over HTTP** (agents on any machine; needs a running server, see the next section):
+
+```sh
+claude mcp add --transport http message-cp https://message-cp.example.com/mcp --header "Authorization: Bearer <token>"
+```
+
+The URL is your proxy's public address followed by `/mcp`. To try it on the server's own machine without a proxy, use `http://127.0.0.1:8787/mcp`.
+
+**Cursor over stdio** (`.cursor/mcp.json` in the project, or `~/.cursor/mcp.json`):
 
 ```json
 {
   "mcpServers": {
     "message-cp": {
       "command": "node",
-      "args": ["/absolute/path/to/dist/index.js"]
+      "args": ["/absolute/path/to/message-cp/dist/index.js"]
     }
   }
 }
 ```
 
-## Serving over HTTP
+Every stdio server started this way opens the same database, `~/.message-cp/db.sqlite`, so an agent registered in one session is visible from every other. Set `MESSAGE_CP_DB` in the server's environment to use another file.
 
-`message-cp serve [--host <address>] [--port <port>] [--public-url <url>]` serves the same tools over MCP's streamable HTTP transport at `/mcp`, against the same database (`MESSAGE_CP_DB`, else the default path), so agents on other machines share agents and messages with local ones. The stdio server is unchanged and can run at the same time on the same database.
-
-```sh
-MESSAGE_CP_HTTP_TOKEN=<long random secret> node dist/cli.js serve --port 8787
-```
-
-- **Token.** `serve` refuses to start unless `MESSAGE_CP_HTTP_TOKEN` (or, when that is unset, the old `MEMORY_CP_HTTP_TOKEN`) is non-empty. Every request must send `Authorization: Bearer <token>`: `MESSAGE_CP_HTTP_TOKEN`, which is the owner's account, or a token made with `message-cp account add` or `token add`, which is that token's account (see [Accounts](#accounts)). Anything else, a revoked token included, gets 401 and nothing is touched. Agents still prove who they are with their key when they register.
-- **Address.** It binds to `127.0.0.1` on port 8787 unless `--host` / `--port` say otherwise. It speaks plain HTTP: **exposing it without HTTPS sends the token and every message in the clear.** Put a reverse proxy that terminates TLS (for example Caddy: `reverse_proxy 127.0.0.1:8787`) in front of it and expose only that.
-- **Sessions.** Each MCP session has its own identity: register in it and its tools act as that agent. A session belongs to the account whose token started it; a request on it with another account's token gets 404, as if the session did not exist. A session ends when the client sends DELETE or after 30 minutes idle.
-- **`wait` over HTTP.** `GET /wait?agent=<name>` (same bearer token as `/mcp`) answers 200 with the same one-line summary as `message-cp wait` as soon as that agent has unread mail, 204 after about four minutes without any (ask again), 404 for an unknown agent or one in another account. It checks the database about once a second and never reads or marks anything. Start `serve` with `--public-url <the https URL clients use, without /mcp>` and the server's instructions and `register`'s `waitCommand` carry a ready-to-run `curl` loop; without it they leave the wait command out and remote agents call `read_inbox`. See "Waking a remote agent".
-
-### End-to-end check
-
-`npm run e2e` (after `npm run build`) starts `dist/cli.js serve` on a free port with a temporary database and a generated token, then checks it the way remote agents use it: no token or a wrong token gets 401; two MCP clients register over streamable HTTP; `GET /wait` has no mail for the second agent, then answers 200 soon after the first sends it a message; `read_inbox` returns that message and `/wait` stops reporting mail; both agents unregister and `list_agents` no longer shows them. It stops the server and exits 0, or names the failed step and exits 1. Bad usage, or `--url` without `MESSAGE_CP_HTTP_TOKEN` or the old `MEMORY_CP_HTTP_TOKEN`, exits 2 before any check runs.
-
-`MESSAGE_CP_HTTP_TOKEN=<token> npm run e2e -- --url https://memory.example.com` runs the same checks against a running server (`MEMORY_CP_HTTP_TOKEN` works too when the new name is unset). The URL must be `https` (plain `http` only for a loopback address, `127.x.x.x` or `[::1]`) and carry no credentials, query or fragment. Its agents are named `e2e-<random>-a` and `-b` and are unregistered before it exits, even after a failure. It needs only the runtime dependencies, and it never prints the token.
-
-Add it to Claude Code:
+## Running the HTTP server
 
 ```sh
-claude mcp add --transport http message-cp https://memory.example.com/mcp --header "Authorization: Bearer <token>"
+export MESSAGE_CP_HTTP_TOKEN="$(openssl rand -hex 32)"
+node dist/cli.js serve --port 8787 --public-url https://message-cp.example.com
 ```
 
-### Accounts
+Keep the token: you need it for clients, the wake-up loop and `npm run e2e`. To try `serve` on one machine without a domain, leave out `--public-url` and use `http://127.0.0.1:8787` wherever this README shows `https://message-cp.example.com`.
 
-Every agent and every message belongs to one account, and nothing crosses between accounts: a session sees, messages, wakes on and removes only its own account's agents, and another account's agent looks exactly like one that does not exist. Names are unique within an account, so two accounts can each have a `planner`. The owner's account is created on first open; `MESSAGE_CP_HTTP_TOKEN`, the stdio server and `message-cp wait` act as it, and every agent, key and message from before accounts belongs to it.
+`serve [--host <address>] [--port <port>] [--public-url <url>]` serves the same tools over MCP's streamable HTTP transport at `/mcp`, against the same database as the stdio server. Both can run at once on the same file, and agents on either see each other.
 
-The operator manages accounts on the server, against the database `serve` uses (`MESSAGE_CP_DB`, else the default path). Run the commands as the server's user with the server's database path, or they open another database and the tokens they print do not work; on the systemd install in `ops/deploy.md`, as root from `/opt/memory-cp/current`, with the path `MEMORY_CP_DB` has in `/etc/memory-cp.env` (the server still uses the old names, which keep working): `setpriv --reuid=memory-cp --regid=memory-cp --init-groups env MEMORY_CP_DB=/var/lib/memory-cp/db.sqlite node dist/cli.js account list`.
+- **Token.** `serve` refuses to start unless `MESSAGE_CP_HTTP_TOKEN` is set and non-empty. Every request must send `Authorization: Bearer <token>`, with that token or one made with `node dist/cli.js account add` or `token add` (see [Accounts and tokens](#accounts-and-tokens-for-a-team)). Anything else, a revoked token included, gets 401 and touches nothing. `MESSAGE_CP_HTTP_TOKEN` is the owner account's token. It lives only in `serve`'s environment, not in the database, so `account list` shows the owner with `tokens: none`; change it by restarting `serve` with a new value.
+- **Address.** It listens on `127.0.0.1:8787` unless `--host` and `--port` say otherwise, and speaks plain HTTP. **Exposed without HTTPS, the token and every message cross the network in the clear.** Put a reverse proxy that terminates TLS in front and expose only that. With [Caddy](https://caddyserver.com), which gets the certificate itself, this `Caddyfile` is enough:
+
+  ```caddyfile
+  message-cp.example.com {
+  	reverse_proxy 127.0.0.1:8787
+  }
+  ```
+
+  Run it with `caddy run --config Caddyfile`. Any proxy works as long as it passes the `Authorization` header through unchanged and does not cut off a request held for about four minutes (`/wait`, below).
+- **Public URL.** `--public-url` is the HTTPS address clients use, without `/mcp`. With it, the server tells each session how to be woken over HTTP (below); without it, remote agents check for mail by calling `read_inbox`.
+- **Sessions.** Each MCP session is one agent once it calls `register`. A session belongs to the account whose token started it; a request on it with another account's token gets 404, as if it did not exist. A session ends when the client sends DELETE or after 30 minutes idle. The server keeps at most 256 sessions and answers 503 beyond that.
+- **Logging.** `serve` prints one line to stderr when it starts listening, and one line for an internal error. It does not log requests, tokens or message bodies.
+
+### Waking remote agents
+
+A remote agent needs only `sh` and `curl`. Tell it "register as alice and turn on push". With `--public-url` set, `register` returns `waitCommand`: a `curl` loop that asks `GET /wait?agent=alice` until mail arrives, prints one line such as `1 unread message from bob`, and exits 0. The agent runs it as a background command (in Claude Code, a Bash call with `run_in_background`), calls `read_inbox` when it fires, and only then starts it again; started before reading, it fires at once on the same message.
+
+The loop reads the token from `MESSAGE_CP_HTTP_TOKEN`, else from `~/.message-cp/http-token` on the agent's machine. Put the token there once:
 
 ```sh
-node dist/cli.js account add <name>       # creates the account and prints its first token
-node dist/cli.js account list             # names, creation times and the ids of working tokens; never a token
-node dist/cli.js token add <account>      # prints another token for the account
-node dist/cli.js token revoke <token id>  # stops that token working
+mkdir -p ~/.message-cp && chmod 700 ~/.message-cp
+(umask 077 && printf '%s\n' '<token>' > ~/.message-cp/http-token)
 ```
 
-A token is printed once, on stdout, when it is made, and only its hash is stored, so a lost token cannot be shown again: make another and revoke the old one. Revoking takes effect on the next request, including requests on sessions that token started; a `/wait` already being held may finish its hold. `MESSAGE_CP_HTTP_TOKEN` is not in the database and is changed in the server's environment, as before. Accounts cannot be deleted yet.
+The loop hands the token to `curl` on stdin, so it never appears in the agent's instructions, a tool result or the process list. A 401 or 404 ends the loop with an error, since asking again cannot help.
 
-## Database
+### Checking a server end to end
 
-Every server process reads and writes the same file: `MESSAGE_CP_DB` if set, else the old `MEMORY_CP_DB`, otherwise `~/.message-cp/db.sqlite` (or the old `~/.memory-cp/db.sqlite` where only that one exists, used in place). The directory is created if missing. The database runs in WAL mode with a busy timeout so several processes can share it. Earlier versions also kept shared memories, a task board and hive run records; the first open by this version deletes those tables and their data and leaves agents and messages as they were. Stop older server processes on the same file before upgrading: they still expect those tables.
+```sh
+npm run e2e
+```
 
-The first open by a release with accounts rebuilds the `agents` table so that names are unique per account, and first copies the file to `<database>.before-accounts` (mode 0600). No release from before accounts can register an agent on the rebuilt table, and one that still runs reads agents by name across every account, so stop every older process on the file before upgrading and do not go back to one without restoring that copy: see `ops/deploy.md`.
+starts `dist/cli.js serve` on a free port with a temporary database and a generated token, and checks it the way remote agents use it: no token or a wrong token gets 401; two clients register; `/wait` reports no mail, then answers soon after one agent messages the other; `read_inbox` returns the message; both agents unregister. It prints one line per step and exits 0, or names the failed step and exits 1.
+
+To check a running server instead, give it the URL and a token for any account:
+
+```sh
+MESSAGE_CP_HTTP_TOKEN=<token> npm run e2e -- --url https://message-cp.example.com
+```
+
+The URL must be `https` (plain `http` only for `127.x.x.x` or `[::1]`). It registers agents named `e2e-<random>-a` and `-b` in that token's account and unregisters them before it exits, even after a failure. It never prints the token.
+
+## Accounts and tokens for a team
+
+Give each person an account and a token. Every agent and every message belongs to one account, and nothing crosses between accounts: a session sees, messages, wakes on and removes only its own account's agents, and another account's agent looks exactly like one that does not exist. Names are unique within an account, so two accounts can each have a `planner`.
+
+The `owner` account exists from the start. `MESSAGE_CP_HTTP_TOKEN`, every stdio server and `node dist/cli.js wait` act as it.
+
+Manage accounts on the server, as the user `serve` runs as and with the same `MESSAGE_CP_DB` (if any). Otherwise the commands open a different database and the tokens they print do not work.
+
+```sh
+node dist/cli.js account add alice        # creates the account and prints its first token
+node dist/cli.js account list             # names, creation times and ids of working tokens; never a token
+node dist/cli.js token add alice          # prints another token for the account
+node dist/cli.js token revoke 2           # stops token 2 working
+```
+
+Token ids are numbered across all accounts; `account list` shows each account's working ones.
+
+Hand each person their token over a private channel; they use it in `claude mcp add --header`, `~/.message-cp/http-token` and `npm run e2e`.
+
+What a token can reach:
+
+- A token is 32 random bytes, printed once on stdout when it is made. Only its SHA-256 hash is stored, so a lost token cannot be shown again: make another and revoke the old one.
+- A token acts as its account on `/mcp` and `/wait`, and nothing else. It cannot manage accounts or tokens; only someone who can run `node dist/cli.js` against the database file can.
+- The token is checked on every request, so revoking one takes effect on the next request, including requests on sessions it started. A `/wait` already being held may finish its hold.
+- Anyone who can read the database file, or start a stdio server or `wait` on it, can read every account's messages: the file is the boundary on the server itself. `openDb` creates a missing directory 0700 and a missing database file 0600.
+- Accounts cannot be deleted yet. Revoke their tokens instead.
+
+## Putting your own sign-in in front
+
+message-cp has no sign-in of its own. If a bearer token per person is not enough, restrict who can reach the server before a request gets to it, and still give each person a token:
+
+- **A VPN** such as WireGuard or Tailscale: give the server a name that resolves only on the VPN, and have the TLS proxy listen only on the VPN address (in Caddy, `bind <vpn address>` inside the site block), so only people on the VPN can connect.
+- **A reverse proxy that only lets your people in**, by network, client certificate or your own gateway. For example, this `Caddyfile` refuses every address outside `10.0.0.0/8`:
+
+  ```caddyfile
+  message-cp.example.com {
+  	@outside not remote_ip 10.0.0.0/8
+  	respond @outside 403
+  	reverse_proxy 127.0.0.1:8787
+  }
+  ```
+
+Whatever is in front must leave the `Authorization: Bearer <token>` header for message-cp. A proxy that uses the `Authorization` header for its own sign-in (HTTP basic auth, for example) takes it over, and message-cp then answers 401. MCP clients and the `curl` wake-up loop send only that header, so a sign-in that needs a browser cannot sit in their path.
 
 ## Tools
 
 | Tool | What it does |
 | --- | --- |
-| `register(name, bio, key?)` | Registers this session as `name`. A new name creates the agent and returns its `key`, once; only a hash is stored. If the name already exists, this session takes that agent over and its bio is updated, but only with the agent's `key`; without it the call fails and nothing changes. An agent registered before keys existed has none: the next `register` claims it and returns a key. |
-| `unregister(name?, key?)` | With no arguments, removes your own agent from the directory and frees its name. The messages addressed to it stay in the database, with their sender, time and read state (so backups taken afterwards have them), but no tool shows them again, not even to a new agent that registers the same name; `keptMessages` in the result says how many there are. This session is then unregistered until it calls `register` again. With `name` and `key`, removes that agent if `key` is its key (an agent registered before keys existed has none and can be removed by name alone); this works from a session that has not registered. A wrong or missing key fails and changes nothing. |
-| `list_agents(limit?, offset?)` | Lists agents by name with bio and last-seen time, one page at a time (default 50, max 200). |
+| `register(name, bio, key?)` | Registers this session as `name`. A new name creates the agent and returns its `key`, once; only a hash is stored. If the name exists, this session takes that agent over and its bio is updated, but only with the agent's `key`; without it the call fails and nothing changes. Returns `waitCommand` when the server can offer one. |
+| `unregister(name?, key?)` | With no arguments, removes your own agent and frees its name; this session is then unregistered until it calls `register` again. With `name` and `key`, removes that agent if the key matches, even from a session that has not registered. The messages addressed to a removed agent stay in the database but no tool shows them again, not even to a new agent with the same name; `keptMessages` says how many. |
+| `list_agents(limit?, offset?)` | Lists agents by name with bio and last-seen time, one page at a time (default 50, max 200). A full page means there may be more: call again with a higher `offset`. |
 | `get_agent(name)` | Returns one agent, or an error if there is none. |
-| `send_message(to, body)` | Sends `body` (at most 4000 characters, counted as code points) to the agent `to`, or to every other registered agent when `to` is `all`. A broadcast reaches only agents registered when it is sent. Fails if `to` is not registered. |
-| `read_inbox(unread_only?, limit?, offset?)` | Returns one page (default 50, max 200) of your messages oldest first with sender, time, body and whether it was a broadcast, and marks them read; a full page means there may be more. `unread_only` defaults to true; with it false, use `offset` to page. Messages are not pushed by the server; to be woken instead of polling, see Waking on messages. |
+| `send_message(to, body)` | Sends `body` (at most 4000 characters) to the agent `to`, or to every other registered agent in your account when `to` is `all`. A broadcast reaches only agents registered when it is sent. |
+| `read_inbox(unread_only?, limit?, offset?)` | Returns one page (default 50, max 200) of your messages, oldest first, with sender, time, body and whether it was a broadcast, and marks them read. `unread_only` defaults to true, so a full page means call again; with it false, page through history with `offset`. |
 
-Names are 1–32 characters of letters, digits, `-` and `_`. They are compared case-insensitively and stored as first registered. `all` (any case) is reserved.
+Every tool but `register`, `list_agents` and `get_agent` needs the session to have registered (`unregister` with a name and key does not). Every call from a registered session updates its agent's last-seen time.
 
-Who this session is lives only in the server process, not in the database. A process can be started as an agent with `MESSAGE_CP_AGENT` and `MESSAGE_CP_AGENT_KEY` (both or neither): at startup the agent is created with that key, or claimed if it has none, and the session acts as it from its first tool call, with no `register`. If the agent exists with a different key, the server prints an error and exits before serving any tool. Keys are never returned by `list_agents`, `get_agent` or messages. A tool that needs the caller's identity returns an error telling the agent to call `register` first. The session remembers which registration it belongs to and checks it against the database on every call, so once its agent is removed with `unregister` (by itself or by anyone holding the key) it is unregistered again, even if another session took the name over, and it never acts as a different agent that registers the same name later. A process started with `MESSAGE_CP_AGENT` registers that agent again at startup, so a removed agent that a supervisor starts comes back the next time it starts it. Every tool call from a registered session updates that agent's last-seen time.
+### Names, keys and identity
 
-Keys only protect a name once every server process sharing the database runs a version that knows about them. A lost key cannot be recovered or rotated yet.
+- Names are 1–32 letters, digits, `-` and `_`, compared without regard to case and shown as first registered. `all` is reserved. A bio is at most 500 characters.
+- An agent's key is what proves a session may act as it. Keep the key `register` returns; a lost key cannot be recovered or rotated yet. Keys are never returned by `list_agents`, `get_agent` or messages.
+- Who a session is lives only in the server process. If its agent is removed, by itself or by anyone holding the key, the session is unregistered again, and it never acts as a later agent that takes the same name.
+- A stdio server can start already registered: set `MESSAGE_CP_AGENT` and `MESSAGE_CP_AGENT_KEY` (both or neither) in its environment. At startup the agent is created with that key; if it exists with a different key, the server prints an error and exits.
+- Messages are stored once per recipient, so read state is per agent. `read_inbox` marks what it returns as read before replying; if a reply is lost, `read_inbox(unread_only: false)` still has it. Messages are never pruned.
 
-Messages are stored once per recipient, so read state is per agent. `read_inbox` marks what it returns as read before the reply is sent; if a reply is lost, `read_inbox(unread_only: false)` returns the history. There is no pruning yet. Sessions that hold the same agent's key and take over its name share one inbox.
+### Waking on messages
 
-## Waking on messages
+The server never pushes messages; an agent asks for them. To be woken instead of polling, an agent runs a command in the background that exits when it has mail. Every session is told the right command for it in the server's instructions, and `register` returns it with the agent's name filled in as `waitCommand`.
 
-`message-cp wait <name>` blocks until the agent `<name>` has at least one unread message, prints one line with how many and from whom (never the bodies), and exits 0. It does not read or mark anything: `read_inbox` is still the only way to read mail. It uses the database the server uses (`MESSAGE_CP_DB`, else the default path), checks about once a second, and exits 1 with an error if no agent has that name. Run it as `node /absolute/path/to/dist/cli.js wait <name>`.
+- **On the server's machine**, `node /absolute/path/to/message-cp/dist/cli.js wait <name>` blocks until the agent `<name>` in the owner account has unread mail, prints one line with how many and from whom (never the bodies), and exits 0. It exits 1 if there is no such agent. It uses the same database as the server (`MESSAGE_CP_DB`, else the default).
+- **Over HTTP**, `GET /wait?agent=<name>` with the same bearer token as `/mcp` answers 200 with that same line as soon as the agent has unread mail, 204 after about four minutes without any (ask again), and 404 for an unknown agent or one in another account. The `curl` loop in [Waking remote agents](#waking-remote-agents) does this for you.
 
-An agent runs it as a background command (in Claude Code, a Bash call with `run_in_background`), and Claude Code wakes the session when it finishes, whether the agent is working or idle. The order matters: when it fires, call `read_inbox` first and then start the command again, because starting it before reading fires at once on the same message.
+Both check about once a second and never read or mark anything; `read_inbox` is still the only way to read mail. When the command fires, call `read_inbox` first and then start it again.
 
-### Waking a remote agent
+### Limits
 
-With `serve --public-url https://memory.example.com`, a remote agent needs only `sh` and `curl`. Tell it "register as X and turn on push": `register` returns `waitCommand`, a `curl` loop that asks `/wait` again after each 204 and exits 0 printing the summary when mail arrives (401 or 404 end it with a non-zero exit and a message). The agent runs it as a background command, calls `read_inbox` when it fires, then starts it again.
+A request body is at most 4 MB, a message 4000 characters, a bio 500 characters and a key 256 characters. `serve` holds at most 256 sessions and 256 waiting `/wait` requests at once, and answers 503 beyond that.
 
-The token is read from the environment variable `MESSAGE_CP_HTTP_TOKEN`, else the old `MEMORY_CP_HTTP_TOKEN`, else from the file `~/.message-cp/http-token` (put the same token you gave `serve` there, mode 0600), else the old `~/.memory-cp/http-token`. An empty variable counts as unset here. It is passed to `curl` on stdin, so it is never in the instructions, a tool result or a process list.
+## Database
 
-Sessions learn this from the server: its `initialize` result carries instructions that give the command with the absolute path of the built CLI and, if the server has `MESSAGE_CP_DB` set, that variable. The name is a placeholder unless the process was started with `MESSAGE_CP_AGENT`. `register` also returns the ready-to-run command, with the agent's name filled in, in `waitCommand`.
+Everything lives in one SQLite file: `MESSAGE_CP_DB` if set, else `~/.message-cp/db.sqlite`. It holds accounts, token hashes, agents with their key hashes, and every message. A missing directory is created 0700 and a missing file 0600; existing ones keep their permissions. The database runs in WAL mode with a busy timeout, so several server processes can share it.
+
+Backing up means copying that one file safely. Copying it with `cp` while a server is writing can give a broken copy, because recent writes sit in the `-wal` file beside it. Use SQLite's own online copy instead, which is safe while servers are running, and check the result. Run it as the server's user, with the server's `MESSAGE_CP_DB` if it has one, so that `DB` names the file the server uses:
+
+```sh
+DB="${MESSAGE_CP_DB:-$HOME/.message-cp/db.sqlite}"
+(umask 077 && sqlite3 "$DB" "VACUUM INTO '/path/to/backup/message-cp.sqlite'")
+sqlite3 /path/to/backup/message-cp.sqlite "PRAGMA integrity_check"   # prints: ok
+```
+
+The backup holds every account's messages, so keep it owner-only; the `umask 077` makes it 0600.
+
+To restore, stop every process that opens the database, move the database and its `-wal` and `-shm` files aside, and put the backup in its place as the server's user with mode 0600. The server keeps the permissions of an existing file, so a backup copied in with `cp` stays as readable as the backup was:
+
+```sh
+DB="${MESSAGE_CP_DB:-$HOME/.message-cp/db.sqlite}"
+install -m 600 /path/to/backup/message-cp.sqlite "$DB"
+```
+
+`ops/backup.sh` is the owner's nightly version of the copy above, tied to one storage service (Oracle Object Storage); `ops/` is the owner's own server setup and an example, not something you need.
+
+## How the project is run
+
+[DIRECTION.md](DIRECTION.md) says what the project is for and how it is run.
+
+## Licence
+
+MIT; see [LICENSE](LICENSE).
