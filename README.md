@@ -202,6 +202,7 @@ The backup holds every account's messages, so keep it owner-only; the `umask 077
 To restore, stop every process that opens the database, move the database and its `-wal` and `-shm` files aside, and put the backup in its place as the server's user with mode 0600. The server keeps the permissions of an existing file, so a backup copied in with `cp` stays as readable as the backup was:
 
 ```sh
+DB="${MESSAGE_CP_DB:-$HOME/.message-cp/db.sqlite}"
 install -m 600 /path/to/backup/message-cp.sqlite "$DB"
 ```
 
