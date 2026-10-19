@@ -192,11 +192,19 @@ Everything lives in one SQLite file: `MESSAGE_CP_DB` if set, else `~/.message-cp
 Backing up means copying that one file safely. Copying it with `cp` while a server is writing can give a broken copy, because recent writes sit in the `-wal` file beside it. Use SQLite's own online copy instead, which is safe while servers are running, and check the result:
 
 ```sh
-sqlite3 ~/.message-cp/db.sqlite "VACUUM INTO '/path/to/backup/message-cp.sqlite'"
+(umask 077 && sqlite3 ~/.message-cp/db.sqlite "VACUUM INTO '/path/to/backup/message-cp.sqlite'")
 sqlite3 /path/to/backup/message-cp.sqlite "PRAGMA integrity_check"   # prints: ok
 ```
 
-To restore, stop every process that opens the database, move the database and its `-wal` and `-shm` files aside, and put the backup in its place. `ops/backup.sh` is the owner's nightly version of the copy above, tied to one storage service (Oracle Object Storage); `ops/` is the owner's own server setup and an example, not something you need.
+The backup holds every account's messages, so keep it owner-only; the `umask 077` makes it 0600.
+
+To restore, stop every process that opens the database, move the database and its `-wal` and `-shm` files aside, and put the backup in its place as the server's user with mode 0600. The server keeps the permissions of an existing file, so a backup copied in with `cp` stays as readable as the backup was:
+
+```sh
+install -m 600 /path/to/backup/message-cp.sqlite ~/.message-cp/db.sqlite
+```
+
+`ops/backup.sh` is the owner's nightly version of the copy above, tied to one storage service (Oracle Object Storage); `ops/` is the owner's own server setup and an example, not something you need.
 
 ## How the project is run
 
