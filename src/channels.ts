@@ -1,4 +1,4 @@
-import { NAME_PATTERN, ToolError } from "./agents.js";
+import { NAME_PATTERN, NOT_REGISTERED, ToolError, nameOfIdentity, type Identity } from "./agents.js";
 import type { AccountId, Db } from "./db.js";
 import { DEFAULT_INBOX_LIMIT, MAX_INBOX_LIMIT, validateBody } from "./messages.js";
 
@@ -31,9 +31,8 @@ export interface ChannelSummary {
   unread: number;
 }
 
-/** The agent a channel tool acts for: its current name and the id of its row in `agents`. */
-export interface Member {
-  id: number;
+/** The agent a channel tool acts for: its registration (`id` is its row in `agents`) and its current name. */
+export interface Member extends Identity {
   name: string;
 }
 
@@ -70,6 +69,14 @@ function findChannel(db: Db, account: AccountId, name: string): { id: number; na
   return row;
 }
 
+/**
+ * Throws unless `member`'s registration is still live. Called inside each tool's transaction, so an agent removed by
+ * another process after the session last checked can neither post nor read.
+ */
+function checkLive(db: Db, account: AccountId, member: Member): void {
+  if (nameOfIdentity(db, account, member) === undefined) throw new ToolError(NOT_REGISTERED);
+}
+
 /** Moves `agent`'s read position in `channel` forward to `postId`; never back. */
 function advance(db: Db, agent: number, channel: number, postId: number): void {
   db.prepare(
@@ -87,6 +94,7 @@ export function post(db: Db, account: AccountId, member: Member, channel: string
   validateBody(body, "Post");
   return db
     .transaction((): PostResult => {
+      checkLive(db, account, member);
       const now = Date.now();
       db.prepare("INSERT INTO channels (account_id, name, created_at) VALUES (?, ?, ?) ON CONFLICT(account_id, name) DO NOTHING")
         .run(account, channel, now);
@@ -119,10 +127,11 @@ export function readChannel(
   channel: string,
   unreadOnly = true,
   limit = DEFAULT_CHANNEL_LIMIT,
-  offset = 0,
+  offset?: number,
 ): ChannelPage {
-  if (unreadOnly && offset !== 0) throw new ToolError("offset pages through history: pass unread_only false with it.");
+  if (unreadOnly && offset !== undefined) throw new ToolError("offset pages through history: pass unread_only false with it.");
   const read = db.transaction((): ChannelPage => {
+    checkLive(db, account, reader);
     const found = findChannel(db, account, channel);
     const pageSize = Math.min(limit, MAX_CHANNEL_LIMIT);
     let rows: PostRow[];
@@ -138,7 +147,7 @@ export function readChannel(
     } else {
       rows = db
         .prepare("SELECT id, sender, body, created_at FROM channel_posts WHERE channel_id = ? ORDER BY id LIMIT ? OFFSET ?")
-        .all(found.id, pageSize, offset) as PostRow[];
+        .all(found.id, pageSize, offset ?? 0) as PostRow[];
     }
     return { channel: found.name, posts: rows.map(toPost) };
   });
@@ -157,19 +166,24 @@ export function listChannels(
   limit = DEFAULT_CHANNEL_LIMIT,
   offset = 0,
 ): ChannelSummary[] {
-  const rows = db
-    .prepare(
-      `SELECT c.name, COUNT(*) AS posts, MAX(p.created_at) AS last_post_at,
-              SUM(p.id > COALESCE(r.last_read_id, 0) AND p.sender_id <> ?) AS unread
-       FROM channels c JOIN channel_posts p ON p.channel_id = c.id
-       LEFT JOIN channel_reads r ON r.channel_id = c.id AND r.agent_id = ?
-       WHERE c.account_id = ? GROUP BY c.id ORDER BY c.name LIMIT ? OFFSET ?`,
-    )
-    .all(reader.id, reader.id, account, Math.min(limit, MAX_CHANNEL_LIMIT), offset) as {
-    name: string;
-    posts: number;
-    last_post_at: number;
-    unread: number;
-  }[];
+  // The page of channels is chosen first, so only its channels' posts are counted.
+  const rows = db.transaction(() => {
+    checkLive(db, account, reader);
+    return db
+      .prepare(
+        `SELECT c.name, COUNT(*) AS posts, MAX(p.created_at) AS last_post_at,
+                SUM(p.id > COALESCE(r.last_read_id, 0) AND p.sender_id <> ?) AS unread
+         FROM (SELECT id, name FROM channels WHERE account_id = ? ORDER BY name LIMIT ? OFFSET ?) c
+         JOIN channel_posts p ON p.channel_id = c.id
+         LEFT JOIN channel_reads r ON r.channel_id = c.id AND r.agent_id = ?
+         GROUP BY c.id ORDER BY c.name`,
+      )
+      .all(reader.id, account, Math.min(limit, MAX_CHANNEL_LIMIT), offset, reader.id) as {
+      name: string;
+      posts: number;
+      last_post_at: number;
+      unread: number;
+    }[];
+  })();
   return rows.map((r) => ({ name: r.name, posts: r.posts, lastPostAt: new Date(r.last_post_at).toISOString(), unread: r.unread }));
 }

@@ -5,6 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { addAccount } from "../src/accounts.js";
+import { identityOf, registerAgent, removeAgent } from "../src/agents.js";
+import { listChannels, post, readChannel } from "../src/channels.js";
 import { OWNER_ACCOUNT, openDb, type AccountId, type Db } from "../src/db.js";
 import { MAX_BODY_LENGTH } from "../src/messages.js";
 import { Session, createServer } from "../src/server.js";
@@ -137,6 +139,7 @@ describe("read_channel", () => {
     expect(bodies(await ok(bob, "read_channel", { channel: "dev", unread_only: false, limit: 2, offset: 1 }))).toEqual(["p2", "p3"]);
     expect(await unreadIn(bob, "dev")).toBe(3);
     expect((await call(bob, "read_channel", { channel: "dev", offset: 1 })).text).toContain("unread_only false");
+    expect((await call(bob, "read_channel", { channel: "dev", offset: 0 })).text).toContain("unread_only false");
   });
 
   it("names a channel that does not exist", async () => {
@@ -247,6 +250,20 @@ describe("two accounts", () => {
       ["dev", 1],
       ["ops", 1],
     ]);
+  });
+});
+
+describe("a registration removed by another process", () => {
+  it("can no longer post, read or list once its row is removed after the session last checked", () => {
+    registerAgent(db, OWNER_ACCOUNT, "alice", "x");
+    const alice = { ...identityOf(db, OWNER_ACCOUNT, "alice")!, name: "alice" };
+    post(db, OWNER_ACCOUNT, alice, "dev", "before");
+    removeAgent(db, OWNER_ACCOUNT, "alice", undefined, alice);
+    expect(() => post(db, OWNER_ACCOUNT, alice, "dev", "after")).toThrow("not registered");
+    expect(() => readChannel(db, OWNER_ACCOUNT, alice, "dev")).toThrow("not registered");
+    expect(() => readChannel(db, OWNER_ACCOUNT, alice, "dev", false)).toThrow("not registered");
+    expect(() => listChannels(db, OWNER_ACCOUNT, alice)).toThrow("not registered");
+    expect((db.prepare("SELECT COUNT(*) AS n FROM channel_posts").get() as { n: number }).n).toBe(1);
   });
 });
 

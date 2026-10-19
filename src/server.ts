@@ -56,7 +56,7 @@ export class Session {
   /** For tools that need the caller's row as well as its name: channel read positions belong to the registration. */
   requireAgent(): Member {
     const name = this.require();
-    return { id: this.identity!.id, name };
+    return { ...this.identity!, name };
   }
 
   /** For tools that need to know the caller. */
@@ -206,7 +206,7 @@ export function createServer(db: Db, session = new Session(OWNER_ACCOUNT), optio
         channel: z.string().describe("The channel's name, in any case."),
         unread_only: z.boolean().optional().describe("Default true."),
         limit: z.number().int().min(1).max(MAX_CHANNEL_LIMIT).optional(),
-        offset: z.number().int().min(0).optional().describe("Only with unread_only false."),
+        offset: z.number().int().min(0).optional().describe("Only with unread_only false; passing it otherwise is an error."),
       },
     },
     tool(
