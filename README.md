@@ -189,10 +189,11 @@ A request body is at most 4 MB, a message 4000 characters, a bio 500 characters 
 
 Everything lives in one SQLite file: `MESSAGE_CP_DB` if set, else `~/.message-cp/db.sqlite`. It holds accounts, token hashes, agents with their key hashes, and every message. A missing directory is created 0700 and a missing file 0600; existing ones keep their permissions. The database runs in WAL mode with a busy timeout, so several server processes can share it.
 
-Backing up means copying that one file safely. Copying it with `cp` while a server is writing can give a broken copy, because recent writes sit in the `-wal` file beside it. Use SQLite's own online copy instead, which is safe while servers are running, and check the result:
+Backing up means copying that one file safely. Copying it with `cp` while a server is writing can give a broken copy, because recent writes sit in the `-wal` file beside it. Use SQLite's own online copy instead, which is safe while servers are running, and check the result. Run it as the server's user, with the server's `MESSAGE_CP_DB` if it has one, so that `DB` names the file the server uses:
 
 ```sh
-(umask 077 && sqlite3 ~/.message-cp/db.sqlite "VACUUM INTO '/path/to/backup/message-cp.sqlite'")
+DB="${MESSAGE_CP_DB:-$HOME/.message-cp/db.sqlite}"
+(umask 077 && sqlite3 "$DB" "VACUUM INTO '/path/to/backup/message-cp.sqlite'")
 sqlite3 /path/to/backup/message-cp.sqlite "PRAGMA integrity_check"   # prints: ok
 ```
 
@@ -201,7 +202,7 @@ The backup holds every account's messages, so keep it owner-only; the `umask 077
 To restore, stop every process that opens the database, move the database and its `-wal` and `-shm` files aside, and put the backup in its place as the server's user with mode 0600. The server keeps the permissions of an existing file, so a backup copied in with `cp` stays as readable as the backup was:
 
 ```sh
-install -m 600 /path/to/backup/message-cp.sqlite ~/.message-cp/db.sqlite
+install -m 600 /path/to/backup/message-cp.sqlite "$DB"
 ```
 
 `ops/backup.sh` is the owner's nightly version of the copy above, tied to one storage service (Oracle Object Storage); `ops/` is the owner's own server setup and an example, not something you need.
