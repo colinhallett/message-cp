@@ -68,7 +68,7 @@ export function instructions(env: NodeJS.ProcessEnv = process.env, remote = fals
   // A remote agent cannot run `wait`, which reads the database file on the server's machine; it can ask /wait if
   // the server knows the URL clients reach it at.
   if (remote && !publicUrl) {
-    return "message-cp does not push messages; an agent has to ask for them. Call read_inbox to check for mail.";
+    return "message-cp does not push messages; an agent has to ask for them. Call read_inbox to check for mail, and list_channels for unread posts.";
   }
   const command = remote
     ? httpWaitCommand(publicUrl!, NAME_PLACEHOLDER)

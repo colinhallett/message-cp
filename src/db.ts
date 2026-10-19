@@ -63,7 +63,7 @@ CREATE TABLE IF NOT EXISTS messages (
 CREATE INDEX IF NOT EXISTS messages_inbox ON messages (recipient_id, read_at, id);
 CREATE INDEX IF NOT EXISTS messages_history ON messages (recipient_id, id);
 
--- A channel belongs to one account and exists from its first post. Names follow the agent-name rules, unique per
+-- A channel belongs to one account and exists from its first post, or from the first agent joining it. Names follow the agent-name rules, unique per
 -- account regardless of case, keeping the first spelling. None of these names may appear in DROP_REMOVED.
 CREATE TABLE IF NOT EXISTS channels (
   id INTEGER PRIMARY KEY,
