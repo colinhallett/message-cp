@@ -62,56 +62,6 @@ CREATE TABLE IF NOT EXISTS messages (
 );
 CREATE INDEX IF NOT EXISTS messages_inbox ON messages (recipient_id, read_at, id);
 CREATE INDEX IF NOT EXISTS messages_history ON messages (recipient_id, id);
-
--- Sign-in with GitHub (src/oauth.ts). An account is tied to the GitHub user id, never the login, which can change hands.
-CREATE TABLE IF NOT EXISTS github_users (
-  github_id INTEGER PRIMARY KEY,
-  account_id INTEGER NOT NULL UNIQUE REFERENCES accounts(id),
-  login TEXT NOT NULL,
-  linked_at INTEGER NOT NULL
-);
-
--- MCP clients that registered themselves. Public clients: no secret, only the redirect URIs they may use.
-CREATE TABLE IF NOT EXISTS oauth_clients (
-  id TEXT PRIMARY KEY,
-  name TEXT,
-  redirect_uris TEXT NOT NULL,
-  created_at INTEGER NOT NULL
-);
-
--- A sign-in handed to GitHub and not yet back: what to resume with once GitHub returns our own state.
-CREATE TABLE IF NOT EXISTS oauth_pending (
-  state_hash TEXT PRIMARY KEY,
-  browser_hash TEXT NOT NULL,
-  client_id TEXT NOT NULL,
-  redirect_uri TEXT NOT NULL,
-  client_state TEXT,
-  code_challenge TEXT NOT NULL,
-  expires_at INTEGER NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS oauth_codes (
-  hash TEXT PRIMARY KEY,
-  account_id INTEGER NOT NULL REFERENCES accounts(id),
-  client_id TEXT NOT NULL,
-  redirect_uri TEXT NOT NULL,
-  code_challenge TEXT NOT NULL,
-  expires_at INTEGER NOT NULL
-);
-
--- One row per sign-in. A refresh replaces both tokens' hashes, so the old ones stop working.
-CREATE TABLE IF NOT EXISTS oauth_grants (
-  id INTEGER PRIMARY KEY,
-  account_id INTEGER NOT NULL REFERENCES accounts(id),
-  client_id TEXT NOT NULL,
-  access_hash TEXT NOT NULL UNIQUE,
-  access_expires_at INTEGER NOT NULL,
-  refresh_hash TEXT NOT NULL UNIQUE,
-  refresh_expires_at INTEGER NOT NULL,
-  created_at INTEGER NOT NULL
-);
-CREATE INDEX IF NOT EXISTS oauth_grants_client ON oauth_grants (client_id);
-CREATE INDEX IF NOT EXISTS oauth_grants_account ON oauth_grants (account_id, id);
 `;
 
 // CREATE TABLE IF NOT EXISTS leaves an existing table alone, so columns added later are added here, only when missing.
@@ -128,7 +78,7 @@ function addColumn(db: Db, column: string, definition: string): void {
   }
 }
 
-// Shared memories, the task board and the hive's run log were removed, so their tables go too.
+// Shared memories, the task board, the hive's run log and the GitHub sign-in were removed, so their tables go too.
 // Dropping a table drops its indexes and triggers; the full-text index is a table of its own.
 // IF EXISTS makes this a no-op once done, and harmless when several processes open the file at once.
 const DROP_REMOVED = `
@@ -138,6 +88,11 @@ DROP TABLE IF EXISTS memories;
 DROP TABLE IF EXISTS task_tags;
 DROP TABLE IF EXISTS tasks;
 DROP TABLE IF EXISTS hive_runs;
+DROP TABLE IF EXISTS github_users;
+DROP TABLE IF EXISTS oauth_clients;
+DROP TABLE IF EXISTS oauth_pending;
+DROP TABLE IF EXISTS oauth_codes;
+DROP TABLE IF EXISTS oauth_grants;
 `;
 
 /** The copy of the database the accounts migration leaves next to it, taken just before it rebuilds `agents`. */
@@ -223,8 +178,6 @@ function migrate(db: Db, path: string): void {
   db.exec(DROP_REMOVED);
   db.prepare("INSERT OR IGNORE INTO accounts (id, name, created_at) VALUES (?, 'owner', ?)").run(OWNER_ACCOUNT, Date.now());
   addAccounts(db, path);
-  // The key hash again, only when `register` generated the key; /wait takes a key without a token only then.
-  addColumn(db, "wait_key_hash", "TEXT");
   // Broadcast reads every live agent of one account in name order; this keeps it from scanning the removed rows too.
   db.exec("CREATE INDEX IF NOT EXISTS agents_live ON agents (account_id, name) WHERE removed_at IS NULL");
 }

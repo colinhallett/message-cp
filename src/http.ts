@@ -3,10 +3,8 @@ import { createServer as createHttpServer, type IncomingMessage, type Server, ty
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import { accountForToken } from "./accounts.js";
-import { accountForAgentKey } from "./agents.js";
 import type { AccountId, Db } from "./db.js";
 import { unreadSummary } from "./messages.js";
-import { OAuth, type OAuthConfig } from "./oauth.js";
 import { Session, createServer } from "./server.js";
 import { DEFAULT_WAIT_HOLD_MS, formatUnread } from "./wait.js";
 
@@ -28,12 +26,7 @@ export interface HttpOptions {
   publicUrl?: string;
   /** How long GET /wait holds a request with no mail before answering 204. */
   waitHoldMs?: number;
-  /** Sign-in with GitHub; without it none of its endpoints exist and only the tokens above get in. */
-  oauth?: OAuthConfig;
 }
-
-/** The header an agent signed in by OAuth sends its own key in on GET /wait, having no token that lasts. */
-export const AGENT_KEY_HEADER = "x-memory-cp-agent-key";
 
 export interface HttpServer {
   server: Server;
@@ -51,16 +44,12 @@ interface Live {
   account: AccountId;
 }
 
-/**
- * The account the request's bearer token belongs to, checked afresh on every request so a revoked token stops at
- * once: an account token, or with sign-in on, an access token from it.
- */
-function accountOf(db: Db, header: string | undefined, ownerToken: string, oauth: OAuth | undefined): AccountId | undefined {
+/** The account the request's bearer token belongs to, checked afresh on every request so a revoked token stops at once. */
+function accountOf(db: Db, header: string | undefined, ownerToken: string): AccountId | undefined {
   const m = /^bearer +(.*)$/i.exec(header ?? "");
   // Hash something even without a header, so a refusal takes about as long either way.
   const account = accountForToken(db, m?.[1] ?? "", ownerToken);
-  if (m === null) return undefined;
-  return account ?? oauth?.accountFor(m[1]);
+  return m === null ? undefined : account;
 }
 
 function reply(res: ServerResponse, status: number, message: string, headers: Record<string, string> = {}): void {
@@ -88,7 +77,6 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
   if (!Number.isInteger(maxSessions) || maxSessions < 1) throw new Error("maxSessions must be a positive integer");
   const waitHoldMs = options.waitHoldMs ?? DEFAULT_WAIT_HOLD_MS;
   if (!Number.isFinite(waitHoldMs) || waitHoldMs < 0) throw new Error("waitHoldMs must be a finite number >= 0");
-  const oauth = options.oauth && new OAuth(db, options.oauth);
   const sessions = new Map<string, Live>();
   let initializing = 0;
   let waiting = 0;
@@ -183,27 +171,13 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
     }
   };
 
-  /**
-   * With sign-in on, an agent without a token may wait on itself alone, with its name and its own key. Anyone can
-   * try this, across every account, so only a key `register` generated counts: a key an agent chose itself may be
-   * one anyone could guess.
-   */
-  const keyAccount = (req: IncomingMessage, path: string): AccountId | undefined => {
-    const key = req.headers[AGENT_KEY_HEADER];
-    if (!oauth || path !== "/wait" || typeof key !== "string" || req.headers.authorization !== undefined) return undefined;
-    const name = new URL(req.url ?? "", "http://x").searchParams.get("agent");
-    return name ? accountForAgentKey(db, name, key) : undefined;
-  };
-
   const handle = async (req: IncomingMessage, res: ServerResponse) => {
-    const path = (req.url ?? "").split("?")[0];
-    // Sign-in's own endpoints need no token; everything else does, but for an agent's /wait on itself with its key.
-    if (oauth && (await oauth.handle(req, res, path))) return;
     // The token is the first thing a request meets, and decides the account everything after it acts as.
-    const account = accountOf(db, req.headers.authorization, options.token, oauth) ?? keyAccount(req, path);
+    const account = accountOf(db, req.headers.authorization, options.token);
     if (account === undefined) {
-      return reply(res, 401, "Unauthorized", { "WWW-Authenticate": oauth ? oauth.challenge : "Bearer" });
+      return reply(res, 401, "Unauthorized", { "WWW-Authenticate": "Bearer" });
     }
+    const path = (req.url ?? "").split("?")[0];
     if (path === "/wait") return wait(req, res, account);
     if (path !== "/mcp") return reply(res, 404, "Not found");
     if (req.method !== "POST" && req.method !== "GET" && req.method !== "DELETE") {
@@ -260,7 +234,7 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
     transport.onclose = () => {
       if (transport.sessionId) sessions.delete(transport.sessionId);
     };
-    await createServer(db, new Session(account), { remote: true, publicUrl: options.publicUrl, agentKeyWait: !!oauth }).connect(transport);
+    await createServer(db, new Session(account), { remote: true, publicUrl: options.publicUrl }).connect(transport);
     await transport.handleRequest(req, res, body);
   };
 

@@ -62,31 +62,6 @@ Add it to Claude Code:
 claude mcp add --transport http memory-cp https://memory.example.com/mcp --header "Authorization: Bearer <token>"
 ```
 
-Or, on a server with [sign-in with GitHub](#sign-in-with-github) on, with only the URL:
-
-```sh
-claude mcp add --transport http memory-cp https://memory.example.com/mcp
-```
-
-### Sign in with GitHub
-
-A person the owner has allowed can connect an MCP client with only the server's URL, sign in with GitHub in the browser, and act as their own account, which is created at their first sign-in. No token is copied by hand. It follows the authorization flow in the MCP specification, which Claude Code and the MCP SDK clients already speak: the server is its own OAuth authorization server, and asks GitHub only who the person is. GitHub's token is used for that one question and then dropped; it is never stored or accepted here.
-
-It is on only when all three of `MEMORY_CP_GITHUB_CLIENT_ID`, `MEMORY_CP_GITHUB_CLIENT_SECRET` and `serve --public-url` are set. Off, none of its endpoints exist and the server answers exactly as before. `serve` says at startup whether it is on.
-
-| Setting | What it is |
-| --- | --- |
-| `MEMORY_CP_GITHUB_CLIENT_ID`, `MEMORY_CP_GITHUB_CLIENT_SECRET` | A GitHub OAuth App's client id and secret (GitHub → Settings → Developer settings → OAuth Apps). Its **Authorization callback URL** is `<public url>/oauth/github/callback`. |
-| `MEMORY_CP_GITHUB_ALLOWED_LOGINS` | The GitHub logins that may sign in, comma-separated, any case. Unset or empty lets nobody in; there is no value that lets everyone in. |
-| `MEMORY_CP_OWNER_GITHUB_LOGIN` | The owner's GitHub login. Its first sign-in is linked to the owner's existing account (the one `MEMORY_CP_HTTP_TOKEN` acts as), with its agents and messages. It must be on the allowlist too. The link is made once, to that GitHub user id: once a GitHub user holds the owner's account, changing this setting moves nothing, and the newly named login gets an account of its own. |
-| `MEMORY_CP_GITHUB_URL`, `MEMORY_CP_GITHUB_API_URL` | For tests only: where GitHub's web flow and API are (default `https://github.com` and `https://api.github.com`), so a fake GitHub can stand in. |
-
-- **Who gets in.** A login not on the allowlist is turned away after GitHub, and gets no account and no token. Taking a login off the list stops its tokens on the next request. An account belongs to the GitHub user id, not the login: a renamed login keeps its account, and someone who later takes over a login does not get the old account. A new account is named after the login, or `github-<id>` if that name is taken, and shows in `memory-cp account list`.
-- **Tokens.** An access token lasts an hour. A refresh replaces both tokens, and the old pair stops working; refreshing never makes a sign-in last longer than 30 days, after which the client sends the person through GitHub again. Each acts only as its own account, like an account token. Only their hashes are stored. Tokens made with `memory-cp token add` and `MEMORY_CP_HTTP_TOKEN` keep working alongside.
-- **Clients.** Clients register themselves (dynamic client registration, public clients with PKCE S256). Only redirect URIs on plain `http` to `localhost`, `127.0.0.1` or `[::1]` are accepted, which is what Claude Code and other local clients use: a sign-in can only be handed back to the person's own machine. **Web-hosted clients, such as claude.ai, cannot sign in this way**; give them an account token. The browser that starts a sign-in carries a cookie that must come back with GitHub's answer, so a sign-in link someone else started does nothing.
-- **Limits.** Registrations nobody signed in with are deleted after a day, unfinished sign-ins and codes after 10 minutes, and at most 1000 of each are kept; past that, new ones get 503 until some expire. At most 64 registrations, GitHub callbacks and token requests are handled at once, and a request body that has not arrived within 10 seconds ends the connection; past that limit they get 503. An account keeps its 100 newest sign-ins.
-- **Endpoints.** `/.well-known/oauth-protected-resource/mcp`, `/.well-known/oauth-authorization-server`, `/oauth/register`, `/oauth/authorize`, `/oauth/github/callback` and `/oauth/token`. A request to `/mcp` without a working token gets a 401 whose `WWW-Authenticate` points at the first.
-
 ### Accounts
 
 Every agent and every message belongs to one account, and nothing crosses between accounts: a session sees, messages, wakes on and removes only its own account's agents, and another account's agent looks exactly like one that does not exist. Names are unique within an account, so two accounts can each have a `planner`. The owner's account is created on first open; `MEMORY_CP_HTTP_TOKEN`, the stdio server and `memory-cp wait` act as it, and every agent, key and message from before accounts belongs to it.
@@ -138,7 +113,5 @@ An agent runs it as a background command (in Claude Code, a Bash call with `run_
 With `serve --public-url https://memory.example.com`, a remote agent needs only `sh` and `curl`. Tell it "register as X and turn on push": `register` returns `waitCommand`, a `curl` loop that asks `/wait` again after each 204 and exits 0 printing the summary when mail arrives (401 or 404 end it with a non-zero exit and a message). The agent runs it as a background command, calls `read_inbox` when it fires, then starts it again.
 
 The token is read from the environment variable `MEMORY_CP_HTTP_TOKEN`, else from the file `~/.memory-cp/http-token` (put the same token you gave `serve` there, mode 0600). It is passed to `curl` on stdin, so it is never in the instructions, a tool result or a process list.
-
-An agent [signed in with GitHub](#sign-in-with-github) has no token that lasts. On a server with sign-in on, the command falls back to the agent's own key when no token is set: from `MEMORY_CP_AGENT_KEY`, else the file `~/.memory-cp/agent-keys/<name>`. The agent saves the key `register` returned there, mode 0600, with a file-writing tool rather than a shell command, before it starts the command; the instructions say so. The key goes to `/wait` in the `X-Memory-Cp-Agent-Key` header, on `curl`'s stdin like the token. Only a key `register` generated is accepted there, never one the agent chose, however long, so no one can wait on an agent by guessing its key; an agent taken over with a chosen key needs a token to wait. It reaches only that agent's own unread count: it is no token for `/mcp` or for any other agent, and a name and key that two accounts both hold is refused.
 
 Sessions learn this from the server: its `initialize` result carries instructions that give the command with the absolute path of the built CLI and, if the server has `MEMORY_CP_DB` set, that variable. The name is a placeholder unless the process was started with `MEMORY_CP_AGENT`. `register` also returns the ready-to-run command, with the agent's name filled in, in `waitCommand`.
