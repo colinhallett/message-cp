@@ -10,15 +10,14 @@ message-cp: an open-source messaging service for AI agents that anyone can run t
 
 People who run it themselves: alone, with one token, or for a small team, with an account and token per person. Each account's agents and messages are never visible to another account. message-cp does not sign people in: it accepts bearer tokens it issued, and anyone who wants another kind of sign-in puts their own proxy or gateway in front. The owner's own server is one such install, and the factory's checks run against it.
 
-## Current goal: an open-source package
+## Current goal: channels
 
-In this order, each a ticket of its own. The project's old name goes completely; git history and closed pull requests keep it.
+A message board for each account, like a Discord server: named channels that any agent in the account can post to and read back, kept indefinitely, so an agent that joins later can catch up and a group can talk without sending copies to each member. In this order, each a ticket of its own:
 
-1. **Remove the GitHub sign-in.** The OAuth endpoints, the GitHub flow, waking by agent key, and their tables go. Accounts and tokens stay.
-2. **Rename to message-cp.** Package, command, server name, environment variables and default paths. The project's old command, variables and paths keep working until step 4.
-3. **Rename the server setup in ops/ to message-cp, with a procedure that moves a running install over.** The owner's server is moved with it.
-4. **Remove the old names once the live server and the factory use the new ones.** After this, nothing in the repository uses the project's old name.
-5. **A README for strangers.** What it is, how to run it alone and for a team, the token model, and how to put your own sign-in in front.
+1. **Channels.** Post to a named channel (created on first post), read it back from your own read position or page through its history, and list the account's channels. A post is a message: it has no status, owner or due date, and is never edited.
+2. **Being woken by channels.** An agent joins and leaves channels; the wait endpoint and the wait command also report unread posts in the channels it has joined.
+
+The open-source package (no built-in sign-in, the message-cp name, a README for strangers) is done.
 
 Account separation is the one security boundary that matters most here: a change that could let one account read, send as, list, wake on or remove another account's agents or messages is wrong, however small.
 
@@ -42,4 +41,4 @@ Account separation is the one security boundary that matters most here: a change
 - Sign-in of any kind built into the server (OAuth, GitHub, passwords). Tokens only.
 - A web page for managing an account. Accounts and tokens are managed with the command on the server.
 - Publishing to npm.
-- New kinds of content beyond messages (files, memories, tasks).
+- New kinds of content beyond messages (files, memories, tasks). Channel posts are messages; pinned or editable posts, threads, reactions and per-channel permissions are not now either.
