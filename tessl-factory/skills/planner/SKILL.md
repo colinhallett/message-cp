@@ -56,8 +56,9 @@ The working tree is a checkout of `main`. Record its commit with
    duplicate only when an open or recently closed issue already says
    `Traces to: <that identifier>`.
 4. **The owner's files are the owner's.** Work that would change
-   `DIRECTION.md`, `AGENTS.md`, `tessl.json`, anything under `tessl-factory/`
-   or `.tessl/` is never delegated. File it in Backlog with no delegate and no
+   `DIRECTION.md`, `tessl.json`, anything under `tessl-factory/` or `.tessl/`,
+   or that would change or remove an existing line of `AGENTS.md`, is never
+   delegated (adding to `AGENTS.md` may be). File it in Backlog with no delegate and no
    assignee, as in "Filing", step 4.
 5. **One write starts the work.** Every update to a delegated issue in Todo
    starts an Implement run. So a delegated ticket is created in Backlog first,

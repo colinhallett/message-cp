@@ -6,6 +6,7 @@
     "skills/pr-shepherd-session",
     "skills/chat-test",
     "skills/prod-check",
-    "skills/planner"
+    "skills/planner",
+    "skills/findings-triage"
   ]
 }
