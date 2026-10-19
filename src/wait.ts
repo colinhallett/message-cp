@@ -1,5 +1,6 @@
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import type { Unread } from "./messages.js";
 import { setting } from "./settings.js";
 
 /** The CLI that sits next to the running server: `dist/cli.js` for a built checkout. */
@@ -17,9 +18,20 @@ export function waitCommand(name: string, env: NodeJS.ProcessEnv = process.env):
   return `${db}node ${shellQuote(cliPath)} wait ${shellQuote(name)}`;
 }
 
-/** The one line `wait` prints, here and over HTTP: how many unread messages and from whom, never the bodies. */
-export function formatUnread(unread: { count: number; senders: string[] }): string {
-  return `${unread.count} unread ${unread.count === 1 ? "message" : "messages"} from ${unread.senders.join(", ")}`;
+/**
+ * The one line `wait` prints, here and over HTTP: how many unread messages and from whom, then how many unread posts
+ * in joined channels and in which, never the bodies. With no unread posts it is the messages part alone, as it was
+ * before channels, so scripts that parse it keep working.
+ */
+export function formatUnread(unread: Unread): string {
+  const parts: string[] = [];
+  if (unread.count > 0) {
+    parts.push(`${unread.count} unread ${unread.count === 1 ? "message" : "messages"} from ${unread.senders.join(", ")}`);
+  }
+  if (unread.posts > 0) {
+    parts.push(`${unread.posts} unread ${unread.posts === 1 ? "post" : "posts"} in ${unread.channels.map((c) => `#${c}`).join(", ")}`);
+  }
+  return parts.join("; ");
 }
 
 /** How long the server holds a /wait request with no mail before answering 204. */
@@ -56,7 +68,7 @@ export function instructions(env: NodeJS.ProcessEnv = process.env, remote = fals
   // A remote agent cannot run `wait`, which reads the database file on the server's machine; it can ask /wait if
   // the server knows the URL clients reach it at.
   if (remote && !publicUrl) {
-    return "message-cp does not push messages; an agent has to ask for them. Call read_inbox to check for mail.";
+    return "message-cp does not push messages; an agent has to ask for them. Call read_inbox to check for mail, and list_channels for unread posts.";
   }
   const command = remote
     ? httpWaitCommand(publicUrl!, NAME_PLACEHOLDER)
@@ -64,7 +76,7 @@ export function instructions(env: NodeJS.ProcessEnv = process.env, remote = fals
   return [
     "message-cp does not push messages; an agent has to ask for them.",
     `To be woken when a message arrives, register and then run this as a background command (in Claude Code, a Bash call with run_in_background): ${command}`,
-    "It exits as soon as you have unread mail and prints how many and from whom, without reading them.",
-    "When it fires, call read_inbox first and only then start the command again; starting it before reading fires at once on the same message.",
+    "It exits as soon as you have unread mail, or unread posts in a channel you joined with join_channel, and prints how many, from whom and in which channels, without reading them.",
+    "When it fires, call read_inbox if it names messages and read_channel for each channel it names, and only then start the command again; starting it before reading fires at once on the same mail.",
   ].join("\n");
 }

@@ -4,7 +4,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import { accountForToken } from "./accounts.js";
 import type { AccountId, Db } from "./db.js";
-import { unreadSummary } from "./messages.js";
+import { hasUnread, unreadSummary, type Unread } from "./messages.js";
 import { Session, createServer } from "./server.js";
 import { DEFAULT_WAIT_HOLD_MS, formatUnread } from "./wait.js";
 
@@ -98,18 +98,19 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
   sweep.unref();
 
   /** One check for mail; a lock held past the busy timeout counts as no mail this time, as in `message-cp wait`. */
-  const poll = (account: AccountId, name: string) => {
+  const poll = (account: AccountId, name: string): Unread | undefined => {
     try {
       return unreadSummary(db, account, name);
     } catch (err) {
       const code = (err as { code?: unknown } | null)?.code;
       if (typeof code !== "string" || !code.startsWith("SQLITE_BUSY")) throw err;
-      return { count: 0, senders: [] as string[] };
+      return { count: 0, senders: [], posts: 0, channels: [] };
     }
   };
 
   /**
-   * Answers 200 with the unread summary as soon as the account's agent has mail, 204 after `waitHoldMs` without any.
+   * Answers 200 with the unread summary as soon as the account's agent has mail or unread posts in a channel it has
+   * joined, 204 after `waitHoldMs` without any.
    * Another account's agent is answered like an unknown one.
    */
   const wait = async (req: IncomingMessage, res: ServerResponse, account: AccountId) => {
@@ -118,7 +119,7 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
     const first = name ? poll(account, name) : undefined;
     if (!first) return reply(res, 404, "No such agent");
     // Mail that is already there is answered at once, whatever the cap.
-    if (first.count > 0) {
+    if (hasUnread(first)) {
       res.writeHead(200, { "Content-Type": "text/plain" });
       return void res.end(`${formatUnread(first)}\n`);
     }
@@ -151,7 +152,7 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
     for (let unread: typeof first | undefined = first; ; unread = poll(account, name)) {
       if (isGone()) return;
       if (!unread) return reply(res, 404, "No such agent");
-      if (unread.count > 0) {
+      if (hasUnread(unread)) {
         res.writeHead(200, { "Content-Type": "text/plain" });
         return void res.end(`${formatUnread(unread)}\n`);
       }

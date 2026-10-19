@@ -2,7 +2,7 @@
 import { DEFAULT_HTTP_HOST, DEFAULT_HTTP_PORT, startHttp } from "./http.js";
 import { AccountError, addAccount, addToken, listAccounts, revokeToken } from "./accounts.js";
 import { OWNER_ACCOUNT, openDb } from "./db.js";
-import { unreadSummary } from "./messages.js";
+import { hasUnread, unreadSummary } from "./messages.js";
 import { setting } from "./settings.js";
 import { formatUnread } from "./wait.js";
 
@@ -58,7 +58,7 @@ if (command === "serve") {
       console.error(`message-cp wait: no agent named '${name}'.`);
       process.exit(1);
     }
-    if (unread.count > 0) {
+    if (hasUnread(unread)) {
       // Exit from the write callback so a piped stdout is flushed before the process ends.
       const err = await new Promise<Error | null | undefined>((r) =>
         process.stdout.write(

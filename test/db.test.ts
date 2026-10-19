@@ -45,6 +45,20 @@ describe("openDb", () => {
     }
   }, 60_000);
 
+  it("adds channel membership to a database from before it, with every existing read position not joined", () => {
+    const file = join(mkdtempSync(join(tmpdir(), "message-cp-")), "db.sqlite");
+    const old = new Database(file);
+    old.exec(`CREATE TABLE channel_reads (
+      agent_id INTEGER NOT NULL, channel_id INTEGER NOT NULL, last_read_id INTEGER NOT NULL, PRIMARY KEY (agent_id, channel_id));
+      INSERT INTO channel_reads VALUES (1, 1, 7);`);
+    old.close();
+    const db = openDb(file);
+    expect(db.prepare("SELECT agent_id, channel_id, last_read_id, joined FROM channel_reads").all()).toEqual([
+      { agent_id: 1, channel_id: 1, last_read_id: 7, joined: 0 },
+    ]);
+    db.close();
+  });
+
   it("makes no copy for a new database", () => {
     const file = join(mkdtempSync(join(tmpdir(), "message-cp-")), "db.sqlite");
     openDb(file).close();
