@@ -380,6 +380,7 @@ const searchPosts = ({ channel, where }: SearchQuery) =>
 // Newest first; at the same millisecond a post before a message, and each kind newest id first.
 const SEARCH_ORDER = "ORDER BY created_at DESC, is_post DESC, id DESC LIMIT ? OFFSET ?";
 
+/** A post row of a search page, as both searches return it. */
 const toPost = (r: SearchRow): PostMatch => ({
   kind: "post",
   channel: r.channel!,

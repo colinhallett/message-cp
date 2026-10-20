@@ -121,6 +121,17 @@ describe("GET /api/search", () => {
     expect((await find(ownerViewer, "text=note")).map((m) => [m.to, m.body])).toEqual([["Bob", "kept note"]]);
   });
 
+  it("puts a post before a message of the same millisecond, and each kind newest id first", async () => {
+    register(OWNER_ACCOUNT, "alice", "bob");
+    sendMessage(db, OWNER_ACCOUNT, "alice", "bob", "tie m1");
+    post(db, OWNER_ACCOUNT, member(OWNER_ACCOUNT, "alice"), "ops", "tie p1");
+    sendMessage(db, OWNER_ACCOUNT, "alice", "bob", "tie m2");
+    post(db, OWNER_ACCOUNT, member(OWNER_ACCOUNT, "alice"), "ops", "tie p2");
+    db.prepare("UPDATE messages SET created_at = 1000").run();
+    db.prepare("UPDATE channel_posts SET created_at = 1000").run();
+    expect(await bodies(ownerViewer, "text=tie")).toEqual(["tie p2", "tie p1", "tie m2", "tie m1"]);
+  });
+
   it("matches %, _ and \\ literally, and ASCII letters in any case", async () => {
     register(OWNER_ACCOUNT, "alice", "bob");
     for (const body of ["100% done", "1000 done", "snake_case", "snakeXcase", "a\\b", "ab", "MiXeD"]) {
@@ -140,6 +151,10 @@ describe("GET /api/search", () => {
     send(OWNER_ACCOUNT, "bob", "alice", "x four");
     expect(await bodies(ownerViewer, "text=x&channel=ops")).toEqual(["x two"]);
     expect(await bodies(ownerViewer, "text=x&channel=nope")).toEqual([]);
+    // A message that names the channel is still not one of its posts.
+    send(OWNER_ACCOUNT, "alice", "bob", "ops note");
+    expect(await bodies(ownerViewer, "text=ops&channel=ops")).toEqual([]);
+    expect(await bodies(ownerViewer, "text=ops")).toEqual(["ops note"]);
     expect(await bodies(ownerViewer, "text=x&from=ALICE")).toEqual(["x three", "x one"]);
     const second = iso("channel_posts", db.prepare("SELECT id FROM channel_posts WHERE body = 'x two'").pluck().get() as number);
     const third = iso("channel_posts", db.prepare("SELECT id FROM channel_posts WHERE body = 'x three'").pluck().get() as number);
