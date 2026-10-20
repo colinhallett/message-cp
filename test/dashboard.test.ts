@@ -1131,8 +1131,9 @@ describe("the page's posting", () => {
 
   // Runs the served script with the given token against this server. answer, when it returns a status for a request,
   // answers it with that status (and a JSON error with message, for a 400) instead of the server; with hold, it answers
-  // only once hold settles (and from the server when there is no status), or fails it when hold rejects.
-  type Answer = { status?: number; body?: string; hold?: Promise<void> };
+  // only once hold settles (and from the server when there is no status), or fails it when hold rejects; with lose, it
+  // lets the server take the request and then fails it as a dropped connection would.
+  type Answer = { status?: number; body?: string; hold?: Promise<void>; lose?: boolean };
   async function load(token: string, answer: (url: string, method: string) => Answer | undefined = () => undefined) {
     const html = await (await fetch(`${base()}/`)).text();
     const script = /<script>([\s\S]*?)<\/script>/.exec(html)![1];
@@ -1159,6 +1160,7 @@ describe("the page's posting", () => {
         const given = answer(url, method);
         const reply = () =>
           given?.status !== undefined ? new Response(given.body ?? null, { status: given.status }) : fetch(`${base()}${url}`, init);
+        if (given?.lose) return fetch(`${base()}${url}`, init).then(() => Promise.reject(new TypeError("connection lost")));
         if (given?.hold) return given.hold.then(reply);
         if (given) return Promise.resolve(reply());
         return fetch(`${base()}${url}`, init);
@@ -1181,11 +1183,15 @@ describe("the page's posting", () => {
     // The names the person picker offers, without its first "Choose who you are" entry.
     const picker = () => elements["as"].children.slice(1).map((o) => o.value);
     // Runs the poll the page scheduled last, once it has scheduled one: the picker can fill before the messages are read.
+    // Runs every timer the page has waiting at POLL_MS.
+    const runTimers = () => polls.splice(0).forEach((fn) => fn());
+    const dropTimers = () => void polls.splice(0);
+    const timers = () => polls.length;
     const poll = async () => {
       await until(() => polls.length > 0);
       polls.splice(0).pop()!();
     };
-    return { elements, made, requests, store, until, choose, send, posts, picker, poll, prevented: () => prevented };
+    return { elements, made, requests, store, until, choose, send, posts, picker, poll, runTimers, dropTimers, timers, prevented: () => prevented };
   }
 
   const seed = () => {
@@ -1336,7 +1342,7 @@ describe("the page's posting", () => {
     page.choose("colin");
     page.send("once");
     expect(page.elements["compose-send"].disabled).toBe(true);
-    // Long past any timeout the page had, the send is still held and a second submit sends nothing.
+    // While the send is held, a second submit sends nothing.
     await new Promise((resolve) => setTimeout(resolve, 30));
     page.send("once");
     expect(page.posts()).toHaveLength(1);
@@ -1348,20 +1354,52 @@ describe("the page's posting", () => {
     expect(page.elements["compose-text"].value).toBe("");
   });
 
-  it("after a failed connection says it may have been sent, and reads the conversation again before Send is enabled", async () => {
+  it("with no answer, checks the channel before Send is enabled, and counts a stored post as sent", async () => {
     seed();
-    const page = await load(OWNER_TOKEN, (url, method) => (method === "POST" ? { hold: Promise.reject(new Error("reset")) } : undefined));
+    // The first POST is stored and its connection then fails; the second fails before reaching the server.
+    const page = await load(OWNER_TOKEN, (url, method) =>
+      method !== "POST" ? undefined : page.posts().length === 1 ? { lose: true } : { hold: Promise.reject(new Error("reset")) },
+    );
     await page.until(() => page.picker().length === 1 && page.elements["channel-rows"].children.length === 1);
     open(page.elements["channel-rows"], "build");
     page.choose("colin");
-    const reads = () => page.requests.filter((r) => r.url.startsWith("/api/channel-posts")).length;
-    await page.until(() => reads() > 0 && page.elements["post-rows"].children.length === 1);
-    const before = reads();
-    page.send("maybe");
+    await page.until(() => page.elements["post-rows"].children.length === 1);
+    page.send("stored");
     await page.until(() => page.elements["compose-send"].disabled === false);
-    expect(reads()).toBeGreaterThan(before);
-    expect(page.elements["compose-note"].textContent).toContain("may have been sent");
-    expect(page.elements["compose-text"].value).toBe("maybe");
+    expect(page.elements["compose-text"].value).toBe("");
+    expect(page.elements["compose-note"].textContent).toBe("");
+    page.send("lost");
+    await page.until(() => page.elements["compose-send"].disabled === false);
+    expect(page.elements["compose-text"].value).toBe("lost");
+    expect(page.elements["compose-note"].textContent).toBe("The server did not take it. Send again.");
+    expect(db.prepare("SELECT body FROM channel_posts ORDER BY id").all()).toEqual([{ body: "hello" }, { body: "stored" }]);
+  });
+
+  it("with no answer, checks the pair, and keeps Send disabled until the check can be read", async () => {
+    seed();
+    let reads = 0;
+    let sent = false;
+    const page = await load(OWNER_TOKEN, (url, method) => {
+      if (method === "POST") return (sent = true), { lose: true };
+      // Once the send is made, the first check of the messages fails.
+      if (sent && url.startsWith("/api/messages") && reads++ === 0) return { status: 503 };
+      return undefined;
+    });
+    await page.until(() => page.picker().length === 1 && page.elements["pair-rows"].children.length === 1);
+    page.choose("colin");
+    // Let the poll opening the pair finish, so the only read after the send is the page's check.
+    page.dropTimers();
+    open(page.elements["pair-rows"], "bob ↔ colin");
+    await page.until(() => page.timers() > 0);
+    page.send("stored reply");
+    await page.until(() => reads === 1);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(page.elements["compose-send"].disabled).toBe(true);
+    expect(page.elements["compose-note"].textContent).toBe("No answer from the server: checking whether it was sent…");
+    page.runTimers();
+    await page.until(() => page.elements["compose-send"].disabled === false);
+    expect(page.elements["compose-text"].value).toBe("");
+    expect(page.posts()).toHaveLength(1);
   });
 
   it("leaves a conversation opened while a send was in flight alone when the send is answered", async () => {
