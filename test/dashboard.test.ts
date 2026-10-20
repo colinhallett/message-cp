@@ -8,6 +8,7 @@ import { addToken, revokeToken } from "../src/accounts.js";
 import { OWNER_ACCOUNT, openDb, type Db } from "../src/db.js";
 import { identityOf, registerAgent } from "../src/agents.js";
 import { joinChannel, post } from "../src/channels.js";
+import { sendMessage, unreadSummary } from "../src/messages.js";
 import { startHttp, type HttpServer } from "../src/http.js";
 
 // The dashboard page at GET /, served before the token check, and everything else still behind it.
@@ -48,6 +49,7 @@ describe("GET /", () => {
     expect(html).toContain("/api/agents");
     expect(html).toContain("/api/channels");
     expect(html).toContain("/api/channel-posts");
+    expect(html).toContain("/api/messages");
     // The query is not part of the path.
     expect((await fetch(`${base()}/?x=1`)).status).toBe(200);
   });
@@ -137,7 +139,7 @@ describe("the page's polling", () => {
   });
 });
 
-describe("the page's channels", () => {
+describe("the page's channels and messages", () => {
   // A stub DOM element: enough for the script to build rows and for the test to read them and click buttons.
   interface Stub {
     on: Record<string, () => void>;
@@ -175,8 +177,9 @@ describe("the page's channels", () => {
   const text = (row: Stub) => row.children.map((td) => td.textContent || td.children.map((c) => c.textContent).join(""));
 
   // Runs the served script with the given token against this server, with real fetches and timers run by hand.
-  // refuse, when it returns a status, answers a request with that status instead of the server; "hang" never answers.
-  async function load(token: string, refuse: (url: string) => number | "hang" | undefined = () => undefined) {
+  // refuse, when it returns a status, answers a request with that status instead of the server; "hang" never answers,
+  // and "fail" rejects as an unreachable server does.
+  async function load(token: string, refuse: (url: string) => number | "hang" | "fail" | undefined = () => undefined) {
     const html = await (await fetch(`${base()}/`)).text();
     const script = /<script>([\s\S]*?)<\/script>/.exec(html)![1];
     const elements: Record<string, Stub> = {};
@@ -194,6 +197,7 @@ describe("the page's channels", () => {
         urls.push(url);
         const status = refuse(url);
         if (status === "hang") return new Promise<Response>(() => {});
+        if (status === "fail") return Promise.reject(new TypeError("fetch failed"));
         return status === undefined ? fetch(`${base()}${url}`, init) : Promise.resolve(new Response(null, { status }));
       },
     });
@@ -340,6 +344,97 @@ describe("the page's channels", () => {
     const names = channels.children.map((row) => text(row)[0]);
     expect(names).toHaveLength(200);
     expect(new Set(names).size).toBe(200);
+  });
+
+  it("lists the direct messages oldest first with a read-only token, marks a broadcast, and reads nothing as read", async () => {
+    for (const name of ["alice", "bob", "carol"]) registerAgent(db, OWNER_ACCOUNT, name, "x");
+    sendMessage(db, OWNER_ACCOUNT, "alice", "bob", "hi <b>bob</b>");
+    sendMessage(db, OWNER_ACCOUNT, "bob", "all", "to everyone");
+    const page = await load(viewer);
+    const messages = page.elements["message-rows"];
+    await page.until(() => messages.children.length === 3);
+    expect(messages.children.map((row) => [0, 1, 2, 4].map((i) => text(row)[i]))).toEqual([
+      ["alice", "bob", "–", "hi <b>bob</b>"],
+      ["bob", "alice", "broadcast", "to everyone"],
+      ["bob", "carol", "broadcast", "to everyone"],
+    ]);
+    expect(page.urls).toContain("/api/messages?limit=200&offset=0");
+    for (const url of page.urls) expect(url).not.toContain(viewer);
+    // Nothing the page did marked a message read.
+    expect(unreadSummary(db, OWNER_ACCOUNT, "bob")!.count).toBe(1);
+
+    page.elements["forget"].on.click();
+    expect(messages.children).toHaveLength(0);
+    expect(page.store.size).toBe(0);
+  });
+
+  it("pages through every message, then reads only the new ones on each poll", async () => {
+    for (const name of ["alice", "bob"]) registerAgent(db, OWNER_ACCOUNT, name, "x");
+    for (let i = 0; i < 201; i++) sendMessage(db, OWNER_ACCOUNT, "alice", "bob", `message ${i}`);
+    const page = await load(viewer);
+    const messages = page.elements["message-rows"];
+    await page.until(() => messages.children.length === 201);
+    expect(page.urls).toContain("/api/messages?limit=200&offset=200");
+    expect(text(messages.children[200])[4]).toBe("message 200");
+
+    sendMessage(db, OWNER_ACCOUNT, "bob", "alice", "reply");
+    page.urls.length = 0;
+    page.poll();
+    await page.until(() => messages.children.length === 202);
+    expect(page.urls.filter((url) => url.startsWith("/api/messages"))).toEqual(["/api/messages?limit=200&offset=201"]);
+    expect(text(messages.children[201])[4]).toBe("reply");
+  });
+
+  it("clears the messages when the server refuses the token", async () => {
+    for (const name of ["alice", "bob"]) registerAgent(db, OWNER_ACCOUNT, name, "x");
+    sendMessage(db, OWNER_ACCOUNT, "alice", "bob", "hello");
+    const ticket = addToken(db, "owner", true);
+    const page = await load(ticket.token);
+    const messages = page.elements["message-rows"];
+    await page.until(() => messages.children.length === 1);
+    revokeToken(db, ticket.id);
+    page.poll();
+    await page.until(() => page.elements["status-line"].textContent.startsWith("The server refused"));
+    expect(messages.children).toHaveLength(0);
+    expect(page.store.size).toBe(0);
+  });
+
+  it("shows the agents and channels while the messages have not answered", async () => {
+    seed();
+    const page = await load(viewer, (url) => (url.startsWith("/api/messages") ? "hang" : undefined));
+    await page.until(() => page.elements["channel-rows"].children.length === 1);
+    expect(page.elements["rows"].children).toHaveLength(1);
+    expect(page.elements["message-rows"].children).toHaveLength(0);
+    // Nor an open channel's log.
+    page.elements["channel-rows"].children[0].children[0].children[0].on.click();
+    await page.until(() => page.elements["post-rows"].children.length === 1);
+  });
+
+  it("reads an open channel's log when the messages fail", async () => {
+    seed();
+    const page = await load(viewer, (url) => (url.startsWith("/api/messages") ? 503 : undefined));
+    const channels = page.elements["channel-rows"];
+    await page.until(() => channels.children.length === 1);
+    channels.children[0].children[0].children[0].on.click();
+    await page.until(() => page.elements["post-rows"].children.length === 1);
+    await page.until(() => page.elements["status-line"].textContent === "The server is busy (503). Retrying…");
+  });
+
+  it.each([503, "fail"] as const)("asks for another token when the log is refused while the messages %s", async (failure) => {
+    seed();
+    let revoked = false;
+    const page = await load(viewer, (url) =>
+      url.startsWith("/api/messages") ? failure : revoked && url.startsWith("/api/channel-posts") ? 401 : undefined,
+    );
+    const channels = page.elements["channel-rows"];
+    await page.until(() => channels.children.length === 1);
+    channels.children[0].children[0].children[0].on.click();
+    await page.until(() => page.elements["post-rows"].children.length === 1);
+    revoked = true;
+    page.poll();
+    await page.until(() => page.elements["status-line"].textContent.startsWith("The server refused"));
+    expect(page.elements["post-rows"].children).toHaveLength(0);
+    expect(page.store.size).toBe(0);
   });
 });
 

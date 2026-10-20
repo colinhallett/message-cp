@@ -1,8 +1,8 @@
 import { createHash } from "node:crypto";
 
 // The page served at GET / by `message-cp serve`. It holds no data and no token: it asks for a token, keeps it in
-// sessionStorage (that tab only), and polls GET /api/agents, GET /api/channels and, while one is open, a channel's
-// GET /api/channel-posts with it. It only reads, and puts agent-supplied text on the page with textContent, never as HTML.
+// sessionStorage (that tab only), and polls GET /api/agents, GET /api/channels, GET /api/messages and, while one is
+// open, a channel's GET /api/channel-posts with it. It only reads, and puts agent-supplied text on the page with textContent, never as HTML.
 
 const STYLE = `
 body { font: 14px/1.4 system-ui, sans-serif; margin: 2em auto; max-width: 70em; padding: 0 1em; color: #222; }
@@ -35,6 +35,8 @@ const log = document.getElementById("log");
 const logTitle = document.getElementById("log-title");
 const logNote = document.getElementById("log-note");
 const postRows = document.getElementById("post-rows");
+const messageRows = document.getElementById("message-rows");
+const messagesNote = document.getElementById("messages-note");
 const statusLine = document.getElementById("status-line");
 let timer;
 let generation = 0;
@@ -42,6 +44,8 @@ let controller;
 // The channel whose log is open, or undefined, and how many of its posts the log holds.
 let openChannel;
 let held = 0;
+// How many of the account's direct messages the page holds.
+let heldMessages = 0;
 
 function say(text, isError) {
   statusLine.textContent = text;
@@ -58,9 +62,12 @@ function cancel() {
 function ask(message) {
   sessionStorage.removeItem(KEY);
   cancel();
-  // Clear the tables, so one token's agents and channels never show under the next token.
+  // Clear the tables, so one token's agents, channels and messages never show under the next token.
   rows.replaceChildren();
   channelRows.replaceChildren();
+  heldMessages = 0;
+  messageRows.replaceChildren();
+  messagesNote.textContent = "";
   closeLog();
   view.hidden = true;
   say(message || "", true);
@@ -183,6 +190,22 @@ async function readLog(token, signal, gen, channel) {
   }
 }
 
+// Reads the account's direct messages past the ones the page holds and appends each page as it comes, as readLog does
+// for a channel. Messages are only ever added, oldest first. GET /api/messages marks nothing read.
+async function readMessages(token, signal, gen) {
+  for (;;) {
+    const page = await fetchPage(token, signal, "/api/messages", {}, heldMessages, list);
+    // A newer poll, or another token, while this page was read: leave the messages to it.
+    if (gen !== generation) return { ok: true };
+    if (!page.items) return page;
+    appendMessages(page.items);
+    if (page.items.length < PAGE) {
+      messagesNote.textContent = heldMessages === 0 ? "No direct messages yet." : "";
+      return { ok: true };
+    }
+  }
+}
+
 async function poll(gen) {
   const token = sessionStorage.getItem(KEY);
   if (!token) return ask();
@@ -193,11 +216,22 @@ async function poll(gen) {
   let result;
   try {
     result = await fetchView(token, ac.signal);
-    // The agents and channels go up before the log is read, so a long or slow log never holds them back.
+    // The agents and channels go up before the messages and the log are read, so a long or slow history never holds
+    // them back. The messages and the log are read side by side, so neither waits on the other or fails with it, and
+    // both have finished before the next poll can read past what they hold.
     if (result.ok && gen === generation) {
       show(result.agents);
       showChannels(result.channels);
-      if (channel !== undefined) result = await readLog(token, ac.signal, gen, channel);
+      const [messages, posts] = await Promise.allSettled([
+        readMessages(token, ac.signal, gen),
+        channel === undefined ? { ok: true } : readLog(token, ac.signal, gen, channel),
+      ]);
+      // A refused token from either read wins, so a failure of the other never leaves the page showing its data.
+      const values = [messages, posts].filter((r) => r.status === "fulfilled").map((r) => r.value);
+      const refused = values.find((v) => v.status === 401);
+      const failed = [messages, posts].find((r) => r.status === "rejected");
+      if (failed && !refused) throw failed.reason;
+      result = refused ?? values.find((v) => !v.ok) ?? posts.value;
     }
   } catch {
     result = { error: ac.signal.aborted ? "The server did not answer in time" : "Cannot reach the server" };
@@ -210,7 +244,7 @@ async function poll(gen) {
   if (result.ok) {
     say("", false);
   } else if (result.status === 403) {
-    say("This token cannot read agents or channels (403). Retrying…", true);
+    say("This token cannot read agents, channels or messages (403). Retrying…", true);
   } else if (result.status === 503) {
     say("The server is busy (503). Retrying…", true);
   } else {
@@ -294,6 +328,18 @@ function appendLog(posts) {
   postRows.append(...trs);
 }
 
+function appendMessages(messages) {
+  const trs = messages.map((m) => {
+    const tr = document.createElement("tr");
+    const time = cell(when(m.sentAt));
+    time.title = String(m.sentAt);
+    tr.append(cell(String(m.from)), cell(String(m.to)), cell(m.broadcast ? "broadcast" : "–"), time, cell(String(m.body), "body"));
+    return tr;
+  });
+  heldMessages += trs.length;
+  messageRows.append(...trs);
+}
+
 function when(iso) {
   const date = new Date(iso);
   return Number.isFinite(date.getTime()) ? date.toLocaleString() : String(iso);
@@ -319,7 +365,7 @@ export const DASHBOARD_HTML = `<!doctype html>
 <form id="login" hidden>
 <label for="token">Token for your account (read-only is enough), kept in this tab only:</label><br>
 <input id="token" type="password" autocomplete="off" required>
-<button type="submit">Show agents and channels</button>
+<button type="submit">Show agents, channels and messages</button>
 </form>
 <div id="view" hidden>
 <table>
@@ -340,6 +386,12 @@ export const DASHBOARD_HTML = `<!doctype html>
 </table>
 <p><button id="close-log" type="button">Close channel</button></p>
 </div>
+<h2>Direct messages</h2>
+<p id="messages-note"></p>
+<table>
+<thead><tr><th>From</th><th>To</th><th>Broadcast</th><th>Sent</th><th>Message</th></tr></thead>
+<tbody id="message-rows"></tbody>
+</table>
 <p><button id="forget" type="button">Forget token</button></p>
 </div>
 <script>${SCRIPT}</script>
