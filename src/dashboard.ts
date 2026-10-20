@@ -230,9 +230,14 @@ let person;
 let sending;
 // The open log's last entry, as chatEntry made it: its sender in lower case, its time in ms (NaN if it could not be
 // read) and its tag, or undefined in an empty log. An entry continues its group only from this one.
-// chatTimes holds each of the open log's time elements with the sentAt it shows, so each poll can keep "2m ago" current.
+// chatRows holds each of the open log's rows as chatEntry made them, so a change in who is a person re-marks them.
+// chatTimes holds the time element and sentAt of each row whose time can still change, so each poll can keep "2m ago"
+// current; see timeSettled.
 let lastEntry;
+let chatRows = [];
 let chatTimes = [];
+// The people the open log's rows were last marked with, in lower case and joined, or undefined before any were.
+let markedPeople;
 // A group ends at a gap of this much or more.
 const GROUP_MS = 5 * 60 * 1000;
 
@@ -328,6 +333,7 @@ function closeLog() {
   held = 0;
   postRows.replaceChildren();
   lastEntry = undefined;
+  chatRows = [];
   chatTimes = [];
   logTitle.textContent = "";
   logTitle.className = "";
@@ -671,6 +677,7 @@ async function readLog(token, signal, gen, channel) {
       held = 0;
       postRows.replaceChildren();
       lastEntry = undefined;
+      chatRows = [];
       chatTimes = [];
       logNote.textContent = "There is no channel by this name now.";
       return { ok: true };
@@ -757,6 +764,7 @@ async function poll(gen) {
     // hold.
     if (result.ok && gen === generation) {
       show(result.agents);
+      refreshChat();
       showChannels(result.channels);
       showDeliveryEntry();
       const [messages, posts] = await Promise.allSettled([
@@ -909,7 +917,6 @@ function markOpen() {
 // Appends to the open log and keeps it at the bottom if it was there, so a reader scrolled back up is not moved.
 function appendEntries(entries) {
   const atBottom = postRows.scrollHeight - postRows.scrollTop - postRows.clientHeight < 40;
-  for (const [node, sentAt] of chatTimes) node.textContent = chatTime(sentAt);
   postRows.append(...entries);
   if (atBottom) postRows.scrollTop = postRows.scrollHeight;
 }
@@ -955,17 +962,51 @@ function chatEntry(from, tag, sentAt, body) {
   const gap = lastEntry === undefined ? NaN : at - lastEntry.at;
   const cont = lastEntry !== undefined && !tag && !lastEntry.tag && lastEntry.from === name.toLowerCase() && gap >= 0 && gap < GROUP_MS;
   lastEntry = { from: name.toLowerCase(), at, tag };
-  const sentByPerson = isPerson(name);
   const li = document.createElement("li");
   li.className = "entry chat " + colourOf(name) + (cont ? " cont" : "");
   const time = part("time", "time", chatTime(sentAt));
   time.title = when(sentAt);
-  chatTimes.push([time, sentAt]);
-  li.append(part("span", sentByPerson ? "avatar person" : "avatar", initials(name)), part("span", "from", name));
-  if (sentByPerson) li.append(part("span", "kind", "person"));
-  if (tag) li.append(part("span", "tag", tag));
-  li.append(time, part("div", "body", String(body)));
+  if (!timeSettled(at)) chatTimes.push([time, sentAt]);
+  const row = { li, name, tag, person: isPerson(name), time, body: part("div", "body", String(body)) };
+  chatRows.push(row);
+  li.append(...chatParts(row));
   return li;
+}
+
+// A chat row's children: its avatar and name, a person's label, its tag, its time and its text.
+function chatParts(row) {
+  const parts = [part("span", row.person ? "avatar person" : "avatar", initials(row.name)), part("span", "from", row.name)];
+  if (row.person) parts.push(part("span", "kind", "person"));
+  if (row.tag) parts.push(part("span", "tag", row.tag));
+  parts.push(row.time, row.body);
+  return parts;
+}
+
+// Whether chatTime of a time in ms will never change: it cannot be read, or it is from before today and 12 hours or more
+// ago, so it shows a date.
+function timeSettled(at) {
+  const today = new Date(Date.now());
+  today.setHours(0, 0, 0, 0);
+  return !(at >= today.getTime() || Date.now() - at < 12 * 3600000);
+}
+
+// Once a poll, after show: re-marks the open log's rows when who is a person has changed since they were marked, and
+// brings its times up to date, dropping those that will not change again.
+function refreshChat() {
+  const marked = JSON.stringify((people ?? []).map((p) => p.toLowerCase()).sort());
+  if (marked !== markedPeople) {
+    markedPeople = marked;
+    for (const row of chatRows) {
+      const person = isPerson(row.name);
+      if (person === row.person) continue;
+      row.person = person;
+      row.li.replaceChildren(...chatParts(row));
+    }
+  }
+  chatTimes = chatTimes.filter(([node, sentAt]) => {
+    node.textContent = chatTime(sentAt);
+    return !timeSettled(Date.parse(sentAt));
+  });
 }
 
 function messageEntry(m) {

@@ -241,7 +241,9 @@ describe("the page's channels and messages", () => {
     };
     // Runs the poll the page scheduled last; earlier ones belong to polls it has since cancelled.
     const poll = () => polls.splice(0).pop()!();
-    return { elements, urls, store, until, poll };
+    // Whether a poll is scheduled, so none is in flight.
+    const scheduled = () => polls.length > 0;
+    return { elements, urls, store, until, poll, scheduled };
   }
 
   it("lists the channels with a read-only token and shows a chosen channel's posts oldest first", async () => {
@@ -746,6 +748,49 @@ describe("the page's channels and messages", () => {
       expect(html).toContain(".avatar.person { border-radius: 50%; }");
     });
 
+    it("re-marks the open log's senders when GET /api/agents changes who is a person", async () => {
+      for (const name of ["alice", "bob"]) registerAgent(db, OWNER_ACCOUNT, name, "x");
+      sendMessage(db, OWNER_ACCOUNT, "alice", "bob", "hi");
+      sendMessage(db, OWNER_ACCOUNT, "bob", "alice", "hello");
+      // Who GET /api/agents gives as a person is changed on its way to the page.
+      let people: string[] = [];
+      const realFetch = fetch;
+      const page = await load(viewer, undefined, {
+        fetch: async (url: string, init: RequestInit) => {
+          const res = await realFetch(`${base()}${url}`, init);
+          if (!url.startsWith("/api/agents")) return res;
+          const list = (await res.json()) as { name: string }[];
+          return new Response(JSON.stringify(list.map((a) => ({ ...a, person: people.includes(a.name) }))));
+        },
+      });
+      await page.until(() => page.elements["pair-rows"].children.length === 1);
+      open(page.elements["pair-rows"].children[0]);
+      const log = page.elements["post-rows"];
+      const marks = () => log.children.map((row) => [field(row, "from"), avatar(row).className, field(row, "kind"), field(row, "body")]);
+      expect(marks()).toEqual([
+        ["alice", "avatar", undefined, "hi"],
+        ["bob", "avatar", undefined, "hello"],
+      ]);
+      // The rows the log already holds follow the next answer, keeping their text.
+      people = ["bob"];
+      await page.until(page.scheduled);
+      page.poll();
+      await page.until(() => avatar(log.children[1]).className === "avatar person");
+      expect(marks()).toEqual([
+        ["alice", "avatar", undefined, "hi"],
+        ["bob", "avatar person", "person", "hello"],
+      ]);
+      // And a sender no longer given as a person goes back to an agent's avatar.
+      people = ["alice"];
+      await page.until(page.scheduled);
+      page.poll();
+      await page.until(() => avatar(log.children[0]).className === "avatar person");
+      expect(marks()).toEqual([
+        ["alice", "avatar person", "person", "hi"],
+        ["bob", "avatar", undefined, "hello"],
+      ]);
+    });
+
     it("shows a time as just now, minutes or hours ago, the time today or the date before, with the full time on hover", async () => {
       // The page's clock is fixed at 23:30 local time, so 12 hours and more ago is still today.
       const now = new Date(2026, 9, 20, 23, 30).getTime();
@@ -803,6 +848,35 @@ describe("the page's channels and messages", () => {
       page.poll();
       await page.until(() => log.children.length === 2);
       expect(field(log.children[0], "time")).toBe("7m ago");
+    });
+
+    it("stops refreshing a time once it shows a date, and keeps refreshing a recent one", async () => {
+      let now = Date.now();
+      class MovingDate extends Date {
+        constructor(...args: unknown[]) {
+          super(...((args.length ? args : [now]) as []));
+        }
+        static now() {
+          return now;
+        }
+      }
+      for (const name of ["alice", "bob"]) registerAgent(db, OWNER_ACCOUNT, name, "x");
+      sendMessage(db, OWNER_ACCOUNT, "alice", "bob", "old");
+      sendMessage(db, OWNER_ACCOUNT, "bob", "alice", "new");
+      backdate("messages", 3 * 24 * 60 * MIN, 2 * MIN);
+      const page = await load(viewer, undefined, { Date: MovingDate });
+      await page.until(() => page.elements["pair-rows"].children.length === 1);
+      open(page.elements["pair-rows"].children[0]);
+      const log = page.elements["post-rows"];
+      const time = (i: number) => log.children[i].children.find((c) => c.className === "time")!;
+      expect(time(1).textContent).toBe("2m ago");
+      // A settled time is never written again: a mark left on it stays through a poll.
+      time(0).textContent = "unchanged";
+      now += 5 * MIN;
+      await page.until(page.scheduled);
+      page.poll();
+      await page.until(() => time(1).textContent === "7m ago");
+      expect(time(0).textContent).toBe("unchanged");
     });
 
     it("shows a time it cannot read as given", async () => {
