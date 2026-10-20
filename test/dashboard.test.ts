@@ -174,7 +174,12 @@ describe("the page's channels and messages", () => {
     },
     focus() {},
   });
-  const text = (row: Stub) => row.children.map((td) => td.textContent || td.children.map((c) => c.textContent).join(""));
+  // A sidebar item's label and count, and the button that opens it.
+  const item = (row: Stub) => row.children[0].children.map((c) => c.textContent);
+  const open = (row: Stub) => row.children[0].on.click();
+  // A chat-log entry's field by class name: from, tag, time or body.
+  const field = (row: Stub, name: string) => row.children.find((c) => c.className === name)?.textContent;
+  const entries = (log: Stub) => log.children.map((row) => [field(row, "from"), field(row, "body")]);
 
   // Runs the served script with the given token against this server, with real fetches and timers run by hand.
   // refuse, when it returns a status, answers a request with that status instead of the server; "hang" never answers,
@@ -222,21 +227,25 @@ describe("the page's channels and messages", () => {
     const page = await load(viewer);
     const channels = page.elements["channel-rows"];
     await page.until(() => channels.children.length === 2);
-    expect(channels.children.map(text).map((row) => row.slice(0, 3))).toEqual([
-      ["build", "alice, bob", "2"],
-      ["ops", "–", "1"],
+    expect(channels.children.map(item)).toEqual([
+      ["build", "2"],
+      ["ops", "1"],
+    ]);
+    expect(channels.children.map((row) => row.children[0].title)).toEqual([
+      expect.stringMatching(/^Members: alice, bob; 2 posts, last post /),
+      expect.stringMatching(/^Members: –; 1 posts, last post /),
     ]);
     expect(page.elements["log"].hidden).toBe(true);
 
     const posts = page.elements["post-rows"];
-    channels.children[1].children[0].children[0].on.click();
+    open(channels.children[1]);
     await page.until(() => posts.children.length === 1);
     expect(page.urls).toContain("/api/channel-posts?channel=ops&limit=200&offset=0");
-    channels.children[0].children[0].children[0].on.click();
+    open(channels.children[0]);
     await page.until(() => posts.children.length === 2);
     expect(page.elements["log"].hidden).toBe(false);
     expect(page.elements["log-title"].textContent).toBe("build");
-    expect(posts.children.map((row) => [text(row)[0], text(row)[2]])).toEqual([
+    expect(entries(posts)).toEqual([
       ["alice", "first <b>post</b>"],
       ["bob", "second"],
     ]);
@@ -261,7 +270,7 @@ describe("the page's channels and messages", () => {
     const page = await load(ticket.token);
     const channels = page.elements["channel-rows"];
     await page.until(() => channels.children.length === 1);
-    channels.children[0].children[0].children[0].on.click();
+    open(channels.children[0]);
     await page.until(() => page.elements["post-rows"].children.length === 1);
 
     revokeToken(db, ticket.id);
@@ -278,7 +287,7 @@ describe("the page's channels and messages", () => {
     const page = await load(viewer, (url) => (url.startsWith("/api/channel-posts") ? 404 : undefined));
     const channels = page.elements["channel-rows"];
     await page.until(() => channels.children.length === 1);
-    channels.children[0].children[0].children[0].on.click();
+    open(channels.children[0]);
     await page.until(() => page.elements["log-note"].textContent === "There is no channel by this name now.");
     expect(page.elements["log"].hidden).toBe(false);
     expect(page.elements["login"].hidden).toBe(true);
@@ -294,12 +303,12 @@ describe("the page's channels and messages", () => {
     const page = await load(viewer);
     const channels = page.elements["channel-rows"];
     await page.until(() => channels.children.length === 201);
-    expect(text(channels.children[200])[0]).toBe("c200");
-    channels.children[0].children[0].children[0].on.click();
+    expect(item(channels.children[200])[0]).toBe("c200");
+    open(channels.children[0]);
     const posts = page.elements["post-rows"];
     await page.until(() => posts.children.length === 201);
-    expect(text(posts.children[0])[2]).toBe("post 0");
-    expect(text(posts.children[200])[2]).toBe("post 200");
+    expect(field(posts.children[0], "body")).toBe("post 0");
+    expect(field(posts.children[200], "body")).toBe("post 200");
     expect(page.urls).toContain("/api/channels?limit=200&offset=200");
     expect(page.urls).toContain("/api/channel-posts?channel=c000&limit=200&offset=200");
   });
@@ -311,7 +320,7 @@ describe("the page's channels and messages", () => {
     const channels = page.elements["channel-rows"];
     const posts = page.elements["post-rows"];
     await page.until(() => channels.children.length === 1);
-    channels.children[0].children[0].children[0].on.click();
+    open(channels.children[0]);
     await page.until(() => posts.children.length === 1);
 
     post(db, OWNER_ACCOUNT, alice, "build", "second");
@@ -320,7 +329,7 @@ describe("the page's channels and messages", () => {
     await page.until(() => posts.children.length === 2);
     expect(page.urls).toContain("/api/channel-posts?channel=build&limit=200&offset=1");
     expect(page.urls).not.toContain("/api/channel-posts?channel=build&limit=200&offset=0");
-    expect(posts.children.map((row) => text(row)[2])).toEqual(["hello", "second"]);
+    expect(posts.children.map((row) => field(row, "body"))).toEqual(["hello", "second"]);
 
     // A log read that has not answered yet does not hold back the agents and channels.
     joinChannel(db, OWNER_ACCOUNT, alice, "ops");
@@ -341,61 +350,110 @@ describe("the page's channels and messages", () => {
     });
     const channels = page.elements["channel-rows"];
     await page.until(() => channels.children.length > 0);
-    const names = channels.children.map((row) => text(row)[0]);
+    const names = channels.children.map((row) => item(row)[0]);
     expect(names).toHaveLength(200);
     expect(new Set(names).size).toBe(200);
   });
 
-  it("lists the direct messages oldest first with a read-only token, marks a broadcast, and reads nothing as read", async () => {
+  it("lists the pairs that have messaged each other with a read-only token, marks a broadcast, and reads nothing as read", async () => {
     for (const name of ["alice", "bob", "carol"]) registerAgent(db, OWNER_ACCOUNT, name, "x");
     sendMessage(db, OWNER_ACCOUNT, "alice", "bob", "hi <b>bob</b>");
     sendMessage(db, OWNER_ACCOUNT, "bob", "all", "to everyone");
     const page = await load(viewer);
-    const messages = page.elements["message-rows"];
-    await page.until(() => messages.children.length === 3);
-    expect(messages.children.map((row) => [0, 1, 2, 4].map((i) => text(row)[i]))).toEqual([
-      ["alice", "bob", "–", "hi <b>bob</b>"],
-      ["bob", "alice", "broadcast", "to everyone"],
-      ["bob", "carol", "broadcast", "to everyone"],
+    const pairs = page.elements["pair-rows"];
+    await page.until(() => pairs.children.length === 2);
+    // The newest pair first; alice to bob and bob to alice are one pair.
+    expect(pairs.children.map(item)).toEqual([
+      ["bob ↔ carol", "1"],
+      ["alice ↔ bob", "2"],
     ]);
     expect(page.urls).toContain("/api/messages?limit=200&offset=0");
     for (const url of page.urls) expect(url).not.toContain(viewer);
+
+    const log = page.elements["post-rows"];
+    open(pairs.children[1]);
+    expect(page.elements["log"].hidden).toBe(false);
+    expect(page.elements["log-title"].textContent).toBe("alice ↔ bob");
+    expect(entries(log)).toEqual([
+      ["alice", "hi <b>bob</b>"],
+      ["bob", "to everyone"],
+    ]);
+    expect(log.children.map((row) => field(row, "tag"))).toEqual([undefined, "broadcast"]);
     // Nothing the page did marked a message read.
     expect(unreadSummary(db, OWNER_ACCOUNT, "bob")!.count).toBe(1);
 
     page.elements["forget"].on.click();
-    expect(messages.children).toHaveLength(0);
+    expect(pairs.children).toHaveLength(0);
+    expect(log.children).toHaveLength(0);
+    expect(page.elements["log"].hidden).toBe(true);
     expect(page.store.size).toBe(0);
   });
 
-  it("pages through every message, then reads only the new ones on each poll", async () => {
-    for (const name of ["alice", "bob"]) registerAgent(db, OWNER_ACCOUNT, name, "x");
-    for (let i = 0; i < 201; i++) sendMessage(db, OWNER_ACCOUNT, "alice", "bob", `message ${i}`);
+  it("shows only the chosen pair's messages, oldest first, and swaps a channel for a pair", async () => {
+    seed();
+    for (const name of ["bob", "carol"]) registerAgent(db, OWNER_ACCOUNT, name, "x");
+    sendMessage(db, OWNER_ACCOUNT, "alice", "bob", "one");
+    sendMessage(db, OWNER_ACCOUNT, "carol", "alice", "elsewhere");
+    sendMessage(db, OWNER_ACCOUNT, "bob", "alice", "two");
     const page = await load(viewer);
-    const messages = page.elements["message-rows"];
-    await page.until(() => messages.children.length === 201);
-    expect(page.urls).toContain("/api/messages?limit=200&offset=200");
-    expect(text(messages.children[200])[4]).toBe("message 200");
+    const pairs = page.elements["pair-rows"];
+    const log = page.elements["post-rows"];
+    await page.until(() => pairs.children.length === 2 && page.elements["channel-rows"].children.length === 1);
+    open(page.elements["channel-rows"].children[0]);
+    await page.until(() => log.children.length === 1);
 
-    sendMessage(db, OWNER_ACCOUNT, "bob", "alice", "reply");
     page.urls.length = 0;
+    open(pairs.children.find((row) => item(row)[0] === "alice ↔ bob")!);
+    expect(entries(log)).toEqual([
+      ["alice", "one"],
+      ["bob", "two"],
+    ]);
+    expect(page.elements["log-title"].textContent).toBe("alice ↔ bob");
+    // The pair comes from the messages the page holds, and the channel's log is no longer read.
     page.poll();
-    await page.until(() => messages.children.length === 202);
-    expect(page.urls.filter((url) => url.startsWith("/api/messages"))).toEqual(["/api/messages?limit=200&offset=201"]);
-    expect(text(messages.children[201])[4]).toBe("reply");
+    await page.until(() => page.urls.some((url) => url.startsWith("/api/messages")));
+    expect(page.urls.filter((url) => url.startsWith("/api/channel-posts"))).toEqual([]);
   });
 
-  it("clears the messages when the server refuses the token", async () => {
+  it("pages through every message, then appends only the new ones for the open pair on each poll", async () => {
+    for (const name of ["alice", "bob", "carol"]) registerAgent(db, OWNER_ACCOUNT, name, "x");
+    for (let i = 0; i < 201; i++) sendMessage(db, OWNER_ACCOUNT, "alice", "bob", `message ${i}`);
+    const page = await load(viewer);
+    const pairs = page.elements["pair-rows"];
+    await page.until(() => pairs.children.length === 1 && item(pairs.children[0])[1] === "201");
+    expect(page.urls).toContain("/api/messages?limit=200&offset=200");
+    open(pairs.children[0]);
+    const log = page.elements["post-rows"];
+    expect(log.children).toHaveLength(201);
+    expect(field(log.children[200], "body")).toBe("message 200");
+
+    sendMessage(db, OWNER_ACCOUNT, "bob", "alice", "reply");
+    sendMessage(db, OWNER_ACCOUNT, "carol", "bob", "not this pair");
+    page.urls.length = 0;
+    page.poll();
+    await page.until(() => log.children.length === 202);
+    expect(page.urls.filter((url) => url.startsWith("/api/messages"))).toEqual(["/api/messages?limit=200&offset=201"]);
+    expect(entries(log).slice(-1)).toEqual([["bob", "reply"]]);
+    await page.until(() => pairs.children.length === 2);
+    expect(log.children).toHaveLength(202);
+  });
+
+  it("clears the pairs and the open conversation when the server refuses the token", async () => {
     for (const name of ["alice", "bob"]) registerAgent(db, OWNER_ACCOUNT, name, "x");
     sendMessage(db, OWNER_ACCOUNT, "alice", "bob", "hello");
     const ticket = addToken(db, "owner", true);
     const page = await load(ticket.token);
-    const messages = page.elements["message-rows"];
-    await page.until(() => messages.children.length === 1);
+    const pairs = page.elements["pair-rows"];
+    await page.until(() => pairs.children.length === 1);
+    open(pairs.children[0]);
+    expect(page.elements["post-rows"].children).toHaveLength(1);
     revokeToken(db, ticket.id);
     page.poll();
     await page.until(() => page.elements["status-line"].textContent.startsWith("The server refused"));
-    expect(messages.children).toHaveLength(0);
+    expect(pairs.children).toHaveLength(0);
+    expect(page.elements["post-rows"].children).toHaveLength(0);
+    expect(page.elements["log"].hidden).toBe(true);
+    expect(page.elements["log-title"].textContent).toBe("");
     expect(page.store.size).toBe(0);
   });
 
@@ -404,9 +462,9 @@ describe("the page's channels and messages", () => {
     const page = await load(viewer, (url) => (url.startsWith("/api/messages") ? "hang" : undefined));
     await page.until(() => page.elements["channel-rows"].children.length === 1);
     expect(page.elements["rows"].children).toHaveLength(1);
-    expect(page.elements["message-rows"].children).toHaveLength(0);
+    expect(page.elements["pair-rows"].children).toHaveLength(0);
     // Nor an open channel's log.
-    page.elements["channel-rows"].children[0].children[0].children[0].on.click();
+    open(page.elements["channel-rows"].children[0]);
     await page.until(() => page.elements["post-rows"].children.length === 1);
   });
 
@@ -415,7 +473,7 @@ describe("the page's channels and messages", () => {
     const page = await load(viewer, (url) => (url.startsWith("/api/messages") ? 503 : undefined));
     const channels = page.elements["channel-rows"];
     await page.until(() => channels.children.length === 1);
-    channels.children[0].children[0].children[0].on.click();
+    open(channels.children[0]);
     await page.until(() => page.elements["post-rows"].children.length === 1);
     await page.until(() => page.elements["status-line"].textContent === "The server is busy (503). Retrying…");
   });
@@ -428,7 +486,7 @@ describe("the page's channels and messages", () => {
     );
     const channels = page.elements["channel-rows"];
     await page.until(() => channels.children.length === 1);
-    channels.children[0].children[0].children[0].on.click();
+    open(channels.children[0]);
     await page.until(() => page.elements["post-rows"].children.length === 1);
     revoked = true;
     page.poll();
