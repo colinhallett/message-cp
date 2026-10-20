@@ -46,7 +46,7 @@ const json = async (token: string, query = "") => {
   const res = await agents(token, query);
   expect(res.status).toBe(200);
   expect(res.headers.get("content-type")).toBe("application/json");
-  return (await res.json()) as { name: string; bio: string; lastSeen: string; unreadMessages: number; unreadPosts: number; online: boolean }[];
+  return (await res.json()) as { name: string; bio: string; lastSeen: string; unreadMessages: number; unreadPosts: number; unreadMentions: number; online: boolean }[];
 };
 const member = (account: AccountId, name: string): Member => ({ ...identityOf(db, account, name)!, name });
 const initialize = (token: string) =>
@@ -115,7 +115,7 @@ describe("GET /api/agents", () => {
       expect(list.map((a) => a.name)).toEqual(["alice", "bob"]);
       expect(list[0]).toMatchObject({ name: "alice", bio: "receiver", unreadMessages: 2, unreadPosts: 1, online: true });
       expect(list[1]).toMatchObject({ name: "bob", unreadMessages: 0, unreadPosts: 0 });
-      expect(Object.keys(list[0]).sort()).toEqual(["bio", "lastSeen", "name", "online", "unreadMessages", "unreadPosts"]);
+      expect(Object.keys(list[0]).sort()).toEqual(["bio", "lastSeen", "name", "online", "unreadMentions", "unreadMessages", "unreadPosts"]);
     }
     // Reading the list marks nothing read.
     expect((await json(ownerViewer))[0].unreadMessages).toBe(2);
@@ -137,7 +137,7 @@ describe("GET /api/agents", () => {
     try {
       for (const token of [OWNER_TOKEN, ownerViewer]) {
         const list = await json(token);
-        expect(list).toEqual([{ name: "alice", bio: "owner's", lastSeen: new Date(0).toISOString(), unreadMessages: 0, unreadPosts: 0, online: false }]);
+        expect(list).toEqual([{ name: "alice", bio: "owner's", lastSeen: new Date(0).toISOString(), unreadMessages: 0, unreadPosts: 0, unreadMentions: 0, online: false }]);
       }
       for (const token of [friendToken, friendViewer]) {
         const list = await json(token);
@@ -183,7 +183,7 @@ describe("GET /api/agents", () => {
     }
   });
 
-  it("counts unread messages and posts as unreadSummary does, for every agent on the page", async () => {
+  it("counts unread messages, posts and mentions as unreadSummary does, for every agent on the page", async () => {
     for (const name of ["alice", "bob", "carol"]) registerAgent(db, OWNER_ACCOUNT, name, "x");
     sendMessage(db, OWNER_ACCOUNT, "bob", "alice", "read later");
     readInbox(db, OWNER_ACCOUNT, "alice");
@@ -198,16 +198,50 @@ describe("GET /api/agents", () => {
     post(db, OWNER_ACCOUNT, member(OWNER_ACCOUNT, "carol"), "ops", "carol is not in ops");
     post(db, OWNER_ACCOUNT, member(OWNER_ACCOUNT, "carol"), "build", "carol's own");
     leaveChannel(db, OWNER_ACCOUNT, member(OWNER_ACCOUNT, "bob"), "build");
+    // Mentions count in any channel, joined or not, and reading one with read_inbox stops it counting.
+    post(db, OWNER_ACCOUNT, member(OWNER_ACCOUNT, "alice"), "dev", "@bob @carol read");
+    readInbox(db, OWNER_ACCOUNT, "carol");
+    post(db, OWNER_ACCOUNT, member(OWNER_ACCOUNT, "alice"), "dev", "@bob @carol one");
+    post(db, OWNER_ACCOUNT, member(OWNER_ACCOUNT, "carol"), "ops", "@bob two");
     const list = await json(ownerViewer);
     for (const a of list) {
       const unread = unreadSummary(db, OWNER_ACCOUNT, a.name)!;
-      expect([a.name, a.unreadMessages, a.unreadPosts]).toEqual([a.name, unread.count, unread.posts]);
+      expect([a.name, a.unreadMessages, a.unreadPosts, a.unreadMentions]).toEqual([a.name, unread.count, unread.posts, unread.mentions]);
     }
-    expect(list.map((a) => [a.name, a.unreadMessages, a.unreadPosts])).toEqual([
-      ["alice", 2, 3],
-      ["bob", 1, 0],
-      ["carol", 1, 2],
+    expect(list.map((a) => [a.name, a.unreadMessages, a.unreadPosts, a.unreadMentions])).toEqual([
+      ["alice", 2, 4, 0],
+      ["bob", 1, 0, 3],
+      ["carol", 0, 2, 1],
     ]);
+  });
+
+  it("counts only the account's mentions of the agent's own registration, and reading them marks none read", async () => {
+    registerAgent(db, OWNER_ACCOUNT, "alice", "x");
+    registerAgent(db, OWNER_ACCOUNT, "bob", "x");
+    registerAgent(db, friend, "fred", "x");
+    registerAgent(db, friend, "bob", "friend's bob");
+    // A mention of bob in the friend's account is the friend's bob's, never the owner's.
+    post(db, friend, member(friend, "fred"), "dev", "@bob in the friend's account");
+    post(db, friend, member(friend, "fred"), "dev", "@bob again");
+    const mentions = async (token: string) => Object.fromEntries((await json(token)).map((a) => [a.name, a.unreadMentions]));
+    for (const token of [OWNER_TOKEN, ownerViewer]) expect(await mentions(token)).toEqual({ alice: 0, bob: 0 });
+    for (const token of [friendToken, friendViewer]) expect(await mentions(token)).toEqual({ bob: 2, fred: 0 });
+    // A removed bob's mention does not count for a later bob that registers the name.
+    post(db, OWNER_ACCOUNT, member(OWNER_ACCOUNT, "alice"), "dev", "@bob old");
+    expect(await mentions(ownerViewer)).toEqual({ alice: 0, bob: 1 });
+    const old = identityOf(db, OWNER_ACCOUNT, "bob")!;
+    removeAgent(db, OWNER_ACCOUNT, "bob", undefined, old);
+    registerAgent(db, OWNER_ACCOUNT, "bob", "new bob");
+    expect(await mentions(ownerViewer)).toEqual({ alice: 0, bob: 0 });
+    // Listing twice marks nothing read: /wait still fires on the mention and read_inbox still returns it.
+    post(db, OWNER_ACCOUNT, member(OWNER_ACCOUNT, "alice"), "dev", "@bob new");
+    expect(await mentions(ownerViewer)).toEqual({ alice: 0, bob: 1 });
+    expect(await mentions(OWNER_TOKEN)).toEqual({ alice: 0, bob: 1 });
+    const wait = await fetch(`${base()}/wait?agent=bob`, { headers: auth(OWNER_TOKEN) });
+    expect(wait.status).toBe(200);
+    expect(await wait.text()).toContain("1 unread mention in #dev");
+    expect(readInbox(db, OWNER_ACCOUNT, "bob").map((m) => m.body)).toEqual(["@bob new"]);
+    expect(await mentions(ownerViewer)).toEqual({ alice: 0, bob: 0 });
   });
 
   it("answers 503 with Retry-After when the database is busy, and 500 for any other failure", async () => {

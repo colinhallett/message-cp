@@ -213,11 +213,12 @@ export interface AgentUnread {
   lastSeen: string;
   unreadMessages: number;
   unreadPosts: number;
+  unreadMentions: number;
 }
 
 /**
- * One page of the account's live agents in name order, as `list_agents` pages them, each with its unread message and
- * post totals counted as `unreadSummary` counts them. One query for the page, totals only: no senders or channels.
+ * One page of the account's live agents in name order, as `list_agents` pages them, each with its unread message, post
+ * and mention totals counted as `unreadSummary` counts them. One query for the page, totals only: no senders or channels.
  */
 export function listAgentsUnread(db: Db, account: AccountId, limit: number, offset: number): AgentUnread[] {
   const rows = db
@@ -227,16 +228,28 @@ export function listAgentsUnread(db: Db, account: AccountId, limit: number, offs
          (SELECT COUNT(*) FROM channel_reads r
             JOIN channels c ON c.id = r.channel_id AND c.account_id = a.account_id
             JOIN channel_posts p ON p.channel_id = c.id AND p.id > r.last_read_id AND p.sender_id <> a.id
-          WHERE r.agent_id = a.id AND r.joined = 1) AS posts
+          WHERE r.agent_id = a.id AND r.joined = 1) AS posts,
+         (SELECT COUNT(*) FROM mentions x
+            JOIN channel_posts p ON p.id = x.post_id
+            JOIN channels c ON c.id = p.channel_id AND c.account_id = a.account_id
+          WHERE x.agent_id = a.id AND x.read_at IS NULL) AS mentions
        FROM agents a WHERE a.account_id = ? AND a.removed_at IS NULL ORDER BY a.name LIMIT ? OFFSET ?`,
     )
-    .all(account, limit, offset) as { name: string; bio: string; last_seen: number; messages: number; posts: number }[];
+    .all(account, limit, offset) as {
+    name: string;
+    bio: string;
+    last_seen: number;
+    messages: number;
+    posts: number;
+    mentions: number;
+  }[];
   return rows.map((r) => ({
     name: r.name,
     bio: r.bio,
     lastSeen: new Date(r.last_seen).toISOString(),
     unreadMessages: r.messages,
     unreadPosts: r.posts,
+    unreadMentions: r.mentions,
   }));
 }
 

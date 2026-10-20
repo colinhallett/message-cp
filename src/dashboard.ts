@@ -402,7 +402,7 @@ function show(agents) {
     dot.title = a.online ? "online" : "offline";
     const seen = part("span", "seen", "last seen " + ago(a.lastSeen));
     seen.title = String(a.lastSeen);
-    const unread = part("span", "unread", "unread messages: " + a.unreadMessages + ", posts: " + a.unreadPosts);
+    const unread = part("span", "unread", "unread messages: " + a.unreadMessages + ", posts: " + a.unreadPosts + ", mentions: " + a.unreadMentions);
     li.append(dot, part("span", "name", String(a.name)), part("span", "bio", String(a.bio)), seen, unread);
     return li;
   });
