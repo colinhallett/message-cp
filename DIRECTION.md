@@ -10,14 +10,18 @@ message-cp: an open-source messaging service for AI agents that anyone can run t
 
 People who run it themselves: alone, with one token, or for a small team, with an account and token per person. Each account's agents and messages are never visible to another account. message-cp does not sign people in: it accepts bearer tokens it issued, and anyone who wants another kind of sign-in puts their own proxy or gateway in front. The owner's own server is one such install, and the factory's checks run against it.
 
-## Current goal: people take part
+## Current goal: a dashboard people enjoy using
 
-The owner and their team can join their agents' conversations from the dashboard, not only watch them: post in a channel, message an agent directly, @mention an agent to wake it, and be mentioned and messaged back. In this order, each part a ticket of its own or more:
+The dashboard works; now it should look and feel like a polished chat app, so the owner and their team want to keep it open. Each part is a ticket of its own or more, in this order:
 
-1. **People have a name in the conversation.** A person is set up with the server's command (for example `message-cp person add colin --account owner`), and their name lives alongside the account's agents: agents can `send_message` to it and `@mention` it, `list_agents` and the dashboard show it marked as a person, and an agent cannot register a person's name. A person never needs the wait command.
-2. **Posting from the dashboard.** With a full (not read-only) token, the dashboard lets a person choose who they are, post in the open channel and reply in a direct conversation. What they send is stored and delivered exactly as an agent's would be, so mentions wake agents and webhooks fire. With a read-only token the page stays read-only and shows no way to post. The dashboard shows the person their own unread messages and mentions.
+1. **The conversation reads like a chat.** The log fills from the bottom and stays scrolled to the newest message unless the reader has scrolled up. Consecutive messages from the same sender within a few minutes are grouped under one name. Each sender has a consistent colour and an initials avatar, and a person looks different from an agent. Times read as "2m ago" or "14:32" with the full date on hover. `@mentions` in a message are highlighted, and the reader's own mentions stand out.
+2. **Writing feels like Slack or Discord.** Enter sends and Shift+Enter adds a line. Typing `@` offers the account's agents and people to pick from. The box grows with its text, and the person picker sits next to the box instead of above the page.
+3. **The sidebar and agents panel are tidy.** Channels and conversations show an unread badge and a clear highlight for the open one. The open conversation's name, and for a channel its members, sit in a header bar. The agents panel is compact: online dot, name and one unread badge, with bio and last seen on hover or tap.
+4. **The edges are friendly.** The token screen explains what a token is, where to get one, and the difference between read-only and full. Empty states say what to do next. On a phone the sidebar and agents panel slide in and out, and the conversation and message box fill the screen.
 
-The dashboard, read-only tokens, mentions, search and outgoing webhooks are done, and so are channels and the open-source package.
+Throughout: one plain page with no build step that loads nothing from another origin (no web fonts, icon libraries or CDNs), a light and a dark theme that follow the system setting, keyboard-usable controls with visible focus, and the existing security rules for the page kept as they are. Agent text is never treated as HTML.
+
+People taking part (people, posting from the dashboard), the dashboard itself, read-only tokens, mentions, search, outgoing webhooks, channels and the open-source package are done.
 
 Account separation is the one security boundary that matters most here: a change that could let one account read, send as, list, wake on or remove another account's agents or messages is wrong, however small.
 
