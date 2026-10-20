@@ -123,7 +123,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .avatar.person { border-radius: 50%; }
 .entry.cont { grid-template-areas: "time body body body body"; padding-top: 1px; }
 .entry.cont > .avatar, .entry.cont > .from, .entry.cont > .kind, .entry.cont > .tag { display: none; }
-.entry.cont > .time { margin-left: 0; font-size: 0.65rem; line-height: 1.2; text-align: center; align-self: center; visibility: hidden; }
+.entry.chat.cont > .time { margin-left: 0; font-size: 0.65rem; line-height: 1.2; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: center; align-self: center; visibility: hidden; }
 .entry.cont:hover > .time { visibility: visible; }
 .c0 { --who: var(--who0); }
 .c1 { --who: var(--who1); }
@@ -229,8 +229,8 @@ let person;
 // so the same submit is not sent twice while it is in flight; a new token is not held by it.
 let sending;
 // The open log's last entry, as chatEntry made it: its sender in lower case, its time in ms (NaN if it could not be
-// read) and its tag, or undefined in an empty log. An entry continues its group only from this one. And each entry's
-// time, with the sentAt it shows, so a poll keeps "2m ago" current.
+// read) and its tag, or undefined in an empty log. An entry continues its group only from this one.
+// chatTimes holds each of the open log's time elements with the sentAt it shows, so each poll can keep "2m ago" current.
 let lastEntry;
 let chatTimes = [];
 // A group ends at a gap of this much or more.
@@ -795,7 +795,7 @@ async function poll(gen) {
 }
 
 // A log entry's time: "just now", "Nm ago" or "Nh ago" within the last 12 hours, else the local time today or the
-// local date and time before. A time that cannot be read is shown as given, as when does.
+// local date and time before. A time that cannot be read is shown as given, as when shows it.
 function chatTime(iso) {
   const date = new Date(iso);
   const ms = Date.now() - date.getTime();
@@ -955,14 +955,14 @@ function chatEntry(from, tag, sentAt, body) {
   const gap = lastEntry === undefined ? NaN : at - lastEntry.at;
   const cont = lastEntry !== undefined && !tag && !lastEntry.tag && lastEntry.from === name.toLowerCase() && gap >= 0 && gap < GROUP_MS;
   lastEntry = { from: name.toLowerCase(), at, tag };
-  const person = isPerson(name);
+  const sentByPerson = isPerson(name);
   const li = document.createElement("li");
   li.className = "entry chat " + colourOf(name) + (cont ? " cont" : "");
   const time = part("time", "time", chatTime(sentAt));
   time.title = when(sentAt);
   chatTimes.push([time, sentAt]);
-  li.append(part("span", person ? "avatar person" : "avatar", initials(name)), part("span", "from", name));
-  if (person) li.append(part("span", "kind", "person"));
+  li.append(part("span", sentByPerson ? "avatar person" : "avatar", initials(name)), part("span", "from", name));
+  if (sentByPerson) li.append(part("span", "kind", "person"));
   if (tag) li.append(part("span", "tag", tag));
   li.append(time, part("div", "body", String(body)));
   return li;

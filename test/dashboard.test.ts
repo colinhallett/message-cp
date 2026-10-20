@@ -220,7 +220,6 @@ describe("the page's channels and messages", () => {
     const polls: (() => void)[] = [];
     const store = new Map([["message-cp-token", token]]);
     runInNewContext(script, {
-      ...globals,
       AbortController,
       URLSearchParams,
       document: { getElementById: (id: string) => (elements[id] ??= el()), createElement: el },
@@ -632,7 +631,22 @@ describe("the page's channels and messages", () => {
       expect(grouped(log).slice(-1)).toEqual([["alice", true]]);
     });
 
-    it("groups channel posts across a poll, never continues a broadcast, and leaves search results and deliveries alone", async () => {
+    it("starts each opened log afresh, so its first entry never continues the log open before", async () => {
+      for (const name of ["alice", "bob"]) registerAgent(db, OWNER_ACCOUNT, name, "x");
+      post(db, OWNER_ACCOUNT, { ...identityOf(db, OWNER_ACCOUNT, "alice")!, name: "alice" }, "build", "in the channel");
+      sendMessage(db, OWNER_ACCOUNT, "alice", "bob", "a minute later, directly");
+      backdate("channel_posts", 10 * MIN);
+      backdate("messages", 9 * MIN);
+      const page = await load(viewer);
+      const log = page.elements["post-rows"];
+      await page.until(() => page.elements["channel-rows"].children.length === 1 && page.elements["pair-rows"].children.length === 1);
+      open(page.elements["channel-rows"].children[0]);
+      await page.until(() => log.children.length === 1);
+      open(page.elements["pair-rows"].children[0]);
+      expect(grouped(log)).toEqual([["alice", false]]);
+    });
+
+    it("groups channel posts across a poll, never continues a broadcast, and leaves search results ungrouped", async () => {
       for (const name of ["alice", "bob"]) registerAgent(db, OWNER_ACCOUNT, name, "x");
       const alice = { ...identityOf(db, OWNER_ACCOUNT, "alice")!, name: "alice" };
       post(db, OWNER_ACCOUNT, alice, "build", "one");
@@ -764,6 +778,31 @@ describe("the page's channels and messages", () => {
       expect(log.children.map((row) => row.children.find((c) => c.className === "time")!.title)).toEqual(
         sent.map((ms) => new Date(ms).toLocaleString()),
       );
+    });
+
+    it("keeps the open log's times current on each poll", async () => {
+      let now = Date.now();
+      class MovingDate extends Date {
+        constructor(...args: unknown[]) {
+          super(...((args.length ? args : [now]) as []));
+        }
+        static now() {
+          return now;
+        }
+      }
+      for (const name of ["alice", "bob"]) registerAgent(db, OWNER_ACCOUNT, name, "x");
+      sendMessage(db, OWNER_ACCOUNT, "alice", "bob", "x");
+      backdate("messages", 2 * MIN);
+      const page = await load(viewer, undefined, { Date: MovingDate });
+      await page.until(() => page.elements["pair-rows"].children.length === 1);
+      open(page.elements["pair-rows"].children[0]);
+      const log = page.elements["post-rows"];
+      expect(field(log.children[0], "time")).toBe("2m ago");
+      now += 5 * MIN;
+      sendMessage(db, OWNER_ACCOUNT, "bob", "alice", "y");
+      page.poll();
+      await page.until(() => log.children.length === 2);
+      expect(field(log.children[0], "time")).toBe("7m ago");
     });
 
     it("shows a time it cannot read as given", async () => {
