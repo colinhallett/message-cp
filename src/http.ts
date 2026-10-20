@@ -34,6 +34,11 @@ export const DEFAULT_HTTP_PORT = 8787;
 export const DEFAULT_HTTP_HOST = "127.0.0.1";
 export const DEFAULT_IDLE_TIMEOUT_MS = 30 * 60 * 1000;
 const MAX_BODY_BYTES = 4 * 1024 * 1024;
+/**
+ * The body limit for POST /api/send and /api/post. A 4000-character body is at most 48 KiB as JSON (12 bytes for an
+ * escaped astral character), so this fits any valid request, and a full cap of them buffers at most 16 MiB.
+ */
+const MAX_PERSON_BODY_BYTES = 64 * 1024;
 export const DEFAULT_MAX_SESSIONS = 256;
 /** An agent seen this recently counts as online in GET /api/agents, as does one with a GET /wait held now. */
 export const ONLINE_WINDOW_MS = 5 * 60 * 1000;
@@ -125,12 +130,12 @@ function unlessBusy<T>(res: ServerResponse, read: () => T): T | undefined {
   }
 }
 
-async function readBody(req: IncomingMessage): Promise<unknown> {
+async function readBody(req: IncomingMessage, maxBytes = MAX_BODY_BYTES): Promise<unknown> {
   const chunks: Buffer[] = [];
   let size = 0;
   for await (const chunk of req) {
     size += (chunk as Buffer).length;
-    if (size > MAX_BODY_BYTES) throw new RangeError("body too large");
+    if (size > maxBytes) throw new RangeError("body too large");
     chunks.push(chunk as Buffer);
   }
   return JSON.parse(Buffer.concat(chunks).toString("utf8"));
@@ -418,7 +423,7 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
     try {
       let input: unknown;
       try {
-        input = await readBody(req);
+        input = await readBody(req, MAX_PERSON_BODY_BYTES);
       } catch (err) {
         return err instanceof RangeError ? reply(res, 413, "Request body too large") : reply(res, 400, "Invalid JSON");
       }

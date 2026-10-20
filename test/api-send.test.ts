@@ -244,9 +244,15 @@ describe.each([
     expect(stored()).toBe(before);
   });
 
-  it("answers 413 for a body over the 4 MB limit", async () => {
-    const res = await send(path, OWNER_TOKEN, body({ body: "x".repeat(4 * 1024 * 1024 + 1) }));
+  it("answers 413 for a body over the 64 KiB limit, and takes a longest body of escaped astral characters", async () => {
+    const res = await send(path, OWNER_TOKEN, body({ body: "x".repeat(64 * 1024 + 1) }));
     expect(res.status).toBe(413);
+    // 4000 characters of U+1F600, each escaped as \ud83d\ude00, is 48000 bytes of body text.
+    const longest = JSON.stringify(body({ body: "\u{1F600}".repeat(4000) })).replace(/[\u{10000}-\u{10FFFF}]/gu, (c) =>
+      c.split("").map((u) => "\\u" + u.charCodeAt(0).toString(16)).join(""),
+    );
+    expect(longest.length).toBeGreaterThan(48000);
+    expect((await send(path, OWNER_TOKEN, longest)).status).toBe(200);
   });
 
   it("answers 503 with Retry-After when the database is busy, and 500 for any other failure", async () => {
