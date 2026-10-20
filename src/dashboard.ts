@@ -639,7 +639,7 @@ export const DASHBOARD_HTML = `<!doctype html>
 <button id="show-sidebar" class="toggle" type="button" aria-label="Channels and conversations">☰</button>
 <h1>message-cp</h1>
 <form id="search" role="search">
-<input id="search-text" type="search" maxlength="200" required aria-label="Search messages and posts" placeholder="Search messages and posts" autocomplete="off">
+<input id="search-text" type="search" maxlength="400" required aria-label="Search messages and posts" placeholder="Search messages and posts" autocomplete="off">
 <button type="submit">Search</button>
 </form>
 <button id="show-agents" class="toggle" type="button">Agents</button>

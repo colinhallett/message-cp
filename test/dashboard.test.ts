@@ -51,7 +51,7 @@ describe("GET /", () => {
     expect(html).toContain("/api/channel-posts");
     expect(html).toContain("/api/messages");
     expect(html).toContain("/api/search");
-    expect(html).toMatch(/<form id="search"[^>]*>\s*<input id="search-text"[^>]*maxlength="200" required/);
+    expect(html).toMatch(/<form id="search"[^>]*>\s*<input id="search-text"[^>]*maxlength="400" required/);
     // The query is not part of the path.
     expect((await fetch(`${base()}/?x=1`)).status).toBe(200);
   });
