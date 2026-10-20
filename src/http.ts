@@ -235,8 +235,8 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
     const { account } = access;
     const path = (req.url ?? "").split("?")[0];
     if (path === "/api/agents") return apiAgents(req, res, account);
-    // A read-only token reaches only /api/ endpoints that read; /mcp and /wait can write or keep a request held.
-    if (access.readOnly && (path === "/wait" || path === "/mcp")) return reply(res, 403, "This token is read-only");
+    // A read-only token reaches the read-only endpoints above and nothing else: /mcp can write, and so can any path added later.
+    if (access.readOnly) return reply(res, 403, "This token is read-only");
     if (path === "/wait") return wait(req, res, account);
     if (path !== "/mcp") return reply(res, 404, "Not found");
     if (req.method !== "POST" && req.method !== "GET" && req.method !== "DELETE") {

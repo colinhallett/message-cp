@@ -73,6 +73,7 @@ describe("read-only tokens", () => {
     }
     expect((await fetch(`${base()}/wait?agent=fred`, { headers: auth(friendViewer) })).status).toBe(403);
     expect((await fetch(`${base()}/wait?agent=nobody`, { headers: auth(ownerViewer) })).status).toBe(403);
+    expect((await fetch(`${base()}/elsewhere`, { headers: auth(ownerViewer) })).status).toBe(403);
     expect(http.sessionCount()).toBe(0);
     expect(JSON.stringify(db.prepare("SELECT * FROM messages").all())).toBe(before);
   });
@@ -171,6 +172,9 @@ describe("GET /api/agents", () => {
     expect(await names("?limit=2&offset=2")).toEqual(["c", "d"]);
     expect(await names("?offset=3")).toEqual(["d"]);
     expect(await names("?offset=9")).toEqual([]);
+    for (let i = 0; i < 205; i++) registerAgent(db, friend, `z${String(i).padStart(3, "0")}`, "x");
+    expect(await json(friendViewer)).toHaveLength(50);
+    expect(await json(friendViewer, "?limit=200")).toHaveLength(200);
     for (const query of ["?limit=0", "?limit=201", "?limit=x", "?offset=-1", "?limit=1.5", "?limit="]) {
       expect((await agents(friendViewer, query)).status).toBe(400);
     }

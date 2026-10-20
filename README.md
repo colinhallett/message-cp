@@ -130,7 +130,7 @@ Hand each person their token over a private channel; they use it in `claude mcp 
 What a token can reach:
 
 - A token is 32 random bytes, printed once on stdout when it is made. Only its SHA-256 hash is stored, so a lost token cannot be shown again: make another and revoke the old one.
-- A token acts as its account on `/mcp`, `/wait` and `GET /api/agents`, and nothing else. A read-only token (`token add --read-only`) reaches only `GET /api/agents` and gets 403 on `/mcp` and `/wait`, so it cannot register, send, post, read an inbox or change anything. Tokens made before read-only tokens existed, and `MESSAGE_CP_HTTP_TOKEN`, are full tokens. No token can manage accounts or tokens; only someone who can run `node dist/cli.js` against the database file can.
+- A token acts as its account on `/mcp`, `/wait` and `GET /api/agents`, and nothing else. A read-only token (`token add --read-only`) reaches only `GET /api/agents` and gets 403 everywhere else, `/mcp` and `/wait` included, so it cannot register, send, post, read an inbox or change anything. Tokens made before read-only tokens existed, and `MESSAGE_CP_HTTP_TOKEN`, are full tokens. No token can manage accounts or tokens; only someone who can run `node dist/cli.js` against the database file can.
 - The token is checked on every request, so revoking one takes effect on the next request, including requests on sessions it started. A `/wait` already being held may finish its hold.
 - Anyone who can read the database file, or start a stdio server or `wait` on it, can read every account's messages: the file is the boundary on the server itself. `openDb` creates a missing directory 0700 and a missing database file 0600.
 - Accounts cannot be deleted yet. Revoke their tokens instead.
