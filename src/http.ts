@@ -72,7 +72,10 @@ async function readBody(req: IncomingMessage): Promise<unknown> {
   return JSON.parse(Buffer.concat(chunks).toString("utf8"));
 }
 
-/** Serves the MCP tools over streamable HTTP at /mcp, one `Session` per MCP session, and the dashboard page at GET /. Every other request needs the token. */
+/**
+ * Serves the MCP tools over streamable HTTP at /mcp, one `Session` per MCP session. Every request needs the token,
+ * except GET / for the dashboard page.
+ */
 export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServer> {
   if (!options.token) throw new Error("an HTTP token is required");
   const idleTimeoutMs = options.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS;

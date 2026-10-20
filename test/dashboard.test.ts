@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -43,6 +44,8 @@ describe("GET /", () => {
     const html = await res.text();
     expect(html).toMatch(/^<!doctype html>/);
     expect(html).toContain("/api/agents");
+    // The query is not part of the path.
+    expect((await fetch(`${base()}/?x=1`)).status).toBe(200);
   });
 
   it("is the same page with any token or none, and holds no data or token", async () => {
@@ -63,7 +66,6 @@ describe("GET /", () => {
   });
 
   it("allows the page's inline script and style by their hashes", async () => {
-    const { createHash } = await import("node:crypto");
     const res = await fetch(`${base()}/`);
     const csp = res.headers.get("content-security-policy") ?? "";
     const html = await res.text();

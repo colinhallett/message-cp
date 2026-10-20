@@ -12,7 +12,8 @@ input { font: inherit; width: 30em; max-width: 100%; }
 table { border-collapse: collapse; width: 100%; }
 th, td { text-align: left; padding: 0.3em 0.6em; border-bottom: 1px solid #ddd; vertical-align: top; }
 td.n { text-align: right; }
-#status { color: #a00; min-height: 1.4em; }
+#status-line { min-height: 1.4em; }
+#status-line.error { color: #a00; }
 [hidden] { display: none; }
 `;
 
@@ -25,15 +26,23 @@ const form = document.getElementById("login");
 const input = document.getElementById("token");
 const view = document.getElementById("view");
 const rows = document.getElementById("rows");
-const status = document.getElementById("status");
+const statusLine = document.getElementById("status-line");
 let timer;
 let generation = 0;
 
-function ask() {
+function say(text, isError) {
+  statusLine.textContent = text;
+  statusLine.className = isError ? "error" : "";
+}
+
+function ask(message) {
   sessionStorage.removeItem(KEY);
   generation++;
   clearTimeout(timer);
+  // Clear the table, so one token's agents never show under the next token.
+  rows.replaceChildren();
   view.hidden = true;
+  say(message || "", true);
   form.hidden = false;
   input.value = "";
   input.focus();
@@ -48,14 +57,14 @@ form.addEventListener("submit", (event) => {
   start();
 });
 
-document.getElementById("forget").addEventListener("click", ask);
+document.getElementById("forget").addEventListener("click", () => ask());
 
 function start() {
   generation++;
   clearTimeout(timer);
   form.hidden = true;
   view.hidden = false;
-  status.textContent = "Loading…";
+  say("Loading…", false);
   poll(generation);
 }
 
@@ -69,7 +78,13 @@ async function fetchAll(token) {
       referrerPolicy: "no-referrer",
     });
     if (!res.ok) return { status: res.status };
-    const page = await res.json();
+    let page;
+    try {
+      page = await res.json();
+    } catch {
+      page = undefined;
+    }
+    if (!Array.isArray(page)) return { error: "The server sent an answer this page cannot read" };
     agents.push(...page);
     if (page.length < PAGE) return { agents };
   }
@@ -86,16 +101,16 @@ async function poll(gen) {
   }
   // A newer token or a sign-out since this poll began: drop its answer.
   if (gen !== generation) return;
-  if (result.status === 401) return ask();
+  if (result.status === 401) return ask("The server refused that token. Enter another.");
   if (result.agents) {
     show(result.agents);
-    status.textContent = "";
+    say("", false);
   } else if (result.status === 403) {
-    status.textContent = "This token cannot read agents (403). Retrying…";
+    say("This token cannot read agents (403). Retrying…", true);
   } else if (result.status === 503) {
-    status.textContent = "The server is busy (503). Retrying…";
+    say("The server is busy (503). Retrying…", true);
   } else {
-    status.textContent = (result.error || "The server answered " + result.status) + ". Retrying…";
+    say((result.error || "The server answered " + result.status) + ". Retrying…", true);
   }
   timer = setTimeout(() => poll(gen), POLL_MS);
 }
@@ -158,13 +173,13 @@ export const DASHBOARD_HTML = `<!doctype html>
 </head>
 <body>
 <h1>message-cp agents</h1>
+<p id="status-line" role="status"></p>
 <form id="login" hidden>
 <label for="token">Token for your account (read-only is enough), kept in this tab only:</label><br>
-<input id="token" type="password" autocomplete="current-password" required>
+<input id="token" type="password" autocomplete="off" required>
 <button type="submit">Show agents</button>
 </form>
 <div id="view" hidden>
-<p id="status" role="status"></p>
 <table>
 <thead><tr><th>Name</th><th>Bio</th><th>Last seen</th><th>Unread messages</th><th>Unread posts</th><th>Online</th></tr></thead>
 <tbody id="rows"></tbody>
