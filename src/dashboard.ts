@@ -2,11 +2,11 @@ import { createHash } from "node:crypto";
 
 // The page served at GET / by `message-cp serve`. It holds no data and no token: it asks for a token, keeps it in
 // sessionStorage (that tab only), and polls GET /api/agents, GET /api/channels, GET /api/messages and, while one is
-// open, a channel's GET /api/channel-posts or the account's GET /api/webhook-deliveries with it. It shows them as a chat app: channels and the pairs of agents that
-// have messaged each other in a sidebar, the open one as a log in the middle, and the agents on the right. A search box
-// asks GET /api/search once per search and shows the answer in the middle in place of the open conversation. The
-// sidebar's "Webhook deliveries" entry shows the newest deliveries in the middle the same way, refreshed with each poll.
-// It only reads, and puts agent-supplied text on the page with textContent, never as HTML.
+// open, a channel's GET /api/channel-posts or the account's GET /api/webhook-deliveries with it. It shows them as a
+// chat app: channels and the pairs of agents that have messaged each other in a sidebar, the open one as a log in the
+// middle, and the agents on the right. A search box asks GET /api/search once per search and shows the answer in the
+// middle in place of the open conversation. The sidebar's "Webhook deliveries" entry shows the newest deliveries in the
+// middle the same way, refreshed with each poll. It only reads, and puts agent-supplied text on the page with textContent, never as HTML.
 
 const STYLE = `
 :root {
@@ -150,12 +150,12 @@ let held = 0;
 let heldMessages = 0;
 let messages = [];
 let pairs = new Map();
-// The pair whose messages are open in the log, by pairKey, or undefined. At most one of openChannel and openPair is set.
+// The pair whose messages are open in the log, by pairKey, or undefined.
 let openPair;
-// Whether the webhook deliveries are open in the log, and how many the view last read, or "" until it has read them.
-// At most one of openChannel, openPair and openDeliveries is set.
+// Whether the webhook deliveries are open in the log. At most one of openChannel, openPair and openDeliveries is set.
 let openDeliveries = false;
-let deliveryCount = "";
+// The count on the sidebar's webhooks entry, once the entry is made: how many deliveries the view read when last open.
+let deliveryCount;
 // The search's own counter and request, separate from generation and controller, so a newer search, leaving the
 // results or ask() drops a search's answer.
 let searchGeneration = 0;
@@ -184,8 +184,7 @@ function ask(message) {
   pairs = new Map();
   pairRows.replaceChildren();
   messagesNote.textContent = "";
-  deliveryCount = "";
-  deliveryEntry.replaceChildren();
+  if (deliveryCount) deliveryCount.textContent = "";
   closeLog();
   searchText.value = "";
   view.hidden = true;
@@ -441,9 +440,9 @@ async function readMessages(token, signal, gen) {
   }
 }
 
-// Reads the newest PAGE webhook deliveries and replaces the ones the log holds: they come newest first, and a delivery's
-// attempts and status change, so each poll reads the one page again rather than appending. Any failure but a refused
-// token goes in the log's note, so it never stops the rest of the page refreshing.
+// Reads the newest PAGE webhook deliveries and replaces the ones the log holds: they come newest first, and a
+// delivery's attempts and status change, so each poll reads the one page again rather than appending. Any failure but
+// a refused token goes in the log's note, so it never stops the rest of the page refreshing.
 async function readDeliveries(token, signal, gen) {
   let page;
   try {
@@ -454,13 +453,23 @@ async function readDeliveries(token, signal, gen) {
   // A newer poll, or the deliveries were closed, while the page was read: leave the log to them.
   if (gen !== generation || !openDeliveries) return { ok: true };
   if (page.status === 401) return page;
-  if (page.items) {
-    postRows.replaceChildren(...page.items.map(deliveryRow));
+  // A list whose entries are not deliveries is as unreadable as one that is not a list.
+  let shown;
+  try {
+    if (page.items) shown = page.items.map(deliveryRow);
+  } catch {
+    page = { error: "The server sent an answer this page cannot read" };
+  }
+  if (shown) {
+    postRows.replaceChildren(...shown);
     postRows.scrollTop = 0;
-    deliveryCount = page.items.length;
-    showDeliveryEntry();
+    deliveryCount.textContent = String(shown.length);
     logNote.textContent =
-      page.items.length === 0 ? "No webhook deliveries yet." : page.items.length === PAGE ? "Only the newest " + PAGE + " deliveries are shown." : "";
+      shown.length === 0
+        ? "No webhook deliveries yet."
+        : shown.length === PAGE
+          ? "Only the newest " + PAGE + " deliveries are shown."
+          : "";
   } else if (page.status === 403) {
     logNote.textContent = "This token cannot read webhook deliveries (403). Retrying…";
   } else if (page.status === 503) {
@@ -483,15 +492,20 @@ async function poll(gen) {
   try {
     result = await fetchView(token, ac.signal);
     // The agents and channels go up before the messages and the log are read, so a long or slow history never holds
-    // them back. The messages and the log (a channel's posts or the webhook deliveries) are read side by side, so neither waits on the other or fails with it, and
-    // both have finished before the next poll can read past what they hold.
+    // them back. The messages and the log (a channel's posts or the webhook deliveries) are read side by side, so
+    // neither waits on the other or fails with it, and both have finished before the next poll can read past what they
+    // hold.
     if (result.ok && gen === generation) {
       show(result.agents);
       showChannels(result.channels);
       showDeliveryEntry();
       const [messages, posts] = await Promise.allSettled([
         readMessages(token, ac.signal, gen),
-        channel !== undefined ? readLog(token, ac.signal, gen, channel) : deliveries ? readDeliveries(token, ac.signal, gen) : { ok: true },
+        channel !== undefined
+          ? readLog(token, ac.signal, gen, channel)
+          : deliveries
+            ? readDeliveries(token, ac.signal, gen)
+            : { ok: true },
       ]);
       // A refused token from either read wins, so a failure of the other never leaves the page showing its data.
       const values = [messages, posts].filter((r) => r.status === "fulfilled").map((r) => r.value);
@@ -604,7 +618,7 @@ function showPairs() {
   pairRows.replaceChildren(...items);
 }
 
-// Marks the open channel or pair in the sidebar, in place, so the button just chosen keeps the focus.
+// Marks the open channel, pair or webhook deliveries in the sidebar, in place, so the button just chosen keeps the focus.
 function markOpen() {
   const key = openKey();
   for (const li of [...channelRows.children, ...pairRows.children, ...deliveryEntry.children]) {
@@ -644,9 +658,12 @@ function resultEntry(r) {
   return li;
 }
 
-// The sidebar's one webhooks entry, with how many deliveries the view last read.
+// Makes the sidebar's one webhooks entry the first time the channels are shown. It is never made again, so a poll
+// never replaces the button and takes its focus; its count is blank until the view is first opened.
 function showDeliveryEntry() {
-  deliveryEntry.replaceChildren(sidebarItem("deliveries", "Webhook deliveries", "", deliveryCount, openDeliveryLog));
+  if (deliveryCount) return;
+  deliveryEntry.append(sidebarItem("deliveries", "Webhook deliveries", "", "", openDeliveryLog));
+  deliveryCount = deliveryEntry.children[0].children[0].children[1];
 }
 
 // A webhook delivery: what it was for, its status (failed marked), when it was queued, its webhook, its attempts and,
@@ -659,7 +676,8 @@ function deliveryRow(d) {
   time.title = String(d.queuedAt);
   const facts = ["webhook " + d.webhook, "attempts: " + d.attempts];
   if (d.deliveredAt != null) facts.push("delivered " + when(d.deliveredAt));
-  li.append(part("span", "from", String(d.on)), part("span", "tag", status), time, part("div", "body", facts.join(" · ")));
+  const body = part("div", "body", facts.join(" · "));
+  li.append(part("span", "from", String(d.on)), part("span", "tag", status), time, body);
   return li;
 }
 

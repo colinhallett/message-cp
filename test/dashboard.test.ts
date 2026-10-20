@@ -832,9 +832,10 @@ describe("the page's webhook deliveries", () => {
   });
 
   // Runs the served script with the given token, as the channels and messages tests do. refuse, when it returns a
-  // status, answers a request with that status; "hang" answers only by failing when it is aborted, "fail" rejects and
-  // "junk" answers 200 with a body this page cannot read.
-  async function load(token: string, refuse: (url: string) => number | "hang" | "fail" | "junk" | undefined = () => undefined) {
+  // status, answers a request with that status; "hang" answers only by failing when it is aborted, "fail" rejects,
+  // "junk" answers 200 with a body this page cannot read and "nulls" a list it cannot read.
+  type Refusal = number | "hang" | "fail" | "junk" | "nulls";
+  async function load(token: string, refuse: (url: string) => Refusal | undefined = () => undefined) {
     const html = await (await fetch(`${base()}/`)).text();
     const script = /<script>([\s\S]*?)<\/script>/.exec(html)![1];
     const elements: Record<string, Stub> = {};
@@ -855,6 +856,7 @@ describe("the page's webhook deliveries", () => {
         if (status === "hang") return new Promise<Response>((_resolve, reject) => init.signal!.addEventListener("abort", () => reject(new Error("aborted"))));
         if (status === "fail") return Promise.reject(new TypeError("fetch failed"));
         if (status === "junk") return Promise.resolve(new Response("{", { status: 200 }));
+        if (status === "nulls") return Promise.resolve(Response.json([null]));
         return status === undefined ? fetch(`${base()}${url}`, init) : Promise.resolve(new Response(null, { status }));
       },
     });
@@ -863,16 +865,16 @@ describe("the page's webhook deliveries", () => {
       expect(done()).toBe(true);
     };
     const poll = () => polls.splice(0).pop()!();
-    const entry = () => elements["delivery-entry"].children[0]?.children[0];
+    const entry = () => elements["delivery-entry"].children[0]?.children[0] as Stub;
     const openDeliveries = async () => {
       await until(() => entry() !== undefined);
-      entry()!.on.click();
+      entry().on.click();
     };
     return { elements, urls, store, polls, deadlines, until, poll, entry, openDeliveries };
   }
 
   // The sidebar entry's label and count.
-  const item = (page: Awaited<ReturnType<typeof load>>) => page.entry()!.children.map((c) => c.textContent);
+  const item = (page: Awaited<ReturnType<typeof load>>) => page.entry().children.map((c) => c.textContent);
   const set = (id: number, attempts: number, deliveredAt: number | null) =>
     db.prepare("UPDATE webhook_deliveries SET attempts = ?, delivered_at = ? WHERE id = ?").run(attempts, deliveredAt, id);
   const ids = () => db.prepare("SELECT id FROM webhook_deliveries ORDER BY id").pluck().all() as number[];
@@ -919,7 +921,7 @@ describe("the page's webhook deliveries", () => {
     ]);
     expect(rows.children.every((row) => field(row, "time")!.startsWith("queued "))).toBe(true);
     expect(item(page)).toEqual(["Webhook deliveries", "3"]);
-    expect(page.entry()!.className).toBe("item current");
+    expect(page.entry().className).toBe("item current");
     // Nothing private reached the page.
     const text = JSON.stringify(rows.children.map(delivery));
     for (const hidden of ["example.com", agent.secret, "secret plans", viewer]) expect(text).not.toContain(hidden);
@@ -963,14 +965,17 @@ describe("the page's webhook deliveries", () => {
     [403, "This token cannot read webhook deliveries (403). Retrying…"],
     [503, "The server is busy (503). Retrying…"],
     ["junk", "The server sent an answer this page cannot read. Retrying…"],
+    ["nulls", "The server sent an answer this page cannot read. Retrying…"],
     ["fail", "Cannot reach the server. Retrying…"],
   ] as const)("shows a %s in the view's note and keeps the rest of the page refreshing", async (failure, note) => {
     for (const name of ["alice", "bob"]) registerAgent(db, OWNER_ACCOUNT, name, "x");
     post(db, OWNER_ACCOUNT, { ...identityOf(db, OWNER_ACCOUNT, "alice")!, name: "alice" }, "build", "hello");
     const page = await load(viewer, (url) => (url.startsWith("/api/webhook-deliveries") ? failure : undefined));
+    await page.until(() => page.polls.length === 1);
+    // Opening the view drops the poll scheduled before it; wait for the one it starts to schedule the next.
+    page.polls.length = 0;
     await page.openDeliveries();
-    await page.until(() => page.elements["log-note"].textContent === note);
-    await page.until(() => page.polls.length > 0);
+    await page.until(() => page.elements["log-note"].textContent === note && page.polls.length === 1);
     expect(page.elements["status-line"].textContent).toBe("");
     expect(page.store.size).toBe(1);
 
@@ -1013,7 +1018,7 @@ describe("the page's webhook deliveries", () => {
     expect(page.elements["post-rows"].children).toHaveLength(0);
     expect(page.elements["log"].hidden).toBe(true);
     expect(page.elements["log-title"].textContent).toBe("");
-    expect(page.elements["delivery-entry"].children).toHaveLength(0);
+    expect(item(page)).toEqual(["Webhook deliveries", ""]);
     expect(page.store.size).toBe(0);
     expect(page.elements["login"].hidden).toBe(false);
   });
@@ -1031,7 +1036,7 @@ describe("the page's webhook deliveries", () => {
     page.elements["forget"].on.click();
     expect(page.elements["post-rows"].children).toHaveLength(0);
     expect(page.elements["log"].hidden).toBe(true);
-    expect(page.elements["delivery-entry"].children).toHaveLength(0);
+    expect(item(page)).toEqual(["Webhook deliveries", ""]);
     expect(page.store.size).toBe(0);
 
     page.elements["token"].value = otherViewer;
