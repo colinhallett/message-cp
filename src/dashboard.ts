@@ -191,8 +191,9 @@ let tokenController;
 let people;
 let pickerKey = "";
 let person;
-// Whether a send is in flight; the Send button is disabled while it is.
-let sending = false;
+// The tokenGeneration a send is in flight for, or undefined. While one is, the Send button is disabled for that token,
+// so a write is never sent twice before the server has said whether it took the first; a new token is not held by it.
+let sending;
 
 function say(text, isError) {
   statusLine.textContent = text;
@@ -220,6 +221,8 @@ function ask(message) {
   asBox.hidden = true;
   asNote.textContent = "";
   composeText.value = "";
+  composeNote.textContent = "";
+  composeSend.disabled = false;
   // Clear every panel, so one token's agents, channels, pairs and messages never show under the next token.
   rows.replaceChildren();
   channelRows.replaceChildren();
@@ -475,65 +478,78 @@ function showCompose() {
   if (shown) composeLabel.textContent = openChannel !== undefined ? "Post in #" + openChannel + " as " + person : "Reply to " + to + " as " + person;
 }
 
-// Posts in the open channel or replies in the open pair as the chosen person, then polls at once so it shows. The text
-// is cleared only once the server has answered 200, and only if it is still what was sent; any other answer keeps it
-// and says why under the box.
+// What the compose box sends to now: the path, the conversation and the person, or undefined when it is hidden.
+function composeTarget() {
+  if (compose.hidden) return undefined;
+  return openChannel !== undefined
+    ? { path: "/api/post", conversation: "#" + openChannel, fields: { as: person, channel: openChannel } }
+    : { path: "/api/send", conversation: openPair, fields: { as: person, to: replyTo() } };
+}
+
+// Posts in the open channel or replies in the open pair as the chosen person, then polls at once so it shows. A send
+// is never abandoned on a timer: the server may take a body the page has stopped waiting for, so Send stays disabled
+// until it answers. Its answer changes the box only while the box still sends to the same conversation as the same
+// person: the text is cleared after a 200, if it is still what was sent, and any other answer keeps it and says why.
 async function send() {
   const token = sessionStorage.getItem(KEY);
   if (!token) return ask();
-  // The box is shown only for a full token, a chosen person and a channel or a pair of theirs (showCompose).
-  if (sending || compose.hidden) return;
-  const body = composeText.value;
-  const [path, fields] =
-    openChannel !== undefined
-      ? ["/api/post", { as: person, channel: openChannel, body }]
-      : ["/api/send", { as: person, to: replyTo(), body }];
   const tokenGen = tokenGeneration;
-  const ac = new AbortController();
-  const deadline = setTimeout(() => ac.abort(), TIMEOUT_MS);
-  sending = true;
+  // The box is shown only for a full token, a chosen person and a channel or a pair of theirs (showCompose).
+  const target = composeTarget();
+  if (sending === tokenGen || target === undefined) return;
+  const body = composeText.value;
+  // The server counts characters as code points, as validateBody does, which maxlength (UTF-16 units) does not.
+  if ([...body].length > ${MAX_BODY_LENGTH}) {
+    composeNote.textContent = "This is longer than ${MAX_BODY_LENGTH} characters.";
+    return;
+  }
+  sending = tokenGen;
   composeSend.disabled = true;
   composeNote.textContent = "Sending…";
   let answer;
   try {
-    const res = await fetch(path, {
+    const res = await fetch(target.path, {
       method: "POST",
       headers: { Authorization: "Bearer " + token, "Content-Type": "application/json" },
-      body: JSON.stringify(fields),
+      body: JSON.stringify({ ...target.fields, body }),
       cache: "no-store",
       credentials: "omit",
       referrerPolicy: "no-referrer",
-      signal: ac.signal,
     });
     answer = res.status === 400 ? { status: 400, reason: await reasonOf(res) } : { status: res.status };
   } catch {
-    answer = { error: ac.signal.aborted ? "The server did not answer in time, so it may have been sent: check before sending again" : "Cannot reach the server" };
-  } finally {
-    clearTimeout(deadline);
-    sending = false;
-    composeSend.disabled = false;
+    answer = { error: "The connection failed, so it may have been sent: check the conversation before sending again" };
   }
   if (tokenGen !== tokenGeneration) return;
   if (answer.status === 401) return ask("The server refused that token. Enter another.");
-  if (answer.status === 200) {
-    if (composeText.value === body) composeText.value = "";
-    composeNote.textContent = "";
+  const now = composeTarget();
+  const same = now !== undefined && now.path === target.path && now.conversation === target.conversation && now.fields.as === target.fields.as;
+  if (answer.status === 200 || answer.error) {
+    if (same && answer.status === 200 && composeText.value === body) composeText.value = "";
+    if (same) composeNote.textContent = answer.status === 200 ? "" : answer.error + ".";
+    // Read again at once, so the post or message shows, or, after a failed connection, so the reader can see whether
+    // it arrived before Send is enabled again.
     cancel();
-    poll(generation);
+    await poll(generation);
+    if (tokenGen !== tokenGeneration) return;
+  } else if (!same) {
+    // The box now sends somewhere else: this answer is not about it.
   } else if (answer.status === 400) {
     composeNote.textContent = answer.reason || "The server refused this (400).";
   } else if (answer.status === 403) {
     composeNote.textContent = "This token cannot post or send (403).";
   } else if (answer.status === 404) {
     // Both endpoints answer 404 only for an "as" that is not a live person of the account.
-    composeNote.textContent = person + " is no longer a person in this account (404).";
+    composeNote.textContent = target.fields.as + " is no longer a person in this account (404).";
   } else if (answer.status === 413) {
     composeNote.textContent = "This is too long for the server (413).";
   } else if (answer.status === 503) {
     composeNote.textContent = "The server is busy (503). Send again in a moment.";
   } else {
-    composeNote.textContent = (answer.error || "The server answered " + answer.status) + ".";
+    composeNote.textContent = "The server answered " + answer.status + ".";
   }
+  sending = undefined;
+  composeSend.disabled = false;
 }
 
 // Fetches the page of path at offset. items picks the page's list out of the answer, or undefined if there is none.
@@ -977,7 +993,7 @@ export const DASHBOARD_HTML = `<!doctype html>
 <ol id="post-rows" role="log"></ol>
 <form id="compose" hidden>
 <label id="compose-label" for="compose-text"></label>
-<textarea id="compose-text" rows="2" maxlength="${MAX_BODY_LENGTH}" required autocomplete="off"></textarea>
+<textarea id="compose-text" rows="2" required autocomplete="off"></textarea>
 <button id="compose-send" type="submit">Send</button>
 <p id="compose-note" class="note" role="status"></p>
 </form>

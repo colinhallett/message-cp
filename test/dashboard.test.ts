@@ -1079,6 +1079,7 @@ describe("the page's posting", () => {
   interface Stub {
     on: Record<string, (event?: unknown) => void>;
     hidden: boolean;
+    disabled?: boolean;
     value: string;
     textContent: string;
     className: string;
@@ -1129,8 +1130,10 @@ describe("the page's posting", () => {
   const open = (rows: Stub, name: string) => rows.children.find((row) => label(row) === name)!.children[0].on.click();
 
   // Runs the served script with the given token against this server. answer, when it returns a status for a request,
-  // answers it with that status (and a JSON error with message, for a 400) instead of the server.
-  async function load(token: string, answer: (url: string, method: string) => { status: number; body?: string } | undefined = () => undefined) {
+  // answers it with that status (and a JSON error with message, for a 400) instead of the server; with hold, it answers
+  // only once hold settles (and from the server when there is no status), or fails it when hold rejects.
+  type Answer = { status?: number; body?: string; hold?: Promise<void> };
+  async function load(token: string, answer: (url: string, method: string) => Answer | undefined = () => undefined) {
     const html = await (await fetch(`${base()}/`)).text();
     const script = /<script>([\s\S]*?)<\/script>/.exec(html)![1];
     const elements: Record<string, Stub> = {};
@@ -1154,7 +1157,10 @@ describe("the page's posting", () => {
         const method = init.method ?? "GET";
         requests.push({ url, method, body: init.body as string | undefined, headers: init.headers as Record<string, string> });
         const given = answer(url, method);
-        if (given) return Promise.resolve(new Response(given.body ?? null, { status: given.status }));
+        const reply = () =>
+          given?.status !== undefined ? new Response(given.body ?? null, { status: given.status }) : fetch(`${base()}${url}`, init);
+        if (given?.hold) return given.hold.then(reply);
+        if (given) return Promise.resolve(reply());
         return fetch(`${base()}${url}`, init);
       },
     });
@@ -1300,9 +1306,111 @@ describe("the page's posting", () => {
     expect(inbox).toEqual({ sender: "colin", body: "on it" });
   });
 
-  it("caps the compose box at MAX_BODY_LENGTH", async () => {
-    const html = await (await fetch(`${base()}/`)).text();
-    expect(html).toMatch(new RegExp(`<textarea id="compose-text"[^>]*maxlength="${MAX_BODY_LENGTH}"`));
+  it("caps the compose box at MAX_BODY_LENGTH characters, counted as the server counts them", async () => {
+    seed();
+    const page = await load(OWNER_TOKEN);
+    await page.until(() => page.picker().length === 1 && page.elements["channel-rows"].children.length === 1);
+    open(page.elements["channel-rows"], "build");
+    page.choose("colin");
+    // An astral character is two UTF-16 units but one character, so this is at the limit and goes.
+    const astral = "\u{1F680}".repeat(MAX_BODY_LENGTH);
+    page.send(astral);
+    await page.until(() => page.posts().length === 1 && page.elements["compose-send"].disabled === false);
+    expect(page.elements["compose-text"].value).toBe("");
+    const stored = db.prepare("SELECT body FROM channel_posts ORDER BY id DESC LIMIT 1").get() as { body: string };
+    expect(stored.body).toBe(astral);
+    // One more is over it, and is never sent.
+    page.send(astral + "x");
+    await page.until(() => page.elements["compose-note"].textContent === `This is longer than ${MAX_BODY_LENGTH} characters.`);
+    expect(page.posts()).toHaveLength(1);
+    expect(page.elements["compose-text"].value).toBe(astral + "x");
+  });
+
+  it("keeps Send disabled until a slow send is answered, so a write is never sent twice", async () => {
+    seed();
+    let release!: () => void;
+    const hold = new Promise<void>((resolve) => (release = resolve));
+    const page = await load(OWNER_TOKEN, (url, method) => (method === "POST" ? { hold } : undefined));
+    await page.until(() => page.picker().length === 1 && page.elements["channel-rows"].children.length === 1);
+    open(page.elements["channel-rows"], "build");
+    page.choose("colin");
+    page.send("once");
+    expect(page.elements["compose-send"].disabled).toBe(true);
+    // Long past any timeout the page had, the send is still held and a second submit sends nothing.
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    page.send("once");
+    expect(page.posts()).toHaveLength(1);
+    expect(page.elements["compose-note"].textContent).toBe("Sending…");
+    release();
+    await page.until(() => page.elements["compose-send"].disabled === false);
+    expect(page.posts()).toHaveLength(1);
+    expect(db.prepare("SELECT COUNT(*) AS n FROM channel_posts WHERE body = 'once'").get()).toEqual({ n: 1 });
+    expect(page.elements["compose-text"].value).toBe("");
+  });
+
+  it("after a failed connection says it may have been sent, and reads the conversation again before Send is enabled", async () => {
+    seed();
+    const page = await load(OWNER_TOKEN, (url, method) => (method === "POST" ? { hold: Promise.reject(new Error("reset")) } : undefined));
+    await page.until(() => page.picker().length === 1 && page.elements["channel-rows"].children.length === 1);
+    open(page.elements["channel-rows"], "build");
+    page.choose("colin");
+    const reads = () => page.requests.filter((r) => r.url.startsWith("/api/channel-posts")).length;
+    await page.until(() => reads() > 0 && page.elements["post-rows"].children.length === 1);
+    const before = reads();
+    page.send("maybe");
+    await page.until(() => page.elements["compose-send"].disabled === false);
+    expect(reads()).toBeGreaterThan(before);
+    expect(page.elements["compose-note"].textContent).toContain("may have been sent");
+    expect(page.elements["compose-text"].value).toBe("maybe");
+  });
+
+  it("leaves a conversation opened while a send was in flight alone when the send is answered", async () => {
+    seed();
+    for (const status of [undefined, 503]) {
+      let release!: () => void;
+      const hold = new Promise<void>((resolve) => (release = resolve));
+      const page = await load(OWNER_TOKEN, (url, method) => (method === "POST" ? { status, hold } : undefined));
+      await page.until(() => page.picker().length === 1 && page.elements["pair-rows"].children.length === 1);
+      page.choose("colin");
+      open(page.elements["channel-rows"], "build");
+      page.send("same text");
+      // The reader moves to the pair and types the same text there before the post is answered.
+      open(page.elements["pair-rows"], "bob ↔ colin");
+      page.elements["compose-text"].value = "same text";
+      release();
+      await page.until(() => page.elements["compose-send"].disabled === false);
+      expect(page.elements["compose-text"].value).toBe("same text");
+      expect(page.elements["compose-note"].textContent).toBe("");
+      expect(page.elements["compose-label"].textContent).toBe("Reply to bob as colin");
+    }
+  });
+
+  it("does not hold a new token's Send button on a send made with a forgotten one", async () => {
+    seed();
+    let release!: () => void;
+    const hold = new Promise<void>((resolve) => (release = resolve));
+    const page = await load(OWNER_TOKEN, (url, method) => (method === "POST" && page.posts().length === 1 ? { hold } : undefined));
+    await page.until(() => page.picker().length === 1 && page.elements["channel-rows"].children.length === 1);
+    open(page.elements["channel-rows"], "build");
+    page.choose("colin");
+    page.send("slow");
+    expect(page.elements["compose-send"].disabled).toBe(true);
+    page.elements["forget"].on.click();
+    expect(page.elements["compose-send"].disabled).toBe(false);
+    page.elements["token"].value = OWNER_TOKEN;
+    page.elements["login"].on.submit({ preventDefault() {} });
+    await page.until(() => page.picker().length === 1 && page.elements["channel-rows"].children.length === 1);
+    open(page.elements["channel-rows"], "build");
+    page.choose("colin");
+    page.send("fast");
+    await page.until(() => page.posts().length === 2 && page.elements["compose-text"].value === "");
+    // The old send's answer comes after, and changes nothing on the new token's box.
+    page.elements["compose-text"].value = "next";
+    release();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(page.elements["compose-send"].disabled).toBe(false);
+    expect(page.elements["compose-text"].value).toBe("next");
+    expect(page.elements["compose-note"].textContent).toBe("");
   });
 
   it.each([
