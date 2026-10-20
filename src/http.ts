@@ -26,6 +26,7 @@ import {
 } from "./messages.js";
 import { Session, createServer } from "./server.js";
 import { DEFAULT_WAIT_HOLD_MS, formatUnread } from "./wait.js";
+import { sendOptions, sendPending, type SendOptions } from "./webhooks.js";
 
 export const DEFAULT_HTTP_PORT = 8787;
 export const DEFAULT_HTTP_HOST = "127.0.0.1";
@@ -34,6 +35,8 @@ const MAX_BODY_BYTES = 4 * 1024 * 1024;
 export const DEFAULT_MAX_SESSIONS = 256;
 /** An agent seen this recently counts as online in GET /api/agents, as does one with a GET /wait held now. */
 export const ONLINE_WINDOW_MS = 5 * 60 * 1000;
+/** How often a pass over the webhook delivery queue is due; a tick while a pass is still running is skipped. */
+export const DEFAULT_WEBHOOK_INTERVAL_MS = 5000;
 
 export interface HttpOptions {
   /** The owner's token (MESSAGE_CP_HTTP_TOKEN). Tokens created with `message-cp token add` work as well, as their account. */
@@ -47,6 +50,10 @@ export interface HttpOptions {
   publicUrl?: string;
   /** How long GET /wait holds a request with no mail before answering 204. */
   waitHoldMs?: number;
+  /** How often a pass sends queued webhook deliveries. */
+  webhookIntervalMs?: number;
+  /** Passed to `sendPending`, so tests can shorten the timeout. */
+  webhookOptions?: Omit<SendOptions, "signal">;
 }
 
 export interface HttpServer {
@@ -139,6 +146,9 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
   if (!Number.isInteger(maxSessions) || maxSessions < 1) throw new Error("maxSessions must be a positive integer");
   const waitHoldMs = options.waitHoldMs ?? DEFAULT_WAIT_HOLD_MS;
   if (!Number.isFinite(waitHoldMs) || waitHoldMs < 0) throw new Error("waitHoldMs must be a finite number >= 0");
+  const webhookIntervalMs = options.webhookIntervalMs ?? DEFAULT_WEBHOOK_INTERVAL_MS;
+  if (!Number.isFinite(webhookIntervalMs) || webhookIntervalMs < 10) throw new Error("webhookIntervalMs must be a finite number >= 10");
+  const webhookOptions = sendOptions(options.webhookOptions ?? {});
   const sessions = new Map<string, Live>();
   let initializing = 0;
   let waiting = 0;
@@ -169,6 +179,26 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
     Math.max(10, Math.min(60_000, idleTimeoutMs / 2)),
   );
   sweep.unref();
+
+  // Webhook deliveries go out from here only: one pass at a time, each sending at most a batch, so outbound work is
+  // bounded. `close()` stops new claims and waits for the pass in progress.
+  const stopping = new AbortController();
+  let sending: Promise<void> | undefined;
+  const deliver = setInterval(() => {
+    if (sending) return;
+    sending = (async () => {
+      try {
+        await sendPending(db, { ...webhookOptions, signal: stopping.signal });
+      } catch (err) {
+        // A lock held past the busy timeout is retried on the next pass; nothing about a delivery is logged.
+        const code = (err as { code?: unknown } | null)?.code;
+        if (typeof code !== "string" || !code.startsWith("SQLITE_BUSY")) console.error("message-cp serve: webhook pass failed");
+      } finally {
+        sending = undefined;
+      }
+    })();
+  }, webhookIntervalMs);
+  deliver.unref();
 
   /** One check for mail; a lock held past the busy timeout counts as no mail this time, as in `message-cp wait`. */
   const poll = (account: AccountId, name: string): Unread | undefined => {
@@ -450,6 +480,9 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
     sessionCount: () => sessions.size,
     close: async () => {
       clearInterval(sweep);
+      clearInterval(deliver);
+      stopping.abort();
+      await sending;
       for (const id of [...sessions.keys()]) drop(id);
       server.closeAllConnections();
       await new Promise<void>((resolve) => server.close(() => resolve()));

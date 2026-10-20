@@ -1,18 +1,32 @@
 import { spawnSync } from "node:child_process";
+import { createHmac } from "node:crypto";
 import { mkdtempSync } from "node:fs";
+import { createServer as createHttpServer, type IncomingHttpHeaders, type Server } from "node:http";
+import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import Database from "better-sqlite3";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { addAccount } from "../src/accounts.js";
 import { registerWithIdentity, removeAgent } from "../src/agents.js";
 import { post } from "../src/channels.js";
 import { OWNER_ACCOUNT, openDb, type AccountId, type Db } from "../src/db.js";
+import { startHttp } from "../src/http.js";
 import { sendMessage } from "../src/messages.js";
-import { WebhookError, addWebhook, deliveryBody, listWebhooks, removeWebhook, webhookOn, webhookUrl } from "../src/webhooks.js";
+import {
+  WebhookError,
+  addWebhook,
+  deliveryBody,
+  listWebhooks,
+  removeWebhook,
+  sendPending,
+  webhookOn,
+  webhookUrl,
+  type NewWebhook,
+} from "../src/webhooks.js";
 
-// Webhooks for the owner's account and a friend's, managed only with `message-cp webhook`. Deliveries are queued but
-// nothing sends them yet.
+// Webhooks for the owner's account and a friend's, managed only with `message-cp webhook`. Deliveries are queued when
+// a message or post is stored and sent by `sendPending`, which `serve` runs on a timer.
 let dbFile: string;
 let db: Db;
 
@@ -297,6 +311,246 @@ describe("queued deliveries", () => {
     addWebhook(db, "owner", "https://example.com/", "agent:bob", true);
     sendMessage(db, OWNER_ACCOUNT, "alice", "bob", "hi");
     expect(queued()).toHaveLength(1);
+  });
+});
+
+describe("sendPending", () => {
+  let friend: AccountId;
+  /** Requests each receiver got, as headers and body text. */
+  type Got = { headers: IncomingHttpHeaders; body: string; url: string };
+  const servers: Server[] = [];
+  beforeEach(() => {
+    friend = (db.prepare("SELECT id FROM accounts WHERE name = 'friend'").get() as { id: number }).id;
+    return async () => {
+      for (const s of servers.splice(0)) {
+        s.closeAllConnections();
+        await new Promise((r) => s.close(r));
+      }
+    };
+  });
+
+  /** A receiver on 127.0.0.1 answering each request with `answer(n)`, n counting from 0; null never answers. */
+  const receiver = async (answer: (n: number) => number | null = () => 200) => {
+    const got: Got[] = [];
+    const server = createHttpServer((req, res) => {
+      const chunks: Buffer[] = [];
+      req.on("data", (c: Buffer) => chunks.push(c));
+      req.on("end", () => {
+        const status = answer(got.length);
+        got.push({ headers: req.headers, body: Buffer.concat(chunks).toString("utf8"), url: req.url ?? "" });
+        if (status === null) return;
+        res.writeHead(status, status === 302 ? { Location: "/elsewhere" } : {});
+        res.end();
+      });
+    });
+    servers.push(server);
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+    return { got, url: `http://127.0.0.1:${(server.address() as AddressInfo).port}/hook` };
+  };
+
+  const member = (account: AccountId, name: string) => ({ ...registerWithIdentity(db, account, name, "x").identity, name });
+  const row = () => db.prepare("SELECT attempts, delivered_at FROM webhook_deliveries").get() as { attempts: number; delivered_at: number | null };
+  const signature = (secret: string, body: string) => `sha256=${createHmac("sha256", secret).update(body).digest("hex")}`;
+  /** Lets a retry be claimed without waiting out the in-flight guard. */
+  const later = { timeoutMs: 1000 };
+  const unclaim = () => db.prepare("UPDATE webhook_deliveries SET claimed_until = NULL").run();
+
+  it("POSTs the body, signed with the webhook's secret, and marks it delivered", async () => {
+    const r = await receiver();
+    member(OWNER_ACCOUNT, "alice");
+    member(OWNER_ACCOUNT, "bob");
+    const hook = addWebhook(db, "owner", r.url, "agent:bob", true);
+    sendMessage(db, OWNER_ACCOUNT, "alice", "bob", "hello bob");
+    expect(await sendPending(db)).toEqual({ delivered: 1, failed: 0 });
+    expect(r.got).toHaveLength(1);
+    const [got] = r.got;
+    expect(got!.url).toBe("/hook");
+    expect(got!.headers["content-type"]).toBe("application/json");
+    expect(got!.body).toBe(JSON.stringify(deliveryBody(db, 1)));
+    expect(JSON.parse(got!.body)).toMatchObject({ event: "agent", recipient: "bob", sender: "alice", text: "hello bob" });
+    expect(got!.headers["x-message-cp-signature"]).toBe(signature(hook.secret, got!.body));
+    expect(JSON.stringify(got)).not.toContain(hook.secret);
+    expect(row()).toMatchObject({ attempts: 1, delivered_at: expect.any(Number) });
+    expect(await sendPending(db)).toEqual({ delivered: 0, failed: 0 });
+    expect(r.got).toHaveLength(1);
+  });
+
+  it("leaves the text out for a webhook added with --no-text", async () => {
+    const r = await receiver();
+    const alice = member(OWNER_ACCOUNT, "alice");
+    addWebhook(db, "owner", r.url, "#general", false);
+    post(db, OWNER_ACCOUNT, alice, "general", "secret plans");
+    await sendPending(db);
+    expect(Object.keys(JSON.parse(r.got[0]!.body)).sort()).toEqual(["channel", "event", "sender", "sentAt"]);
+    expect(r.got[0]!.body).not.toContain("plans");
+  });
+
+  it("retries a 500 on a later pass and then delivers", async () => {
+    const r = await receiver((n) => (n === 0 ? 500 : 204));
+    member(OWNER_ACCOUNT, "alice");
+    member(OWNER_ACCOUNT, "bob");
+    addWebhook(db, "owner", r.url, "agent:bob", true);
+    sendMessage(db, OWNER_ACCOUNT, "alice", "bob", "hi");
+    expect(await sendPending(db, later)).toEqual({ delivered: 0, failed: 1 });
+    expect(row()).toEqual({ attempts: 1, delivered_at: null });
+    // The attempt just made may still be in flight for another sender, so it is not retried at once.
+    expect(await sendPending(db, later)).toEqual({ delivered: 0, failed: 0 });
+    unclaim();
+    expect(await sendPending(db, later)).toEqual({ delivered: 1, failed: 0 });
+    expect(row()).toMatchObject({ attempts: 2, delivered_at: expect.any(Number) });
+    expect(r.got[1]!.body).toBe(r.got[0]!.body);
+  });
+
+  it("aborts a request the receiver never answers and counts it as failed", async () => {
+    const r = await receiver(() => null);
+    member(OWNER_ACCOUNT, "alice");
+    member(OWNER_ACCOUNT, "bob");
+    addWebhook(db, "owner", r.url, "agent:bob", true);
+    sendMessage(db, OWNER_ACCOUNT, "alice", "bob", "hi");
+    const started = Date.now();
+    expect(await sendPending(db, { timeoutMs: 200 })).toEqual({ delivered: 0, failed: 1 });
+    expect(Date.now() - started).toBeLessThan(2000);
+    expect(r.got).toHaveLength(1);
+    expect(row()).toEqual({ attempts: 1, delivered_at: null });
+  });
+
+  it("does not follow a 302, and counts it as failed", async () => {
+    const r = await receiver((n) => (n === 0 ? 302 : 200));
+    member(OWNER_ACCOUNT, "alice");
+    member(OWNER_ACCOUNT, "bob");
+    addWebhook(db, "owner", r.url, "agent:bob", true);
+    sendMessage(db, OWNER_ACCOUNT, "alice", "bob", "hi");
+    expect(await sendPending(db)).toEqual({ delivered: 0, failed: 1 });
+    expect(r.got.map((g) => g.url)).toEqual(["/hook"]);
+    expect(row()).toEqual({ attempts: 1, delivered_at: null });
+  });
+
+  it("stops after 3 attempts in all, leaving the row undelivered", async () => {
+    const r = await receiver(() => 503);
+    member(OWNER_ACCOUNT, "alice");
+    member(OWNER_ACCOUNT, "bob");
+    addWebhook(db, "owner", r.url, "agent:bob", true);
+    sendMessage(db, OWNER_ACCOUNT, "alice", "bob", "hi");
+    for (let i = 0; i < 5; i++) {
+      await sendPending(db, later);
+      unclaim();
+    }
+    expect(r.got).toHaveLength(3);
+    expect(row()).toEqual({ attempts: 3, delivered_at: null });
+  });
+
+  it("uses up a row's attempts without a request when its stored URL no longer passes webhookUrl", async () => {
+    const r = await receiver();
+    member(OWNER_ACCOUNT, "alice");
+    member(OWNER_ACCOUNT, "bob");
+    const hook = addWebhook(db, "owner", r.url, "agent:bob", true);
+    db.prepare("UPDATE webhooks SET url = ? WHERE id = ?").run(r.url.replace("127.0.0.1", "localhost"), hook.id);
+    sendMessage(db, OWNER_ACCOUNT, "alice", "bob", "hi");
+    for (let i = 0; i < 3; i++) {
+      expect(await sendPending(db, later)).toEqual({ delivered: 0, failed: 1 });
+      unclaim();
+    }
+    expect(await sendPending(db, later)).toEqual({ delivered: 0, failed: 0 });
+    expect(r.got).toHaveLength(0);
+    expect(row()).toEqual({ attempts: 3, delivered_at: null });
+  });
+
+  it("never lets a second sender on the same file resend a claimed attempt", async () => {
+    const r = await receiver(() => null);
+    member(OWNER_ACCOUNT, "alice");
+    member(OWNER_ACCOUNT, "bob");
+    addWebhook(db, "owner", r.url, "agent:bob", true);
+    sendMessage(db, OWNER_ACCOUNT, "alice", "bob", "hi");
+    const other = openDb(dbFile);
+    try {
+      const first = sendPending(db, { timeoutMs: 1000 });
+      await vi.waitFor(() => expect(r.got).toHaveLength(1));
+      // The first request is still waiting on the receiver.
+      expect(await sendPending(other, { timeoutMs: 1000 })).toEqual({ delivered: 0, failed: 0 });
+      expect(await first).toEqual({ delivered: 0, failed: 1 });
+      expect(r.got).toHaveLength(1);
+      expect(row()).toEqual({ attempts: 1, delivered_at: null });
+    } finally {
+      other.close();
+    }
+  });
+
+  it("leaves a claim alone for as long as the claiming sender's own timeout allows, whatever the next sender's", async () => {
+    const r = await receiver(() => 500);
+    member(OWNER_ACCOUNT, "alice");
+    member(OWNER_ACCOUNT, "bob");
+    addWebhook(db, "owner", r.url, "agent:bob", true);
+    sendMessage(db, OWNER_ACCOUNT, "alice", "bob", "hi");
+    const claimed = Date.now();
+    expect(await sendPending(db, { timeoutMs: 30_000 })).toEqual({ delivered: 0, failed: 1 });
+    const now = vi.spyOn(Date, "now");
+    try {
+      // Past twice the default timeout, but the first sender's request could still be in flight.
+      now.mockReturnValue(claimed + 15_000);
+      expect(await sendPending(db)).toEqual({ delivered: 0, failed: 0 });
+      now.mockReturnValue(claimed + 61_000);
+      expect(await sendPending(db)).toEqual({ delivered: 0, failed: 1 });
+    } finally {
+      now.mockRestore();
+    }
+    expect(r.got).toHaveLength(2);
+  });
+
+  it("refuses a batch, timeout or attempt count that is not a positive integer", async () => {
+    for (const bad of [{ batch: -1 }, { batch: 0 }, { batch: 1.5 }, { batch: Infinity }, { timeoutMs: -1 }, { maxAttempts: NaN }]) {
+      await expect(sendPending(db, bad), JSON.stringify(bad)).rejects.toThrow(/must be a positive integer/);
+      await expect(startHttp(db, { token: "t", port: 0, webhookOptions: bad }), JSON.stringify(bad)).rejects.toThrow(/must be a positive integer/);
+    }
+  });
+
+  it("sends each account's deliveries only to that account's own webhook", async () => {
+    const mine = await receiver();
+    const theirs = await receiver();
+    const ownerAlice = member(OWNER_ACCOUNT, "alice");
+    member(OWNER_ACCOUNT, "bob");
+    const friendAlice = member(friend, "alice");
+    member(friend, "bob");
+    const ownerHooks = ["agent:bob", "#general"].map((on) => addWebhook(db, "owner", mine.url, on, true));
+    const friendHooks = ["agent:bob", "#general"].map((on) => addWebhook(db, "friend", theirs.url, on, true));
+    sendMessage(db, OWNER_ACCOUNT, "alice", "bob", "owner dm");
+    post(db, OWNER_ACCOUNT, ownerAlice, "general", "owner post");
+    sendMessage(db, friend, "alice", "bob", "friend dm");
+    post(db, friend, friendAlice, "general", "friend post");
+    expect(await sendPending(db)).toEqual({ delivered: 4, failed: 0 });
+    const texts = (got: Got[]) => got.map((g) => JSON.parse(g.body).text).sort();
+    expect(texts(mine.got)).toEqual(["owner dm", "owner post"]);
+    expect(texts(theirs.got)).toEqual(["friend dm", "friend post"]);
+    const secrets = (hooks: NewWebhook[]) => hooks.map((h) => h.secret);
+    for (const g of mine.got) expect(secrets(ownerHooks).map((s) => signature(s, g.body))).toContain(g.headers["x-message-cp-signature"]);
+    for (const g of theirs.got) expect(secrets(friendHooks).map((s) => signature(s, g.body))).toContain(g.headers["x-message-cp-signature"]);
+  });
+
+  it("sends at most a batch per pass, oldest first", async () => {
+    const r = await receiver();
+    member(OWNER_ACCOUNT, "alice");
+    member(OWNER_ACCOUNT, "bob");
+    addWebhook(db, "owner", r.url, "agent:bob", true);
+    for (let i = 0; i < 5; i++) sendMessage(db, OWNER_ACCOUNT, "alice", "bob", `m${i}`);
+    expect(await sendPending(db, { batch: 3 })).toEqual({ delivered: 3, failed: 0 });
+    expect(r.got.map((g) => JSON.parse(g.body).text).sort()).toEqual(["m0", "m1", "m2"]);
+    expect(await sendPending(db, { batch: 3 })).toEqual({ delivered: 2, failed: 0 });
+  });
+
+  it("is sent by serve on its timer, and close() waits for the pass in progress", async () => {
+    const r = await receiver();
+    member(OWNER_ACCOUNT, "alice");
+    member(OWNER_ACCOUNT, "bob");
+    addWebhook(db, "owner", r.url, "agent:bob", true);
+    const http = await startHttp(db, { token: "t", port: 0, webhookIntervalMs: 20 });
+    try {
+      sendMessage(db, OWNER_ACCOUNT, "alice", "bob", "hi");
+      await vi.waitFor(() => expect(row().delivered_at).not.toBeNull());
+    } finally {
+      await http.close();
+    }
+    sendMessage(db, OWNER_ACCOUNT, "alice", "bob", "after close");
+    await new Promise((res) => setTimeout(res, 100));
+    expect(r.got).toHaveLength(1);
   });
 });
 

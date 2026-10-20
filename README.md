@@ -143,7 +143,7 @@ What a token can reach:
 
 ### Webhooks
 
-An account can have outgoing webhooks, managed on the server like accounts and tokens. **Nothing is sent yet:** each message or post a webhook is for is queued in the database file, in the same transaction that stores it, and sending, signing and retrying the queue come later.
+An account can have outgoing webhooks, managed on the server like accounts and tokens. Each message or post a webhook is for is queued in the database file, in the same transaction that stores it, and `serve` sends the queue: a JSON body POSTed to the webhook's URL, signed with its secret.
 
 ```sh
 node dist/cli.js webhook add --url https://example.com/hook --on '#general'               # the owner account's posts in #general
@@ -152,10 +152,26 @@ node dist/cli.js webhook list --account alice   # id, account, URL, event and wh
 node dist/cli.js webhook remove 3                 # deletes webhook 3
 ```
 
-- `--on` is `#<channel>` (posts in that channel), `mention:<agent>` (posts that mention that agent) or `agent:<agent>` (direct messages to that agent), all in the webhook's account. `mention:all` and `agent:all` are refused, since no agent can be named `all`; `#all` is an ordinary channel. The channel or agent need not exist yet. Without `--account` a webhook belongs to `owner`. `--no-text` means its deliveries will leave out the message text. One `--on` per webhook; to change one, remove it and add another.
+- `--on` is `#<channel>` (posts in that channel), `mention:<agent>` (posts that mention that agent) or `agent:<agent>` (direct messages to that agent), all in the webhook's account. `mention:all` and `agent:all` are refused, since no agent can be named `all`; `#all` is an ordinary channel. The channel or agent need not exist yet. Without `--account` a webhook belongs to `owner`. `--no-text` means its deliveries leave out the message text. One `--on` per webhook; to change one, remove it and add another.
 - `--url` must be `https:`, or `http:` only to a literal loopback address (`127.x.x.x` or `[::1]`, not `localhost`), with no username, password, query or fragment. The check is made on the URL as `new URL()` parses it, so a shortened loopback form such as `http://127.1/` is accepted and stored as `http://127.0.0.1/`. A refused URL is not repeated in the error.
-- `add` prints a new secret for the webhook, 32 random bytes in hex, once on stdout. Deliveries will be signed with it, so it is stored as is in the database file, unlike tokens.
+- `add` prints a new secret for the webhook, 32 random bytes in hex, once on stdout. Deliveries are signed with it, so it is stored as is in the database file, unlike tokens.
 - No token, MCP tool or HTTP route can add, list, change or remove a webhook; only someone who can run `node dist/cli.js` against the database file can.
+- A delivery is a POST with `Content-Type: application/json` and a body such as `{"event":"agent","recipient":"bob","sender":"alice","sentAt":"2026-10-20T14:32:00.000Z","text":"hi"}`; a post has `channel` instead of `recipient`, and `text` is left out for a webhook added with `--no-text`. Its `X-Message-CP-Signature` header is `sha256=` and the hex HMAC-SHA256 of the exact body bytes, keyed with the webhook's secret. The secret itself is never sent.
+- A 2xx answer delivers it. Anything else is a failed attempt, retried on a later pass: a 3xx, 4xx or 5xx, a network error, or no answer within 5 seconds. Redirects are not followed, so a delivery only ever reaches the URL that was checked when the webhook was added (and is checked again before each send). After 3 attempts in all a delivery is given up and not tried again. Nothing about a delivery, its URL or its secret is logged.
+- Only `serve` sends. The stdio server and `message-cp wait` only queue, so deliveries for messages sent through a stdio server go out when a `serve` next runs on the same database file. Several `serve` processes may share the file: each attempt is claimed in the database before it is sent, so no two send the same one. A receiver may still, rarely, get a delivery twice (say its 2xx came too late to be recorded), so it should tolerate a repeat.
+
+A receiver checks the signature against the body as it arrived, before parsing it:
+
+```js
+import { createHmac, timingSafeEqual } from "node:crypto";
+
+// `raw` is the request body as a Buffer, `header` the X-Message-CP-Signature header, `secret` what `webhook add` printed.
+function signed(raw, header, secret) {
+  const expected = Buffer.from(`sha256=${createHmac("sha256", secret).update(raw).digest("hex")}`);
+  const given = Buffer.from(header ?? "");
+  return given.length === expected.length && timingSafeEqual(given, expected);
+}
+```
 
 ## Putting your own sign-in in front
 
@@ -226,7 +242,7 @@ Both check about once a second and never read or mark anything; `read_inbox` and
 
 ### Limits
 
-A request body is at most 4 MB, a message 4000 characters, a bio 500 characters, a key 256 characters and `search` text 200 characters. `serve` holds at most 256 sessions and 256 waiting `/wait` requests at once, and answers 503 beyond that.
+A request body is at most 4 MB, a message 4000 characters, a bio 500 characters, a key 256 characters and `search` text 200 characters. `serve` holds at most 256 sessions and 256 waiting `/wait` requests at once, and answers 503 beyond that. Webhook deliveries go out in one pass at a time: every 5 seconds a pass starts unless the last one is still running (one with slow receivers can take about 25 seconds), and a pass sends at most 20 deliveries, oldest first, at most 4 at once, each with a 5-second timeout and 3 attempts in all.
 
 ## Database
 
