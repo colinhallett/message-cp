@@ -124,10 +124,15 @@ describe("search", () => {
     expect((await ok(bob, "search", { text: "note", channel: "dev" }))[0].channel).toBe("Dev");
     expect(await ok(bob, "search", { text: "note", channel: "nothere" })).toEqual([]);
     expect(bodies(await ok(bob, "search", { text: "note", from: "ALICE" })).sort()).toEqual(["note one", "note two"]);
+    expect(bodies(await ok(bob, "search", { text: "note", from: "alice", channel: "ops" }))).toEqual(["note two"]);
+    expect(await ok(bob, "search", { text: "note", from: "carol", channel: "ops" })).toEqual([]);
 
     db.prepare("UPDATE messages SET created_at = ? WHERE body = 'note one'").run(Date.parse("2026-01-01T00:00:00Z"));
     db.prepare("UPDATE channel_posts SET created_at = ? WHERE body = 'note two'").run(Date.parse("2026-02-01T00:00:00Z"));
     expect(bodies(await ok(bob, "search", { text: "note", until: "2026-02-01" }))).toEqual(["note one"]);
+    // An offset moves the bound: 01:00+01:00 is midnight UTC, and a time with no offset is UTC.
+    expect(bodies(await ok(bob, "search", { text: "note", until: "2026-02-01T01:00:00+01:00" }))).toEqual(["note one"]);
+    expect(bodies(await ok(bob, "search", { text: "note", until: "2026-02-01T00:00:00.001" })).sort()).toEqual(["note one", "note two"]);
     expect(bodies(await ok(bob, "search", { text: "note", since: "2026-01-01T00:00:00Z", until: "2026-03-01" }))).toEqual([
       "note two",
       "note one",
@@ -169,11 +174,14 @@ describe("search", () => {
     await ok(fAlice, "send_message", { to: "bob", body: "secret one" });
     await ok(fAlice, "post", { channel: "ops", body: "secret two" });
     await ok(alice, "send_message", { to: "bob", body: "secret mine" });
+    await tick();
+    await ok(alice, "post", { channel: "ops", body: "secret post" });
 
-    expect(bodies(await ok(bob, "search", { text: "secret" }))).toEqual(["secret mine"]);
-    expect(await ok(bob, "search", { text: "secret", channel: "ops" })).toEqual([]);
-    expect(await ok(alice, "search", { text: "secret", from: "alice" })).toEqual([]);
+    expect(bodies(await ok(bob, "search", { text: "secret" }))).toEqual(["secret post", "secret mine"]);
+    expect(bodies(await ok(bob, "search", { text: "secret", channel: "ops" }))).toEqual(["secret post"]);
+    expect(bodies(await ok(alice, "search", { text: "secret", from: "alice" }))).toEqual(["secret post"]);
     expect(bodies(await ok(fBob, "search", { text: "secret" })).sort()).toEqual(["secret one", "secret two"]);
+    expect(bodies(await ok(fBob, "search", { text: "secret", channel: "ops" }))).toEqual(["secret two"]);
   });
 
   it("does not give a later agent with a removed agent's name the removed agent's messages", async () => {

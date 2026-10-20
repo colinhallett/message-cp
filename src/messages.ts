@@ -299,7 +299,14 @@ export interface SearchFilters {
 
 export const MAX_SEARCH_LENGTH = 200;
 
-// A date, or a date and time with an optional offset; a time with no offset is UTC, like a date alone.
+/** A row of search's page: a message, or with `is_post` 1 a channel post, whose `channel` is then set. */
+interface SearchRow extends Omit<Row, "read_at"> {
+  is_post: number;
+  channel: string | null;
+}
+
+// A date, or a date and time (to the millisecond) with an optional offset; a time with no offset is UTC, like a date
+// alone.
 const ISO_TIME = /^(\d{4})-(\d{2})-(\d{2})(?:T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,3})?)?(Z|[+-]\d{2}:\d{2})?)?$/;
 
 function parseTime(value: string, field: string): number {
@@ -338,9 +345,9 @@ export function search(
   const since = filters.since === undefined ? null : parseTime(filters.since, "since");
   const until = filters.until === undefined ? null : parseTime(filters.until, "until");
   const pattern = `%${text.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
-  // Each half's filters, in the order of its placeholders: body, sender, since, until.
-  const where = `body LIKE ? ESCAPE '\\' AND (? IS NULL OR sender = ? COLLATE NOCASE)
-    AND (? IS NULL OR created_at >= ?) AND (? IS NULL OR created_at < ?)`;
+  // Each half's filters on its table `t`, in the order of their placeholders: body, sender, since, until.
+  const where = (t: string) => `${t}.body LIKE ? ESCAPE '\\' AND (? IS NULL OR ${t}.sender = ? COLLATE NOCASE)
+    AND (? IS NULL OR ${t}.created_at >= ?) AND (? IS NULL OR ${t}.created_at < ?)`;
   const params = [pattern, from ?? null, from ?? null, since, since, until, until];
   return db.transaction((): (MessageMatch | PostMatch)[] => {
     const agent = db
@@ -351,11 +358,11 @@ export function search(
     const rows = db
       .prepare(
         `SELECT * FROM (
-           ${channel === undefined ? `SELECT 0 AS post, id, sender, body, broadcast, created_at, NULL AS channel FROM messages WHERE recipient_id = ? AND ${where} UNION ALL` : ""}
-           SELECT 1 AS post, p.id, p.sender, p.body, 0 AS broadcast, p.created_at, c.name AS channel
+           ${channel === undefined ? `SELECT 0 AS is_post, m.id, m.sender, m.body, m.broadcast, m.created_at, NULL AS channel FROM messages m WHERE m.recipient_id = ? AND ${where("m")} UNION ALL` : ""}
+           SELECT 1 AS is_post, p.id, p.sender, p.body, 0 AS broadcast, p.created_at, c.name AS channel
            FROM channel_posts p JOIN channels c ON c.id = p.channel_id AND c.account_id = ?
-           WHERE (? IS NULL OR c.name = ?) AND ${where.replace(/\b(body|sender|created_at)\b/g, "p.$1")})
-         ORDER BY created_at DESC, post DESC, id DESC LIMIT ? OFFSET ?`,
+           WHERE (? IS NULL OR c.name = ?) AND ${where("p")})
+         ORDER BY created_at DESC, is_post DESC, id DESC LIMIT ? OFFSET ?`,
       )
       .all(
         ...(channel === undefined ? [agent.id, ...params] : []),
@@ -365,12 +372,12 @@ export function search(
         ...params,
         Math.min(limit, MAX_INBOX_LIMIT),
         offset,
-      ) as Omit<InboxRow, "mention">[];
+      ) as SearchRow[];
     return rows.map((r): MessageMatch | PostMatch => {
       const sentAt = new Date(r.created_at).toISOString();
-      return r.channel === null
-        ? { kind: "message", from: r.sender, sentAt, body: r.body, broadcast: r.broadcast === 1 }
-        : { kind: "post", channel: r.channel, id: r.id, from: r.sender, sentAt, body: r.body };
+      return r.is_post === 1
+        ? { kind: "post", channel: r.channel!, id: r.id, from: r.sender, sentAt, body: r.body }
+        : { kind: "message", from: r.sender, sentAt, body: r.body, broadcast: r.broadcast === 1 };
     });
   })();
 }
