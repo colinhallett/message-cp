@@ -35,6 +35,9 @@ const STYLE = `
   --who5: #0e7490;
   --who6: #be185d;
   --who7: #4d7c0f;
+  --mention-bg: #e3e8fa;
+  --me: #6b3f00;
+  --me-bg: #ffe08a;
   --s1: 0.25rem;
   --s2: 0.5rem;
   --s3: 0.75rem;
@@ -63,6 +66,9 @@ const STYLE = `
     --who5: #67e8f9;
     --who6: #f9a8d4;
     --who7: #bef264;
+    --mention-bg: #343c5c;
+    --me: #ffe7a3;
+    --me-bg: #6b5212;
   }
 }
 * { box-sizing: border-box; }
@@ -107,6 +113,11 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .log-head h2 { flex: 1; margin: 0; font-size: 1rem; letter-spacing: normal; text-transform: none; color: var(--text); overflow-wrap: anywhere; }
 .channel::before, .item .channel-name::before { content: "# "; color: var(--muted); }
 #post-rows, #result-rows { flex: 1; overflow-y: auto; padding: var(--s2) 0 var(--s4); }
+/* A short log sits at the bottom, above the compose box, by an auto margin: justifying the content to the end would
+   leave the top of a long log out of reach. The webhook deliveries are newest first, so they stay at the top. */
+#post-rows { display: flex; flex-direction: column; }
+#post-rows > :first-child { margin-top: auto; }
+#post-rows.top > :first-child { margin-top: 0; }
 .entry { display: grid; grid-template-columns: auto auto minmax(0, 1fr); grid-template-areas: "from tag time" "body body body"; column-gap: var(--s2); align-items: baseline; padding: var(--s2) var(--s4); }
 .entry.result { grid-template-columns: auto auto auto minmax(0, 1fr); grid-template-areas: "from where tag time" "body body body body"; }
 .where { grid-area: where; color: var(--muted); overflow-wrap: anywhere; }
@@ -115,6 +126,8 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .time { grid-area: time; font-size: 0.8rem; color: var(--muted); }
 .tag { grid-area: tag; font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--accent); border: 1px solid currentColor; border-radius: var(--radius); padding: 0 var(--s1); }
 .body { grid-area: body; white-space: pre-wrap; overflow-wrap: anywhere; }
+.mention { color: var(--accent); background: var(--mention-bg); border-radius: 3px; padding: 0 2px; font-weight: 600; }
+.mention.me { color: var(--me); background: var(--me-bg); box-shadow: inset 0 -2px 0 currentColor; }
 .entry.chat { grid-template-columns: 2.5rem auto auto auto minmax(0, 1fr); grid-template-areas: "avatar from kind tag time" "avatar body body body body"; column-gap: 0; padding-bottom: 1px; }
 .entry.chat > :not(.avatar) { margin-left: var(--s2); }
 .entry.chat > .from { color: var(--who); }
@@ -240,6 +253,12 @@ let chatTimes = [];
 let markedPeople;
 // A group ends at a gap of this much or more.
 const GROUP_MS = 5 * 60 * 1000;
+// A mention as the server finds one: a copy of MENTION in src/channels.ts, to be kept in step with it.
+const MENTION = /(?<![A-Za-z0-9_-])@([A-Za-z0-9_-]{1,32})(?![A-Za-z0-9_-])/g;
+// The mention elements of the open log and of the search results, each with its name in lower case, so a change of
+// the chosen person re-marks them in place.
+let logMentions = [];
+let resultMentions = [];
 
 function say(text, isError) {
   statusLine.textContent = text;
@@ -311,6 +330,7 @@ asSelect.addEventListener("change", () => {
   // Only a name GET /api/agents gave for this token is ever sent as "as".
   person = people && people.includes(asSelect.value) ? asSelect.value : undefined;
   showCompose();
+  markMentions();
 });
 compose.addEventListener("submit", (event) => {
   event.preventDefault();
@@ -332,9 +352,11 @@ function closeLog() {
   openDeliveries = false;
   held = 0;
   postRows.replaceChildren();
+  postRows.className = "";
   lastEntry = undefined;
   chatRows = [];
   chatTimes = [];
+  logMentions = [];
   logTitle.textContent = "";
   logTitle.className = "";
   logNote.textContent = "";
@@ -382,6 +404,7 @@ function openPairLog(key) {
 function openDeliveryLog() {
   closeLog();
   openDeliveries = true;
+  postRows.className = "top";
   logTitle.textContent = "Webhook deliveries";
   logNote.textContent = "Loading…";
   log.hidden = false;
@@ -396,6 +419,7 @@ function closeResults() {
   searchGeneration++;
   if (searchController) searchController.abort();
   resultRows.replaceChildren();
+  resultMentions = [];
   resultsTitle.textContent = "";
   resultsNote.textContent = "";
   results.hidden = true;
@@ -487,6 +511,7 @@ async function checkToken() {
 // Shows the person picker, with a full token, from the people GET /api/agents last gave, and clears the chosen person
 // once they are gone. The list is rebuilt only when it changes, so a poll never closes it under the reader.
 function showPicker() {
+  const before = person;
   const known = people ?? [];
   if (person !== undefined && !known.includes(person)) person = undefined;
   asBox.hidden = !canPost || known.length === 0;
@@ -507,6 +532,7 @@ function showPicker() {
   }
   asSelect.value = person ?? "";
   showCompose();
+  if (person !== before) markMentions();
 }
 
 // The name a person replies to in the open pair, or undefined if the pair is not theirs.
@@ -679,6 +705,7 @@ async function readLog(token, signal, gen, channel) {
       lastEntry = undefined;
       chatRows = [];
       chatTimes = [];
+      logMentions = [];
       logNote.textContent = "There is no channel by this name now.";
       return { ok: true };
     }
@@ -832,6 +859,33 @@ function part(tag, className, text) {
   return node;
 }
 
+// An entry's text as a div.body. Text with mentions is split into spans, each mention its own span.mention, marked
+// "mention me" when it names the person the page posts as; text with none is the div's own text.
+function bodyPart(text, mentions) {
+  const body = part("div", "body", "");
+  let at = 0;
+  for (const match of text.matchAll(MENTION)) {
+    if (match.index > at) body.append(part("span", "", text.slice(at, match.index)));
+    const span = part("span", mentionClass(match[1]), match[0]);
+    mentions.push([span, match[1].toLowerCase()]);
+    body.append(span);
+    at = match.index + match[0].length;
+  }
+  if (at === 0) body.textContent = text;
+  else if (at < text.length) body.append(part("span", "", text.slice(at)));
+  return body;
+}
+
+// A mention's classes: "mention me" for the chosen person's name, without case, with a full token; else "mention".
+function mentionClass(name) {
+  return canPost && person !== undefined && name.toLowerCase() === person.toLowerCase() ? "mention me" : "mention";
+}
+
+// Re-marks the mentions already shown after the chosen person changed, without rebuilding the log or the results.
+function markMentions() {
+  for (const [span, name] of [...logMentions, ...resultMentions]) span.className = mentionClass(name);
+}
+
 function show(agents) {
   const items = agents.map((a) => {
     const li = document.createElement("li");
@@ -921,14 +975,14 @@ function appendEntries(entries) {
   if (atBottom) postRows.scrollTop = postRows.scrollHeight;
 }
 
-function entry(from, tag, sentAt, body) {
+function entry(from, tag, sentAt, body, mentions) {
   const li = document.createElement("li");
   li.className = "entry";
   const time = part("time", "time", when(sentAt));
   time.title = String(sentAt);
   li.append(part("span", "from", String(from)));
   if (tag) li.append(part("span", "tag", tag));
-  li.append(time, part("div", "body", String(body)));
+  li.append(time, bodyPart(String(body), mentions));
   return li;
 }
 
@@ -968,7 +1022,7 @@ function chatEntry(from, tag, sentAt, body) {
   time.title = when(sentAt);
   const due = nextChange(at);
   if (due !== undefined) chatTimes.push([time, sentAt, due]);
-  const row = { li, name, tag, person: isPerson(name), time, body: part("div", "body", String(body)) };
+  const row = { li, name, tag, person: isPerson(name), time, body: bodyPart(String(body), logMentions) };
   chatRows.push(row);
   li.append(...chatParts(row));
   return li;
@@ -1030,7 +1084,7 @@ function messageEntry(m) {
 // A search result: a message shows its sender and recipient and whether it was a broadcast, a post its sender and channel.
 function resultEntry(r) {
   const post = r.kind === "post";
-  const li = entry(r.from, r.broadcast ? "broadcast" : "", r.sentAt, r.body);
+  const li = entry(r.from, r.broadcast ? "broadcast" : "", r.sentAt, r.body, resultMentions);
   li.className = "entry result";
   li.append(post ? part("span", "where channel", String(r.channel)) : part("span", "where", "→ " + String(r.to)));
   return li;
