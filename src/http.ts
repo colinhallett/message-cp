@@ -4,6 +4,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import { accountForToken, type TokenAccess } from "./accounts.js";
 import { DEFAULT_LIST_LIMIT, MAX_LIST_LIMIT } from "./agents.js";
+import { DASHBOARD_HEADERS, DASHBOARD_HTML } from "./dashboard.js";
 import type { AccountId, Db } from "./db.js";
 import { hasUnread, listAgentsUnread, unreadSummary, type AgentUnread, type Unread } from "./messages.js";
 import { Session, createServer } from "./server.js";
@@ -71,7 +72,10 @@ async function readBody(req: IncomingMessage): Promise<unknown> {
   return JSON.parse(Buffer.concat(chunks).toString("utf8"));
 }
 
-/** Serves the MCP tools over streamable HTTP at /mcp, one `Session` per MCP session. Every request needs the token. */
+/**
+ * Serves the MCP tools over streamable HTTP at /mcp, one `Session` per MCP session. Every request needs the token,
+ * except GET / for the dashboard page.
+ */
 export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServer> {
   if (!options.token) throw new Error("an HTTP token is required");
   const idleTimeoutMs = options.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS;
@@ -230,13 +234,18 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
   };
 
   const handle = async (req: IncomingMessage, res: ServerResponse) => {
-    // The token is the first thing a request meets, and decides the account everything after it acts as.
+    const path = (req.url ?? "").split("?")[0];
+    // The dashboard page is the same constant for everyone and holds no data, so it alone comes before the token.
+    if (req.method === "GET" && path === "/") {
+      res.writeHead(200, DASHBOARD_HEADERS);
+      return void res.end(DASHBOARD_HTML);
+    }
+    // The token is the first thing any other request meets, and decides the account everything after it acts as.
     const access = accountOf(db, req.headers.authorization, options.token);
     if (access === undefined) {
       return reply(res, 401, "Unauthorized", { "WWW-Authenticate": "Bearer" });
     }
     const { account } = access;
-    const path = (req.url ?? "").split("?")[0];
     if (path === "/api/agents") return apiAgents(req, res, account);
     // A read-only token reaches the read-only endpoints above and nothing else: /mcp can write, and so can any path added later.
     if (access.readOnly) return reply(res, 403, "This token is read-only");
