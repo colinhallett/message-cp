@@ -119,6 +119,20 @@ CREATE TABLE IF NOT EXISTS webhooks (
   secret TEXT NOT NULL,
   created_at INTEGER NOT NULL
 );
+
+-- What a webhook is owed: one row per webhook per message or post it is for, queued in the transaction that stores the
+-- message or post. Only ids are kept, so the body is built when it is sent. Nothing sends them yet.
+CREATE TABLE IF NOT EXISTS webhook_deliveries (
+  id INTEGER PRIMARY KEY,
+  webhook_id INTEGER NOT NULL REFERENCES webhooks(id) ON DELETE CASCADE,
+  message_id INTEGER REFERENCES messages(id) ON DELETE CASCADE,
+  post_id INTEGER REFERENCES channel_posts(id),
+  created_at INTEGER NOT NULL,
+  attempts INTEGER NOT NULL DEFAULT 0,
+  delivered_at INTEGER,
+  CHECK ((message_id IS NULL) <> (post_id IS NULL))
+);
+CREATE INDEX IF NOT EXISTS webhook_deliveries_pending ON webhook_deliveries (delivered_at, id);
 `;
 
 // CREATE TABLE IF NOT EXISTS leaves an existing table alone, so columns added later are added here, only when missing.

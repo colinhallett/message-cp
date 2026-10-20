@@ -83,8 +83,16 @@ export function sendMessage(db: Db, account: AccountId, from: string, to: string
       const insert = db.prepare(
         "INSERT INTO messages (recipient_id, sender, body, broadcast, created_at) VALUES (?, ?, ?, ?, ?)",
       );
+      // Each recipient's row is owed to every `agent:<recipient>` webhook of the account.
+      const queue = db.prepare(
+        `INSERT INTO webhook_deliveries (webhook_id, message_id, created_at)
+         SELECT id, ?, ? FROM webhooks WHERE account_id = ? AND event = 'agent' AND name = ? COLLATE NOCASE ORDER BY id`,
+      );
       const now = Date.now();
-      for (const r of recipients) insert.run(r.id, from, body, broadcast ? 1 : 0, now);
+      for (const r of recipients) {
+        const id = insert.run(r.id, from, body, broadcast ? 1 : 0, now).lastInsertRowid;
+        queue.run(id, now, account, r.name);
+      }
       return { delivered: recipients.length, recipients: recipients.map((r) => r.name) };
     })
     .immediate();
