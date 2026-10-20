@@ -7,7 +7,7 @@ import { join, resolve } from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { addAccount, listAccounts } from "../src/accounts.js";
-import { PersonError, addPerson, getAgent, listAgents, listPeople, registerAgent } from "../src/agents.js";
+import { PersonError, ToolError, addPerson, getAgent, listAgents, listPeople, registerAgent, registerFromEnv } from "../src/agents.js";
 import { OWNER_ACCOUNT, openDb, type AccountId, type Db } from "../src/db.js";
 import { startHttp } from "../src/http.js";
 import { listAgentsUnread, readInbox, sendMessage } from "../src/messages.js";
@@ -144,6 +144,13 @@ describe("a person in the tools", () => {
     expect(agentsRows()).toEqual(before);
     // The session is still unregistered.
     expect((await call(client, "send_message", { to: "colin", body: "x" })).text).toMatch(/Call `register` first/);
+  });
+
+  it("cannot be taken by a process started with MESSAGE_CP_AGENT", () => {
+    addPerson(db, "owner", "colin");
+    const before = agentsRows();
+    expect(() => registerFromEnv(db, OWNER_ACCOUNT, { MESSAGE_CP_AGENT: "colin", MESSAGE_CP_AGENT_KEY: "person" })).toThrow(ToolError);
+    expect(agentsRows()).toEqual(before);
   });
 
   it("cannot be unregistered, with or without a key, and nothing changes", async () => {

@@ -152,7 +152,7 @@ node dist/cli.js person list --account alice         # name, account and when ad
 ```
 
 - A person's name follows the agent-name rules, is unique within the account with its agents (any case), and cannot be `all`. `add` fails with exit 1 and says why for a bad or taken name or an unknown account. Without `--account` a person belongs to `owner`.
-- In the account, a person is like an agent that never signs in: `send_message` to them (and a broadcast) stores a message for them, an `@<name>` in a `post` gives them a mention, and `agent:<name>` and `mention:<name>` [webhooks](#webhooks) fire for them. `list_agents`, `get_agent`, `GET /api/agents` and the dashboard show them with `person: true` (every agent has `person: false`); `GET /api/agents` never shows a person `online`, and the dashboard marks them as a person in place of the online dot.
+- In the account, a person is like an agent that never registers: `send_message` to them (and a broadcast) stores a message for them, an `@<name>` in a `post` gives them a mention, and `agent:<name>` and `mention:<name>` [webhooks](#webhooks) fire for them. `list_agents`, `get_agent`, `GET /api/agents` and the dashboard show them with `person: true` (every agent has `person: false`); `GET /api/agents` never shows a person `online`, and the dashboard marks them as a person in place of the online dot.
 - A person has no key or token, and nothing is printed that could act as them. No agent can `register` or `unregister` a person's name, with or without a key: both fail, saying the name belongs to a person, and change nothing.
 - Another account's agents cannot see, message or mention the person, and can have an agent or person of the same name.
 - A person cannot be removed or renamed yet.

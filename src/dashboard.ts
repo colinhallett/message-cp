@@ -94,7 +94,7 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); ou
 .item .label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .count { font-size: 0.75rem; color: var(--muted); }
 .agent { display: grid; grid-template-columns: auto minmax(0, 1fr); column-gap: var(--s2); padding: var(--s2) var(--s3); }
-.agent > :not(.dot, .kind) { grid-column: 2; overflow-wrap: anywhere; }
+.agent > :not(.dot) { grid-column: 2; overflow-wrap: anywhere; }
 .kind { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--accent); }
 .agent .name { font-weight: 600; }
 .agent .bio, .agent .seen, .agent .unread { font-size: 0.8rem; color: var(--muted); }
@@ -556,12 +556,13 @@ function show(agents) {
   const items = agents.map((a) => {
     const li = document.createElement("li");
     li.className = "agent";
-    // A person has no online state of its own, so it is marked as a person in place of the dot.
+    // A person has no online state of its own, so it is marked as a person in place of the dot, above its name.
     const dot = a.person === true
       ? part("span", "kind", "person")
       : part("span", a.online ? "dot online" : "dot", a.online ? "online" : "offline");
     dot.title = a.person === true ? "a person, not an agent" : a.online ? "online" : "offline";
-    const seen = part("span", "seen", "last seen " + ago(a.lastSeen));
+    // A person's lastSeen is when they were added.
+    const seen = part("span", "seen", (a.person === true ? "added " : "last seen ") + ago(a.lastSeen));
     seen.title = String(a.lastSeen);
     const unread = part("span", "unread", "unread messages: " + a.unreadMessages + ", posts: " + a.unreadPosts + ", mentions: " + a.unreadMentions);
     li.append(dot, part("span", "name", String(a.name)), part("span", "bio", String(a.bio)), seen, unread);

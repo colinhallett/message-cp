@@ -230,6 +230,7 @@ function addAccounts(db: Db, path: string): void {
       if (hasColumn(db, "account_id")) return;
       copyBeforeAccounts(path);
       db.exec(agentsTable("agents_by_account"));
+      // `person` is left to its default: no person can exist before accounts did.
       db.prepare(
         `INSERT INTO agents_by_account (id, account_id, name, bio, registered_at, last_seen, key_hash, instance, removed_at, removed_name)
          SELECT id, ?, name, bio, registered_at, last_seen, key_hash, instance, removed_at, removed_name FROM agents`,

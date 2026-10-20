@@ -343,6 +343,7 @@ describe("the page's channels and messages", () => {
       ["alice", "dot online", "online", "online"],
       ["colin", "kind", "person", "a person, not an agent"],
     ]);
+    expect(rows.children.map((row) => field(row, "seen")?.split(" ")[0])).toEqual(["last", "added"]);
   });
 
   it("reads only the posts past the ones the log holds on each poll, and shows the agents and channels first", async () => {

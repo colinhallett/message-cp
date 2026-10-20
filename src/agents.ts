@@ -40,7 +40,7 @@ function toAgent(row: Row): Agent {
 }
 
 /** The refusal for `register` and `unregister` on a person's name. */
-const isPerson = (name: string) => `The name '${name}' belongs to a person, not an agent. No agent can register or remove it.`;
+const personRefusal = (name: string) => `The name '${name}' belongs to a person, not an agent. No agent can register or remove it.`;
 
 export function validateName(name: string): void {
   if (!NAME_PATTERN.test(name)) {
@@ -118,7 +118,7 @@ export const registerWithIdentity = (
       | { name: string; key_hash: string | null; person: number }
       | undefined;
     // Before the key check: no key, not even a right one, makes a person's name an agent's.
-    if (existing?.person === 1) throw new ToolError(isPerson(existing.name));
+    if (existing?.person === 1) throw new ToolError(personRefusal(existing.name));
     if (existing && existing.key_hash !== null && (key === undefined || !sameHash(hashKey(key), existing.key_hash))) {
       throw new ToolError(
         `Agent '${name}' is already registered and has a key. Pass its key to take it over.`,
@@ -242,7 +242,7 @@ export const removeAgent = (db: Db, account: AccountId, name: string, key?: stri
         : db.prepare("SELECT id, name, key_hash, person FROM agents WHERE account_id = ? AND name = ? AND removed_at IS NULL").get(account, name)
     ) as { id: number; name: string; key_hash: string | null; person: number } | undefined;
     if (!row) throw new ToolError(own ? NOT_REGISTERED : `No agent named '${name}'.`);
-    if (row.person === 1) throw new ToolError(isPerson(row.name));
+    if (row.person === 1) throw new ToolError(personRefusal(row.name));
     if (row.key_hash !== null && !own) {
       if (key === undefined) throw new ToolError(`Agent '${row.name}' has a key. Pass its key to remove it.`);
       if (!sameHash(hashKey(key), row.key_hash)) throw new ToolError(`Wrong key for agent '${row.name}'.`);
