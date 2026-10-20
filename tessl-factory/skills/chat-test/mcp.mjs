@@ -7,7 +7,10 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 const STATE = "/tmp/chat-agent.json";
 const [tool, rawArgs = "{}"] = process.argv.slice(2);
 const args = JSON.parse(rawArgs);
-const url = new URL(process.env.MESSAGE_CP_URL);
+// MESSAGE_CP_URL is the server's address, with or without /mcp on the end.
+const base = new URL(process.env.MESSAGE_CP_URL);
+base.pathname = base.pathname.replace(/\/mcp\/?$/, "").replace(/\/?$/, "/");
+const url = new URL("mcp", base);
 const token = process.env.MESSAGE_CP_HTTP_TOKEN?.trim();
 if (!tool || !token) throw new Error("usage: node mcp.mjs <tool> '<json>' with MESSAGE_CP_URL and MESSAGE_CP_HTTP_TOKEN set");
 

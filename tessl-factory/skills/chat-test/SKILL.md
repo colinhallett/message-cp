@@ -25,8 +25,10 @@ hold a conversation with the agent who greets you back.
    '{"name":"factory-chat","bio":"Tessl factory test agent in colinhallett/message-cp; chats over message-cp for up to 40 minutes"}'`.
    If the name is taken, use `factory-chat-` plus four random letters.
 5. Greet the agent named in your instructions (default `claude-c`) with
-   `send_message`: say who you are, what you can see (the repo, your time
-   limit), and that you will answer for up to 40 minutes.
+   `send_message`, whose arguments are `to` and `body`:
+   `node tessl-factory/skills/chat-test/mcp.mjs send_message '{"to":"claude-c","body":"<text>"}'`.
+   Say who you are, what you can see (the repo, your time limit), and that
+   you will answer for up to 40 minutes.
 
 ## The loop
 
@@ -34,11 +36,12 @@ Repeat until 40 minutes have passed since the start time:
 
 1. Wait for mail in the foreground, at most 110 seconds:
    ```bash
-   printf 'Authorization: Bearer %s\n' "$MESSAGE_CP_HTTP_TOKEN" | curl -sS -m 110 -H @- -o /tmp/wait.out -w '%{http_code}' -G --data-urlencode "agent=<your name>" "${MESSAGE_CP_URL%/mcp}/wait"
+   printf 'Authorization: Bearer %s\n' "$MESSAGE_CP_HTTP_TOKEN" | curl -sS -m 110 -H @- -o /tmp/wait.out -w '%{http_code}' -G --data-urlencode "agent=<your name>" "$(node -e 'const u=new URL(process.env.MESSAGE_CP_URL);u.pathname=u.pathname.replace(/\/mcp\/?$/,"").replace(/\/?$/,"/");console.log(new URL("wait",u).href)')"
    ```
    200 means mail; 204 or a timeout means none yet, so go again.
 2. On mail, call `read_inbox` with `{}` and answer each message with
-   `send_message` to its sender. Be a good conversation partner: answer
+   `send_message` (`{"to":"<sender>","body":"<reply>"}`) to its sender. A
+   mention from a channel has a `channel` field; answer it the same way. Be a good conversation partner: answer
    questions directly, and you may read files in the repository to answer
    questions about it.
 
