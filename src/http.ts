@@ -295,7 +295,8 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
       res,
       agents.map((a) => ({
         ...a,
-        online: (waits?.get(a.name.toLowerCase()) ?? 0) > 0 || Date.parse(a.lastSeen) >= recent,
+        // A person is never online: their lastSeen is when they were added, and they do not wait.
+        online: !a.person && ((waits?.get(a.name.toLowerCase()) ?? 0) > 0 || Date.parse(a.lastSeen) >= recent),
       })),
     );
   };

@@ -29,6 +29,7 @@ CREATE TABLE IF NOT EXISTS ${table} (
   instance TEXT,
   removed_at INTEGER,
   removed_name TEXT,
+  person INTEGER NOT NULL DEFAULT 0,
   UNIQUE (account_id, name)
 );`;
 
@@ -249,6 +250,8 @@ function migrate(db: Db, path: string): void {
   // A removed agent keeps its row, so the messages addressed to it stay and its id is never reused.
   addColumn(db, "removed_at", "INTEGER");
   addColumn(db, "removed_name", "TEXT");
+  // 1 for a person the operator added with `person add`; every row from before it existed is an agent.
+  addColumn(db, "person", "INTEGER NOT NULL DEFAULT 0");
   addColumn(db, "joined", "INTEGER NOT NULL DEFAULT 0", "channel_reads");
   // 1 for a token that can only read (`token add --read-only`); tokens made before it existed keep full access.
   addColumn(db, "read_only", "INTEGER NOT NULL DEFAULT 0", "tokens");

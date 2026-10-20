@@ -6,7 +6,7 @@ import { runInNewContext } from "node:vm";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { addAccount, addToken, listAccounts, revokeToken } from "../src/accounts.js";
 import { OWNER_ACCOUNT, openDb, type Db } from "../src/db.js";
-import { identityOf, registerAgent } from "../src/agents.js";
+import { addPerson, identityOf, registerAgent } from "../src/agents.js";
 import { joinChannel, post } from "../src/channels.js";
 import { sendMessage, unreadSummary } from "../src/messages.js";
 import { startHttp, type HttpServer } from "../src/http.js";
@@ -332,6 +332,19 @@ describe("the page's channels and messages", () => {
     expect(page.urls).toContain("/api/channels?limit=200&offset=200");
     expect(page.urls).toContain("/api/channel-posts?channel=c000&limit=200&offset=200");
   });
+  it("marks a person in the agents panel as a person, in place of the online dot", async () => {
+    registerAgent(db, OWNER_ACCOUNT, "alice", "x");
+    addPerson(db, "owner", "colin");
+    const page = await load(viewer);
+    const rows = page.elements["rows"];
+    await page.until(() => rows.children.length === 2);
+    const marks = rows.children.map((row) => [field(row, "name"), row.children[0].className, row.children[0].textContent, row.children[0].title]);
+    expect(marks).toEqual([
+      ["alice", "dot online", "online", "online"],
+      ["colin", "kind", "person", "a person, not an agent"],
+    ]);
+  });
+
   it("reads only the posts past the ones the log holds on each poll, and shows the agents and channels first", async () => {
     seed();
     const alice = { ...identityOf(db, OWNER_ACCOUNT, "alice")!, name: "alice" };

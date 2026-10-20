@@ -154,7 +154,7 @@ export function createServer(db: Db, session = new Session(OWNER_ACCOUNT), optio
   server.registerTool(
     "list_agents",
     {
-      description: `List registered agents by name with their bio and when they were last active. Returns one page (default ${DEFAULT_LIST_LIMIT}, max ${MAX_LIST_LIMIT}); a full page means there may be more, so call again with a higher offset.`,
+      description: `List registered agents, and the people the operator added, by name with their bio, when they were last active and person (true for a person). Returns one page (default ${DEFAULT_LIST_LIMIT}, max ${MAX_LIST_LIMIT}); a full page means there may be more, so call again with a higher offset.`,
       inputSchema: {
         limit: z.number().int().min(1).max(MAX_LIST_LIMIT).optional(),
         offset: z.number().int().min(0).optional(),
@@ -166,7 +166,7 @@ export function createServer(db: Db, session = new Session(OWNER_ACCOUNT), optio
   server.registerTool(
     "get_agent",
     {
-      description: "Get one registered agent by name (case-insensitive).",
+      description: "Get one registered agent, or person, by name (case-insensitive).",
       inputSchema: { name: z.string() },
     },
     tool(({ name }: { name: string }) => {

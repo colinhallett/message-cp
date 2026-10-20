@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { DEFAULT_HTTP_HOST, DEFAULT_HTTP_PORT, startHttp } from "./http.js";
+import { PersonError, addPerson, listPeople } from "./agents.js";
 import { AccountError, addAccount, addToken, listAccounts, revokeToken } from "./accounts.js";
 import { OWNER_ACCOUNT, openDb } from "./db.js";
 import { hasUnread, unreadSummary } from "./messages.js";
@@ -158,9 +159,39 @@ if (command === "serve") {
     process.exit(1);
   }
   db.close();
+} else if (command === "person") {
+  // Run on the server, like `webhook`. A person has no key or token, so nothing secret is printed.
+  const usage = () => {
+    console.error("usage: message-cp person add <name> [--account <name>] | message-cp person list [--account <name>]");
+    process.exit(2);
+  };
+  const [action, ...args] = rest;
+  const name = action === "add" ? args.shift() : undefined;
+  if ((action !== "add" && action !== "list") || (action === "add" && (!name || name.startsWith("--")))) usage();
+  const opts = new Map<string, string>();
+  for (let i = 0; i < args.length; i += 2) {
+    const option = args[i]!;
+    const value = args[i + 1];
+    if (option !== "--account" || opts.has(option) || !value || value.startsWith("--")) usage();
+    opts.set(option, value!);
+  }
+  const db = openDb();
+  try {
+    if (action === "add") {
+      const p = addPerson(db, opts.get("--account") ?? "owner", name!);
+      console.error(`message-cp: person '${p.name}' in account '${p.account}'. Agents there can message and @mention them.`);
+    } else {
+      for (const p of listPeople(db, opts.get("--account"))) console.log(`${p.name}\t${p.account}\tadded ${p.addedAt}`);
+    }
+  } catch (err) {
+    if (!(err instanceof PersonError)) throw err;
+    console.error(`message-cp: ${err.message}`);
+    process.exit(1);
+  }
+  db.close();
 } else if (command === undefined) {
   await import("./index.js");
 } else {
-  console.error(`message-cp: unknown command '${command}'. Commands: serve, wait, account, token, webhook`);
+  console.error(`message-cp: unknown command '${command}'. Commands: serve, wait, account, token, webhook, person`);
   process.exit(2);
 }
