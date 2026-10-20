@@ -26,7 +26,7 @@ import {
 } from "./messages.js";
 import { Session, createServer } from "./server.js";
 import { DEFAULT_WAIT_HOLD_MS, formatUnread } from "./wait.js";
-import { sendOptions, sendPending, type SendOptions } from "./webhooks.js";
+import { listAccountDeliveries, sendOptions, sendPending, type SendOptions } from "./webhooks.js";
 
 export const DEFAULT_HTTP_PORT = 8787;
 export const DEFAULT_HTTP_HOST = "127.0.0.1";
@@ -352,6 +352,22 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
   };
 
   /**
+   * GET /api/webhook-deliveries: one page of the deliveries for the account's webhooks, newest first, each with its
+   * status under this server's `maxAttempts`. Never a webhook's URL or secret, or a message or post body.
+   */
+  const apiWebhookDeliveries = (req: IncomingMessage, res: ServerResponse, account: AccountId) => {
+    if (req.method !== "GET") return reply(res, 405, "Method not allowed", { Allow: "GET" });
+    const query = new URL(req.url ?? "", "http://x").searchParams;
+    const paging = page(query, DEFAULT_INBOX_LIMIT, MAX_INBOX_LIMIT);
+    if (paging === undefined) return reply(res, 400, `limit must be 1-${MAX_INBOX_LIMIT} and offset 0 or more`);
+    const deliveries = unlessBusy(res, () =>
+      listAccountDeliveries(db, account, webhookOptions.maxAttempts, paging.limit, paging.offset),
+    );
+    if (deliveries === undefined) return;
+    sendJson(res, deliveries);
+  };
+
+  /**
    * GET /api/search?text=<text>: one page of the account's messages and channel posts whose body contains `text`,
    * newest first, with the `search` tool's filters and errors. It marks nothing read and moves no read position.
    */
@@ -397,6 +413,7 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
     if (path === "/api/channel-posts") return apiChannelPosts(req, res, account);
     if (path === "/api/messages") return apiMessages(req, res, account);
     if (path === "/api/search") return apiSearch(req, res, account);
+    if (path === "/api/webhook-deliveries") return apiWebhookDeliveries(req, res, account);
     // A read-only token reaches the read-only endpoints above and nothing else: /mcp can write, and so can any path added later.
     if (access.readOnly) return reply(res, 403, "This token is read-only");
     if (path === "/wait") return wait(req, res, account);

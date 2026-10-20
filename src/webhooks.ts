@@ -1,6 +1,7 @@
 import { createHmac, randomBytes } from "node:crypto";
 import { NAME_PATTERN } from "./agents.js";
 import type { AccountId, Db } from "./db.js";
+import { MAX_INBOX_LIMIT } from "./messages.js";
 
 // Outgoing webhooks. The operator manages them with `message-cp webhook` on the server; no agent or token can.
 // Messages and posts a webhook is for are queued in `webhook_deliveries` when they are stored, and `serve` sends them
@@ -107,6 +108,52 @@ export function removeWebhook(db: Db, id: number): string {
     .get(id) as { account: string } | undefined;
   if (!row) throw new WebhookError(`No webhook with id ${id}.`);
   return row.account;
+}
+
+/** A delivery as `GET /api/webhook-deliveries` shows it: never its webhook's URL or secret, or the text it carries. */
+export interface AccountDelivery {
+  id: number;
+  webhook: number;
+  /** The webhook's `--on`, as `formatOn` prints it. */
+  on: string;
+  queuedAt: string;
+  attempts: number;
+  /** Null until a 2xx answer. */
+  deliveredAt: string | null;
+  /** `failed` once it has no attempts left under `maxAttempts`, so `sendPending` with it will not try again. */
+  status: "delivered" | "pending" | "failed";
+}
+
+/**
+ * One page of the deliveries queued for the webhooks of `account`, newest first. Scoped through the webhook's account,
+ * so another account's deliveries are never counted or returned. Reads only: no row is claimed or changed.
+ */
+export function listAccountDeliveries(db: Db, account: AccountId, maxAttempts: number, limit: number, offset: number): AccountDelivery[] {
+  const rows = db
+    .prepare(
+      `SELECT d.id, d.webhook_id, w.event, w.name, d.created_at, d.attempts, d.delivered_at
+       FROM webhook_deliveries d JOIN webhooks w ON w.id = d.webhook_id
+       WHERE w.account_id = ? ORDER BY d.id DESC LIMIT ? OFFSET ?`,
+    )
+    .all(account, Math.min(limit, MAX_INBOX_LIMIT), offset) as {
+    id: number;
+    webhook_id: number;
+    event: WebhookEvent;
+    name: string;
+    created_at: number;
+    attempts: number;
+    delivered_at: number | null;
+  }[];
+  return rows.map((r) => ({
+    id: r.id,
+    webhook: r.webhook_id,
+    on: formatOn(r),
+    queuedAt: new Date(r.created_at).toISOString(),
+    attempts: r.attempts,
+    deliveredAt: r.delivered_at === null ? null : new Date(r.delivered_at).toISOString(),
+    // As `sendPending` picks what is still pending: undelivered with attempts left.
+    status: r.delivered_at !== null ? "delivered" : r.attempts < maxAttempts ? "pending" : "failed",
+  }));
 }
 
 /** The JSON body a delivery carries. Never an account id, a secret or a token. */
