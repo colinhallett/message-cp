@@ -674,6 +674,7 @@ function deliveryRow(d) {
   const status = d.status;
   const delivered = status === "delivered";
   if (
+    !Number.isInteger(d.id) ||
     typeof d.on !== "string" ||
     !Number.isInteger(d.webhook) ||
     !Number.isInteger(d.attempts) ||
