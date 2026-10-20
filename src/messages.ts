@@ -1,4 +1,4 @@
-import { ToolError, getAgent, type Identity } from "./agents.js";
+import { NAME_PATTERN, ToolError, getAgent, type Identity } from "./agents.js";
 import type { AccountId, Db } from "./db.js";
 
 export interface Message {
@@ -290,4 +290,115 @@ export function listAccountMessages(db: Db, account: AccountId, limit: number, o
     broadcast: r.broadcast === 1,
     read: r.read_at !== null,
   }));
+}
+
+/** A message the caller received, as `search` returns it. */
+export interface MessageMatch extends Message {
+  kind: "message";
+}
+
+/** A post in one of the caller's account's channels, as `search` returns it: `id` is the post's id. */
+export interface PostMatch {
+  kind: "post";
+  channel: string;
+  id: number;
+  from: string;
+  sentAt: string;
+  body: string;
+}
+
+export interface SearchFilters {
+  /** Only this channel's posts, and no messages. */
+  channel?: string;
+  /** Only this sender's, by name in any case. */
+  from?: string;
+  /** ISO 8601: sent at or after this time. */
+  since?: string;
+  /** ISO 8601: sent before this time. */
+  until?: string;
+}
+
+export const MAX_SEARCH_LENGTH = 200;
+
+/** A row of search's page: a message, or with `is_post` 1 a channel post, whose `channel` is then set. */
+interface SearchRow extends Omit<Row, "read_at"> {
+  is_post: number;
+  channel: string | null;
+}
+
+// A date, or a date and time (to the millisecond) with an optional offset; a time with no offset is UTC, like a date
+// alone.
+const ISO_TIME = /^(\d{4})-(\d{2})-(\d{2})(?:T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,3})?)?(Z|[+-]\d{2}:\d{2})?)?$/;
+
+function parseTime(value: string, field: string): number {
+  const m = ISO_TIME.exec(value);
+  const ms = m ? Date.parse(value.includes("T") && !m[4] ? `${value}Z` : value) : NaN;
+  // Date.parse rolls 2026-02-30 over to March, so the date has to come back unchanged. setUTCFullYear keeps years 0-99,
+  // which Date.UTC would read as 1900-1999.
+  const day = m && new Date(new Date(0).setUTCFullYear(+m[1], +m[2] - 1, +m[3]));
+  if (!m || Number.isNaN(ms) || day!.getUTCMonth() !== +m[2] - 1 || day!.getUTCDate() !== +m[3]) {
+    throw new ToolError(`Invalid ${field}: use an ISO 8601 time such as 2026-10-20 or 2026-10-20T12:00:00Z.`);
+  }
+  return ms;
+}
+
+/**
+ * One page of what the caller could already read whose body contains `text` (ASCII letters in any case), newest
+ * first: the messages it received and the posts in its account's channels. `reader` is the caller's registration, so
+ * a later agent with a removed agent's name finds none of its messages. Reads only: nothing is marked read and no
+ * channel read position moves.
+ */
+export function search(
+  db: Db,
+  account: AccountId,
+  reader: Identity,
+  text: string,
+  filters: SearchFilters = {},
+  limit = DEFAULT_INBOX_LIMIT,
+  offset = 0,
+): (MessageMatch | PostMatch)[] {
+  if (text.length === 0 || text.length > 2 * MAX_SEARCH_LENGTH || countCodePoints(text) > MAX_SEARCH_LENGTH) {
+    throw new ToolError(`Search text must be 1 to ${MAX_SEARCH_LENGTH} characters.`);
+  }
+  const { channel, from } = filters;
+  if (channel !== undefined && !NAME_PATTERN.test(channel)) {
+    throw new ToolError("Invalid channel name: use 1-32 characters from letters, digits, '-' and '_'.");
+  }
+  const since = filters.since === undefined ? null : parseTime(filters.since, "since");
+  const until = filters.until === undefined ? null : parseTime(filters.until, "until");
+  const pattern = `%${text.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
+  // Each half's filters on its table `t`, in the order of their placeholders: body, sender, since, until.
+  const where = (t: string) => `${t}.body LIKE ? ESCAPE '\\' AND (? IS NULL OR ${t}.sender = ? COLLATE NOCASE)
+    AND (? IS NULL OR ${t}.created_at >= ?) AND (? IS NULL OR ${t}.created_at < ?)`;
+  const params = [pattern, from ?? null, from ?? null, since, since, until, until];
+  return db.transaction((): (MessageMatch | PostMatch)[] => {
+    const agent = db
+      .prepare("SELECT id FROM agents WHERE account_id = ? AND id = ? AND registered_at = ? AND instance IS ? AND removed_at IS NULL")
+      .get(account, reader.id, reader.registeredAt, reader.instance) as { id: number } | undefined;
+    if (!agent) return [];
+    // Newest first; at the same millisecond a post before a message, and each kind newest id first.
+    const rows = db
+      .prepare(
+        `SELECT * FROM (
+           ${channel === undefined ? `SELECT 0 AS is_post, m.id, m.sender, m.body, m.broadcast, m.created_at, NULL AS channel FROM messages m WHERE m.recipient_id = ? AND ${where("m")} UNION ALL` : ""}
+           SELECT 1 AS is_post, p.id, p.sender, p.body, 0 AS broadcast, p.created_at, c.name AS channel
+           FROM channel_posts p JOIN channels c ON c.id = p.channel_id AND c.account_id = ?
+           WHERE ${channel === undefined ? "" : "c.name = ? AND "}${where("p")})
+         ORDER BY created_at DESC, is_post DESC, id DESC LIMIT ? OFFSET ?`,
+      )
+      .all(
+        ...(channel === undefined ? [agent.id, ...params] : []),
+        account,
+        ...(channel === undefined ? [] : [channel]),
+        ...params,
+        Math.min(limit, MAX_INBOX_LIMIT),
+        offset,
+      ) as SearchRow[];
+    return rows.map((r): MessageMatch | PostMatch => {
+      const sentAt = new Date(r.created_at).toISOString();
+      return r.is_post === 1
+        ? { kind: "post", channel: r.channel!, id: r.id, from: r.sender, sentAt, body: r.body }
+        : { kind: "message", from: r.sender, sentAt, body: r.body, broadcast: r.broadcast === 1 };
+    });
+  })();
 }
