@@ -247,6 +247,23 @@ describe("queued deliveries", () => {
     post(db, friend, friendAlice, "general", "@bob friend post");
     expect(queued().map((d) => d.webhook)).toEqual([theirs[0], theirs[1], theirs[2]]);
     expect(JSON.stringify(queued())).not.toContain("owner");
+
+    // A name that is an agent only in the owner's account queues nothing for a post in the friend's.
+    db.exec("DELETE FROM webhook_deliveries");
+    member(OWNER_ACCOUNT, "carol");
+    addWebhook(db, "owner", "https://example.com/", "mention:carol", true);
+    addWebhook(db, "friend", "https://example.com/", "mention:carol", true);
+    post(db, friend, friendAlice, "random", "@carol are you there");
+    expect(queued()).toEqual([]);
+  });
+
+  it("names a recipient removed after the message was queued as it was when sent", () => {
+    member(OWNER_ACCOUNT, "alice");
+    const bob = registerWithIdentity(db, OWNER_ACCOUNT, "bob", "x").identity;
+    addWebhook(db, "owner", "https://example.com/", "agent:bob", true);
+    sendMessage(db, OWNER_ACCOUNT, "alice", "bob", "hi");
+    removeAgent(db, OWNER_ACCOUNT, "bob", undefined, bob);
+    expect(queued()[0]!.body).toMatchObject({ event: "agent", recipient: "bob", sender: "alice" });
   });
 
   it("refuses a row for both or neither of a message and a post", () => {
@@ -254,9 +271,10 @@ describe("queued deliveries", () => {
     member(OWNER_ACCOUNT, "bob");
     const hook = addWebhook(db, "owner", "https://example.com/", "#general", true);
     sendMessage(db, OWNER_ACCOUNT, "alice", "bob", "hi");
-    post(db, OWNER_ACCOUNT, alice, "general", "hi");
+    const { id: postId } = post(db, OWNER_ACCOUNT, alice, "general", "hi");
+    const { id: messageId } = db.prepare("SELECT id FROM messages").get() as { id: number };
     const insert = db.prepare("INSERT INTO webhook_deliveries (webhook_id, message_id, post_id, created_at) VALUES (?, ?, ?, 0)");
-    expect(() => insert.run(hook.id, 1, 1)).toThrow(/CHECK/);
+    expect(() => insert.run(hook.id, messageId, postId)).toThrow(/CHECK/);
     expect(() => insert.run(hook.id, null, null)).toThrow(/CHECK/);
     expect(deliveryBody(db, 999)).toBeUndefined();
   });

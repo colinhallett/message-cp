@@ -143,6 +143,7 @@ export function post(db: Db, account: AccountId, member: Member, channel: string
         for (const name of names) mention.run(id, account, name, member.id);
       }
       // Owed to every `#<channel>` webhook of the account, and to every `mention:<agent>` webhook of an agent it mentioned.
+      // Mention rows only ever name agents of this account; the account check on `webhooks` says so where it matters.
       db.prepare(
         `INSERT INTO webhook_deliveries (webhook_id, post_id, created_at)
          SELECT id, ?, ? FROM webhooks WHERE account_id = ? AND event = 'channel' AND name = ? COLLATE NOCASE ORDER BY id`,
