@@ -298,8 +298,13 @@ export interface MessageMatch extends Message {
 }
 
 /** A post in one of the caller's account's channels, as `search` returns it: `id` is the post's id. */
-export interface PostMatch extends Mention {
+export interface PostMatch {
   kind: "post";
+  channel: string;
+  id: number;
+  from: string;
+  sentAt: string;
+  body: string;
 }
 
 export interface SearchFilters {
@@ -328,8 +333,9 @@ const ISO_TIME = /^(\d{4})-(\d{2})-(\d{2})(?:T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,3})?
 function parseTime(value: string, field: string): number {
   const m = ISO_TIME.exec(value);
   const ms = m ? Date.parse(value.includes("T") && !m[4] ? `${value}Z` : value) : NaN;
-  // Date.parse rolls 2026-02-30 over to March, so the date has to come back unchanged.
-  const day = m && new Date(Date.UTC(+m[1], +m[2] - 1, +m[3]));
+  // Date.parse rolls 2026-02-30 over to March, so the date has to come back unchanged. setUTCFullYear keeps years 0-99,
+  // which Date.UTC would read as 1900-1999.
+  const day = m && new Date(new Date(0).setUTCFullYear(+m[1], +m[2] - 1, +m[3]));
   if (!m || Number.isNaN(ms) || day!.getUTCMonth() !== +m[2] - 1 || day!.getUTCDate() !== +m[3]) {
     throw new ToolError(`Invalid ${field}: use an ISO 8601 time such as 2026-10-20 or 2026-10-20T12:00:00Z.`);
   }
@@ -377,14 +383,13 @@ export function search(
            ${channel === undefined ? `SELECT 0 AS is_post, m.id, m.sender, m.body, m.broadcast, m.created_at, NULL AS channel FROM messages m WHERE m.recipient_id = ? AND ${where("m")} UNION ALL` : ""}
            SELECT 1 AS is_post, p.id, p.sender, p.body, 0 AS broadcast, p.created_at, c.name AS channel
            FROM channel_posts p JOIN channels c ON c.id = p.channel_id AND c.account_id = ?
-           WHERE (? IS NULL OR c.name = ?) AND ${where("p")})
+           WHERE ${channel === undefined ? "" : "c.name = ? AND "}${where("p")})
          ORDER BY created_at DESC, is_post DESC, id DESC LIMIT ? OFFSET ?`,
       )
       .all(
         ...(channel === undefined ? [agent.id, ...params] : []),
         account,
-        channel ?? null,
-        channel ?? null,
+        ...(channel === undefined ? [] : [channel]),
         ...params,
         Math.min(limit, MAX_INBOX_LIMIT),
         offset,

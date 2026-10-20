@@ -97,12 +97,15 @@ describe("search", () => {
       { text: "x", until: "2026-02-30" },
       { text: "x", since: "2026-13-01" },
       { text: "x", until: "2026-10-20T25:00:00Z" },
+      { text: "x", since: "20261020" },
+      { text: "x", since: "0001-02-29" },
     ]) {
       const r = await call(bob, "search", args);
       expect(r.isError, JSON.stringify(args)).toBe(true);
     }
     expect(await ok(bob, "search", { text: "😀".repeat(MAX_SEARCH_LENGTH) })).toEqual([]);
     expect(await ok(bob, "search", { text: "x", since: "2026-10-20", until: "2026-10-20T12:00:00.5+02:00" })).toEqual([]);
+    expect(await ok(bob, "search", { text: "x", since: "0000-02-29" })).toEqual([]);
   });
 
   it("requires register first", async () => {

@@ -210,9 +210,9 @@ export function createServer(db: Db, session = new Session(OWNER_ACCOUNT), optio
       inputSchema: {
         text: z.string().describe(`1-${MAX_SEARCH_LENGTH} characters, found anywhere in the body; ASCII letters match in any case, and % and _ are literal.`),
         channel: z.string().optional().describe("Only this channel's posts, and no messages."),
-        from: z.string().optional().describe("Only what this agent sent, by name in any case."),
-        since: z.string().optional().describe("ISO 8601 time, such as 2026-10-20 or 2026-10-20T12:00:00Z (UTC when it has no offset): sent at or after it."),
-        until: z.string().optional().describe("ISO 8601 time (UTC when it has no offset): sent before it."),
+        from: z.string().optional().describe("Only what the agent with this name sent, in any case."),
+        since: z.string().optional().describe("A date (2026-10-20) or date and time (2026-10-20T12:00:00Z, seconds, milliseconds and offset optional; UTC when it has no offset): sent at or after it."),
+        until: z.string().optional().describe("A date or date and time, as since: sent before it."),
         limit: z.number().int().min(1).max(MAX_INBOX_LIMIT).optional(),
         offset: z.number().int().min(0).optional(),
       },
