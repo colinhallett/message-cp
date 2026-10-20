@@ -241,3 +241,70 @@ export function listChannels(
     joined: r.joined === 1,
   }));
 }
+
+export interface AccountChannel {
+  name: string;
+  posts: number;
+  /** Null for a channel that was joined before anyone posted to it. */
+  lastPostAt: string | null;
+  /** The names of the account's live agents that have joined the channel, in name order. */
+  members: string[];
+}
+
+/**
+ * One page of the account's channels by name, each with its post count, last post time and joined live agents, for
+ * the account rather than for one agent. Reads only, so nothing is marked read.
+ */
+export function listAccountChannels(
+  db: Db,
+  account: AccountId,
+  limit = DEFAULT_CHANNEL_LIMIT,
+  offset = 0,
+): AccountChannel[] {
+  // One read transaction, so the page and its members describe the same moment.
+  return db.transaction(() => {
+    const rows = db
+      .prepare(
+        `SELECT c.id, c.name, COUNT(p.id) AS posts, MAX(p.created_at) AS last_post_at
+         FROM (SELECT id, name FROM channels WHERE account_id = ? ORDER BY name LIMIT ? OFFSET ?) c
+         LEFT JOIN channel_posts p ON p.channel_id = c.id
+         GROUP BY c.id ORDER BY c.name`,
+      )
+      .all(account, Math.min(limit, MAX_CHANNEL_LIMIT), offset) as {
+      id: number;
+      name: string;
+      posts: number;
+      last_post_at: number | null;
+    }[];
+    const members = db.prepare(
+      `SELECT a.name FROM channel_reads r JOIN agents a ON a.id = r.agent_id
+       WHERE r.channel_id = ? AND r.joined = 1 AND a.account_id = ? AND a.removed_at IS NULL ORDER BY a.name`,
+    );
+    return rows.map((r) => ({
+      name: r.name,
+      posts: r.posts,
+      lastPostAt: r.last_post_at === null ? null : new Date(r.last_post_at).toISOString(),
+      members: members.pluck().all(r.id, account) as string[],
+    }));
+  })();
+}
+
+/**
+ * One page of the account's channel `channel`, oldest first, paged by `limit` and `offset`, for the account rather than for one
+ * agent. Reads only, so no read position moves.
+ */
+export function readAccountChannel(
+  db: Db,
+  account: AccountId,
+  channel: string,
+  limit = DEFAULT_CHANNEL_LIMIT,
+  offset = 0,
+): ChannelPage {
+  return db.transaction((): ChannelPage => {
+    const found = findChannel(db, account, channel);
+    const rows = db
+      .prepare("SELECT id, sender, body, created_at FROM channel_posts WHERE channel_id = ? ORDER BY id LIMIT ? OFFSET ?")
+      .all(found.id, Math.min(limit, MAX_CHANNEL_LIMIT), offset) as PostRow[];
+    return { channel: found.name, posts: rows.map(toPost) };
+  })();
+}
