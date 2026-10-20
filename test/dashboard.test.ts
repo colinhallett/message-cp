@@ -10,6 +10,7 @@ import { identityOf, registerAgent } from "../src/agents.js";
 import { joinChannel, post } from "../src/channels.js";
 import { sendMessage, unreadSummary } from "../src/messages.js";
 import { startHttp, type HttpServer } from "../src/http.js";
+import { addWebhook } from "../src/webhooks.js";
 
 // The dashboard page at GET /, served before the token check, and everything else still behind it.
 const OWNER_TOKEN = "owner-token";
@@ -51,6 +52,7 @@ describe("GET /", () => {
     expect(html).toContain("/api/channel-posts");
     expect(html).toContain("/api/messages");
     expect(html).toContain("/api/search");
+    expect(html).toContain("/api/webhook-deliveries");
     expect(html).toMatch(/<form id="search"[^>]*>\s*<input id="search-text"[^>]*maxlength="400" required/);
     // The query is not part of the path.
     expect((await fetch(`${base()}/?x=1`)).status).toBe(200);
@@ -778,6 +780,266 @@ describe("the page's search", () => {
     await page.until(() => page.polls.length === 1);
     expect(searches(page.urls)).toEqual([]);
     expect(page.elements["results"].hidden).toBe(false);
+  });
+});
+
+describe("the page's webhook deliveries", () => {
+  // A stub DOM element, as in the channels and messages tests above.
+  interface Stub {
+    on: Record<string, () => void>;
+    hidden: boolean;
+    value: string;
+    textContent: string;
+    className: string;
+    title: string;
+    scrollTop: number;
+    scrollHeight: number;
+    children: Stub[];
+    append(...children: Stub[]): void;
+    replaceChildren(...children: Stub[]): void;
+    addEventListener(type: string, fn: () => void): void;
+    focus(): void;
+  }
+  const el = (): Stub => ({
+    on: {},
+    hidden: true,
+    value: "",
+    textContent: "",
+    className: "",
+    title: "",
+    scrollTop: 0,
+    scrollHeight: 0,
+    children: [],
+    append(...children) {
+      this.children.push(...children);
+    },
+    replaceChildren(...children) {
+      this.children = children;
+    },
+    addEventListener(type, fn) {
+      this.on[type] = fn;
+    },
+    focus() {},
+  });
+  const field = (row: Stub, name: string) => row.children.find((c) => c.className === name)?.textContent;
+  // A delivery row's on, status, whether it is marked failed, and its webhook, attempts and delivery time.
+  const delivery = (row: Stub) => [field(row, "from"), field(row, "tag"), row.className.includes("failed"), field(row, "body")];
+
+  // The server's own sender never runs here, so each delivery stays as the test sets it.
+  beforeEach(async () => {
+    await http.close();
+    http = await startHttp(db, { token: OWNER_TOKEN, port: 0, webhookIntervalMs: 3_600_000 });
+  });
+
+  // Runs the served script with the given token, as the channels and messages tests do. refuse, when it returns a
+  // status, answers a request with that status; "hang" answers only by failing when it is aborted, "fail" rejects and
+  // "junk" answers 200 with a body this page cannot read.
+  async function load(token: string, refuse: (url: string) => number | "hang" | "fail" | "junk" | undefined = () => undefined) {
+    const html = await (await fetch(`${base()}/`)).text();
+    const script = /<script>([\s\S]*?)<\/script>/.exec(html)![1];
+    const elements: Record<string, Stub> = {};
+    const urls: string[] = [];
+    const polls: (() => void)[] = [];
+    const deadlines: (() => void)[] = [];
+    const store = new Map([["message-cp-token", token]]);
+    runInNewContext(script, {
+      AbortController,
+      URLSearchParams,
+      document: { getElementById: (id: string) => (elements[id] ??= el()), createElement: el },
+      sessionStorage: { getItem: (k: string) => store.get(k) ?? null, setItem: (k: string, v: string) => store.set(k, v), removeItem: (k: string) => store.delete(k) },
+      setTimeout: (fn: () => void, ms: number) => (ms === 5000 ? polls.push(fn) : deadlines.push(fn), 0),
+      clearTimeout: () => {},
+      fetch: (url: string, init: RequestInit) => {
+        urls.push(url);
+        const status = refuse(url);
+        if (status === "hang") return new Promise<Response>((_resolve, reject) => init.signal!.addEventListener("abort", () => reject(new Error("aborted"))));
+        if (status === "fail") return Promise.reject(new TypeError("fetch failed"));
+        if (status === "junk") return Promise.resolve(new Response("{", { status: 200 }));
+        return status === undefined ? fetch(`${base()}${url}`, init) : Promise.resolve(new Response(null, { status }));
+      },
+    });
+    const until = async (done: () => boolean) => {
+      for (let i = 0; i < 200 && !done(); i++) await new Promise((resolve) => setTimeout(resolve, 5));
+      expect(done()).toBe(true);
+    };
+    const poll = () => polls.splice(0).pop()!();
+    const entry = () => elements["delivery-entry"].children[0]?.children[0];
+    const openDeliveries = async () => {
+      await until(() => entry() !== undefined);
+      entry()!.on.click();
+    };
+    return { elements, urls, store, polls, deadlines, until, poll, entry, openDeliveries };
+  }
+
+  // The sidebar entry's label and count.
+  const item = (page: Awaited<ReturnType<typeof load>>) => page.entry()!.children.map((c) => c.textContent);
+  const set = (id: number, attempts: number, deliveredAt: number | null) =>
+    db.prepare("UPDATE webhook_deliveries SET attempts = ?, delivered_at = ? WHERE id = ?").run(attempts, deliveredAt, id);
+  const ids = () => db.prepare("SELECT id FROM webhook_deliveries ORDER BY id").pluck().all() as number[];
+  const deliveryUrls = (urls: string[]) => urls.filter((url) => url.startsWith("/api/webhook-deliveries"));
+
+  it("shows this account's deliveries newest first with each status, marks a failure, and never another account's", async () => {
+    for (const name of ["alice", "bob"]) registerAgent(db, OWNER_ACCOUNT, name, "x");
+    const alice = { ...identityOf(db, OWNER_ACCOUNT, "alice")!, name: "alice" };
+    const agent = addWebhook(db, "owner", "https://example.com/agent-hook", "agent:bob", true);
+    const channel = addWebhook(db, "owner", "https://example.com/channel-hook", "#general", true);
+    const mention = addWebhook(db, "owner", "https://example.com/mention-hook", "mention:bob", false);
+    sendMessage(db, OWNER_ACCOUNT, "alice", "bob", "secret plans");
+    post(db, OWNER_ACCOUNT, alice, "general", "@bob more secret plans");
+    // Another account with webhooks on the same names, and deliveries of its own.
+    addAccount(db, "other");
+    const other = listAccounts(db).find((a) => a.name === "other")!.id;
+    for (const name of ["alice", "bob"]) registerAgent(db, other, name, "x");
+    addWebhook(db, "other", "https://example.com/other-hook", "agent:bob", true);
+    sendMessage(db, other, "alice", "bob", "other's");
+    const [delivered, failed, pending] = ids();
+    const deliveredAt = Date.UTC(2026, 9, 20, 12);
+    set(delivered!, 2, deliveredAt);
+    set(failed!, 3, null);
+    set(pending!, 1, null);
+
+    const page = await load(viewer);
+    // Until the view is opened the entry has no count, and the deliveries are not read.
+    await page.until(() => page.entry() !== undefined);
+    expect(item(page)).toEqual(["Webhook deliveries", ""]);
+    expect(deliveryUrls(page.urls)).toEqual([]);
+    await page.openDeliveries();
+    const rows = page.elements["post-rows"];
+    await page.until(() => rows.children.length === 3);
+    expect(deliveryUrls(page.urls)).toEqual(["/api/webhook-deliveries?limit=200&offset=0"]);
+    for (const url of page.urls) expect(url).not.toContain(viewer);
+    expect(page.elements["log"].hidden).toBe(false);
+    expect(page.elements["log-title"].textContent).toBe("Webhook deliveries");
+    expect(page.elements["log-note"].textContent).toBe("");
+    const time = (ms: number) => new Date(ms).toLocaleString();
+    expect(rows.children.map(delivery)).toEqual([
+      ["mention:bob", "pending", false, `webhook ${mention.id} · attempts: 1`],
+      ["#general", "failed", true, `webhook ${channel.id} · attempts: 3`],
+      ["agent:bob", "delivered", false, `webhook ${agent.id} · attempts: 2 · delivered ${time(deliveredAt)}`],
+    ]);
+    expect(rows.children.every((row) => field(row, "time")!.startsWith("queued "))).toBe(true);
+    expect(item(page)).toEqual(["Webhook deliveries", "3"]);
+    expect(page.entry()!.className).toBe("item current");
+    // Nothing private reached the page.
+    const text = JSON.stringify(rows.children.map(delivery));
+    for (const hidden of ["example.com", agent.secret, "secret plans", viewer]) expect(text).not.toContain(hidden);
+
+    // The next poll replaces the rows with the page as it is now, without a reload.
+    sendMessage(db, OWNER_ACCOUNT, "alice", "bob", "again");
+    set(pending!, 2, deliveredAt);
+    page.urls.length = 0;
+    page.poll();
+    await page.until(() => rows.children.length === 4);
+    expect(deliveryUrls(page.urls)).toEqual(["/api/webhook-deliveries?limit=200&offset=0"]);
+    expect(rows.children.map((row) => field(row, "tag"))).toEqual(["pending", "delivered", "failed", "delivered"]);
+
+    // Closing the view stops reading it.
+    page.elements["close-log"].on.click();
+    expect(page.elements["log"].hidden).toBe(true);
+    expect(rows.children).toHaveLength(0);
+    page.urls.length = 0;
+    page.poll();
+    await page.until(() => page.polls.length === 1);
+    expect(deliveryUrls(page.urls)).toEqual([]);
+  });
+
+  it("says when there are no deliveries and when only the newest 200 are shown", async () => {
+    for (const name of ["alice", "bob"]) registerAgent(db, OWNER_ACCOUNT, name, "x");
+    const page = await load(viewer);
+    await page.openDeliveries();
+    await page.until(() => page.elements["log-note"].textContent === "No webhook deliveries yet.");
+    expect(page.elements["post-rows"].children).toHaveLength(0);
+    expect(item(page)).toEqual(["Webhook deliveries", "0"]);
+
+    addWebhook(db, "owner", "https://example.com/", "agent:bob", true);
+    for (let i = 0; i < 201; i++) sendMessage(db, OWNER_ACCOUNT, "alice", "bob", `m${i}`);
+    page.poll();
+    await page.until(() => page.elements["post-rows"].children.length === 200);
+    expect(page.elements["log-note"].textContent).toBe("Only the newest 200 deliveries are shown.");
+    expect(item(page)).toEqual(["Webhook deliveries", "200"]);
+  });
+
+  it.each([
+    [403, "This token cannot read webhook deliveries (403). Retrying…"],
+    [503, "The server is busy (503). Retrying…"],
+    ["junk", "The server sent an answer this page cannot read. Retrying…"],
+    ["fail", "Cannot reach the server. Retrying…"],
+  ] as const)("shows a %s in the view's note and keeps the rest of the page refreshing", async (failure, note) => {
+    for (const name of ["alice", "bob"]) registerAgent(db, OWNER_ACCOUNT, name, "x");
+    post(db, OWNER_ACCOUNT, { ...identityOf(db, OWNER_ACCOUNT, "alice")!, name: "alice" }, "build", "hello");
+    const page = await load(viewer, (url) => (url.startsWith("/api/webhook-deliveries") ? failure : undefined));
+    await page.openDeliveries();
+    await page.until(() => page.elements["log-note"].textContent === note);
+    await page.until(() => page.polls.length > 0);
+    expect(page.elements["status-line"].textContent).toBe("");
+    expect(page.store.size).toBe(1);
+
+    // The agents, channels and messages still refresh.
+    sendMessage(db, OWNER_ACCOUNT, "alice", "bob", "hi");
+    joinChannel(db, OWNER_ACCOUNT, { ...identityOf(db, OWNER_ACCOUNT, "alice")!, name: "alice" }, "ops");
+    page.poll();
+    await page.until(() => page.elements["pair-rows"].children.length === 1 && page.elements["channel-rows"].children.length === 2);
+    expect(page.elements["log-note"].textContent).toBe(note);
+  });
+
+  it("keeps the rest of the page refreshing while the deliveries time out", async () => {
+    for (const name of ["alice", "bob"]) registerAgent(db, OWNER_ACCOUNT, name, "x");
+    sendMessage(db, OWNER_ACCOUNT, "alice", "bob", "hi");
+    const page = await load(viewer, (url) => (url.startsWith("/api/webhook-deliveries") ? "hang" : undefined));
+    await page.openDeliveries();
+    await page.until(() => page.elements["pair-rows"].children.length === 1 && deliveryUrls(page.urls).length === 1);
+    // The poll's deadline aborts the request that never answers; the next poll is still scheduled.
+    page.polls.length = 0;
+    page.deadlines.splice(0).forEach((abort) => abort());
+    await page.until(() => page.elements["log-note"].textContent === "The server did not answer in time. Retrying…");
+    await page.until(() => page.polls.length === 1);
+    expect(page.elements["pair-rows"].children).toHaveLength(1);
+    expect(page.store.size).toBe(1);
+  });
+
+  it("asks for the token again and clears the view when the server refuses the token", async () => {
+    for (const name of ["alice", "bob"]) registerAgent(db, OWNER_ACCOUNT, name, "x");
+    addWebhook(db, "owner", "https://example.com/", "agent:bob", true);
+    sendMessage(db, OWNER_ACCOUNT, "alice", "bob", "hi");
+    const ticket = addToken(db, "owner", true);
+    let refused = false;
+    // Only the deliveries are refused, so the 401 can only come from them.
+    const page = await load(ticket.token, (url) => (refused && url.startsWith("/api/webhook-deliveries") ? 401 : undefined));
+    await page.openDeliveries();
+    await page.until(() => page.elements["post-rows"].children.length === 1);
+    refused = true;
+    page.poll();
+    await page.until(() => page.elements["status-line"].textContent.startsWith("The server refused"));
+    expect(page.elements["post-rows"].children).toHaveLength(0);
+    expect(page.elements["log"].hidden).toBe(true);
+    expect(page.elements["log-title"].textContent).toBe("");
+    expect(page.elements["delivery-entry"].children).toHaveLength(0);
+    expect(page.store.size).toBe(0);
+    expect(page.elements["login"].hidden).toBe(false);
+  });
+
+  it("clears the view when the token is forgotten, and shows the next token only its own account's deliveries", async () => {
+    for (const name of ["alice", "bob"]) registerAgent(db, OWNER_ACCOUNT, name, "x");
+    addWebhook(db, "owner", "https://example.com/", "agent:bob", true);
+    sendMessage(db, OWNER_ACCOUNT, "alice", "bob", "hi");
+    addAccount(db, "other");
+    const otherViewer = addToken(db, "other", true).token;
+    const page = await load(viewer);
+    await page.openDeliveries();
+    await page.until(() => page.elements["post-rows"].children.length === 1);
+
+    page.elements["forget"].on.click();
+    expect(page.elements["post-rows"].children).toHaveLength(0);
+    expect(page.elements["log"].hidden).toBe(true);
+    expect(page.elements["delivery-entry"].children).toHaveLength(0);
+    expect(page.store.size).toBe(0);
+
+    page.elements["token"].value = otherViewer;
+    page.elements["login"].on.submit({ preventDefault() {} } as never);
+    await page.openDeliveries();
+    await page.until(() => page.elements["log-note"].textContent === "No webhook deliveries yet.");
+    expect(page.elements["post-rows"].children).toHaveLength(0);
+    expect(item(page)).toEqual(["Webhook deliveries", "0"]);
   });
 });
 
