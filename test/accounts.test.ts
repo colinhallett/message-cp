@@ -232,8 +232,11 @@ describe("account and token management", () => {
   });
 
   it("resolves MESSAGE_CP_HTTP_TOKEN to the owner's account and an account's token to that account", () => {
-    expect(accountForToken(db, OWNER_TOKEN, OWNER_TOKEN)).toBe(OWNER_ACCOUNT);
-    expect(accountForToken(db, friendToken, OWNER_TOKEN)).toBe(listAccounts(db)[1].id);
+    expect(accountForToken(db, OWNER_TOKEN, OWNER_TOKEN)).toEqual({ account: OWNER_ACCOUNT, readOnly: false });
+    expect(accountForToken(db, friendToken, OWNER_TOKEN)).toEqual({ account: listAccounts(db)[1].id, readOnly: false });
+    const viewer = addToken(db, "friend", true);
+    expect(viewer.readOnly).toBe(true);
+    expect(accountForToken(db, viewer.token, OWNER_TOKEN)).toEqual({ account: listAccounts(db)[1].id, readOnly: true });
     expect(accountForToken(db, "nope", OWNER_TOKEN)).toBeUndefined();
   });
 });

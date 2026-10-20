@@ -18,18 +18,25 @@ export interface NewToken {
   id: number;
   account: string;
   token: string;
+  readOnly: boolean;
+}
+
+/** Who a bearer token acts as: its account, and whether it may only read. */
+export interface TokenAccess {
+  account: AccountId;
+  readOnly: boolean;
 }
 
 const NAME_PATTERN = /^[A-Za-z0-9_-]{1,32}$/;
 
 const hashToken = (token: string) => createHash("sha256").update(token).digest("hex");
 
-function issueToken(db: Db, account: AccountId): { id: number; token: string } {
+function issueToken(db: Db, account: AccountId, readOnly = false): { id: number; token: string; readOnly: boolean } {
   const token = randomBytes(32).toString("hex");
   const { id } = db
-    .prepare("INSERT INTO tokens (account_id, hash, created_at) VALUES (?, ?, ?) RETURNING id")
-    .get(account, hashToken(token), Date.now()) as { id: number };
-  return { id, token };
+    .prepare("INSERT INTO tokens (account_id, hash, created_at, read_only) VALUES (?, ?, ?, ?) RETURNING id")
+    .get(account, hashToken(token), Date.now(), readOnly ? 1 : 0) as { id: number };
+  return { id, token, readOnly };
 }
 
 /** Creates the account `name` (unique in any case) with its first token. */
@@ -54,12 +61,12 @@ export function listAccounts(db: Db): Account[] {
   }));
 }
 
-/** Another token for the account named `account`. */
-export const addToken = (db: Db, account: string): NewToken =>
+/** Another token for the account named `account`; with `readOnly`, one that can only read. */
+export const addToken = (db: Db, account: string, readOnly = false): NewToken =>
   db.transaction((): NewToken => {
     const row = db.prepare("SELECT id, name FROM accounts WHERE name = ?").get(account) as { id: number; name: string } | undefined;
     if (!row) throw new AccountError(`No account named '${account}'.`);
-    return { ...issueToken(db, row.id), account: row.name };
+    return { ...issueToken(db, row.id, readOnly), account: row.name };
   }).immediate();
 
 /** Stops the token `id` working for every request from now on. Returns the account it belonged to. */
@@ -75,15 +82,15 @@ export function revokeToken(db: Db, id: number): string {
 }
 
 /**
- * The account a bearer token belongs to: the owner's for `ownerToken` (MESSAGE_CP_HTTP_TOKEN), else the account of a
- * token created with `message-cp`, as long as it has not been revoked. Undefined for anything else.
+ * The account a bearer token belongs to: the owner's for `ownerToken` (MESSAGE_CP_HTTP_TOKEN, never read-only), else
+ * the account of a token created with `message-cp`, as long as it has not been revoked. Undefined for anything else.
  */
-export function accountForToken(db: Db, token: string, ownerToken: string): AccountId | undefined {
+export function accountForToken(db: Db, token: string, ownerToken: string): TokenAccess | undefined {
   const hash = hashToken(token);
   // Constant-time against the owner's token, as before accounts; created tokens are found by their hash.
-  if (timingSafeEqual(Buffer.from(hash), Buffer.from(hashToken(ownerToken)))) return OWNER_ACCOUNT;
-  const row = db.prepare("SELECT account_id FROM tokens WHERE hash = ? AND revoked_at IS NULL").get(hash) as
-    | { account_id: number }
+  if (timingSafeEqual(Buffer.from(hash), Buffer.from(hashToken(ownerToken)))) return { account: OWNER_ACCOUNT, readOnly: false };
+  const row = db.prepare("SELECT account_id, read_only FROM tokens WHERE hash = ? AND revoked_at IS NULL").get(hash) as
+    | { account_id: number; read_only: number }
     | undefined;
-  return row?.account_id;
+  return row && { account: row.account_id, readOnly: row.read_only === 1 };
 }

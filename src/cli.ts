@@ -77,15 +77,18 @@ if (command === "serve") {
   // hash is stored; everything else goes to stderr.
   const usage = () => {
     console.error(
-      "usage: message-cp account add <name> | message-cp account list | message-cp token add <account> | message-cp token revoke <token id>",
+      "usage: message-cp account add <name> | message-cp account list | message-cp token add <account> [--read-only] | message-cp token revoke <token id>",
     );
     process.exit(2);
   };
-  const [action, arg, extra] = rest;
-  if (extra !== undefined) usage();
+  const [action, arg, extra, ...more] = rest;
+  // Only `token add <account>` takes a flag: --read-only, for a token that can only read.
+  const readOnly = command === "token" && action === "add" && extra === "--read-only";
+  if ((extra !== undefined && !readOnly) || more.length > 0) usage();
   const db = openDb();
-  const printToken = (t: { id: number; account: string; token: string }) => {
-    console.error(`message-cp: token ${t.id} for account '${t.account}'. It is shown only now; keep it.`);
+  const printToken = (t: { id: number; account: string; token: string; readOnly: boolean }) => {
+    const kind = t.readOnly ? "read-only token" : "token";
+    console.error(`message-cp: ${kind} ${t.id} for account '${t.account}'. It is shown only now; keep it.`);
     console.log(t.token);
   };
   try {
@@ -94,7 +97,7 @@ if (command === "serve") {
       for (const a of listAccounts(db)) {
         console.log(`${a.name}\tcreated ${a.createdAt}\ttokens: ${a.tokenIds.length ? a.tokenIds.join(", ") : "none"}`);
       }
-    } else if (command === "token" && action === "add" && arg) printToken(addToken(db, arg));
+    } else if (command === "token" && action === "add" && arg && !arg.startsWith("--")) printToken(addToken(db, arg, readOnly));
     else if (command === "token" && action === "revoke" && arg) {
       const id = Number(arg);
       if (!/^[0-9]+$/.test(arg) || !Number.isSafeInteger(id)) usage();

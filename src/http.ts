@@ -2,7 +2,8 @@ import { randomUUID } from "node:crypto";
 import { createServer as createHttpServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
-import { accountForToken } from "./accounts.js";
+import { accountForToken, type TokenAccess } from "./accounts.js";
+import { DEFAULT_LIST_LIMIT, MAX_LIST_LIMIT, listAgents } from "./agents.js";
 import type { AccountId, Db } from "./db.js";
 import { hasUnread, unreadSummary, type Unread } from "./messages.js";
 import { Session, createServer } from "./server.js";
@@ -13,6 +14,8 @@ export const DEFAULT_HTTP_HOST = "127.0.0.1";
 export const DEFAULT_IDLE_TIMEOUT_MS = 30 * 60 * 1000;
 const MAX_BODY_BYTES = 4 * 1024 * 1024;
 export const DEFAULT_MAX_SESSIONS = 256;
+/** An agent seen this recently counts as online in GET /api/agents, as does one with a GET /wait held now. */
+export const ONLINE_WINDOW_MS = 5 * 60 * 1000;
 
 export interface HttpOptions {
   /** The owner's token (MESSAGE_CP_HTTP_TOKEN). Tokens created with `message-cp token add` work as well, as their account. */
@@ -45,7 +48,7 @@ interface Live {
 }
 
 /** The account the request's bearer token belongs to, checked afresh on every request so a revoked token stops at once. */
-function accountOf(db: Db, header: string | undefined, ownerToken: string): AccountId | undefined {
+function accountOf(db: Db, header: string | undefined, ownerToken: string): TokenAccess | undefined {
   const m = /^bearer +(.*)$/i.exec(header ?? "");
   // Hash something even without a header, so a refusal takes about as long either way.
   const account = accountForToken(db, m?.[1] ?? "", ownerToken);
@@ -80,6 +83,17 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
   const sessions = new Map<string, Live>();
   let initializing = 0;
   let waiting = 0;
+  // Held GET /wait requests per account and agent name (lower-cased, as names are unique regardless of case).
+  const held = new Map<AccountId, Map<string, number>>();
+  const holding = (account: AccountId, name: string, delta: number) => {
+    const agents = held.get(account) ?? new Map<string, number>();
+    const key = name.toLowerCase();
+    const n = (agents.get(key) ?? 0) + delta;
+    if (n > 0) agents.set(key, n);
+    else agents.delete(key);
+    if (agents.size > 0) held.set(account, agents);
+    else held.delete(account);
+  };
 
   const drop = (id: string) => {
     const live = sessions.get(id);
@@ -126,6 +140,7 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
     // Held requests are capped like sessions, so a runaway client cannot pin the server's connections.
     if (waiting >= maxSessions) return reply(res, 503, "Too many waiting requests", { "Retry-After": "5" });
     waiting++;
+    holding(account, name!, 1);
     let gone = false;
     let wake: () => void = () => {};
     res.on("close", () => {
@@ -137,6 +152,7 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
       await hold(first, account, name!, deadline, res, () => gone, (w) => (wake = w));
     } finally {
       waiting--;
+      holding(account, name!, -1);
     }
   };
 
@@ -172,13 +188,55 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
     }
   };
 
+  /**
+   * GET /api/agents: one page of the account's live agents, as `list_agents` pages them, each with its unread counts
+   * and whether it is online. Counts only, never a message or post; it reads nothing as read.
+   */
+  const apiAgents = (req: IncomingMessage, res: ServerResponse, account: AccountId) => {
+    if (req.method !== "GET") return reply(res, 405, "Method not allowed", { Allow: "GET" });
+    const query = new URL(req.url ?? "", "http://x").searchParams;
+    const number = (key: string, fallback: number, min: number, max: number) => {
+      const raw = query.get(key);
+      if (raw === null) return fallback;
+      const n = /^[0-9]+$/.test(raw) ? Number(raw) : NaN;
+      return Number.isSafeInteger(n) && n >= min && n <= max ? n : undefined;
+    };
+    const limit = number("limit", DEFAULT_LIST_LIMIT, 1, MAX_LIST_LIMIT);
+    const offset = number("offset", 0, 0, Number.MAX_SAFE_INTEGER);
+    if (limit === undefined || offset === undefined) {
+      return reply(res, 400, `limit must be 1-${MAX_LIST_LIMIT} and offset 0 or more`);
+    }
+    const waits = held.get(account);
+    const recent = Date.now() - ONLINE_WINDOW_MS;
+    // One read transaction, so the page and its counts describe the same moment.
+    const agents = db.transaction(() =>
+      listAgents(db, account, limit, offset).map((a) => {
+        const unread = unreadSummary(db, account, a.name);
+        return {
+          name: a.name,
+          bio: a.bio,
+          lastSeen: a.lastSeen,
+          unreadMessages: unread?.count ?? 0,
+          unreadPosts: unread?.posts ?? 0,
+          online: (waits?.get(a.name.toLowerCase()) ?? 0) > 0 || Date.parse(a.lastSeen) >= recent,
+        };
+      }),
+    )();
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify(agents));
+  };
+
   const handle = async (req: IncomingMessage, res: ServerResponse) => {
     // The token is the first thing a request meets, and decides the account everything after it acts as.
-    const account = accountOf(db, req.headers.authorization, options.token);
-    if (account === undefined) {
+    const access = accountOf(db, req.headers.authorization, options.token);
+    if (access === undefined) {
       return reply(res, 401, "Unauthorized", { "WWW-Authenticate": "Bearer" });
     }
+    const { account } = access;
     const path = (req.url ?? "").split("?")[0];
+    if (path === "/api/agents") return apiAgents(req, res, account);
+    // A read-only token reaches only /api/ endpoints that read; /mcp and /wait can write or keep a request held.
+    if (access.readOnly && (path === "/wait" || path === "/mcp")) return reply(res, 403, "This token is read-only");
     if (path === "/wait") return wait(req, res, account);
     if (path !== "/mcp") return reply(res, 404, "Not found");
     if (req.method !== "POST" && req.method !== "GET" && req.method !== "DELETE") {
