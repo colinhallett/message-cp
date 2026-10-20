@@ -97,7 +97,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 #search input { flex: 1; min-width: 0; padding: var(--s1) var(--s2); background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); }
 .toggle { display: none; }
 /* The person picker and the compose box share one row under the log, the picker beside the box. */
-#writer { display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--s2); padding: var(--s2) var(--s4); border-top: 1px solid var(--border); }
+#writer { position: relative; display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--s2); padding: var(--s2) var(--s4); border-top: 1px solid var(--border); }
 #as-box { display: flex; align-items: center; gap: var(--s1); }
 #as { padding: var(--s1); background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); }
 #as-note { margin: 0; }
@@ -107,6 +107,12 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 /* The note sits under the row, outside the form, so the picker stays level with the box when it shows. */
 #compose-note { flex: 1 1 100%; margin: 0; }
 #compose[hidden] + #compose-note { display: none; }
+/* The names offered for a mention sit over the compose row, so the log above stays where it is. */
+#mentions { position: absolute; bottom: 100%; left: var(--s4); z-index: 1; min-width: 14rem; max-width: calc(100% - 2 * var(--s4)); padding: var(--s1) 0; background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: 0 2px 8px rgb(0 0 0 / 0.2); }
+.option { display: flex; align-items: baseline; gap: var(--s2); padding: var(--s1) var(--s3); cursor: pointer; }
+.option:hover { background: var(--hover); }
+.option.current { background: var(--active); box-shadow: inset 3px 0 0 var(--accent); }
+.option .name { font-weight: 600; overflow-wrap: anywhere; }
 #sidebar { grid-area: side; overflow-y: auto; background: var(--panel); border-right: 1px solid var(--border); }
 #agents { grid-area: agents; overflow-y: auto; background: var(--panel); border-left: 1px solid var(--border); }
 #chat { grid-area: chat; min-width: 0; display: flex; flex-direction: column; }
@@ -211,6 +217,7 @@ const composeLabel = document.getElementById("compose-label");
 const composeText = document.getElementById("compose-text");
 const composeNote = document.getElementById("compose-note");
 const composeSend = document.getElementById("compose-send");
+const mentionList = document.getElementById("mentions");
 let timer;
 let generation = 0;
 let controller;
@@ -268,6 +275,20 @@ const MENTION = /(?<![A-Za-z0-9_-])@([A-Za-z0-9_-]{1,32})(?![A-Za-z0-9_-])/g;
 // the chosen person re-marks them in place.
 let logMentions = [];
 let resultMentions = [];
+// The account's live agents and people as the last GET /api/agents gave them, each with its name and whether it is a
+// person, which the compose box offers after an "@"; ask() clears them.
+let mentionable = [];
+// An "@" being typed: the text before the caret ends in one, at the start or after a character that cannot be in a
+// name (MENTION's boundary), with the name characters typed after it.
+const TYPING = /(?<![A-Za-z0-9_-])@([A-Za-z0-9_-]{0,32})$/;
+// At most this many names are offered.
+const MAX_OFFERED = 8;
+// The names offered now, empty while the list is closed, which one is highlighted, and the "@" and the characters
+// typed after it, as offsets in the box's text, that a pick replaces.
+let offered = [];
+let highlighted = 0;
+let typedFrom = 0;
+let typedTo = 0;
 
 function say(text, isError) {
   statusLine.textContent = text;
@@ -298,6 +319,7 @@ function ask(message) {
   grow();
   composeNote.textContent = "";
   composeSend.disabled = false;
+  mentionable = [];
   // Clear every panel, so one token's agents, channels, pairs and messages never show under the next token.
   rows.replaceChildren();
   channelRows.replaceChildren();
@@ -349,12 +371,48 @@ compose.addEventListener("submit", (event) => {
 // Enter sends and Shift+Enter adds a line, as in a chat app. An Enter that ends an input method's composition does
 // neither (Safari ends it before the keydown, which then has keyCode 229), and one in a box of only whitespace sends
 // nothing; send() itself ignores one while a send is in flight.
+// While names are offered, the arrows move the highlight, Enter or Tab picks the highlighted name and Escape closes the
+// list, each in place of what the key would do. Each first looks again at the selection and the text before the caret,
+// which a key the list does not watch (Ctrl+A, say) may have changed, and does what it always does if nothing is offered
+// any more. An arrow, Enter or Tab with a modifier (Shift+Arrow selects, Shift+Tab moves focus back) does what it always
+// does.
 composeText.addEventListener("keydown", (event) => {
+  if (offered.length > 0 && !event.isComposing && event.keyCode !== 229) offer();
+  if (offered.length > 0 && !event.isComposing && event.keyCode !== 229) {
+    const plain = !event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey;
+    if (plain && (event.key === "ArrowDown" || event.key === "ArrowUp")) {
+      event.preventDefault();
+      highlighted = (highlighted + (event.key === "ArrowDown" ? 1 : offered.length - 1)) % offered.length;
+      showOffered();
+      return;
+    }
+    if (plain && (event.key === "Enter" || event.key === "Tab")) {
+      event.preventDefault();
+      pick(highlighted);
+      return;
+    }
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeOffered();
+      return;
+    }
+  }
   if (event.key !== "Enter" || event.shiftKey || event.isComposing || event.keyCode === 229) return;
   event.preventDefault();
   if (composeText.value.trim() !== "") send();
 });
-composeText.addEventListener("input", () => grow());
+composeText.addEventListener("input", () => {
+  grow();
+  offer();
+});
+// Moving the caret without typing looks again at what is before it; leaving the box closes the list. An open list looks
+// again after every key, once the browser has done what the key does (Ctrl+A selects, Shift+ArrowUp moves the caret), so
+// it never stays offered for a selection or caret it no longer matches.
+composeText.addEventListener("keyup", (event) => {
+  if (offered.length > 0 || ["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) offer();
+});
+composeText.addEventListener("click", () => offer());
+composeText.addEventListener("blur", () => closeOffered());
 // On a narrow screen only one panel shows at a time: these buttons swap the conversation for the sidebar or the agents.
 document.getElementById("show-sidebar").addEventListener("click", () => panel("show-sidebar"));
 document.getElementById("show-agents").addEventListener("click", () => panel("show-agents"));
@@ -380,6 +438,7 @@ function closeLog() {
   logTitle.className = "";
   logNote.textContent = "";
   log.hidden = true;
+  closeOffered();
   // The text typed stays, so leaving a conversation never loses it; only a 200 or a new token clears it.
   composeNote.textContent = "";
   compose.hidden = true;
@@ -575,6 +634,7 @@ function showCompose() {
   const to = replyTo();
   const shown = canPost && person !== undefined && (openChannel !== undefined || to !== undefined);
   compose.hidden = !shown;
+  if (!shown) closeOffered();
   if (shown) composeLabel.textContent = openChannel !== undefined ? "Post in #" + openChannel + " as " + person : "Reply to " + to + " as " + person;
   writer.hidden = compose.hidden && asBox.hidden && asNote.textContent === "";
   if (shown) grow();
@@ -584,6 +644,74 @@ function showCompose() {
 function grow() {
   composeText.rows = MIN_ROWS;
   while (composeText.rows < MAX_ROWS && composeText.scrollHeight > composeText.clientHeight) composeText.rows++;
+}
+
+// Offers the names that start with what was typed after an "@" just before the caret, ignoring case, leaving out the
+// chosen person and "all", for which the server records no mention; closes the list when there is no "@" or no match,
+// or text is selected.
+function offer() {
+  const selected = composeText.selectionStart !== composeText.selectionEnd;
+  const typed = compose.hidden || selected ? null : TYPING.exec(composeText.value.slice(0, composeText.selectionStart));
+  if (!typed) return closeOffered();
+  const start = typed[1].toLowerCase();
+  const me = person === undefined ? undefined : person.toLowerCase();
+  const found = mentionable.filter((n) => {
+    const lower = n.name.toLowerCase();
+    return lower.startsWith(start) && lower !== "all" && lower !== me;
+  }).slice(0, MAX_OFFERED);
+  if (found.length === 0) return closeOffered();
+  // The highlight stays on its name while it is still offered.
+  const current = offered[highlighted];
+  highlighted = current ? Math.max(0, found.findIndex((n) => n.name === current.name)) : 0;
+  offered = found;
+  typedFrom = typed.index;
+  typedTo = typed.index + typed[0].length;
+  showOffered();
+}
+
+// Builds the list of offered names, each with whether it is a person, and marks the highlighted one.
+function showOffered() {
+  mentionList.replaceChildren(...offered.map((n, i) => {
+    const option = part("li", i === highlighted ? "option current" : "option", "");
+    option.id = "mention-" + i;
+    option.setAttribute("role", "option");
+    option.setAttribute("aria-selected", i === highlighted ? "true" : "false");
+    option.append(part("span", "name", n.name));
+    if (n.person) option.append(part("span", "kind", "person"));
+    // On mousedown, with its default prevented, so the box keeps the focus and the caret. It looks again at the box
+    // first, and picks only a name still offered for the selection and caret as they are now.
+    option.addEventListener("mousedown", (event) => {
+      event.preventDefault();
+      offer();
+      const now = offered.findIndex((o) => o.name === n.name);
+      if (now >= 0) pick(now);
+    });
+    return option;
+  }));
+  mentionList.hidden = false;
+  composeText.setAttribute("aria-expanded", "true");
+  composeText.setAttribute("aria-activedescendant", "mention-" + highlighted);
+}
+
+function closeOffered() {
+  if (offered.length === 0) return;
+  offered = [];
+  highlighted = 0;
+  mentionList.replaceChildren();
+  mentionList.hidden = true;
+  composeText.setAttribute("aria-expanded", "false");
+  composeText.removeAttribute("aria-activedescendant");
+}
+
+// Replaces the "@" and what was typed after it with "@<name> " and puts the caret after the space.
+function pick(i) {
+  const text = "@" + offered[i].name + " ";
+  const value = composeText.value;
+  composeText.value = value.slice(0, typedFrom) + text + value.slice(typedTo);
+  const caret = typedFrom + text.length;
+  composeText.setSelectionRange(caret, caret);
+  closeOffered();
+  grow();
 }
 
 // What the compose box sends to now: the path, the conversation and the person, or undefined when it is hidden.
@@ -641,6 +769,7 @@ async function send() {
   if (answer.status === 200 || answer.error) {
     if (same && answer.status === 200 && composeText.value === body) {
       composeText.value = "";
+      closeOffered();
       grow();
     }
     if (same) composeNote.textContent = answer.status === 200 ? "" : answer.error + ".";
@@ -941,7 +1070,10 @@ function show(agents) {
   if (items.length === 0) items.push(part("li", "note", "No agents registered in this account."));
   rows.replaceChildren(...items);
   people = agents.filter((a) => a.person === true).map((a) => String(a.name));
+  mentionable = agents.map((a) => ({ name: String(a.name), person: a.person === true }));
   showPicker();
+  // An open list follows the answer, so it never offers a name that has gone.
+  if (offered.length > 0) offer();
 }
 
 // The sidebar key of the open conversation, as sidebarItem takes it, or undefined.
@@ -1243,9 +1375,10 @@ export const DASHBOARD_HTML = `<!doctype html>
 <select id="as"></select>
 </span>
 <p id="as-note" class="note"></p>
+<ul id="mentions" role="listbox" aria-label="Agents and people to mention" hidden></ul>
 <form id="compose" hidden>
 <label id="compose-label" for="compose-text"></label>
-<textarea id="compose-text" rows="2" required autocomplete="off" placeholder="Enter sends, Shift+Enter adds a line"></textarea>
+<textarea id="compose-text" rows="2" required autocomplete="off" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="mentions" placeholder="Enter sends, Shift+Enter adds a line"></textarea>
 <button id="compose-send" type="submit">Send</button>
 </form>
 <p id="compose-note" class="note" role="status"></p>
