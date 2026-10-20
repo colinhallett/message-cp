@@ -123,7 +123,7 @@ CREATE INDEX IF NOT EXISTS webhooks_by_name ON webhooks (account_id, event, name
 
 -- What a webhook is owed: one row per webhook per message or post it is for, queued in the transaction that stores the
 -- message or post. Only ids are kept, so the body is built when it is sent. \`serve\` sends them: \`attempts\` is counted
--- and \`attempted_at\` set when a sender claims a row, before its request, and \`delivered_at\` set on a 2xx answer.
+-- and \`claimed_until\` set when a sender claims a row, before its request, and \`delivered_at\` set on a 2xx answer.
 CREATE TABLE IF NOT EXISTS webhook_deliveries (
   id INTEGER PRIMARY KEY,
   webhook_id INTEGER NOT NULL REFERENCES webhooks(id) ON DELETE CASCADE,
@@ -252,8 +252,8 @@ function migrate(db: Db, path: string): void {
   addColumn(db, "joined", "INTEGER NOT NULL DEFAULT 0", "channel_reads");
   // 1 for a token that can only read (`token add --read-only`); tokens made before it existed keep full access.
   addColumn(db, "read_only", "INTEGER NOT NULL DEFAULT 0", "tokens");
-  // When a sender last claimed the delivery, so another sender leaves it alone while that request may be in flight.
-  addColumn(db, "attempted_at", "INTEGER", "webhook_deliveries");
+  // Until when the request of the sender that last claimed the delivery may be in flight; no sender takes it before then.
+  addColumn(db, "claimed_until", "INTEGER", "webhook_deliveries");
   db.exec(DROP_REMOVED);
   db.prepare("INSERT OR IGNORE INTO accounts (id, name, created_at) VALUES (?, 'owner', ?)").run(OWNER_ACCOUNT, Date.now());
   addAccounts(db, path);

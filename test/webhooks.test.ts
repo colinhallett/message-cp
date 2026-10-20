@@ -353,7 +353,7 @@ describe("sendPending", () => {
   const signature = (secret: string, body: string) => `sha256=${createHmac("sha256", secret).update(body).digest("hex")}`;
   /** Lets a retry be claimed without waiting out the in-flight guard. */
   const later = { timeoutMs: 1000 };
-  const unclaim = () => db.prepare("UPDATE webhook_deliveries SET attempted_at = NULL").run();
+  const unclaim = () => db.prepare("UPDATE webhook_deliveries SET claimed_until = NULL").run();
 
   it("POSTs the body, signed with the webhook's secret, and marks it delivered", async () => {
     const r = await receiver();
@@ -472,6 +472,34 @@ describe("sendPending", () => {
       expect(row()).toEqual({ attempts: 1, delivered_at: null });
     } finally {
       other.close();
+    }
+  });
+
+  it("leaves a claim alone for as long as the claiming sender's own timeout allows, whatever the next sender's", async () => {
+    const r = await receiver(() => 500);
+    member(OWNER_ACCOUNT, "alice");
+    member(OWNER_ACCOUNT, "bob");
+    addWebhook(db, "owner", r.url, "agent:bob", true);
+    sendMessage(db, OWNER_ACCOUNT, "alice", "bob", "hi");
+    const claimed = Date.now();
+    expect(await sendPending(db, { timeoutMs: 30_000 })).toEqual({ delivered: 0, failed: 1 });
+    const now = vi.spyOn(Date, "now");
+    try {
+      // Past twice the default timeout, but the first sender's request could still be in flight.
+      now.mockReturnValue(claimed + 15_000);
+      expect(await sendPending(db)).toEqual({ delivered: 0, failed: 0 });
+      now.mockReturnValue(claimed + 61_000);
+      expect(await sendPending(db)).toEqual({ delivered: 0, failed: 1 });
+    } finally {
+      now.mockRestore();
+    }
+    expect(r.got).toHaveLength(2);
+  });
+
+  it("refuses a batch, timeout or attempt count that is not a positive integer", async () => {
+    for (const bad of [{ batch: -1 }, { batch: 0 }, { batch: 1.5 }, { batch: Infinity }, { timeoutMs: -1 }, { maxAttempts: NaN }]) {
+      await expect(sendPending(db, bad), JSON.stringify(bad)).rejects.toThrow(/must be a positive integer/);
+      await expect(startHttp(db, { token: "t", port: 0, webhookOptions: bad }), JSON.stringify(bad)).rejects.toThrow(/must be a positive integer/);
     }
   });
 

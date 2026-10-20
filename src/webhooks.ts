@@ -167,34 +167,46 @@ export interface SendOptions {
   signal?: AbortSignal;
 }
 
+/** `options` with defaults filled in; throws for a value that is not a positive integer, so a pass is always bounded. */
+export function sendOptions(options: Omit<SendOptions, "signal">): Required<Omit<SendOptions, "signal">> {
+  const resolved = {
+    timeoutMs: options.timeoutMs ?? WEBHOOK_TIMEOUT_MS,
+    maxAttempts: options.maxAttempts ?? WEBHOOK_MAX_ATTEMPTS,
+    batch: options.batch ?? WEBHOOK_BATCH,
+  };
+  for (const [key, value] of Object.entries(resolved)) {
+    if (!Number.isSafeInteger(value) || value < 1) throw new Error(`${key} must be a positive integer`);
+  }
+  return resolved;
+}
+
 /**
  * One pass over the queue: claims up to `batch` pending deliveries, oldest first, and POSTs each one's body to its own
  * webhook's URL, signed with its secret in `X-Message-CP-Signature`. A 2xx answer delivers it; anything else, a
  * network error or the timeout is a failed attempt, retried on a later pass. Redirects are not followed.
  * An attempt is counted when the row is claimed, before the request, so two senders on one file never send the same
- * attempt, and a row whose last attempt may still be in flight (claimed under twice `timeoutMs` ago, leaving room to
- * record the answer) is left for a later pass.
+ * attempt. The claim also records until when that request may still be in flight (twice the claiming sender's own
+ * `timeoutMs`, leaving room to record the answer), and no sender, whatever its own timeout, takes the row before then.
  * Nothing about a delivery is logged: its body, secret and URL are all private.
  */
 export async function sendPending(db: Db, options: SendOptions = {}): Promise<{ delivered: number; failed: number }> {
-  const timeoutMs = options.timeoutMs ?? WEBHOOK_TIMEOUT_MS;
-  const maxAttempts = options.maxAttempts ?? WEBHOOK_MAX_ATTEMPTS;
+  const { timeoutMs, maxAttempts, batch } = sendOptions(options);
   const rows = db
     .prepare(
       `SELECT d.id, d.attempts, w.url, w.secret FROM webhook_deliveries d JOIN webhooks w ON w.id = d.webhook_id
-       WHERE d.delivered_at IS NULL AND d.attempts < ? AND (d.attempted_at IS NULL OR d.attempted_at <= ?)
+       WHERE d.delivered_at IS NULL AND d.attempts < ? AND (d.claimed_until IS NULL OR d.claimed_until <= ?)
        ORDER BY d.delivered_at, d.id LIMIT ?`,
     )
-    .all(maxAttempts, Date.now() - 2 * timeoutMs, options.batch ?? WEBHOOK_BATCH) as { id: number; attempts: number; url: string; secret: string }[];
+    .all(maxAttempts, Date.now(), batch) as { id: number; attempts: number; url: string; secret: string }[];
   const claim = db.prepare(
-    "UPDATE webhook_deliveries SET attempts = attempts + 1, attempted_at = ? WHERE id = ? AND attempts = ? AND delivered_at IS NULL",
+    "UPDATE webhook_deliveries SET attempts = attempts + 1, claimed_until = ? WHERE id = ? AND attempts = ? AND delivered_at IS NULL",
   );
   const done = db.prepare("UPDATE webhook_deliveries SET delivered_at = ? WHERE id = ?");
   let delivered = 0;
   let failed = 0;
 
   const send = async (row: (typeof rows)[number]) => {
-    if (claim.run(Date.now(), row.id, row.attempts).changes !== 1) return;
+    if (claim.run(Date.now() + 2 * timeoutMs, row.id, row.attempts).changes !== 1) return;
     let href: string;
     try {
       href = webhookUrl(row.url);

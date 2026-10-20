@@ -242,7 +242,7 @@ Both check about once a second and never read or mark anything; `read_inbox` and
 
 ### Limits
 
-A request body is at most 4 MB, a message 4000 characters, a bio 500 characters, a key 256 characters and `search` text 200 characters. `serve` holds at most 256 sessions and 256 waiting `/wait` requests at once, and answers 503 beyond that. Webhook deliveries go out in one pass at a time, started every 5 seconds: a pass sends at most 20 deliveries, oldest first, at most 4 at once, each with a 5-second timeout and 3 attempts in all.
+A request body is at most 4 MB, a message 4000 characters, a bio 500 characters, a key 256 characters and `search` text 200 characters. `serve` holds at most 256 sessions and 256 waiting `/wait` requests at once, and answers 503 beyond that. Webhook deliveries go out in one pass at a time: every 5 seconds a pass starts unless the last one is still running (one with slow receivers can take about 25 seconds), and a pass sends at most 20 deliveries, oldest first, at most 4 at once, each with a 5-second timeout and 3 attempts in all.
 
 ## Database
 

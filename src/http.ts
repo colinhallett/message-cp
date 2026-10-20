@@ -26,7 +26,7 @@ import {
 } from "./messages.js";
 import { Session, createServer } from "./server.js";
 import { DEFAULT_WAIT_HOLD_MS, formatUnread } from "./wait.js";
-import { sendPending, type SendOptions } from "./webhooks.js";
+import { sendOptions, sendPending, type SendOptions } from "./webhooks.js";
 
 export const DEFAULT_HTTP_PORT = 8787;
 export const DEFAULT_HTTP_HOST = "127.0.0.1";
@@ -35,7 +35,7 @@ const MAX_BODY_BYTES = 4 * 1024 * 1024;
 export const DEFAULT_MAX_SESSIONS = 256;
 /** An agent seen this recently counts as online in GET /api/agents, as does one with a GET /wait held now. */
 export const ONLINE_WINDOW_MS = 5 * 60 * 1000;
-/** How often a pass over the webhook delivery queue starts, if none is still running. */
+/** How often a pass over the webhook delivery queue is due; a tick while a pass is still running is skipped. */
 export const DEFAULT_WEBHOOK_INTERVAL_MS = 5000;
 
 export interface HttpOptions {
@@ -148,6 +148,7 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
   if (!Number.isFinite(waitHoldMs) || waitHoldMs < 0) throw new Error("waitHoldMs must be a finite number >= 0");
   const webhookIntervalMs = options.webhookIntervalMs ?? DEFAULT_WEBHOOK_INTERVAL_MS;
   if (!Number.isFinite(webhookIntervalMs) || webhookIntervalMs < 10) throw new Error("webhookIntervalMs must be a finite number >= 10");
+  const webhookOptions = sendOptions(options.webhookOptions ?? {});
   const sessions = new Map<string, Live>();
   let initializing = 0;
   let waiting = 0;
@@ -187,7 +188,7 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
     if (sending) return;
     sending = (async () => {
       try {
-        await sendPending(db, { ...options.webhookOptions, signal: stopping.signal });
+        await sendPending(db, { ...webhookOptions, signal: stopping.signal });
       } catch (err) {
         // A lock held past the busy timeout is retried on the next pass; nothing about a delivery is logged.
         const code = (err as { code?: unknown } | null)?.code;
