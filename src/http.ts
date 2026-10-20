@@ -13,7 +13,15 @@ import {
 } from "./channels.js";
 import { DASHBOARD_HEADERS, DASHBOARD_HTML } from "./dashboard.js";
 import type { AccountId, Db } from "./db.js";
-import { hasUnread, listAgentsUnread, unreadSummary, type Unread } from "./messages.js";
+import {
+  DEFAULT_INBOX_LIMIT,
+  MAX_INBOX_LIMIT,
+  hasUnread,
+  listAccountMessages,
+  listAgentsUnread,
+  unreadSummary,
+  type Unread,
+} from "./messages.js";
 import { Session, createServer } from "./server.js";
 import { DEFAULT_WAIT_HOLD_MS, formatUnread } from "./wait.js";
 
@@ -297,6 +305,20 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
     sendJson(res, channel);
   };
 
+  /**
+   * GET /api/messages: one page of the account's direct messages, oldest first, each with its recipient and whether
+   * it has been read. It marks nothing read, so no unread count, `lastSeen` or /wait answer moves.
+   */
+  const apiMessages = (req: IncomingMessage, res: ServerResponse, account: AccountId) => {
+    if (req.method !== "GET") return reply(res, 405, "Method not allowed", { Allow: "GET" });
+    const query = new URL(req.url ?? "", "http://x").searchParams;
+    const paging = page(query, DEFAULT_INBOX_LIMIT, MAX_INBOX_LIMIT);
+    if (paging === undefined) return reply(res, 400, `limit must be 1-${MAX_INBOX_LIMIT} and offset 0 or more`);
+    const messages = unlessBusy(res, () => listAccountMessages(db, account, paging.limit, paging.offset));
+    if (messages === undefined) return;
+    sendJson(res, messages);
+  };
+
   const handle = async (req: IncomingMessage, res: ServerResponse) => {
     const path = (req.url ?? "").split("?")[0];
     // The dashboard page is the same constant for everyone and holds no data, so it alone comes before the token.
@@ -313,6 +335,7 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
     if (path === "/api/agents") return apiAgents(req, res, account);
     if (path === "/api/channels") return apiChannels(req, res, account);
     if (path === "/api/channel-posts") return apiChannelPosts(req, res, account);
+    if (path === "/api/messages") return apiMessages(req, res, account);
     // A read-only token reaches the read-only endpoints above and nothing else: /mcp can write, and so can any path added later.
     if (access.readOnly) return reply(res, 403, "This token is read-only");
     if (path === "/wait") return wait(req, res, account);
