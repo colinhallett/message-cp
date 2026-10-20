@@ -5,6 +5,7 @@ import { OWNER_ACCOUNT, openDb } from "./db.js";
 import { hasUnread, unreadSummary } from "./messages.js";
 import { setting } from "./settings.js";
 import { formatUnread } from "./wait.js";
+import { WebhookError, addWebhook, formatOn, listWebhooks, removeWebhook } from "./webhooks.js";
 
 const [command, ...rest] = process.argv.slice(2);
 
@@ -109,9 +110,57 @@ if (command === "serve") {
     process.exit(1);
   }
   db.close();
+} else if (command === "webhook") {
+  // Run on the server, like `account` and `token`. A new webhook's secret is printed this once, to stdout; everything
+  // else goes to stderr, except `list`, which never prints a secret.
+  const usage = () => {
+    console.error(
+      "usage: message-cp webhook add --url <url> --on <#channel | mention:<agent> | agent:<agent>> [--account <name>] [--no-text] | message-cp webhook list [--account <name>] | message-cp webhook remove <webhook id>",
+    );
+    process.exit(2);
+  };
+  const [action, ...args] = rest;
+  const valued = action === "add" ? ["--url", "--on", "--account"] : action === "list" ? ["--account"] : [];
+  const opts = new Map<string, string>();
+  let noText = false;
+  if (action === "add" || action === "list") {
+    for (let i = 0; i < args.length; i++) {
+      const name = args[i]!;
+      if (action === "add" && name === "--no-text" && !noText) {
+        noText = true;
+        continue;
+      }
+      const value = args[++i];
+      if (!valued.includes(name) || opts.has(name) || !value || value.startsWith("--")) usage();
+      opts.set(name, value!);
+    }
+  }
+  const db = openDb();
+  try {
+    if (action === "add" && opts.has("--url") && opts.has("--on")) {
+      const account = opts.get("--account") ?? "owner";
+      const w = addWebhook(db, account, opts.get("--url")!, opts.get("--on")!, !noText);
+      console.error(`message-cp: webhook ${w.id} for account '${w.account}'. Its secret is shown only now; keep it.`);
+      console.log(w.secret);
+    } else if (action === "list") {
+      for (const w of listWebhooks(db, opts.get("--account"))) {
+        console.log(`${w.id}\t${w.account}\t${w.url}\t${formatOn(w)}\t${w.includeText ? "text" : "no text"}`);
+      }
+    } else if (action === "remove" && args.length === 1) {
+      const arg = args[0]!;
+      const id = Number(arg);
+      if (!/^[0-9]+$/.test(arg) || !Number.isSafeInteger(id)) usage();
+      console.error(`message-cp: removed webhook ${id} of account '${removeWebhook(db, id)}'.`);
+    } else usage();
+  } catch (err) {
+    if (!(err instanceof WebhookError)) throw err;
+    console.error(`message-cp: ${err.message}`);
+    process.exit(1);
+  }
+  db.close();
 } else if (command === undefined) {
   await import("./index.js");
 } else {
-  console.error(`message-cp: unknown command '${command}'. Commands: serve, wait, account, token`);
+  console.error(`message-cp: unknown command '${command}'. Commands: serve, wait, account, token, webhook`);
   process.exit(2);
 }
