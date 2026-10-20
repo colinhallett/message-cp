@@ -119,6 +119,7 @@ CREATE TABLE IF NOT EXISTS webhooks (
   secret TEXT NOT NULL,
   created_at INTEGER NOT NULL
 );
+CREATE INDEX IF NOT EXISTS webhooks_by_name ON webhooks (account_id, event, name COLLATE NOCASE);
 
 -- What a webhook is owed: one row per webhook per message or post it is for, queued in the transaction that stores the
 -- message or post. Only ids are kept, so the body is built when it is sent. Nothing sends them yet.

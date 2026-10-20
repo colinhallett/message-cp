@@ -279,6 +279,13 @@ describe("queued deliveries", () => {
     expect(deliveryBody(db, 999)).toBeUndefined();
   });
 
+  it("finds an account's webhooks for an event and name through an index, without case", () => {
+    const plan = db
+      .prepare("EXPLAIN QUERY PLAN SELECT id FROM webhooks WHERE account_id = ? AND event = 'agent' AND name = ? COLLATE NOCASE")
+      .all(OWNER_ACCOUNT, "Bob") as { detail: string }[];
+    expect(plan.map((p) => p.detail).join("\n")).toMatch(/USING COVERING INDEX webhooks_by_name \(account_id=\? AND event=\? AND name=\?\)/);
+  });
+
   it("gives an existing database the table on open", () => {
     db.close();
     const raw = new Database(dbFile);
