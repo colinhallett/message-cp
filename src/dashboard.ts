@@ -149,8 +149,8 @@ let messages = [];
 let pairs = new Map();
 // The pair whose messages are open in the log, by pairKey, or undefined. At most one of openChannel and openPair is set.
 let openPair;
-// The search's own counter and request, apart from the polls', so a newer search, leaving the results or ask() drops
-// its answer, and opening a channel is not the only thing that does.
+// The search's own counter and request, separate from generation and controller, so a newer search, leaving the
+// results or ask() drops a search's answer.
 let searchGeneration = 0;
 let searchController;
 
@@ -269,9 +269,9 @@ function closeResults() {
   results.hidden = true;
 }
 
-// Asks GET /api/search for the newest PAGE results and shows them in place of the open conversation. It runs once:
-// the polls go on beside it and never read it again, and an answer that comes after a newer search, after the results
-// were left or after the token was forgotten is dropped.
+// Asks GET /api/search for the newest PAGE results and shows them in place of the open conversation. The polls never
+// refresh the results; searching again does. An answer that comes after a newer search, after the results were left or
+// after the token was forgotten is dropped.
 async function search(text) {
   const token = sessionStorage.getItem(KEY);
   if (!token) return ask();
@@ -285,29 +285,29 @@ async function search(text) {
   resultsNote.textContent = "Searching…";
   results.hidden = false;
   view.className = "";
-  let result;
+  let answer;
   try {
-    result = await fetchPage(token, ac.signal, "/api/search", { text }, 0, list);
+    answer = await fetchPage(token, ac.signal, "/api/search", { text }, 0, list);
   } catch {
-    result = { error: ac.signal.aborted ? "The server did not answer in time" : "Cannot reach the server" };
+    answer = { error: ac.signal.aborted ? "The server did not answer in time" : "Cannot reach the server" };
   } finally {
     clearTimeout(deadline);
   }
   if (gen !== searchGeneration) return;
-  if (result.status === 401) return ask("The server refused that token. Enter another.");
-  if (result.items) {
-    resultRows.replaceChildren(...result.items.map(resultEntry));
+  if (answer.status === 401) return ask("The server refused that token. Enter another.");
+  if (answer.items) {
+    resultRows.replaceChildren(...answer.items.map(resultEntry));
     resultRows.scrollTop = 0;
     resultsNote.textContent =
-      result.items.length === 0 ? "Nothing found." : result.items.length === PAGE ? "Only the newest " + PAGE + " results are shown." : "";
-  } else if (result.status === 400) {
-    resultsNote.textContent = result.reason || "The server could not run this search (400).";
-  } else if (result.status === 403) {
+      answer.items.length === 0 ? "Nothing found." : answer.items.length === PAGE ? "Only the newest " + PAGE + " results are shown." : "";
+  } else if (answer.status === 400) {
+    resultsNote.textContent = answer.reason || "The server could not run this search (400).";
+  } else if (answer.status === 403) {
     resultsNote.textContent = "This token cannot search (403).";
-  } else if (result.status === 503) {
+  } else if (answer.status === 503) {
     resultsNote.textContent = "The server is busy (503). Search again in a moment.";
   } else {
-    resultsNote.textContent = (result.error || "The server answered " + result.status) + ".";
+    resultsNote.textContent = (answer.error || "The server answered " + answer.status) + ".";
   }
 }
 
