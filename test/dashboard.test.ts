@@ -1613,9 +1613,16 @@ describe("the page's posting", () => {
     children: Stub[];
     html: string[];
     innerHTML: string;
+    id?: string;
+    attributes: Record<string, string>;
+    selectionStart: number;
+    selectionEnd: number;
     append(...children: Stub[]): void;
     replaceChildren(...children: Stub[]): void;
     addEventListener(type: string, fn: (event?: unknown) => void): void;
+    setAttribute(name: string, value: string): void;
+    removeAttribute(name: string): void;
+    setSelectionRange(start: number, end: number): void;
     focus(): void;
   }
   const el = (): Stub => ({
@@ -1636,6 +1643,9 @@ describe("the page's posting", () => {
     get innerHTML() {
       return "";
     },
+    attributes: {},
+    selectionStart: 0,
+    selectionEnd: 0,
     append(...children) {
       this.children.push(...children);
     },
@@ -1644,6 +1654,16 @@ describe("the page's posting", () => {
     },
     addEventListener(type, fn) {
       this.on[type] = fn;
+    },
+    setAttribute(name, value) {
+      this.attributes[name] = value;
+    },
+    removeAttribute(name) {
+      delete this.attributes[name];
+    },
+    setSelectionRange(start, end) {
+      this.selectionStart = start;
+      this.selectionEnd = end;
     },
     focus() {},
   });
@@ -1948,6 +1968,186 @@ describe("the page's posting", () => {
       key(page, box.value);
       await page.until(() => box.value === "");
       expect(box.rows).toBe(2);
+    });
+  });
+
+  describe("offering names after @", () => {
+    // Types text into the compose box as a browser does: the caret at its end (or at caret), then an input event.
+    const type = (page: Awaited<ReturnType<typeof load>>, text: string, caret = text.length) => {
+      const box = page.elements["compose-text"];
+      box.value = text;
+      box.selectionStart = box.selectionEnd = caret;
+      box.on.input();
+    };
+    // A key on the compose box, counting the preventDefault calls it gets.
+    const press = (page: Awaited<ReturnType<typeof load>>, key: string) => {
+      let prevented = 0;
+      page.elements["compose-text"].on.keydown({ key, shiftKey: false, isComposing: false, preventDefault: () => prevented++ });
+      return prevented;
+    };
+    const list = (page: Awaited<ReturnType<typeof load>>) => page.elements["mentions"];
+    // Each offered entry's name and whether it is marked as a person.
+    const offered = (page: Awaited<ReturnType<typeof load>>) =>
+      list(page).hidden ? [] : list(page).children.map((o) => [o.children[0].textContent, o.children[1]?.textContent ?? ""]);
+    const highlighted = (page: Awaited<ReturnType<typeof load>>) =>
+      list(page).children.filter((o) => o.className === "option current").map((o) => o.children[0].textContent);
+    // An account with agents bob, Bobby and alice, and people colin and dana; colin posts in #build.
+    const ready = async (answer?: Parameters<typeof load>[1]) => {
+      seed();
+      for (const name of ["Bobby", "alice"]) registerAgent(db, OWNER_ACCOUNT, name, "x");
+      addPerson(db, "owner", "dana");
+      const page = await load(OWNER_TOKEN, answer);
+      await page.until(() => page.picker().length === 2 && page.elements["channel-rows"].children.length === 1);
+      open(page.elements["channel-rows"], "build");
+      page.choose("colin");
+      expect(page.elements["compose"].hidden).toBe(false);
+      return page;
+    };
+
+    it("opens on @ with the account's agents and people, minus the chosen person and all, and narrows ignoring case", async () => {
+      const page = await ready();
+      expect(list(page).hidden).toBe(true);
+      type(page, "@");
+      expect(offered(page)).toEqual([
+        ["alice", ""],
+        ["bob", ""],
+        ["Bobby", ""],
+        ["dana", "person"],
+      ]);
+      expect(highlighted(page)).toEqual(["alice"]);
+      type(page, "hi @B");
+      expect(offered(page).map(([name]) => name)).toEqual(["bob", "Bobby"]);
+      type(page, "hi (@bOBB");
+      expect(offered(page).map(([name]) => name)).toEqual(["Bobby"]);
+      // Nothing matches, so the list closes; so does a name already ended by a space, and a caret moved before the @.
+      type(page, "@bobx");
+      expect(list(page).hidden).toBe(true);
+      type(page, "@bob ");
+      expect(list(page).hidden).toBe(true);
+      type(page, "x @bo", 1);
+      expect(list(page).hidden).toBe(true);
+      // The chosen person is never offered.
+      type(page, "@c");
+      expect(list(page).hidden).toBe(true);
+      // The names went on the page only as text.
+      for (const stub of page.made) expect(stub.html).toEqual([]);
+    });
+
+    it("never offers all, even if GET /api/agents gave it", async () => {
+      // The server reserves the name, so no agent can have it; the answer is stubbed to hold one anyway.
+      const agent = (name: string, person: boolean) => ({ name, bio: "x", person, online: false, lastSeen: new Date().toISOString(), unreadMessages: 0, unreadPosts: 0, unreadMentions: 0 });
+      const body = JSON.stringify([agent("all", false), agent("alba", false), agent("colin", true), agent("dana", true)]);
+      const page = await ready((url) => (url.startsWith("/api/agents") ? { status: 200, body } : undefined));
+      type(page, "@al");
+      expect(offered(page)).toEqual([["alba", ""]]);
+      type(page, "@all");
+      expect(list(page).hidden).toBe(true);
+    });
+
+    it("opens nothing for an @ after a name character", async () => {
+      const page = await ready();
+      for (const text of ["a@", "a@b", "x_@", "9@b", "-@"]) {
+        type(page, text);
+        expect(list(page).hidden).toBe(true);
+      }
+      type(page, "a @");
+      expect(list(page).hidden).toBe(false);
+    });
+
+    it("offers at most 8 names", async () => {
+      const page = await ready();
+      for (let i = 0; i < 10; i++) registerAgent(db, OWNER_ACCOUNT, `bot${i}`, "x");
+      await page.poll();
+      await page.until(() => page.elements["rows"].children.length === 15);
+      type(page, "@bo");
+      expect(offered(page)).toHaveLength(8);
+    });
+
+    it("moves the highlight with the arrows and picks it with Enter, inserting @<name> and sending nothing", async () => {
+      const page = await ready();
+      type(page, "ask @b about the rest", 6);
+      expect(highlighted(page)).toEqual(["bob"]);
+      expect(press(page, "ArrowDown")).toBe(1);
+      expect(highlighted(page)).toEqual(["Bobby"]);
+      expect(page.elements["compose-text"].attributes["aria-activedescendant"]).toBe("mention-1");
+      press(page, "ArrowDown");
+      expect(highlighted(page)).toEqual(["bob"]);
+      press(page, "ArrowUp");
+      expect(highlighted(page)).toEqual(["Bobby"]);
+      expect(press(page, "Enter")).toBe(1);
+      const box = page.elements["compose-text"];
+      expect(box.value).toBe("ask @Bobby  about the rest");
+      expect(box.selectionStart).toBe("ask @Bobby ".length);
+      expect(list(page).hidden).toBe(true);
+      expect(box.attributes["aria-activedescendant"]).toBeUndefined();
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      expect(page.posts()).toEqual([]);
+    });
+
+    it("picks with Tab and with a click on an entry", async () => {
+      const page = await ready();
+      type(page, "@d");
+      expect(press(page, "Tab")).toBe(1);
+      expect(page.elements["compose-text"].value).toBe("@dana ");
+      type(page, "@dana and @a");
+      let prevented = 0;
+      list(page).children[0].on.mousedown({ preventDefault: () => prevented++ });
+      expect(prevented).toBe(1);
+      expect(page.elements["compose-text"].value).toBe("@dana and @alice ");
+      expect(list(page).hidden).toBe(true);
+      // With the list closed, Tab keeps its default and moves on.
+      expect(press(page, "Tab")).toBe(0);
+      expect(page.posts()).toEqual([]);
+    });
+
+    it("closes on Escape, keeping the text, and a following Enter sends", async () => {
+      const page = await ready();
+      type(page, "hello @bo");
+      expect(press(page, "Escape")).toBe(1);
+      expect(list(page).hidden).toBe(true);
+      expect(page.elements["compose-text"].value).toBe("hello @bo");
+      expect(press(page, "Enter")).toBe(1);
+      await page.until(() => page.posts().length === 1 && page.elements["compose-text"].value === "");
+      expect(JSON.parse(page.posts()[0].body!)).toEqual({ as: "colin", channel: "build", body: "hello @bo" });
+    });
+
+    it("closes after a send clears the text, when the conversation closes and when the token is forgotten", async () => {
+      const page = await ready();
+      type(page, "@bob");
+      // The Send button posts while the list is open; the 200 clears the text and the list.
+      page.elements["compose"].on.submit({ preventDefault() {} });
+      await page.until(() => page.elements["compose-text"].value === "");
+      expect(list(page).hidden).toBe(true);
+      type(page, "@bob");
+      expect(list(page).hidden).toBe(false);
+      page.elements["close-log"].on.click();
+      expect(list(page).hidden).toBe(true);
+      open(page.elements["channel-rows"], "build");
+      type(page, "@bob");
+      expect(list(page).hidden).toBe(false);
+      page.elements["forget"].on.click();
+      expect(list(page).hidden).toBe(true);
+      // The next token starts with no names, so one token's names never show under another's.
+      page.elements["compose"].hidden = false;
+      type(page, "@");
+      expect(list(page).hidden).toBe(true);
+    });
+
+    it("styles the highlight in both themes with classes, and has no list with a read-only token", async () => {
+      const html = await (await fetch(`${base()}/`)).text();
+      expect(html).toContain(".option.current { background: var(--active); box-shadow: inset 3px 0 0 var(--accent); }");
+      expect(html.match(/--active: #/g)).toHaveLength(2);
+      expect(html).toMatch(/<ul id="mentions" role="listbox"[^>]*hidden><\/ul>\s*<form id="compose" hidden>/);
+      expect(html).not.toMatch(/ style=|\.style\s*[.=[]/);
+
+      seed();
+      const page = await load(viewer);
+      await page.until(() => page.elements["channel-rows"].children.length === 1 && page.elements["rows"].children.length === 2);
+      open(page.elements["channel-rows"], "build");
+      expect(page.elements["compose"].hidden).toBe(true);
+      type(page, "@");
+      expect(list(page).hidden).toBe(true);
+      expect(list(page).children).toEqual([]);
     });
   });
 
