@@ -1174,7 +1174,11 @@ describe("the page's posting", () => {
     const posts = () => requests.filter((r) => r.method !== "GET");
     // The names the person picker offers, without its first "Choose who you are" entry.
     const picker = () => elements["as"].children.slice(1).map((o) => o.value);
-    const poll = () => polls.splice(0).pop()!();
+    // Runs the poll the page scheduled last, once it has scheduled one: the picker can fill before the messages are read.
+    const poll = async () => {
+      await until(() => polls.length > 0);
+      polls.splice(0).pop()!();
+    };
     return { elements, made, requests, store, until, choose, send, posts, picker, poll, prevented: () => prevented };
   }
 
@@ -1194,7 +1198,7 @@ describe("the page's posting", () => {
     expect(page.picker()).toEqual(["colin", "dana"]);
     expect(page.elements["as-box"].hidden).toBe(false);
     expect(page.elements["as-note"].textContent).toBe("");
-    page.poll();
+    await page.poll();
     await page.until(() => page.requests.filter((r) => r.url.startsWith("/api/agents")).length === 2);
     const asks = page.requests.filter((r) => r.url === "/api/token");
     expect(asks).toHaveLength(1);
@@ -1360,7 +1364,7 @@ describe("the page's posting", () => {
     expect(page.elements["compose"].hidden).toBe(false);
     // There is no person remove yet, so the person goes as a removed registration does.
     db.prepare("UPDATE agents SET removed_at = ? WHERE name = 'colin'").run(Date.now());
-    page.poll();
+    await page.poll();
     await page.until(() => page.elements["compose"].hidden);
     expect(page.picker()).toEqual([]);
     expect(page.elements["as-note"].textContent).toContain("message-cp person add");
