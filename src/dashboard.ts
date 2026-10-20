@@ -192,7 +192,7 @@ let people;
 let pickerKey = "";
 let person;
 // The tokenGeneration a send is in flight for, or undefined. While one is, the Send button is disabled for that token,
-// so a write is never sent twice before the server has said whether it took the first; a new token is not held by it.
+// so the same submit is not sent twice while it is in flight; a new token is not held by it.
 let sending;
 
 function say(text, isError) {
@@ -486,11 +486,11 @@ function composeTarget() {
     : { path: "/api/send", conversation: openPair, fields: { as: person, to: replyTo() } };
 }
 
-// Posts in the open channel or replies in the open pair as the chosen person, then polls at once so it shows. A send
-// with no answer (a failed connection, or none within TIMEOUT_MS) may still have been stored, so Send stays disabled
-// until settle has read the conversation and found whether it was. Its answer changes the box only while the box still
-// sends to the same conversation as the same person: the text is cleared after a 200, if it is still what was sent,
-// and any other answer keeps it and says why.
+// Posts in the open channel or replies in the open pair as the chosen person, then polls at once so it shows. Send
+// stays disabled while the request is in flight. One with no answer (a failed connection, or none within TIMEOUT_MS)
+// may still have been stored, so the text is kept with a note to check the conversation before sending again. Its
+// answer changes the box only while the box still sends to the same conversation as the same person: the text is
+// cleared after a 200, if it is still what was sent, and any other answer keeps it and says why.
 async function send() {
   const token = sessionStorage.getItem(KEY);
   if (!token) return ask();
@@ -504,8 +504,6 @@ async function send() {
     composeNote.textContent = "This is longer than ${MAX_BODY_LENGTH} characters.";
     return;
   }
-  // Only entries past what the page holds now can be this one: posts and messages are only ever appended.
-  const offset = target.path === "/api/post" ? held : heldMessages;
   sending = tokenGen;
   composeSend.disabled = true;
   composeNote.textContent = "Sending…";
@@ -524,28 +522,21 @@ async function send() {
     });
     answer = res.status === 400 ? { status: 400, reason: await reasonOf(res) } : { status: res.status };
   } catch {
-    answer = undefined;
+    answer = { error: "No answer from the server, so it may have been sent: check the conversation before sending again" };
   } finally {
     clearTimeout(deadline);
   }
   if (tokenGen !== tokenGeneration) return;
-  const same = () => {
-    const now = composeTarget();
-    return now !== undefined && now.path === target.path && now.conversation === target.conversation && now.fields.as === target.fields.as;
-  };
-  if (answer === undefined) {
-    if (same()) composeNote.textContent = "No answer from the server: checking whether it was sent…";
-    const sent = await settle(token, tokenGen, target, body, offset);
-    if (sent === undefined) return;
-    answer = sent ? { status: 200 } : { error: "The server did not take it. Send again" };
-  }
   if (answer.status === 401) return ask("The server refused that token. Enter another.");
-  if (answer.status === 200) {
-    if (same() && composeText.value === body) composeText.value = "";
-    if (same()) composeNote.textContent = "";
+  const now = composeTarget();
+  const same = now !== undefined && now.path === target.path && now.conversation === target.conversation && now.fields.as === target.fields.as;
+  if (answer.status === 200 || answer.error) {
+    if (same && answer.status === 200 && composeText.value === body) composeText.value = "";
+    if (same) composeNote.textContent = answer.status === 200 ? "" : answer.error + ".";
+    // Read again at once, so the post or message shows, or, with no answer, so the reader can see whether it arrived.
     cancel();
     poll(generation);
-  } else if (!same()) {
+  } else if (!same) {
     // The box now sends somewhere else: this answer is not about it.
   } else if (answer.status === 400) {
     composeNote.textContent = answer.reason || "The server refused this (400).";
@@ -559,60 +550,10 @@ async function send() {
   } else if (answer.status === 503) {
     composeNote.textContent = "The server is busy (503). Send again in a moment.";
   } else {
-    composeNote.textContent = (answer.error || "The server answered " + answer.status) + ".";
+    composeNote.textContent = "The server answered " + answer.status + ".";
   }
   sending = undefined;
   composeSend.disabled = false;
-}
-
-// Reads the conversation a send went to, past offset, until a read succeeds, and says whether the person's text is
-// there: true or false, or undefined once the token has been forgotten or refused. Until then Send stays disabled, so
-// a send with no answer is never made a second time before the page knows whether the first was stored.
-async function settle(token, tokenGen, target, body, offset) {
-  for (;;) {
-    let found;
-    try {
-      found = await findSent(token, target, body, offset);
-    } catch {
-      found = undefined;
-    }
-    if (tokenGen !== tokenGeneration) return undefined;
-    if (found === 401) {
-      ask("The server refused that token. Enter another.");
-      return undefined;
-    }
-    if (found !== undefined) return found;
-    await new Promise((resolve) => setTimeout(resolve, POLL_MS));
-    if (tokenGen !== tokenGeneration) return undefined;
-  }
-}
-
-// Whether the channel's posts or the account's messages past offset hold body from the person to the send's channel
-// or other side; 401 for a refused token, or undefined when a read fails.
-async function findSent(token, target, body, offset) {
-  const { as } = target.fields;
-  const same = (a, b) => String(a).toLowerCase() === String(b).toLowerCase();
-  const [path, params, items, match] =
-    target.path === "/api/post"
-      ? ["/api/channel-posts", { channel: target.fields.channel }, postsOf, (p) => same(p.from, as) && p.body === body]
-      : ["/api/messages", {}, list, (m) => same(m.from, as) && same(m.to, target.fields.to) && m.body === body];
-  for (;;) {
-    const ac = new AbortController();
-    const deadline = setTimeout(() => ac.abort(), TIMEOUT_MS);
-    let page;
-    try {
-      page = await fetchPage(token, ac.signal, path, params, offset, items);
-    } finally {
-      clearTimeout(deadline);
-    }
-    if (page.status === 401) return 401;
-    // A channel that is not there holds no post.
-    if (page.status === 404) return false;
-    if (!page.items) return undefined;
-    if (page.items.some(match)) return true;
-    if (page.items.length < PAGE) return false;
-    offset += page.items.length;
-  }
 }
 
 // Fetches the page of path at offset. items picks the page's list out of the answer, or undefined if there is none.
