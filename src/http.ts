@@ -8,6 +8,7 @@ import {
   DEFAULT_CHANNEL_LIMIT,
   MAX_CHANNEL_LIMIT,
   listAccountChannels,
+  postAsPerson,
   readAccountChannel,
   type ChannelPage,
 } from "./channels.js";
@@ -20,6 +21,7 @@ import {
   listAccountMessages,
   listAgentsUnread,
   searchAccount,
+  sendAsPerson,
   unreadSummary,
   type SearchFilters,
   type Unread,
@@ -32,6 +34,11 @@ export const DEFAULT_HTTP_PORT = 8787;
 export const DEFAULT_HTTP_HOST = "127.0.0.1";
 export const DEFAULT_IDLE_TIMEOUT_MS = 30 * 60 * 1000;
 const MAX_BODY_BYTES = 4 * 1024 * 1024;
+/**
+ * The body limit for POST /api/send and /api/post. A 4000-character body is at most 48 KiB as JSON (12 bytes for an
+ * escaped astral character), so this fits any valid request, and a full cap of them buffers at most 16 MiB.
+ */
+const MAX_PERSON_BODY_BYTES = 64 * 1024;
 export const DEFAULT_MAX_SESSIONS = 256;
 /** An agent seen this recently counts as online in GET /api/agents, as does one with a GET /wait held now. */
 export const ONLINE_WINDOW_MS = 5 * 60 * 1000;
@@ -123,12 +130,12 @@ function unlessBusy<T>(res: ServerResponse, read: () => T): T | undefined {
   }
 }
 
-async function readBody(req: IncomingMessage): Promise<unknown> {
+async function readBody(req: IncomingMessage, maxBytes = MAX_BODY_BYTES): Promise<unknown> {
   const chunks: Buffer[] = [];
   let size = 0;
   for await (const chunk of req) {
     size += (chunk as Buffer).length;
-    if (size > MAX_BODY_BYTES) throw new RangeError("body too large");
+    if (size > maxBytes) throw new RangeError("body too large");
     chunks.push(chunk as Buffer);
   }
   return JSON.parse(Buffer.concat(chunks).toString("utf8"));
@@ -152,6 +159,8 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
   const sessions = new Map<string, Live>();
   let initializing = 0;
   let waiting = 0;
+  // POST /api/send and /api/post requests between taking a slot and answering, so buffered bodies are bounded.
+  let actingAsPerson = 0;
   // Held GET /wait requests per account and agent name (lower-cased, as names are unique regardless of case).
   const held = new Map<AccountId, Map<string, number>>();
   const holding = (account: AccountId, name: string, delta: number) => {
@@ -396,6 +405,56 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
     sendJson(res, found);
   };
 
+  /**
+   * POST /api/send and /api/post: reads a JSON object whose `fields` are all strings and answers with what `act` returns
+   * for it. A slot is taken before the body is read and given back at the end, so held bodies are capped like sessions.
+   * `act` answers undefined for an `as` that is not a live person of the account, which gets 404; a tool's refusal
+   * gets 400 with its message, which never quotes the body.
+   */
+  const asPerson = async <K extends string>(
+    req: IncomingMessage,
+    res: ServerResponse,
+    fields: readonly K[],
+    act: (input: Record<K, string>) => unknown,
+  ) => {
+    if (req.method !== "POST") return reply(res, 405, "Method not allowed", { Allow: "POST" });
+    if (actingAsPerson >= maxSessions) return reply(res, 503, "Too many requests", { Connection: "close" });
+    actingAsPerson++;
+    try {
+      let input: unknown;
+      try {
+        input = await readBody(req, MAX_PERSON_BODY_BYTES);
+      } catch (err) {
+        return err instanceof RangeError ? reply(res, 413, "Request body too large") : reply(res, 400, "Invalid JSON");
+      }
+      // Anything but an object with each field a string, an array or `null` included, has some field missing.
+      if (fields.some((f) => typeof (input as Record<string, unknown> | null)?.[f] !== "string")) {
+        return reply(res, 400, `Give ${fields.join(", ")} as strings`);
+      }
+      let done: unknown;
+      try {
+        // null for no such person, kept apart from the undefined `unlessBusy` gives once it has answered 503.
+        done = unlessBusy(res, () => act(input as Record<K, string>) ?? null);
+      } catch (err) {
+        if (err instanceof ToolError) return reply(res, 400, err.message);
+        throw err;
+      }
+      if (done === undefined) return;
+      if (done === null) return reply(res, 404, "No such person");
+      sendJson(res, done);
+    } finally {
+      actingAsPerson--;
+    }
+  };
+
+  /** POST /api/send: `{ as, to, body }`, sent as `send_message` sends it, from the account's person `as`. */
+  const apiSend = (req: IncomingMessage, res: ServerResponse, account: AccountId) =>
+    asPerson(req, res, ["as", "to", "body"], (m) => sendAsPerson(db, account, m.as, m.to, m.body));
+
+  /** POST /api/post: `{ as, channel, body }`, posted as `post` posts it, by the account's person `as`. */
+  const apiPost = (req: IncomingMessage, res: ServerResponse, account: AccountId) =>
+    asPerson(req, res, ["as", "channel", "body"], (m) => postAsPerson(db, account, m.as, m.channel, m.body));
+
   const handle = async (req: IncomingMessage, res: ServerResponse) => {
     const path = (req.url ?? "").split("?")[0];
     // The dashboard page is the same constant for everyone and holds no data, so it alone comes before the token.
@@ -417,6 +476,8 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
     if (path === "/api/webhook-deliveries") return apiWebhookDeliveries(req, res, account);
     // A read-only token reaches the read-only endpoints above and nothing else: /mcp can write, and so can any path added later.
     if (access.readOnly) return reply(res, 403, "This token is read-only");
+    if (path === "/api/send") return apiSend(req, res, account);
+    if (path === "/api/post") return apiPost(req, res, account);
     if (path === "/wait") return wait(req, res, account);
     if (path !== "/mcp") return reply(res, 404, "Not found");
     if (req.method !== "POST" && req.method !== "GET" && req.method !== "DELETE") {

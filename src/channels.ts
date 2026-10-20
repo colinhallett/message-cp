@@ -1,4 +1,4 @@
-import { NAME_PATTERN, NOT_REGISTERED, ToolError, nameOfIdentity, type Identity } from "./agents.js";
+import { NAME_PATTERN, NOT_REGISTERED, ToolError, nameOfIdentity, personOf, type Identity } from "./agents.js";
 import type { AccountId, Db } from "./db.js";
 import { DEFAULT_INBOX_LIMIT, MAX_INBOX_LIMIT, validateBody } from "./messages.js";
 
@@ -122,44 +122,64 @@ export function post(db: Db, account: AccountId, member: Member, channel: string
   return db
     .transaction((): PostResult => {
       checkLive(db, account, member);
-      const now = Date.now();
-      const found = ensureChannel(db, account, channel, now);
-      const last = db.prepare("SELECT MAX(id) AS id FROM channel_posts WHERE channel_id = ?").get(found.id) as { id: number | null };
-      const read = db
-        .prepare("SELECT last_read_id FROM channel_reads WHERE agent_id = ? AND channel_id = ?")
-        .get(member.id, found.id) as { last_read_id: number } | undefined;
-      const id = Number(
-        db
-          .prepare("INSERT INTO channel_posts (channel_id, sender_id, sender, body, created_at) VALUES (?, ?, ?, ?, ?)")
-          .run(found.id, member.id, member.name, body, now).lastInsertRowid,
-      );
-      if (last.id === null || (read !== undefined && read.last_read_id >= last.id)) advance(db, member.id, found.id, id);
-      const names = body.includes("@") ? mentionedNames(body) : [];
-      if (names.length > 0) {
-        const mention = db.prepare(
-          `INSERT INTO mentions (agent_id, post_id)
-           SELECT id, ? FROM agents WHERE account_id = ? AND name = ? AND removed_at IS NULL AND id <> ?`,
-        );
-        for (const name of names) mention.run(id, account, name, member.id);
-      }
-      // Owed to every `#<channel>` webhook of the account, and to every `mention:<agent>` webhook of an agent it mentioned.
-      // Mention rows only ever name agents of this account; the account check on `webhooks` says so where it matters.
-      db.prepare(
-        `INSERT INTO webhook_deliveries (webhook_id, post_id, created_at)
-         SELECT id, ?, ? FROM webhooks WHERE account_id = ? AND event = 'channel' AND name = ? COLLATE NOCASE ORDER BY id`,
-      ).run(id, now, account, found.name);
-      if (names.length > 0) {
-        db.prepare(
-          `INSERT INTO webhook_deliveries (webhook_id, post_id, created_at)
-           SELECT webhooks.id, ?, ? FROM mentions
-           JOIN agents ON agents.id = mentions.agent_id
-           JOIN webhooks ON webhooks.account_id = agents.account_id AND webhooks.event = 'mention' AND webhooks.name = agents.name COLLATE NOCASE
-           WHERE mentions.post_id = ? AND webhooks.account_id = ? ORDER BY webhooks.id`,
-        ).run(id, now, id, account);
-      }
-      return { channel: found.name, id, sentAt: new Date(now).toISOString() };
+      return append(db, account, member, channel, body);
     })
     .immediate();
+}
+
+/**
+ * `post` from the account's live person `as`, under the person's stored name. Undefined, with nothing stored, if `as`
+ * is not a live person of the account, so an agent's name, a removed one and an unknown one are alike.
+ */
+export function postAsPerson(db: Db, account: AccountId, as: string, channel: string, body: string): PostResult | undefined {
+  validateChannelName(channel);
+  validateBody(body, "Post");
+  return db
+    .transaction((): PostResult | undefined => {
+      const person = personOf(db, account, as);
+      return person && append(db, account, person, channel, body);
+    })
+    .immediate();
+}
+
+/** The body of `post` once the sender is known to be live: `member` is its row in `agents` and its stored name. */
+function append(db: Db, account: AccountId, member: { id: number; name: string }, channel: string, body: string): PostResult {
+  const now = Date.now();
+  const found = ensureChannel(db, account, channel, now);
+  const last = db.prepare("SELECT MAX(id) AS id FROM channel_posts WHERE channel_id = ?").get(found.id) as { id: number | null };
+  const read = db
+    .prepare("SELECT last_read_id FROM channel_reads WHERE agent_id = ? AND channel_id = ?")
+    .get(member.id, found.id) as { last_read_id: number } | undefined;
+  const id = Number(
+    db
+      .prepare("INSERT INTO channel_posts (channel_id, sender_id, sender, body, created_at) VALUES (?, ?, ?, ?, ?)")
+      .run(found.id, member.id, member.name, body, now).lastInsertRowid,
+  );
+  if (last.id === null || (read !== undefined && read.last_read_id >= last.id)) advance(db, member.id, found.id, id);
+  const names = body.includes("@") ? mentionedNames(body) : [];
+  if (names.length > 0) {
+    const mention = db.prepare(
+      `INSERT INTO mentions (agent_id, post_id)
+       SELECT id, ? FROM agents WHERE account_id = ? AND name = ? AND removed_at IS NULL AND id <> ?`,
+    );
+    for (const name of names) mention.run(id, account, name, member.id);
+  }
+  // Owed to every `#<channel>` webhook of the account, and to every `mention:<agent>` webhook of an agent it mentioned.
+  // Mention rows only ever name agents of this account; the account check on `webhooks` says so where it matters.
+  db.prepare(
+    `INSERT INTO webhook_deliveries (webhook_id, post_id, created_at)
+     SELECT id, ?, ? FROM webhooks WHERE account_id = ? AND event = 'channel' AND name = ? COLLATE NOCASE ORDER BY id`,
+  ).run(id, now, account, found.name);
+  if (names.length > 0) {
+    db.prepare(
+      `INSERT INTO webhook_deliveries (webhook_id, post_id, created_at)
+       SELECT webhooks.id, ?, ? FROM mentions
+       JOIN agents ON agents.id = mentions.agent_id
+       JOIN webhooks ON webhooks.account_id = agents.account_id AND webhooks.event = 'mention' AND webhooks.name = agents.name COLLATE NOCASE
+       WHERE mentions.post_id = ? AND webhooks.account_id = ? ORDER BY webhooks.id`,
+    ).run(id, now, id, account);
+  }
+  return { channel: found.name, id, sentAt: new Date(now).toISOString() };
 }
 
 /**

@@ -1,4 +1,4 @@
-import { NAME_PATTERN, ToolError, getAgent, type Identity } from "./agents.js";
+import { NAME_PATTERN, ToolError, getAgent, personOf, type Identity } from "./agents.js";
 import type { AccountId, Db } from "./db.js";
 
 export interface Message {
@@ -94,6 +94,21 @@ export function sendMessage(db: Db, account: AccountId, from: string, to: string
         queue.run(id, now, account, r.name);
       }
       return { delivered: recipients.length, recipients: recipients.map((r) => r.name) };
+    })
+    .immediate();
+}
+
+/**
+ * `sendMessage` from the account's live person `as`, under the person's stored name. Undefined, with nothing stored,
+ * if `as` is not a live person of the account, so an agent's name, a removed one and an unknown one are alike.
+ */
+export function sendAsPerson(db: Db, account: AccountId, as: string, to: string, body: string): SendResult | undefined {
+  validateBody(body);
+  // One transaction, so the person cannot be removed between the check and the send.
+  return db
+    .transaction((): SendResult | undefined => {
+      const person = personOf(db, account, as);
+      return person && sendMessage(db, account, person.name, to, body);
     })
     .immediate();
 }
