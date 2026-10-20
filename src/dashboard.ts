@@ -668,8 +668,21 @@ function showDeliveryEntry() {
 
 // A webhook delivery: what it was for, its status (failed marked), when it was queued, its webhook, its attempts and,
 // once delivered, when. Never a URL, a secret or a message's text, which GET /api/webhook-deliveries does not give.
+// Throws on an entry that is not a delivery as GET /api/webhook-deliveries gives one, so readDeliveries shows the
+// answer as unreadable rather than as delivery state: only a delivered one has a delivery time.
 function deliveryRow(d) {
-  const status = String(d.status);
+  const status = d.status;
+  const delivered = status === "delivered";
+  if (
+    typeof d.on !== "string" ||
+    !Number.isInteger(d.webhook) ||
+    !Number.isInteger(d.attempts) ||
+    typeof d.queuedAt !== "string" ||
+    !(delivered || status === "pending" || status === "failed") ||
+    (delivered ? typeof d.deliveredAt !== "string" : d.deliveredAt !== null)
+  ) {
+    throw new TypeError("not a delivery");
+  }
   const li = document.createElement("li");
   li.className = status === "failed" ? "entry delivery failed" : "entry delivery";
   const time = part("time", "time", "queued " + when(d.queuedAt));

@@ -833,8 +833,9 @@ describe("the page's webhook deliveries", () => {
 
   // Runs the served script with the given token, as the channels and messages tests do. refuse, when it returns a
   // status, answers a request with that status; "hang" answers only by failing when it is aborted, "fail" rejects,
-  // "junk" answers 200 with a body this page cannot read and "nulls" a list it cannot read.
-  type Refusal = number | "hang" | "fail" | "junk" | "nulls";
+  // "junk" answers 200 with a body this page cannot read and "nulls" a list it cannot read. "retired" answers a
+  // delivery with a status the server never gives, and "undated" a delivered one with no delivery time.
+  type Refusal = number | "hang" | "fail" | "junk" | "nulls" | "retired" | "undated";
   async function load(token: string, refuse: (url: string) => Refusal | undefined = () => undefined) {
     const html = await (await fetch(`${base()}/`)).text();
     const script = /<script>([\s\S]*?)<\/script>/.exec(html)![1];
@@ -857,6 +858,9 @@ describe("the page's webhook deliveries", () => {
         if (status === "fail") return Promise.reject(new TypeError("fetch failed"));
         if (status === "junk") return Promise.resolve(new Response("{", { status: 200 }));
         if (status === "nulls") return Promise.resolve(Response.json([null]));
+        const odd = { id: 1, webhook: 1, on: "agent:bob", queuedAt: new Date(0).toISOString(), attempts: 1, deliveredAt: null };
+        if (status === "retired") return Promise.resolve(Response.json([{ ...odd, status: "retired" }]));
+        if (status === "undated") return Promise.resolve(Response.json([{ ...odd, status: "delivered" }]));
         return status === undefined ? fetch(`${base()}${url}`, init) : Promise.resolve(new Response(null, { status }));
       },
     });
@@ -966,6 +970,8 @@ describe("the page's webhook deliveries", () => {
     [503, "The server is busy (503). Retrying…"],
     ["junk", "The server sent an answer this page cannot read. Retrying…"],
     ["nulls", "The server sent an answer this page cannot read. Retrying…"],
+    ["retired", "The server sent an answer this page cannot read. Retrying…"],
+    ["undated", "The server sent an answer this page cannot read. Retrying…"],
     ["fail", "Cannot reach the server. Retrying…"],
   ] as const)("shows a %s in the view's note and keeps the rest of the page refreshing", async (failure, note) => {
     for (const name of ["alice", "bob"]) registerAgent(db, OWNER_ACCOUNT, name, "x");
