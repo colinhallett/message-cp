@@ -1,4 +1,4 @@
-import { ToolError, getAgent } from "./agents.js";
+import { ToolError, getAgent, type Identity } from "./agents.js";
 import type { AccountId, Db } from "./db.js";
 
 export interface Message {
@@ -93,21 +93,26 @@ export function sendMessage(db: Db, account: AccountId, from: string, to: string
 /**
  * One page of the caller's messages and mentions together, oldest first. Everything returned is marked read. Unread
  * ones beyond the page stay unread for the next call; with `unreadOnly` false, use `offset`. Reading a mention does
- * not move the caller's read position in its channel.
+ * not move the caller's read position in its channel. `reader` is the caller's name, or its registration.
  */
 export function readInbox(
   db: Db,
   account: AccountId,
-  name: string,
+  reader: string | Identity,
   unreadOnly = true,
   limit = DEFAULT_INBOX_LIMIT,
   offset = 0,
 ): (Message | Mention)[] {
   return db
     .transaction((): (Message | Mention)[] => {
-      const agent = db
-        .prepare("SELECT id FROM agents WHERE account_id = ? AND name = ? AND removed_at IS NULL")
-        .get(account, name) as { id: number } | undefined;
+      // A session passes its registration, so a name taken over since the session checked it reads nothing.
+      const agent = (
+        typeof reader === "string"
+          ? db.prepare("SELECT id FROM agents WHERE account_id = ? AND name = ? AND removed_at IS NULL").get(account, reader)
+          : db
+              .prepare("SELECT id FROM agents WHERE account_id = ? AND id = ? AND registered_at = ? AND instance IS ? AND removed_at IS NULL")
+              .get(account, reader.id, reader.registeredAt, reader.instance)
+      ) as { id: number } | undefined;
       if (!agent) return [];
       // Oldest first; a message before a mention of the same millisecond, and each kind in id order.
       const rows = db

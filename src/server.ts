@@ -191,7 +191,7 @@ export function createServer(db: Db, session = new Session(OWNER_ACCOUNT), optio
       },
     },
     tool(({ unread_only, limit, offset }: { unread_only?: boolean; limit?: number; offset?: number }) =>
-      readInbox(db, account, session.require(), unread_only, limit, offset),
+      readInbox(db, account, session.requireAgent(), unread_only, limit, offset),
     ),
   );
 

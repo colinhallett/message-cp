@@ -6,10 +6,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { addAccount, addToken } from "../src/accounts.js";
-import { mentionedNames } from "../src/channels.js";
 import { OWNER_ACCOUNT, openDb, type AccountId, type Db } from "../src/db.js";
 import { startHttp, type HttpServer } from "../src/http.js";
-import { unreadSummary } from "../src/messages.js";
+import { registerWithIdentity, removeAgent } from "../src/agents.js";
+import { mentionedNames, post } from "../src/channels.js";
+import { readInbox, sendMessage, unreadSummary } from "../src/messages.js";
 import { Session, createServer } from "../src/server.js";
 import { formatUnread } from "../src/wait.js";
 
@@ -150,6 +151,16 @@ describe("read_inbox with mentions", () => {
     expect(body(await ok(bob, "read_inbox", { unread_only: false, limit: 2 }))).toEqual(["m1", "@bob p1"]);
     expect(body(await ok(bob, "read_inbox", { unread_only: false, limit: 2, offset: 2 }))).toEqual(["m2", "@bob p2"]);
     expect(body(await ok(bob, "read_inbox", { unread_only: false, offset: 4 }))).toEqual([]);
+  });
+  it("reads only the registration it is given: a replacement registration of the same name keeps its mail", () => {
+    const alice = registerWithIdentity(db, OWNER_ACCOUNT, "alice", "x");
+    const old = registerWithIdentity(db, OWNER_ACCOUNT, "bob", "x").identity;
+    removeAgent(db, OWNER_ACCOUNT, "bob", undefined, old);
+    registerWithIdentity(db, OWNER_ACCOUNT, "bob", "x");
+    post(db, OWNER_ACCOUNT, { ...alice.identity, name: "alice" }, "dev", "@bob hi");
+    sendMessage(db, OWNER_ACCOUNT, "alice", "bob", "direct");
+    expect(readInbox(db, OWNER_ACCOUNT, old)).toEqual([]);
+    expect(summary("bob")).toMatchObject({ count: 1, mentions: 1 });
   });
 });
 
