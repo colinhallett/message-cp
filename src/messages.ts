@@ -189,3 +189,39 @@ export function listAgentsUnread(db: Db, account: AccountId, limit: number, offs
     unreadPosts: r.posts,
   }));
 }
+
+export interface AccountMessage {
+  id: number;
+  from: string;
+  to: string;
+  sentAt: string;
+  body: string;
+  broadcast: boolean;
+  /** Whether the recipient has read it. */
+  read: boolean;
+}
+
+/**
+ * One page of the account's messages, oldest first, for the account rather than for one agent. A broadcast is one row
+ * per recipient, so it appears once per recipient. A message to a removed agent shows the name it had. Reads only, so
+ * nothing is marked read.
+ */
+export function listAccountMessages(db: Db, account: AccountId, limit: number, offset: number): AccountMessage[] {
+  const rows = db
+    .prepare(
+      `SELECT m.id, m.sender, CASE WHEN a.removed_at IS NULL THEN a.name ELSE a.removed_name END AS recipient,
+              m.body, m.broadcast, m.created_at, m.read_at
+       FROM messages m JOIN agents a ON a.id = m.recipient_id
+       WHERE a.account_id = ? ORDER BY m.id LIMIT ? OFFSET ?`,
+    )
+    .all(account, Math.min(limit, MAX_INBOX_LIMIT), offset) as (Row & { recipient: string })[];
+  return rows.map((r) => ({
+    id: r.id,
+    from: r.sender,
+    to: r.recipient,
+    sentAt: new Date(r.created_at).toISOString(),
+    body: r.body,
+    broadcast: r.broadcast === 1,
+    read: r.read_at !== null,
+  }));
+}
