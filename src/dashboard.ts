@@ -157,6 +157,7 @@ const compose = document.getElementById("compose");
 const composeLabel = document.getElementById("compose-label");
 const composeText = document.getElementById("compose-text");
 const composeNote = document.getElementById("compose-note");
+const composeSend = document.getElementById("compose-send");
 let timer;
 let generation = 0;
 let controller;
@@ -185,14 +186,13 @@ let searchController;
 let canPost = false;
 let tokenGeneration = 0;
 let tokenController;
-// The names of the account's live people, as the last GET /api/agents gave them, the list the picker shows, and the
-// person the page posts as: always one of people, or undefined.
-let people = [];
-let pickerShows = "";
+// The names of the account's live people, as the last GET /api/agents gave them (undefined until it has answered),
+// the list the picker was last built from, and the person the page posts as: always one of people, or undefined.
+let people;
+let pickerKey = "";
 let person;
-// A send in flight, and the compose box's counter, so leaving the conversation drops a send's note.
+// Whether a send is in flight; the Send button is disabled while it is.
 let sending = false;
-let composeGeneration = 0;
 
 function say(text, isError) {
   statusLine.textContent = text;
@@ -213,12 +213,13 @@ function ask(message) {
   tokenGeneration++;
   if (tokenController) tokenController.abort();
   canPost = false;
-  people = [];
-  pickerShows = "";
+  people = undefined;
+  pickerKey = "";
   person = undefined;
   asSelect.replaceChildren();
   asBox.hidden = true;
   asNote.textContent = "";
+  composeText.value = "";
   // Clear every panel, so one token's agents, channels, pairs and messages never show under the next token.
   rows.replaceChildren();
   channelRows.replaceChildren();
@@ -259,7 +260,7 @@ searchForm.addEventListener("submit", (event) => {
 document.getElementById("close-results").addEventListener("click", () => closeResults());
 asSelect.addEventListener("change", () => {
   // Only a name GET /api/agents gave for this token is ever sent as "as".
-  person = people.includes(asSelect.value) ? asSelect.value : undefined;
+  person = people && people.includes(asSelect.value) ? asSelect.value : undefined;
   showCompose();
 });
 compose.addEventListener("submit", (event) => {
@@ -286,8 +287,7 @@ function closeLog() {
   logTitle.className = "";
   logNote.textContent = "";
   log.hidden = true;
-  composeGeneration++;
-  composeText.value = "";
+  // The text typed stays, so leaving a conversation never loses it; only a 200 or a new token clears it.
   composeNote.textContent = "";
   compose.hidden = true;
 }
@@ -435,16 +435,17 @@ async function checkToken() {
 // Shows the person picker, with a full token, from the people GET /api/agents last gave, and clears the chosen person
 // once they are gone. The list is rebuilt only when it changes, so a poll never closes it under the reader.
 function showPicker() {
-  if (person !== undefined && !people.includes(person)) person = undefined;
-  asBox.hidden = !canPost || people.length === 0;
-  asNote.textContent = canPost && people.length === 0 ? "No people to post as. Add one with: message-cp person add <name>" : "";
-  const shows = canPost ? JSON.stringify(people) : "";
-  if (shows !== pickerShows) {
-    pickerShows = shows;
+  const known = people ?? [];
+  if (person !== undefined && !known.includes(person)) person = undefined;
+  asBox.hidden = !canPost || known.length === 0;
+  asNote.textContent = canPost && people !== undefined && known.length === 0 ? "No people to post as. Add one with: message-cp person add <name>" : "";
+  const key = canPost ? JSON.stringify(known) : "";
+  if (key !== pickerKey) {
+    pickerKey = key;
     const none = document.createElement("option");
     none.value = "";
     none.textContent = "Choose who you are";
-    const options = people.map((name) => {
+    const options = known.map((name) => {
       const option = document.createElement("option");
       option.value = name;
       option.textContent = name;
@@ -475,23 +476,23 @@ function showCompose() {
 }
 
 // Posts in the open channel or replies in the open pair as the chosen person, then polls at once so it shows. The text
-// is cleared only once the server has answered 200; any other answer keeps it and says why under the box.
+// is cleared only once the server has answered 200, and only if it is still what was sent; any other answer keeps it
+// and says why under the box.
 async function send() {
   const token = sessionStorage.getItem(KEY);
   if (!token) return ask();
-  if (sending || compose.hidden || !canPost || person === undefined) return;
+  // The box is shown only for a full token, a chosen person and a channel or a pair of theirs (showCompose).
+  if (sending || compose.hidden) return;
   const body = composeText.value;
-  const to = replyTo();
   const [path, fields] =
     openChannel !== undefined
       ? ["/api/post", { as: person, channel: openChannel, body }]
-      : ["/api/send", { as: person, to, body }];
-  if (openChannel === undefined && to === undefined) return;
-  const gen = composeGeneration;
+      : ["/api/send", { as: person, to: replyTo(), body }];
   const tokenGen = tokenGeneration;
   const ac = new AbortController();
   const deadline = setTimeout(() => ac.abort(), TIMEOUT_MS);
   sending = true;
+  composeSend.disabled = true;
   composeNote.textContent = "Sending…";
   let answer;
   try {
@@ -510,13 +511,12 @@ async function send() {
   } finally {
     clearTimeout(deadline);
     sending = false;
+    composeSend.disabled = false;
   }
   if (tokenGen !== tokenGeneration) return;
   if (answer.status === 401) return ask("The server refused that token. Enter another.");
-  // The conversation was left while this was sent: what was sent shows when it is opened again.
-  if (gen !== composeGeneration) return;
   if (answer.status === 200) {
-    composeText.value = "";
+    if (composeText.value === body) composeText.value = "";
     composeNote.textContent = "";
     cancel();
     poll(generation);
@@ -525,6 +525,7 @@ async function send() {
   } else if (answer.status === 403) {
     composeNote.textContent = "This token cannot post or send (403).";
   } else if (answer.status === 404) {
+    // Both endpoints answer 404 only for an "as" that is not a live person of the account.
     composeNote.textContent = person + " is no longer a person in this account (404).";
   } else if (answer.status === 413) {
     composeNote.textContent = "This is too long for the server (413).";
@@ -977,7 +978,7 @@ export const DASHBOARD_HTML = `<!doctype html>
 <form id="compose" hidden>
 <label id="compose-label" for="compose-text"></label>
 <textarea id="compose-text" rows="2" maxlength="${MAX_BODY_LENGTH}" required autocomplete="off"></textarea>
-<button type="submit">Send</button>
+<button id="compose-send" type="submit">Send</button>
 <p id="compose-note" class="note" role="status"></p>
 </form>
 </section>

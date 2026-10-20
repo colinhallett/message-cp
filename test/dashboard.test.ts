@@ -1323,6 +1323,19 @@ describe("the page's posting", () => {
     expect(page.store.size).toBe(1);
   });
 
+  it("keeps typed text when the conversation is left, until a 200", async () => {
+    seed();
+    const page = await load(OWNER_TOKEN);
+    await page.until(() => page.picker().length === 1 && page.elements["pair-rows"].children.length === 1);
+    page.choose("colin");
+    open(page.elements["channel-rows"], "build");
+    page.elements["compose-text"].value = "a draft";
+    open(page.elements["channel-rows"], "build");
+    open(page.elements["pair-rows"], "bob ↔ colin");
+    expect(page.elements["compose-text"].value).toBe("a draft");
+    expect(page.posts()).toEqual([]);
+  });
+
   it("clears the page and asks for a token on a 401", async () => {
     seed();
     const page = await load(OWNER_TOKEN, (url, method) => (method === "POST" ? { status: 401 } : undefined));
