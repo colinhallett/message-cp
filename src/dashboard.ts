@@ -231,8 +231,8 @@ let sending;
 // The open log's last entry, as chatEntry made it: its sender in lower case, its time in ms (NaN if it could not be
 // read) and its tag, or undefined in an empty log. An entry continues its group only from this one.
 // chatRows holds each of the open log's rows as chatEntry made them, so a change in who is a person re-marks them.
-// chatTimes holds the time element and sentAt of each row whose time can still change, so each poll can keep "2m ago"
-// current; see timeSettled.
+// chatTimes holds [time element, sentAt, due] for each row whose time can still change, so each poll can keep "2m ago"
+// current: due is the earliest ms its text can change at (see nextChange). A time that shows a date is not held.
 let lastEntry;
 let chatRows = [];
 let chatTimes = [];
@@ -966,7 +966,8 @@ function chatEntry(from, tag, sentAt, body) {
   li.className = "entry chat " + colourOf(name) + (cont ? " cont" : "");
   const time = part("time", "time", chatTime(sentAt));
   time.title = when(sentAt);
-  if (!timeSettled(at)) chatTimes.push([time, sentAt]);
+  const due = nextChange(at);
+  if (due !== undefined) chatTimes.push([time, sentAt, due]);
   const row = { li, name, tag, person: isPerson(name), time, body: part("div", "body", String(body)) };
   chatRows.push(row);
   li.append(...chatParts(row));
@@ -982,16 +983,21 @@ function chatParts(row) {
   return parts;
 }
 
-// Whether chatTime of a time in ms will never change: it cannot be read, or it is from before today and 12 hours or more
-// ago, so it shows a date.
-function timeSettled(at) {
-  const today = new Date(Date.now());
+// The earliest ms chatTime of a time in ms can change at: now for one it shows as relative (or in the future), the next
+// local midnight for one it shows as the time today, and undefined for one it shows as a date or cannot read, which
+// never changes.
+function nextChange(at) {
+  const now = Date.now();
+  if (now - at < 12 * 3600000) return now;
+  const midnight = new Date(now);
+  midnight.setHours(24, 0, 0, 0);
+  const today = new Date(now);
   today.setHours(0, 0, 0, 0);
-  return !(at >= today.getTime() || Date.now() - at < 12 * 3600000);
+  return at >= today.getTime() ? midnight.getTime() : undefined;
 }
 
 // Once a poll, after show: re-marks the open log's rows when who is a person has changed since they were marked, and
-// brings its times up to date, dropping those that will not change again.
+// rewrites the times that may have changed since they were written, dropping those that never will again.
 function refreshChat() {
   const marked = JSON.stringify((people ?? []).map((p) => p.toLowerCase()).sort());
   if (marked !== markedPeople) {
@@ -1003,10 +1009,17 @@ function refreshChat() {
       row.li.replaceChildren(...chatParts(row));
     }
   }
-  chatTimes = chatTimes.filter(([node, sentAt]) => {
-    node.textContent = chatTime(sentAt);
-    return !timeSettled(Date.parse(sentAt));
-  });
+  const now = Date.now();
+  const live = [];
+  for (const entry of chatTimes) {
+    const [node, sentAt, due] = entry;
+    if (due <= now) {
+      node.textContent = chatTime(sentAt);
+      entry[2] = nextChange(Date.parse(sentAt));
+    }
+    if (entry[2] !== undefined) live.push(entry);
+  }
+  chatTimes = live;
 }
 
 function messageEntry(m) {

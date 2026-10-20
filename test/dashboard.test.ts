@@ -850,8 +850,9 @@ describe("the page's channels and messages", () => {
       expect(field(log.children[0], "time")).toBe("7m ago");
     });
 
-    it("stops refreshing a time once it shows a date, and keeps refreshing a recent one", async () => {
-      let now = Date.now();
+    it("rewrites a time only when its text can change: relative ones each poll, today's clock at midnight, a date never", async () => {
+      // 23:30 local, so a message 13 hours ago shows the time today until midnight.
+      let now = new Date(2026, 9, 20, 23, 30).getTime();
       class MovingDate extends Date {
         constructor(...args: unknown[]) {
           super(...((args.length ? args : [now]) as []));
@@ -861,21 +862,32 @@ describe("the page's channels and messages", () => {
         }
       }
       for (const name of ["alice", "bob"]) registerAgent(db, OWNER_ACCOUNT, name, "x");
-      sendMessage(db, OWNER_ACCOUNT, "alice", "bob", "old");
-      sendMessage(db, OWNER_ACCOUNT, "bob", "alice", "new");
-      backdate("messages", 3 * 24 * 60 * MIN, 2 * MIN);
+      for (const body of ["days ago", "this morning", "just sent"]) sendMessage(db, OWNER_ACCOUNT, "alice", "bob", body);
+      const sent = [now - 3 * 24 * 60 * MIN, now - 13 * 60 * MIN, now - 2 * MIN];
+      const ids = (db.prepare("SELECT id FROM messages ORDER BY id").all() as { id: number }[]).map((r) => r.id);
+      ids.forEach((id, i) => db.prepare("UPDATE messages SET created_at = ? WHERE id = ?").run(sent[i], id));
       const page = await load(viewer, undefined, { Date: MovingDate });
       await page.until(() => page.elements["pair-rows"].children.length === 1);
       open(page.elements["pair-rows"].children[0]);
       const log = page.elements["post-rows"];
       const time = (i: number) => log.children[i].children.find((c) => c.className === "time")!;
-      expect(time(1).textContent).toBe("2m ago");
-      // A settled time is never written again: a mark left on it stays through a poll.
+      const clock = { hour: "2-digit", minute: "2-digit" } as const;
+      expect(time(1).textContent).toBe(new Date(sent[1]).toLocaleTimeString([], clock));
+      expect(time(2).textContent).toBe("2m ago");
+      // A mark left on a time stays until the page writes that time again.
       time(0).textContent = "unchanged";
-      now += 5 * MIN;
+      time(1).textContent = "unchanged";
+      now += 10 * MIN;
       await page.until(page.scheduled);
       page.poll();
-      await page.until(() => time(1).textContent === "7m ago");
+      await page.until(() => time(2).textContent === "12m ago");
+      expect([time(0).textContent, time(1).textContent]).toEqual(["unchanged", "unchanged"]);
+      // Past midnight, this morning's time becomes a date; the one days ago is never written again.
+      now += 30 * MIN;
+      await page.until(page.scheduled);
+      page.poll();
+      await page.until(() => time(1).textContent !== "unchanged");
+      expect(time(1).textContent).toBe(new Date(sent[1]).toLocaleString([], { year: "numeric", month: "short", day: "numeric", ...clock }));
       expect(time(0).textContent).toBe("unchanged");
     });
 
