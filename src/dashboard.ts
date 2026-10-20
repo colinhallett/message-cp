@@ -104,7 +104,9 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 #compose { flex: 1 1 20rem; min-width: 0; display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--s2); }
 #compose label { flex: 1 1 100%; font-size: 0.8rem; color: var(--muted); }
 #compose textarea { flex: 1; min-width: 0; resize: none; overflow-y: auto; padding: var(--s2); background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); }
-#compose .note { flex: 1 1 100%; margin: 0; }
+/* The note sits under the row, outside the form, so the picker stays level with the box when it shows. */
+#compose-note { flex: 1 1 100%; margin: 0; }
+#compose[hidden] + #compose-note { display: none; }
 #sidebar { grid-area: side; overflow-y: auto; background: var(--panel); border-right: 1px solid var(--border); }
 #agents { grid-area: agents; overflow-y: auto; background: var(--panel); border-left: 1px solid var(--border); }
 #chat { grid-area: chat; min-width: 0; display: flex; flex-direction: column; }
@@ -345,9 +347,10 @@ compose.addEventListener("submit", (event) => {
   send();
 });
 // Enter sends and Shift+Enter adds a line, as in a chat app. An Enter that ends an input method's composition does
-// neither, and one in a box of only whitespace sends nothing; send() itself ignores one while a send is in flight.
+// neither (Safari ends it before the keydown, which then has keyCode 229), and one in a box of only whitespace sends
+// nothing; send() itself ignores one while a send is in flight.
 composeText.addEventListener("keydown", (event) => {
-  if (event.key !== "Enter" || event.shiftKey || event.isComposing) return;
+  if (event.key !== "Enter" || event.shiftKey || event.isComposing || event.keyCode === 229) return;
   event.preventDefault();
   if (composeText.value.trim() !== "") send();
 });
@@ -566,13 +569,15 @@ function replyTo() {
   return undefined;
 }
 
-// Shows the compose box under an open channel, or under an open pair the chosen person is one side of.
+// Shows the compose box under an open channel, or under an open pair the chosen person is one side of, and the row
+// it shares with the person picker while either of them, or the picker's note, shows.
 function showCompose() {
   const to = replyTo();
   const shown = canPost && person !== undefined && (openChannel !== undefined || to !== undefined);
   compose.hidden = !shown;
   if (shown) composeLabel.textContent = openChannel !== undefined ? "Post in #" + openChannel + " as " + person : "Reply to " + to + " as " + person;
   writer.hidden = compose.hidden && asBox.hidden && asNote.textContent === "";
+  if (shown) grow();
 }
 
 // Sets the compose box's rows to what its text needs, from MIN_ROWS up to MAX_ROWS, so it grows and shrinks with it.
@@ -1242,8 +1247,8 @@ export const DASHBOARD_HTML = `<!doctype html>
 <label id="compose-label" for="compose-text"></label>
 <textarea id="compose-text" rows="2" required autocomplete="off" placeholder="Enter sends, Shift+Enter adds a line"></textarea>
 <button id="compose-send" type="submit">Send</button>
-<p id="compose-note" class="note" role="status"></p>
 </form>
+<p id="compose-note" class="note" role="status"></p>
 </div>
 </section>
 <section id="results" hidden>

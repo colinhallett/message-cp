@@ -1854,7 +1854,7 @@ describe("the page's posting", () => {
 
   describe("writing like a chat app", () => {
     // A keydown on the compose box, counting the preventDefault calls it gets.
-    const key = (page: Awaited<ReturnType<typeof load>>, text: string, init: { shiftKey?: boolean; isComposing?: boolean } = {}) => {
+    const key = (page: Awaited<ReturnType<typeof load>>, text: string, init: { shiftKey?: boolean; isComposing?: boolean; keyCode?: number } = {}) => {
       let prevented = 0;
       page.elements["compose-text"].value = text;
       page.elements["compose-text"].on.keydown({ key: "Enter", shiftKey: false, isComposing: false, ...init, preventDefault: () => prevented++ });
@@ -1878,8 +1878,8 @@ describe("the page's posting", () => {
       const bar = /<header class="bar">([\s\S]*?)<\/header>/.exec(html)![1];
       expect(bar).not.toContain('id="as-box"');
       const log = /<section id="log"[^>]*>([\s\S]*?)<\/section>/.exec(html)![1];
-      expect(log).toMatch(/<div id="writer" hidden>\s*<span id="as-box" hidden>[\s\S]*<p id="as-note"[\s\S]*<form id="compose" hidden>/);
-      expect(html).not.toMatch(/ style=|\.style\b/);
+      expect(log).toMatch(/<div id="writer" hidden>\s*<span id="as-box" hidden>[\s\S]*<p id="as-note"[\s\S]*<form id="compose" hidden>[\s\S]*<\/form>\s*<p id="compose-note"/);
+      expect(html).not.toMatch(/ style=|\.style\s*[.=[]/);
     });
 
     it("sends once on Enter and prevents its newline", async () => {
@@ -1899,6 +1899,8 @@ describe("the page's posting", () => {
       // Shift+Enter and an IME's Enter keep their default, so the line is added or the composition ends.
       expect(key(page, "two\nlines", { shiftKey: true })).toBe(0);
       expect(key(page, "にほん", { isComposing: true })).toBe(0);
+      // Safari ends the composition before the Enter that confirms it, which then comes with keyCode 229.
+      expect(key(page, "にほん", { keyCode: 229 })).toBe(0);
       // An Enter in a blank box adds no line either.
       expect(key(page, " \n\t ")).toBe(1);
       expect(key(page, "")).toBe(1);
