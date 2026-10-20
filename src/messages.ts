@@ -156,3 +156,36 @@ export function unreadSummary(db: Db, account: AccountId, name: string): Unread 
     };
   })();
 }
+
+export interface AgentUnread {
+  name: string;
+  bio: string;
+  lastSeen: string;
+  unreadMessages: number;
+  unreadPosts: number;
+}
+
+/**
+ * One page of the account's live agents in name order, as `list_agents` pages them, each with its unread message and
+ * post totals counted as `unreadSummary` counts them. One query for the page, totals only: no senders or channels.
+ */
+export function listAgentsUnread(db: Db, account: AccountId, limit: number, offset: number): AgentUnread[] {
+  const rows = db
+    .prepare(
+      `SELECT a.name, a.bio, a.last_seen,
+         (SELECT COUNT(*) FROM messages m WHERE m.recipient_id = a.id AND m.read_at IS NULL) AS messages,
+         (SELECT COUNT(*) FROM channel_reads r
+            JOIN channels c ON c.id = r.channel_id AND c.account_id = a.account_id
+            JOIN channel_posts p ON p.channel_id = c.id AND p.id > r.last_read_id AND p.sender_id <> a.id
+          WHERE r.agent_id = a.id AND r.joined = 1) AS posts
+       FROM agents a WHERE a.account_id = ? AND a.removed_at IS NULL ORDER BY a.name LIMIT ? OFFSET ?`,
+    )
+    .all(account, limit, offset) as { name: string; bio: string; last_seen: number; messages: number; posts: number }[];
+  return rows.map((r) => ({
+    name: r.name,
+    bio: r.bio,
+    lastSeen: new Date(r.last_seen).toISOString(),
+    unreadMessages: r.messages,
+    unreadPosts: r.posts,
+  }));
+}

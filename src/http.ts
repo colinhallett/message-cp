@@ -3,9 +3,9 @@ import { createServer as createHttpServer, type IncomingMessage, type Server, ty
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import { accountForToken, type TokenAccess } from "./accounts.js";
-import { DEFAULT_LIST_LIMIT, MAX_LIST_LIMIT, listAgents } from "./agents.js";
+import { DEFAULT_LIST_LIMIT, MAX_LIST_LIMIT } from "./agents.js";
 import type { AccountId, Db } from "./db.js";
-import { hasUnread, unreadSummary, type Unread } from "./messages.js";
+import { hasUnread, listAgentsUnread, unreadSummary, type AgentUnread, type Unread } from "./messages.js";
 import { Session, createServer } from "./server.js";
 import { DEFAULT_WAIT_HOLD_MS, formatUnread } from "./wait.js";
 
@@ -196,8 +196,11 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
     if (req.method !== "GET") return reply(res, 405, "Method not allowed", { Allow: "GET" });
     const query = new URL(req.url ?? "", "http://x").searchParams;
     const number = (key: string, fallback: number, min: number, max: number) => {
-      const raw = query.get(key);
-      if (raw === null) return fallback;
+      // A key given twice is refused like a bad value, so no value supplied is silently ignored.
+      const values = query.getAll(key);
+      if (values.length === 0) return fallback;
+      if (values.length > 1) return undefined;
+      const raw = values[0];
       const n = /^[0-9]+$/.test(raw) ? Number(raw) : NaN;
       return Number.isSafeInteger(n) && n >= min && n <= max ? n : undefined;
     };
@@ -208,20 +211,20 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
     }
     const waits = held.get(account);
     const recent = Date.now() - ONLINE_WINDOW_MS;
-    // One read transaction, so the page and its counts describe the same moment.
-    const agents = db.transaction(() =>
-      listAgents(db, account, limit, offset).map((a) => {
-        const unread = unreadSummary(db, account, a.name);
-        return {
-          name: a.name,
-          bio: a.bio,
-          lastSeen: a.lastSeen,
-          unreadMessages: unread?.count ?? 0,
-          unreadPosts: unread?.posts ?? 0,
-          online: (waits?.get(a.name.toLowerCase()) ?? 0) > 0 || Date.parse(a.lastSeen) >= recent,
-        };
-      }),
-    )();
+    let page: AgentUnread[];
+    try {
+      // One query, so the page and its counts describe the same moment.
+      page = listAgentsUnread(db, account, limit, offset);
+    } catch (err) {
+      // A lock held past the busy timeout is transient: ask the client to try again rather than answer 500.
+      const code = (err as { code?: unknown } | null)?.code;
+      if (typeof code !== "string" || !code.startsWith("SQLITE_BUSY")) throw err;
+      return reply(res, 503, "Database busy", { "Retry-After": "1" });
+    }
+    const agents = page.map((a) => ({
+      ...a,
+      online: (waits?.get(a.name.toLowerCase()) ?? 0) > 0 || Date.parse(a.lastSeen) >= recent,
+    }));
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify(agents));
   };

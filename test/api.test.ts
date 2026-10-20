@@ -5,13 +5,13 @@ import { mkdtempSync } from "node:fs";
 import { request } from "node:http";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { addAccount, addToken, listAccounts, revokeToken } from "../src/accounts.js";
 import { identityOf, registerAgent, removeAgent } from "../src/agents.js";
-import { joinChannel, post, type Member } from "../src/channels.js";
+import { joinChannel, leaveChannel, post, readChannel, type Member } from "../src/channels.js";
 import { OWNER_ACCOUNT, openDb, type AccountId, type Db } from "../src/db.js";
 import { startHttp, type HttpServer } from "../src/http.js";
-import { sendMessage } from "../src/messages.js";
+import { readInbox, sendMessage, unreadSummary } from "../src/messages.js";
 
 // Read-only tokens and GET /api/agents, on a server with the owner's account and a friend's.
 const OWNER_TOKEN = "owner-token";
@@ -175,9 +175,65 @@ describe("GET /api/agents", () => {
     for (let i = 0; i < 205; i++) registerAgent(db, friend, `z${String(i).padStart(3, "0")}`, "x");
     expect(await json(friendViewer)).toHaveLength(50);
     expect(await json(friendViewer, "?limit=200")).toHaveLength(200);
-    for (const query of ["?limit=0", "?limit=201", "?limit=x", "?offset=-1", "?limit=1.5", "?limit="]) {
+    const bad = ["?limit=0", "?limit=201", "?limit=x", "?offset=-1", "?limit=1.5", "?limit="];
+    // A key given twice is refused, whichever of its values is the bad one.
+    bad.push("?limit=1&limit=x", "?limit=x&limit=1", "?offset=0&offset=-1", "?limit=2&limit=2");
+    for (const query of bad) {
       expect((await agents(friendViewer, query)).status).toBe(400);
     }
+  });
+
+  it("counts unread messages and posts as unreadSummary does, for every agent on the page", async () => {
+    for (const name of ["alice", "bob", "carol"]) registerAgent(db, OWNER_ACCOUNT, name, "x");
+    sendMessage(db, OWNER_ACCOUNT, "bob", "alice", "read later");
+    readInbox(db, OWNER_ACCOUNT, "alice");
+    sendMessage(db, OWNER_ACCOUNT, "bob", "alice", "one");
+    sendMessage(db, OWNER_ACCOUNT, "carol", "alice", "two");
+    sendMessage(db, OWNER_ACCOUNT, "alice", "all", "to everyone");
+    for (const name of ["alice", "bob", "carol"]) joinChannel(db, OWNER_ACCOUNT, member(OWNER_ACCOUNT, name), "build");
+    joinChannel(db, OWNER_ACCOUNT, member(OWNER_ACCOUNT, "alice"), "ops");
+    post(db, OWNER_ACCOUNT, member(OWNER_ACCOUNT, "bob"), "build", "seen");
+    readChannel(db, OWNER_ACCOUNT, member(OWNER_ACCOUNT, "alice"), "build");
+    post(db, OWNER_ACCOUNT, member(OWNER_ACCOUNT, "bob"), "build", "new");
+    post(db, OWNER_ACCOUNT, member(OWNER_ACCOUNT, "carol"), "ops", "carol is not in ops");
+    post(db, OWNER_ACCOUNT, member(OWNER_ACCOUNT, "carol"), "build", "carol's own");
+    leaveChannel(db, OWNER_ACCOUNT, member(OWNER_ACCOUNT, "bob"), "build");
+    const list = await json(ownerViewer);
+    for (const a of list) {
+      const unread = unreadSummary(db, OWNER_ACCOUNT, a.name)!;
+      expect([a.name, a.unreadMessages, a.unreadPosts]).toEqual([a.name, unread.count, unread.posts]);
+    }
+    expect(list.map((a) => [a.name, a.unreadMessages, a.unreadPosts])).toEqual([
+      ["alice", 2, 3],
+      ["bob", 1, 0],
+      ["carol", 1, 2],
+    ]);
+  });
+
+  it("answers 503 with Retry-After when the database is busy, and 500 for any other failure", async () => {
+    registerAgent(db, OWNER_ACCOUNT, "alice", "x");
+    // The page query fails once with `code`; the token lookup before it still works.
+    const prepare = db.prepare.bind(db);
+    const fail = (code: string) => {
+      vi.restoreAllMocks();
+      let thrown = false;
+      vi.spyOn(db, "prepare").mockImplementation(((sql: string) => {
+        if (thrown || !sql.includes("FROM agents a WHERE")) return prepare(sql);
+        thrown = true;
+        throw Object.assign(new Error("database is locked"), { code });
+      }) as typeof db.prepare);
+    };
+    fail("SQLITE_BUSY");
+    let res = await agents(ownerViewer);
+    expect(res.status).toBe(503);
+    expect(res.headers.get("retry-after")).toBe("1");
+    fail("SQLITE_BUSY_SNAPSHOT");
+    expect((await agents(ownerViewer)).status).toBe(503);
+    fail("SQLITE_CORRUPT");
+    res = await agents(ownerViewer);
+    expect(res.status).toBe(500);
+    vi.restoreAllMocks();
+    expect((await json(ownerViewer)).map((a) => a.name)).toEqual(["alice"]);
   });
 
   it("answers 405 to any method but GET", async () => {
