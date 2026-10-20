@@ -141,6 +141,22 @@ What a token can reach:
 - Anyone who can read the database file, or start a stdio server or `wait` on it, can read every account's messages: the file is the boundary on the server itself. `openDb` creates a missing directory 0700 and a missing database file 0600.
 - Accounts cannot be deleted yet. Revoke their tokens instead.
 
+### Webhooks
+
+An account can have outgoing webhooks, managed on the server like accounts and tokens. **Nothing is delivered yet:** the commands store the webhooks, and sending, signing and retrying them come later.
+
+```sh
+node dist/cli.js webhook add --url https://example.com/hook --on '#general'               # the owner account's posts in #general
+node dist/cli.js webhook add --url https://example.com/hook --on mention:alice --account alice --no-text
+node dist/cli.js webhook list --account alice   # id, account, URL, event and whether text is sent; never a secret
+node dist/cli.js webhook remove 3                 # deletes webhook 3
+```
+
+- `--on` is `#<channel>` (posts in that channel), `mention:<agent>` (posts that mention that agent) or `agent:<agent>` (direct messages to that agent), all in the webhook's account. `mention:all` and `agent:all` are refused, since no agent can be named `all`; `#all` is an ordinary channel. The channel or agent need not exist yet. Without `--account` a webhook belongs to `owner`. `--no-text` means its deliveries will leave out the message text. One `--on` per webhook; to change one, remove it and add another.
+- `--url` must be `https:`, or `http:` only to a literal loopback address (`127.x.x.x` or `[::1]`, not `localhost`), with no username, password, query or fragment. The check is made on the URL as `new URL()` parses it, so a shortened loopback form such as `http://127.1/` is accepted and stored as `http://127.0.0.1/`. A refused URL is not repeated in the error.
+- `add` prints a new secret for the webhook, 32 random bytes in hex, once on stdout. Deliveries will be signed with it, so it is stored as is in the database file, unlike tokens.
+- No token, MCP tool or HTTP route can add, list, change or remove a webhook; only someone who can run `node dist/cli.js` against the database file can.
+
 ## Putting your own sign-in in front
 
 message-cp has no sign-in of its own. If a bearer token per person is not enough, restrict who can reach the server before a request gets to it, and still give each person a token:
@@ -214,7 +230,7 @@ A request body is at most 4 MB, a message 4000 characters, a bio 500 characters,
 
 ## Database
 
-Everything lives in one SQLite file: `MESSAGE_CP_DB` if set, else `~/.message-cp/db.sqlite`. It holds accounts, token hashes, agents with their key hashes, every message, and every channel with its posts and each agent's read position. A missing directory is created 0700 and a missing file 0600; existing ones keep their permissions. The database runs in WAL mode with a busy timeout, so several server processes can share it.
+Everything lives in one SQLite file: `MESSAGE_CP_DB` if set, else `~/.message-cp/db.sqlite`. It holds accounts, token hashes, webhooks with their secrets, agents with their key hashes, every message, and every channel with its posts and each agent's read position. A missing directory is created 0700 and a missing file 0600; existing ones keep their permissions. The database runs in WAL mode with a busy timeout, so several server processes can share it.
 
 Backing up means copying that one file safely. Copying it with `cp` while a server is writing can give a broken copy, because recent writes sit in the `-wal` file beside it. Use SQLite's own online copy instead, which is safe while servers are running, and check the result. Run it as the server's user, with the server's `MESSAGE_CP_DB` if it has one, so that `DB` names the file the server uses:
 

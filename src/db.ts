@@ -106,6 +106,19 @@ CREATE TABLE IF NOT EXISTS mentions (
   PRIMARY KEY (agent_id, post_id)
 );
 CREATE INDEX IF NOT EXISTS mentions_unread ON mentions (agent_id, read_at, post_id);
+
+-- Outgoing webhooks, managed only with \`message-cp webhook\`. \`event\` is 'channel', 'mention' or 'agent' and \`name\` the
+-- channel or agent in the same account, which need not exist yet. The secret is stored as is: deliveries sign with it.
+CREATE TABLE IF NOT EXISTS webhooks (
+  id INTEGER PRIMARY KEY,
+  account_id INTEGER NOT NULL REFERENCES accounts(id),
+  url TEXT NOT NULL,
+  event TEXT NOT NULL CHECK (event IN ('channel', 'mention', 'agent')),
+  name TEXT NOT NULL,
+  include_text INTEGER NOT NULL,
+  secret TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+);
 `;
 
 // CREATE TABLE IF NOT EXISTS leaves an existing table alone, so columns added later are added here, only when missing.
