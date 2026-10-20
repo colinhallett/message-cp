@@ -1,10 +1,12 @@
-import { randomBytes } from "node:crypto";
+import { createHmac, randomBytes } from "node:crypto";
 import { NAME_PATTERN } from "./agents.js";
 import type { AccountId, Db } from "./db.js";
 
 // Outgoing webhooks. The operator manages them with `message-cp webhook` on the server; no agent or token can.
-// Messages and posts a webhook is for are queued in `webhook_deliveries` when they are stored, but nothing sends them
-// yet. A webhook's secret is shown once, when it is added, and stored as is so that deliveries can sign with it.
+// Messages and posts a webhook is for are queued in `webhook_deliveries` when they are stored, and `serve` sends them
+// with `sendPending`: each body signed with the webhook's secret, a timeout and a few attempts. The stdio server and
+// `message-cp wait` send nothing. A webhook's secret is shown once, when it is added, and stored as is so that
+// deliveries can sign with it.
 
 export class WebhookError extends Error {}
 
@@ -146,4 +148,101 @@ export function deliveryBody(db: Db, id: number): DeliveryBody | undefined {
     sentAt: new Date(row.created_at).toISOString(),
     ...(row.include_text === 1 ? { text: row.body } : {}),
   };
+}
+
+/** A delivery request not finished in this long is aborted and counts as a failed attempt. */
+export const WEBHOOK_TIMEOUT_MS = 5000;
+/** Attempts a delivery gets in all; after the last failed one it is left undelivered and not tried again. */
+export const WEBHOOK_MAX_ATTEMPTS = 3;
+/** Most deliveries one pass sends. */
+export const WEBHOOK_BATCH = 20;
+/** Requests a pass has in flight at once. */
+const WEBHOOK_CONCURRENCY = 4;
+
+export interface SendOptions {
+  timeoutMs?: number;
+  maxAttempts?: number;
+  batch?: number;
+  /** Once aborted, no further delivery is claimed; requests already sent run to their end or their timeout. */
+  signal?: AbortSignal;
+}
+
+/**
+ * One pass over the queue: claims up to `batch` pending deliveries, oldest first, and POSTs each one's body to its own
+ * webhook's URL, signed with its secret in `X-Message-CP-Signature`. A 2xx answer delivers it; anything else, a
+ * network error or the timeout is a failed attempt, retried on a later pass. Redirects are not followed.
+ * An attempt is counted when the row is claimed, before the request, so two senders on one file never send the same
+ * attempt, and a row whose last attempt may still be in flight (claimed under twice `timeoutMs` ago, leaving room to
+ * record the answer) is left for a later pass.
+ * Nothing about a delivery is logged: its body, secret and URL are all private.
+ */
+export async function sendPending(db: Db, options: SendOptions = {}): Promise<{ delivered: number; failed: number }> {
+  const timeoutMs = options.timeoutMs ?? WEBHOOK_TIMEOUT_MS;
+  const maxAttempts = options.maxAttempts ?? WEBHOOK_MAX_ATTEMPTS;
+  const rows = db
+    .prepare(
+      `SELECT d.id, d.attempts, w.url, w.secret FROM webhook_deliveries d JOIN webhooks w ON w.id = d.webhook_id
+       WHERE d.delivered_at IS NULL AND d.attempts < ? AND (d.attempted_at IS NULL OR d.attempted_at <= ?)
+       ORDER BY d.delivered_at, d.id LIMIT ?`,
+    )
+    .all(maxAttempts, Date.now() - 2 * timeoutMs, options.batch ?? WEBHOOK_BATCH) as { id: number; attempts: number; url: string; secret: string }[];
+  const claim = db.prepare(
+    "UPDATE webhook_deliveries SET attempts = attempts + 1, attempted_at = ? WHERE id = ? AND attempts = ? AND delivered_at IS NULL",
+  );
+  const done = db.prepare("UPDATE webhook_deliveries SET delivered_at = ? WHERE id = ?");
+  let delivered = 0;
+  let failed = 0;
+
+  const send = async (row: (typeof rows)[number]) => {
+    if (claim.run(Date.now(), row.id, row.attempts).changes !== 1) return;
+    let href: string;
+    try {
+      href = webhookUrl(row.url);
+    } catch {
+      // Stored before the check was what it is now: the attempt is used without a request.
+      failed++;
+      return;
+    }
+    const body = deliveryBody(db, row.id);
+    if (!body) return;
+    const text = JSON.stringify(body);
+    let ok = false;
+    try {
+      const res = await fetch(href, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Message-CP-Signature": `sha256=${createHmac("sha256", row.secret).update(text).digest("hex")}`,
+        },
+        body: text,
+        redirect: "manual",
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+      ok = res.status >= 200 && res.status < 300;
+      await res.body?.cancel();
+    } catch {
+      // A network error or the timeout; the answer, if any, is only read for its status.
+    }
+    if (ok) {
+      done.run(Date.now(), row.id);
+      delivered++;
+    } else {
+      failed++;
+    }
+  };
+
+  let next = 0;
+  let error: unknown;
+  const worker = async () => {
+    while (next < rows.length && error === undefined && !options.signal?.aborted) {
+      try {
+        await send(rows[next++]!);
+      } catch (err) {
+        error ??= err;
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(WEBHOOK_CONCURRENCY, rows.length) }, worker));
+  if (error !== undefined) throw error;
+  return { delivered, failed };
 }
