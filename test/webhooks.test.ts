@@ -27,6 +27,9 @@ describe("webhookUrl", () => {
     expect(webhookUrl("http://127.0.0.1:9000/hook")).toBe("http://127.0.0.1:9000/hook");
     expect(webhookUrl("http://[::1]/hook")).toBe("http://[::1]/hook");
     expect(webhookUrl("HTTPS://Example.COM")).toBe("https://example.com/");
+    // new URL() writes these loopback forms as 127.0.0.1 before the check, so they are stored as that.
+    expect(webhookUrl("http://127.1/hook")).toBe("http://127.0.0.1/hook");
+    expect(webhookUrl("http://2130706433/hook")).toBe("http://127.0.0.1/hook");
   });
 
   it.each(REFUSED)("refuses %s without repeating it", (url) => {
@@ -55,10 +58,11 @@ describe("webhookOn", () => {
     expect(webhookOn("#general")).toEqual({ event: "channel", name: "general" });
     expect(webhookOn("mention:alice")).toEqual({ event: "mention", name: "alice" });
     expect(webhookOn("agent:bob_2")).toEqual({ event: "agent", name: "bob_2" });
+    expect(webhookOn("#all")).toEqual({ event: "channel", name: "all" });
   });
 
   it("refuses anything else", () => {
-    for (const on of ["general", "#", "mention:", "agent:", "#a b", "#a\n", "channel:x", "agent:" + "x".repeat(33), "@alice", "Agent:x"]) {
+    for (const on of ["general", "#", "mention:", "agent:", "#a b", "#a\n", "channel:x", "agent:" + "x".repeat(33), "@alice", "Agent:x", "mention:all", "agent:all", "agent:ALL"]) {
       expect(() => webhookOn(on), on).toThrow(WebhookError);
     }
   });

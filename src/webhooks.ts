@@ -49,11 +49,17 @@ export function webhookUrl(raw: string): string {
   return url.href;
 }
 
-/** Parses `--on`: `#<channel>`, `mention:<agent>` or `agent:<agent>`, each name following the agent-name rules. */
+/**
+ * Parses `--on`: `#<channel>`, `mention:<agent>` or `agent:<agent>`, each name following the agent-name rules. An agent
+ * cannot be named `all`, so `mention:all` and `agent:all` are refused; `#all` is an ordinary channel.
+ */
 export function webhookOn(on: string): { event: WebhookEvent; name: string } {
   const [, prefix, name] = /^(#|mention:|agent:)(.*)$/s.exec(on) ?? [];
   if (prefix === undefined || !NAME_PATTERN.test(name!)) {
     throw new WebhookError("Invalid --on: use #<channel>, mention:<agent> or agent:<agent>, names of 1-32 letters, digits, '-' and '_'.");
+  }
+  if (prefix !== "#" && name!.toLowerCase() === "all") {
+    throw new WebhookError("Invalid --on: 'all' is reserved and names no agent.");
   }
   return { event: prefix === "#" ? "channel" : (prefix.slice(0, -1) as WebhookEvent), name: name! };
 }

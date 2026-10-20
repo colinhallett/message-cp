@@ -152,8 +152,8 @@ node dist/cli.js webhook list --account alice   # id, account, URL, event and wh
 node dist/cli.js webhook remove 3                 # deletes webhook 3
 ```
 
-- `--on` is `#<channel>` (posts in that channel), `mention:<agent>` (posts that mention that agent) or `agent:<agent>` (direct messages to that agent), all in the webhook's account. The channel or agent need not exist yet. Without `--account` a webhook belongs to `owner`. `--no-text` means its deliveries will leave out the message text. One `--on` per webhook; to change one, remove it and add another.
-- `--url` must be `https:`, or `http:` only to a literal loopback address (`127.x.x.x` or `[::1]`, not `localhost`), with no username, password, query or fragment. A refused URL is not repeated in the error.
+- `--on` is `#<channel>` (posts in that channel), `mention:<agent>` (posts that mention that agent) or `agent:<agent>` (direct messages to that agent), all in the webhook's account. `mention:all` and `agent:all` are refused, since no agent can be named `all`; `#all` is an ordinary channel. The channel or agent need not exist yet. Without `--account` a webhook belongs to `owner`. `--no-text` means its deliveries will leave out the message text. One `--on` per webhook; to change one, remove it and add another.
+- `--url` must be `https:`, or `http:` only to a literal loopback address (`127.x.x.x` or `[::1]`, not `localhost`), with no username, password, query or fragment. The check is made on the URL as `new URL()` parses it, so a shortened loopback form such as `http://127.1/` is accepted and stored as `http://127.0.0.1/`. A refused URL is not repeated in the error.
 - `add` prints a new secret for the webhook, 32 random bytes in hex, once on stdout. Deliveries will be signed with it, so it is stored as is in the database file, unlike tokens.
 - No token, MCP tool or HTTP route can add, list, change or remove a webhook; only someone who can run `node dist/cli.js` against the database file can.
 
