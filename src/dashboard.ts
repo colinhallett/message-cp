@@ -96,13 +96,17 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 #search { display: flex; gap: var(--s1); flex: 0 1 20rem; min-width: 0; }
 #search input { flex: 1; min-width: 0; padding: var(--s1) var(--s2); background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); }
 .toggle { display: none; }
+/* The person picker and the compose box share one row under the log, the picker beside the box. */
+#writer { display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--s2); padding: var(--s2) var(--s4); border-top: 1px solid var(--border); }
 #as-box { display: flex; align-items: center; gap: var(--s1); }
 #as { padding: var(--s1); background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); }
 #as-note { margin: 0; }
-#compose { display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--s2); padding: var(--s2) var(--s4); border-top: 1px solid var(--border); }
+#compose { flex: 1 1 20rem; min-width: 0; display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--s2); }
 #compose label { flex: 1 1 100%; font-size: 0.8rem; color: var(--muted); }
-#compose textarea { flex: 1; min-width: 0; resize: vertical; padding: var(--s2); background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); }
-#compose .note { flex: 1 1 100%; margin: 0; }
+#compose textarea { flex: 1; min-width: 0; resize: none; overflow-y: auto; padding: var(--s2); background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); }
+/* The note sits under the row, outside the form, so the picker stays level with the box when it shows. */
+#compose-note { flex: 1 1 100%; margin: 0; }
+#compose[hidden] + #compose-note { display: none; }
 #sidebar { grid-area: side; overflow-y: auto; background: var(--panel); border-right: 1px solid var(--border); }
 #agents { grid-area: agents; overflow-y: auto; background: var(--panel); border-left: 1px solid var(--border); }
 #chat { grid-area: chat; min-width: 0; display: flex; flex-direction: column; }
@@ -167,6 +171,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   #view.show-sidebar #sidebar, #view.show-agents #agents { display: block; grid-area: chat; }
   #view.show-sidebar #chat, #view.show-agents #chat { display: none; }
   .entry { padding: var(--s2) var(--s3); }
+  #writer { padding: var(--s2) var(--s3); }
 }
 [hidden] { display: none !important; }
 `;
@@ -200,6 +205,7 @@ const deliveryEntry = document.getElementById("delivery-entry");
 const asBox = document.getElementById("as-box");
 const asSelect = document.getElementById("as");
 const asNote = document.getElementById("as-note");
+const writer = document.getElementById("writer");
 const compose = document.getElementById("compose");
 const composeLabel = document.getElementById("compose-label");
 const composeText = document.getElementById("compose-text");
@@ -241,6 +247,9 @@ let person;
 // The tokenGeneration a send is in flight for, or undefined. While one is, the Send button is disabled for that token,
 // so the same submit is not sent twice while it is in flight; a new token is not held by it.
 let sending;
+// The compose box starts at MIN_ROWS rows and grows with its text up to MAX_ROWS, then scrolls.
+const MIN_ROWS = 2;
+const MAX_ROWS = 10;
 // The open log's last entry, as chatEntry made it: its sender in lower case, its time in ms (NaN if it could not be
 // read) and its tag, or undefined in an empty log. An entry continues its group only from this one.
 // chatRows holds each of the open log's rows as chatEntry made them, so a change in who is a person re-marks them.
@@ -286,6 +295,7 @@ function ask(message) {
   asBox.hidden = true;
   asNote.textContent = "";
   composeText.value = "";
+  grow();
   composeNote.textContent = "";
   composeSend.disabled = false;
   // Clear every panel, so one token's agents, channels, pairs and messages never show under the next token.
@@ -336,6 +346,15 @@ compose.addEventListener("submit", (event) => {
   event.preventDefault();
   send();
 });
+// Enter sends and Shift+Enter adds a line, as in a chat app. An Enter that ends an input method's composition does
+// neither (Safari ends it before the keydown, which then has keyCode 229), and one in a box of only whitespace sends
+// nothing; send() itself ignores one while a send is in flight.
+composeText.addEventListener("keydown", (event) => {
+  if (event.key !== "Enter" || event.shiftKey || event.isComposing || event.keyCode === 229) return;
+  event.preventDefault();
+  if (composeText.value.trim() !== "") send();
+});
+composeText.addEventListener("input", () => grow());
 // On a narrow screen only one panel shows at a time: these buttons swap the conversation for the sidebar or the agents.
 document.getElementById("show-sidebar").addEventListener("click", () => panel("show-sidebar"));
 document.getElementById("show-agents").addEventListener("click", () => panel("show-agents"));
@@ -364,6 +383,9 @@ function closeLog() {
   // The text typed stays, so leaving a conversation never loses it; only a 200 or a new token clears it.
   composeNote.textContent = "";
   compose.hidden = true;
+  asBox.hidden = true;
+  asNote.textContent = "";
+  writer.hidden = true;
 }
 
 // Opens a channel's log and polls again at once; the poll in flight is dropped, so a slow answer for the channel
@@ -377,7 +399,7 @@ function openLog(name) {
   log.hidden = false;
   view.className = "";
   markOpen();
-  showCompose();
+  showPicker();
   cancel();
   poll(generation);
 }
@@ -395,7 +417,7 @@ function openPairLog(key) {
   postRows.replaceChildren(...messages.filter((m) => pairKey(m) === key).map(messageEntry));
   postRows.scrollTop = postRows.scrollHeight;
   markOpen();
-  showCompose();
+  showPicker();
   cancel();
   poll(generation);
 }
@@ -508,14 +530,16 @@ async function checkToken() {
   showPicker();
 }
 
-// Shows the person picker, with a full token, from the people GET /api/agents last gave, and clears the chosen person
-// once they are gone. The list is rebuilt only when it changes, so a poll never closes it under the reader.
+// Shows the person picker beside the compose box, with a full token and an open channel or pair, from the people
+// GET /api/agents last gave, and clears the chosen person once they are gone. The list is rebuilt only when it changes,
+// so a poll never closes it under the reader.
 function showPicker() {
   const before = person;
   const known = people ?? [];
   if (person !== undefined && !known.includes(person)) person = undefined;
-  asBox.hidden = !canPost || known.length === 0;
-  asNote.textContent = canPost && people !== undefined && known.length === 0 ? "No people to post as. Add one with: message-cp person add <name>" : "";
+  const conversation = openChannel !== undefined || openPair !== undefined;
+  asBox.hidden = !canPost || !conversation || known.length === 0;
+  asNote.textContent = canPost && conversation && people !== undefined && known.length === 0 ? "No people to post as. Add one with: message-cp person add <name>" : "";
   const key = canPost ? JSON.stringify(known) : "";
   if (key !== pickerKey) {
     pickerKey = key;
@@ -545,12 +569,21 @@ function replyTo() {
   return undefined;
 }
 
-// Shows the compose box under an open channel, or under an open pair the chosen person is one side of.
+// Shows the compose box under an open channel, or under an open pair the chosen person is one side of, and the row
+// it shares with the person picker while either of them, or the picker's note, shows.
 function showCompose() {
   const to = replyTo();
   const shown = canPost && person !== undefined && (openChannel !== undefined || to !== undefined);
   compose.hidden = !shown;
   if (shown) composeLabel.textContent = openChannel !== undefined ? "Post in #" + openChannel + " as " + person : "Reply to " + to + " as " + person;
+  writer.hidden = compose.hidden && asBox.hidden && asNote.textContent === "";
+  if (shown) grow();
+}
+
+// Sets the compose box's rows to what its text needs, from MIN_ROWS up to MAX_ROWS, so it grows and shrinks with it.
+function grow() {
+  composeText.rows = MIN_ROWS;
+  while (composeText.rows < MAX_ROWS && composeText.scrollHeight > composeText.clientHeight) composeText.rows++;
 }
 
 // What the compose box sends to now: the path, the conversation and the person, or undefined when it is hidden.
@@ -606,7 +639,10 @@ async function send() {
   const now = composeTarget();
   const same = now !== undefined && now.path === target.path && now.conversation === target.conversation && now.fields.as === target.fields.as;
   if (answer.status === 200 || answer.error) {
-    if (same && answer.status === 200 && composeText.value === body) composeText.value = "";
+    if (same && answer.status === 200 && composeText.value === body) {
+      composeText.value = "";
+      grow();
+    }
     if (same) composeNote.textContent = answer.status === 200 ? "" : answer.error + ".";
     // Read again at once, so the post or message shows, or, with no answer, so the reader can see whether it arrived.
     cancel();
@@ -1181,11 +1217,6 @@ export const DASHBOARD_HTML = `<!doctype html>
 <input id="search-text" type="search" maxlength="400" required aria-label="Search messages and posts" placeholder="Search messages and posts" autocomplete="off">
 <button type="submit">Search</button>
 </form>
-<span id="as-box" hidden>
-<label for="as">Post as</label>
-<select id="as"></select>
-</span>
-<p id="as-note" class="note"></p>
 <button id="show-agents" class="toggle" type="button">Agents</button>
 <button id="forget" type="button">Forget token</button>
 </header>
@@ -1206,12 +1237,19 @@ export const DASHBOARD_HTML = `<!doctype html>
 </div>
 <p id="log-note" class="note"></p>
 <ol id="post-rows" role="log"></ol>
+<div id="writer" hidden>
+<span id="as-box" hidden>
+<label for="as">Post as</label>
+<select id="as"></select>
+</span>
+<p id="as-note" class="note"></p>
 <form id="compose" hidden>
 <label id="compose-label" for="compose-text"></label>
-<textarea id="compose-text" rows="2" required autocomplete="off"></textarea>
+<textarea id="compose-text" rows="2" required autocomplete="off" placeholder="Enter sends, Shift+Enter adds a line"></textarea>
 <button id="compose-send" type="submit">Send</button>
-<p id="compose-note" class="note" role="status"></p>
 </form>
+<p id="compose-note" class="note" role="status"></p>
+</div>
 </section>
 <section id="results" hidden>
 <div class="log-head">

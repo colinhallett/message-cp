@@ -1731,23 +1731,31 @@ describe("the page's posting", () => {
     seed();
     addPerson(db, "owner", "dana");
     const page = await load(OWNER_TOKEN);
-    await page.until(() => page.picker().length === 2);
+    await page.until(() => page.picker().length === 2 && page.elements["channel-rows"].children.length === 1);
     expect(page.picker()).toEqual(["colin", "dana"]);
-    expect(page.elements["as-box"].hidden).toBe(false);
-    expect(page.elements["as-note"].textContent).toBe("");
+    // The picker sits beside the compose box, so it shows only under an open conversation.
+    expect(page.elements["as-box"].hidden).toBe(true);
     await page.poll();
     await page.until(() => page.requests.filter((r) => r.url.startsWith("/api/agents")).length === 2);
     const asks = page.requests.filter((r) => r.url === "/api/token");
     expect(asks).toHaveLength(1);
     expect(asks[0].headers).toEqual({ Authorization: `Bearer ${OWNER_TOKEN}` });
     for (const r of page.requests) expect(r.url).not.toContain(OWNER_TOKEN);
+    open(page.elements["channel-rows"], "build");
+    expect(page.elements["as-box"].hidden).toBe(false);
+    expect(page.elements["writer"].hidden).toBe(false);
+    expect(page.elements["as-note"].textContent).toBe("");
     expect(page.elements["compose"].hidden).toBe(true);
   });
 
-  it("with a full token and no people, names message-cp person add", async () => {
+  it("with a full token and no people, names message-cp person add under an open conversation", async () => {
     registerAgent(db, OWNER_ACCOUNT, "bob", "x");
+    joinChannel(db, OWNER_ACCOUNT, { ...identityOf(db, OWNER_ACCOUNT, "bob")!, name: "bob" }, "build");
     const page = await load(OWNER_TOKEN);
+    await page.until(() => page.elements["channel-rows"].children.length === 1);
+    open(page.elements["channel-rows"], "build");
     await page.until(() => page.elements["as-note"].textContent !== "");
+    expect(page.elements["writer"].hidden).toBe(false);
     expect(page.elements["as-note"].textContent).toContain("message-cp person add");
     expect(page.elements["as-box"].hidden).toBe(true);
   });
@@ -1774,6 +1782,13 @@ describe("the page's posting", () => {
       open(page.elements["pair-rows"], "bob ↔ colin");
       expect(page.elements["compose"].hidden).toBe(true);
       page.send("should not go");
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(page.posts()).toEqual([]);
+      // Nor does a conversation open the picker or the row it sits in, and Enter sends nothing.
+      expect(page.elements["as-box"].hidden).toBe(true);
+      expect(page.elements["writer"].hidden).toBe(true);
+      page.elements["compose-text"].value = "should not go";
+      page.elements["compose-text"].on.keydown({ key: "Enter", shiftKey: false, isComposing: false, preventDefault() {} });
       await new Promise((resolve) => setTimeout(resolve, 20));
       expect(page.posts()).toEqual([]);
     }
@@ -1835,6 +1850,105 @@ describe("the page's posting", () => {
     expect(page.posts()[0].url).toBe("/api/send");
     const inbox = db.prepare("SELECT sender, body FROM messages WHERE recipient_id = ? ORDER BY id DESC LIMIT 1").get(identityOf(db, OWNER_ACCOUNT, "bob")!.id);
     expect(inbox).toEqual({ sender: "colin", body: "on it" });
+  });
+
+  describe("writing like a chat app", () => {
+    // A keydown on the compose box, counting the preventDefault calls it gets.
+    const key = (page: Awaited<ReturnType<typeof load>>, text: string, init: { shiftKey?: boolean; isComposing?: boolean; keyCode?: number } = {}) => {
+      let prevented = 0;
+      page.elements["compose-text"].value = text;
+      page.elements["compose-text"].on.keydown({ key: "Enter", shiftKey: false, isComposing: false, ...init, preventDefault: () => prevented++ });
+      return prevented;
+    };
+    const ready = async (page: Awaited<ReturnType<typeof load>>) => {
+      await page.until(() => page.picker().length === 1 && page.elements["channel-rows"].children.length === 1);
+      open(page.elements["channel-rows"], "build");
+      // The picker shows under the open channel before a person is chosen, so one can be chosen there.
+      expect(page.elements["as-box"].hidden).toBe(false);
+      expect(page.elements["writer"].hidden).toBe(false);
+      expect(page.elements["compose"].hidden).toBe(true);
+      page.choose("colin");
+      expect(page.elements["compose"].hidden).toBe(false);
+    };
+
+    it("says in the placeholder that Enter sends and Shift+Enter adds a line", async () => {
+      const html = await (await fetch(`${base()}/`)).text();
+      expect(html).toMatch(/<textarea id="compose-text" rows="2"[^>]*placeholder="Enter sends, Shift\+Enter adds a line"/);
+      // The picker is no longer in the top bar, but in the log beside the compose box.
+      const bar = /<header class="bar">([\s\S]*?)<\/header>/.exec(html)![1];
+      expect(bar).not.toContain('id="as-box"');
+      const log = /<section id="log"[^>]*>([\s\S]*?)<\/section>/.exec(html)![1];
+      expect(log).toMatch(/<div id="writer" hidden>\s*<span id="as-box" hidden>[\s\S]*<p id="as-note"[\s\S]*<form id="compose" hidden>[\s\S]*<\/form>\s*<p id="compose-note"/);
+      expect(html).not.toMatch(/ style=|\.style\s*[.=[]/);
+    });
+
+    it("sends once on Enter and prevents its newline", async () => {
+      seed();
+      const page = await load(OWNER_TOKEN);
+      await ready(page);
+      expect(key(page, "by enter")).toBe(1);
+      await page.until(() => page.elements["compose-send"].disabled === false && page.elements["compose-text"].value === "");
+      expect(page.posts()).toHaveLength(1);
+      expect(JSON.parse(page.posts()[0].body!)).toEqual({ as: "colin", channel: "build", body: "by enter" });
+    });
+
+    it("sends nothing on Shift+Enter, on an Enter while composing, or on an Enter in a box of only whitespace", async () => {
+      seed();
+      const page = await load(OWNER_TOKEN);
+      await ready(page);
+      // Shift+Enter and an IME's Enter keep their default, so the line is added or the composition ends.
+      expect(key(page, "two\nlines", { shiftKey: true })).toBe(0);
+      expect(key(page, "にほん", { isComposing: true })).toBe(0);
+      // Safari ends the composition before the Enter that confirms it, which then comes with keyCode 229.
+      expect(key(page, "にほん", { keyCode: 229 })).toBe(0);
+      // An Enter in a blank box adds no line either.
+      expect(key(page, " \n\t ")).toBe(1);
+      expect(key(page, "")).toBe(1);
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      expect(page.posts()).toEqual([]);
+      expect(page.elements["compose-text"].value).toBe("");
+      expect(page.elements["compose-note"].textContent).toBe("");
+    });
+
+    it("sends nothing on a second Enter while a send is in flight", async () => {
+      seed();
+      let release!: () => void;
+      const hold = new Promise<void>((resolve) => (release = resolve));
+      const page = await load(OWNER_TOKEN, (url, method) => (method === "POST" ? { hold } : undefined));
+      await ready(page);
+      key(page, "only once");
+      expect(page.elements["compose-send"].disabled).toBe(true);
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      expect(key(page, "only once")).toBe(1);
+      expect(page.posts()).toHaveLength(1);
+      release();
+      await page.until(() => page.elements["compose-send"].disabled === false);
+      expect(db.prepare("SELECT COUNT(*) AS n FROM channel_posts WHERE body = 'only once'").get()).toEqual({ n: 1 });
+    });
+
+    it("grows the box with its text up to 10 rows, shrinks it back and resets it after a 200", async () => {
+      seed();
+      const page = await load(OWNER_TOKEN);
+      await ready(page);
+      // A textarea as a browser lays it out: each line of text and each row is 20px high.
+      const box = page.elements["compose-text"] as Stub & { rows: number };
+      Object.defineProperty(box, "scrollHeight", { get: () => Math.max(box.rows, box.value.split("\n").length) * 20 });
+      Object.defineProperty(box, "clientHeight", { get: () => box.rows * 20 });
+      const type = (text: string) => {
+        box.value = text;
+        box.on.input();
+        return box.rows;
+      };
+      expect(type("one")).toBe(2);
+      expect(type("1\n2\n3\n4")).toBe(4);
+      expect(type(Array(30).fill("x").join("\n"))).toBe(10);
+      expect(type("1\n2\n3")).toBe(3);
+      type("1\n2\n3\n4\n5");
+      expect(box.rows).toBe(5);
+      key(page, box.value);
+      await page.until(() => box.value === "");
+      expect(box.rows).toBe(2);
+    });
   });
 
   it("caps the compose box at MAX_BODY_LENGTH characters, counted as the server counts them", async () => {
