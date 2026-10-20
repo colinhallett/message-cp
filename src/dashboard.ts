@@ -217,7 +217,8 @@ function openLog(name) {
   poll(generation);
 }
 
-// Opens a pair's messages, oldest first, from the ones the page holds; the next poll appends any new ones.
+// Opens a pair's messages, oldest first, from the ones the page holds, and polls again at once to append any new ones;
+// the poll in flight is dropped, so a slow read of the channel open before never holds this pair's refresh back.
 function openPairLog(key) {
   const pair = pairs.get(key);
   if (!pair) return;
@@ -229,6 +230,8 @@ function openPairLog(key) {
   postRows.replaceChildren(...messages.filter((m) => pairKey(m) === key).map(messageEntry));
   postRows.scrollTop = postRows.scrollHeight;
   markOpen();
+  cancel();
+  poll(generation);
 }
 
 function start() {

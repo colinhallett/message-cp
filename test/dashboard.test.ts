@@ -149,6 +149,10 @@ describe("the page's channels and messages", () => {
     className: string;
     title: string;
     children: Stub[];
+    top: number;
+    scrollTop: number;
+    readonly scrollHeight: number;
+    readonly clientHeight: number;
     append(...children: Stub[]): void;
     replaceChildren(...children: Stub[]): void;
     addEventListener(type: string, fn: () => void): void;
@@ -163,6 +167,18 @@ describe("the page's channels and messages", () => {
     className: "",
     title: "",
     children: [],
+    // A box 100px high whose rows are 20px each, scrolled as a browser does: never past the last row.
+    top: 0,
+    get scrollHeight() {
+      return this.children.length * 20;
+    },
+    clientHeight: 100,
+    get scrollTop() {
+      return this.top;
+    },
+    set scrollTop(value: number) {
+      this.top = Math.max(0, Math.min(value, this.scrollHeight - this.clientHeight));
+    },
     append(...children) {
       this.children.push(...children);
     },
@@ -413,6 +429,49 @@ describe("the page's channels and messages", () => {
     page.poll();
     await page.until(() => page.urls.some((url) => url.startsWith("/api/messages")));
     expect(page.urls.filter((url) => url.startsWith("/api/channel-posts"))).toEqual([]);
+  });
+
+  it("reads the chosen pair at once while the channel open before has not answered", async () => {
+    for (const name of ["alice", "bob"]) registerAgent(db, OWNER_ACCOUNT, name, "x");
+    post(db, OWNER_ACCOUNT, { ...identityOf(db, OWNER_ACCOUNT, "alice")!, name: "alice" }, "build", "hello");
+    sendMessage(db, OWNER_ACCOUNT, "alice", "bob", "one");
+    const page = await load(viewer, (url) => (url.startsWith("/api/channel-posts") ? "hang" : undefined));
+    const pairs = page.elements["pair-rows"];
+    const log = page.elements["post-rows"];
+    await page.until(() => pairs.children.length === 1 && page.elements["channel-rows"].children.length === 1);
+    open(page.elements["channel-rows"].children[0]);
+    await page.until(() => page.urls.some((url) => url.startsWith("/api/channel-posts")));
+
+    sendMessage(db, OWNER_ACCOUNT, "bob", "alice", "two");
+    open(pairs.children[0]);
+    // No poll is run by hand: opening the pair drops the poll waiting on the channel and reads the messages again.
+    await page.until(() => log.children.length === 2);
+    expect(entries(log)).toEqual([
+      ["alice", "one"],
+      ["bob", "two"],
+    ]);
+  });
+
+  it("follows new entries at the bottom of the open log, and leaves a reader scrolled up where they are", async () => {
+    for (const name of ["alice", "bob"]) registerAgent(db, OWNER_ACCOUNT, name, "x");
+    for (let i = 0; i < 10; i++) sendMessage(db, OWNER_ACCOUNT, "alice", "bob", `message ${i}`);
+    const page = await load(viewer);
+    const pairs = page.elements["pair-rows"];
+    const log = page.elements["post-rows"];
+    await page.until(() => pairs.children.length === 1);
+    open(pairs.children[0]);
+    expect(log.scrollTop).toBe(100);
+
+    sendMessage(db, OWNER_ACCOUNT, "bob", "alice", "at the bottom");
+    page.poll();
+    await page.until(() => log.children.length === 11);
+    expect(log.scrollTop).toBe(120);
+
+    log.scrollTop = 0;
+    sendMessage(db, OWNER_ACCOUNT, "bob", "alice", "scrolled up");
+    page.poll();
+    await page.until(() => log.children.length === 12);
+    expect(log.scrollTop).toBe(0);
   });
 
   it("pages through every message, then appends only the new ones for the open pair on each poll", async () => {
