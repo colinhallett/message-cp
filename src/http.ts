@@ -287,6 +287,15 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
   };
 
   /**
+   * GET /api/token: whether the request's token is read-only, so the dashboard offers posting only to a full token. It
+   * gives nothing else about the token: no token, hash, id or account.
+   */
+  const apiToken = (req: IncomingMessage, res: ServerResponse, readOnly: boolean) => {
+    if (req.method !== "GET") return reply(res, 405, "Method not allowed", { Allow: "GET" });
+    sendJson(res, { readOnly });
+  };
+
+  /**
    * GET /api/agents: one page of the account's live agents, as `list_agents` pages them, each with its unread message,
    * post and mention counts and whether it is online. Counts only, never a message or post; it reads nothing as read.
    */
@@ -468,6 +477,7 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
       return reply(res, 401, "Unauthorized", { "WWW-Authenticate": "Bearer" });
     }
     const { account } = access;
+    if (path === "/api/token") return apiToken(req, res, access.readOnly);
     if (path === "/api/agents") return apiAgents(req, res, account);
     if (path === "/api/channels") return apiChannels(req, res, account);
     if (path === "/api/channel-posts") return apiChannelPosts(req, res, account);

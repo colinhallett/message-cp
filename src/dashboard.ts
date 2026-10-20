@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { MAX_BODY_LENGTH } from "./messages.js";
 
 // The page served at GET / by `message-cp serve`. It holds no data and no token: it asks for a token, keeps it in
 // sessionStorage (that tab only), and polls GET /api/agents, GET /api/channels, GET /api/messages and, while one is
@@ -6,7 +7,10 @@ import { createHash } from "node:crypto";
 // chat app: channels and the pairs of agents that have messaged each other in a sidebar, the open one as a log in the
 // middle, and the agents on the right. A search box asks GET /api/search once per search and shows the answer in the
 // middle in place of the open conversation. The sidebar's "Webhook deliveries" entry shows the newest deliveries in the
-// middle the same way, refreshed with each poll. It only reads, and puts agent-supplied text on the page with textContent, never as HTML.
+// middle the same way, refreshed with each poll. It asks GET /api/token once whether the token is read-only. With a full
+// token it lets a person choose which of the account's people they are, post in the open channel with POST /api/post and
+// reply in an open direct conversation of theirs with POST /api/send; that is all it ever writes. With a read-only token
+// it only reads. It puts agent- and person-supplied text on the page with textContent, never as HTML.
 
 const STYLE = `
 :root {
@@ -51,10 +55,10 @@ body { margin: 0; display: flex; flex-direction: column; font: 14px/1.45 system-
 h1 { font-size: 1.1rem; margin: 0; }
 h2 { font-size: 0.75rem; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase; color: var(--muted); margin: var(--s4) var(--s3) var(--s2); }
 ul, ol { list-style: none; margin: 0; padding: 0; }
-button, input { font: inherit; color: inherit; }
+button, input, select, textarea { font: inherit; color: inherit; }
 button { cursor: pointer; background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); padding: var(--s1) var(--s3); }
 button:hover { background: var(--hover); }
-button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .note { color: var(--muted); margin: var(--s2) var(--s3); }
 .note:empty { display: none; }
 .dim { color: var(--muted); }
@@ -70,6 +74,13 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); ou
 #search { display: flex; gap: var(--s1); flex: 0 1 20rem; min-width: 0; }
 #search input { flex: 1; min-width: 0; padding: var(--s1) var(--s2); background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); }
 .toggle { display: none; }
+#as-box { display: flex; align-items: center; gap: var(--s1); }
+#as { padding: var(--s1); background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); }
+#as-note { margin: 0; }
+#compose { display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--s2); padding: var(--s2) var(--s4); border-top: 1px solid var(--border); }
+#compose label { flex: 1 1 100%; font-size: 0.8rem; color: var(--muted); }
+#compose textarea { flex: 1; min-width: 0; resize: vertical; padding: var(--s2); background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); }
+#compose .note { flex: 1 1 100%; margin: 0; }
 #sidebar { grid-area: side; overflow-y: auto; background: var(--panel); border-right: 1px solid var(--border); }
 #agents { grid-area: agents; overflow-y: auto; background: var(--panel); border-left: 1px solid var(--border); }
 #chat { grid-area: chat; min-width: 0; display: flex; flex-direction: column; }
@@ -139,6 +150,13 @@ const resultsTitle = document.getElementById("results-title");
 const resultsNote = document.getElementById("results-note");
 const resultRows = document.getElementById("result-rows");
 const deliveryEntry = document.getElementById("delivery-entry");
+const asBox = document.getElementById("as-box");
+const asSelect = document.getElementById("as");
+const asNote = document.getElementById("as-note");
+const compose = document.getElementById("compose");
+const composeLabel = document.getElementById("compose-label");
+const composeText = document.getElementById("compose-text");
+const composeNote = document.getElementById("compose-note");
 let timer;
 let generation = 0;
 let controller;
@@ -161,6 +179,20 @@ let deliveryCount;
 // results or ask() drops a search's answer.
 let searchGeneration = 0;
 let searchController;
+// Whether GET /api/token said this token is a full one, which alone shows the person picker and the compose box; the
+// server's 403 is still what keeps a read-only token from posting. tokenGeneration drops an answer to GET /api/token,
+// or to a send, that comes after the token was forgotten.
+let canPost = false;
+let tokenGeneration = 0;
+let tokenController;
+// The names of the account's live people, as the last GET /api/agents gave them, the list the picker shows, and the
+// person the page posts as: always one of people, or undefined.
+let people = [];
+let pickerShows = "";
+let person;
+// A send in flight, and the compose box's counter, so leaving the conversation drops a send's note.
+let sending = false;
+let composeGeneration = 0;
 
 function say(text, isError) {
   statusLine.textContent = text;
@@ -177,6 +209,16 @@ function cancel() {
 function ask(message) {
   sessionStorage.removeItem(KEY);
   cancel();
+  // Forget whether the last token could post, and who the page posted as, so the next token starts read-only.
+  tokenGeneration++;
+  if (tokenController) tokenController.abort();
+  canPost = false;
+  people = [];
+  pickerShows = "";
+  person = undefined;
+  asSelect.replaceChildren();
+  asBox.hidden = true;
+  asNote.textContent = "";
   // Clear every panel, so one token's agents, channels, pairs and messages never show under the next token.
   rows.replaceChildren();
   channelRows.replaceChildren();
@@ -215,6 +257,15 @@ searchForm.addEventListener("submit", (event) => {
   if (searchText.value) search(searchText.value);
 });
 document.getElementById("close-results").addEventListener("click", () => closeResults());
+asSelect.addEventListener("change", () => {
+  // Only a name GET /api/agents gave for this token is ever sent as "as".
+  person = people.includes(asSelect.value) ? asSelect.value : undefined;
+  showCompose();
+});
+compose.addEventListener("submit", (event) => {
+  event.preventDefault();
+  send();
+});
 // On a narrow screen only one panel shows at a time: these buttons swap the conversation for the sidebar or the agents.
 document.getElementById("show-sidebar").addEventListener("click", () => panel("show-sidebar"));
 document.getElementById("show-agents").addEventListener("click", () => panel("show-agents"));
@@ -235,6 +286,10 @@ function closeLog() {
   logTitle.className = "";
   logNote.textContent = "";
   log.hidden = true;
+  composeGeneration++;
+  composeText.value = "";
+  composeNote.textContent = "";
+  compose.hidden = true;
 }
 
 // Opens a channel's log and polls again at once; the poll in flight is dropped, so a slow answer for the channel
@@ -248,6 +303,7 @@ function openLog(name) {
   log.hidden = false;
   view.className = "";
   markOpen();
+  showCompose();
   cancel();
   poll(generation);
 }
@@ -265,6 +321,7 @@ function openPairLog(key) {
   postRows.replaceChildren(...messages.filter((m) => pairKey(m) === key).map(messageEntry));
   postRows.scrollTop = postRows.scrollHeight;
   markOpen();
+  showCompose();
   cancel();
   poll(generation);
 }
@@ -339,7 +396,143 @@ function start() {
   form.hidden = true;
   view.hidden = false;
   say("Loading…", false);
+  checkToken();
   poll(generation);
+}
+
+// Asks GET /api/token once whether this token is read-only. Only an answer of readOnly false shows the picker; a
+// read-only token, a failure or an answer this page cannot read leaves the page read-only.
+async function checkToken() {
+  const token = sessionStorage.getItem(KEY);
+  if (!token) return;
+  const gen = tokenGeneration;
+  const ac = new AbortController();
+  tokenController = ac;
+  const deadline = setTimeout(() => ac.abort(), TIMEOUT_MS);
+  let full = false;
+  let refused = false;
+  try {
+    const res = await fetch("/api/token", {
+      headers: { Authorization: "Bearer " + token },
+      cache: "no-store",
+      credentials: "omit",
+      referrerPolicy: "no-referrer",
+      signal: ac.signal,
+    });
+    refused = res.status === 401;
+    if (res.ok) full = (await res.json()).readOnly === false;
+  } catch {
+    full = false;
+  } finally {
+    clearTimeout(deadline);
+  }
+  if (gen !== tokenGeneration) return;
+  if (refused) return ask("The server refused that token. Enter another.");
+  canPost = full;
+  showPicker();
+}
+
+// Shows the person picker, with a full token, from the people GET /api/agents last gave, and clears the chosen person
+// once they are gone. The list is rebuilt only when it changes, so a poll never closes it under the reader.
+function showPicker() {
+  if (person !== undefined && !people.includes(person)) person = undefined;
+  asBox.hidden = !canPost || people.length === 0;
+  asNote.textContent = canPost && people.length === 0 ? "No people to post as. Add one with: message-cp person add <name>" : "";
+  const shows = canPost ? JSON.stringify(people) : "";
+  if (shows !== pickerShows) {
+    pickerShows = shows;
+    const none = document.createElement("option");
+    none.value = "";
+    none.textContent = "Choose who you are";
+    const options = people.map((name) => {
+      const option = document.createElement("option");
+      option.value = name;
+      option.textContent = name;
+      return option;
+    });
+    asSelect.replaceChildren(...(canPost ? [none, ...options] : []));
+  }
+  asSelect.value = person ?? "";
+  showCompose();
+}
+
+// The name a person replies to in the open pair, or undefined if the pair is not theirs.
+function replyTo() {
+  const pair = openPair !== undefined ? pairs.get(openPair) : undefined;
+  if (!pair || person === undefined) return undefined;
+  const [a, b] = pair.names;
+  if (a.toLowerCase() === person.toLowerCase()) return b;
+  if (b.toLowerCase() === person.toLowerCase()) return a;
+  return undefined;
+}
+
+// Shows the compose box under an open channel, or under an open pair the chosen person is one side of.
+function showCompose() {
+  const to = replyTo();
+  const shown = canPost && person !== undefined && (openChannel !== undefined || to !== undefined);
+  compose.hidden = !shown;
+  if (shown) composeLabel.textContent = openChannel !== undefined ? "Post in #" + openChannel + " as " + person : "Reply to " + to + " as " + person;
+}
+
+// Posts in the open channel or replies in the open pair as the chosen person, then polls at once so it shows. The text
+// is cleared only once the server has answered 200; any other answer keeps it and says why under the box.
+async function send() {
+  const token = sessionStorage.getItem(KEY);
+  if (!token) return ask();
+  if (sending || compose.hidden || !canPost || person === undefined) return;
+  const body = composeText.value;
+  const to = replyTo();
+  const [path, fields] =
+    openChannel !== undefined
+      ? ["/api/post", { as: person, channel: openChannel, body }]
+      : ["/api/send", { as: person, to, body }];
+  if (openChannel === undefined && to === undefined) return;
+  const gen = composeGeneration;
+  const tokenGen = tokenGeneration;
+  const ac = new AbortController();
+  const deadline = setTimeout(() => ac.abort(), TIMEOUT_MS);
+  sending = true;
+  composeNote.textContent = "Sending…";
+  let answer;
+  try {
+    const res = await fetch(path, {
+      method: "POST",
+      headers: { Authorization: "Bearer " + token, "Content-Type": "application/json" },
+      body: JSON.stringify(fields),
+      cache: "no-store",
+      credentials: "omit",
+      referrerPolicy: "no-referrer",
+      signal: ac.signal,
+    });
+    answer = res.status === 400 ? { status: 400, reason: await reasonOf(res) } : { status: res.status };
+  } catch {
+    answer = { error: ac.signal.aborted ? "The server did not answer in time, so it may have been sent: check before sending again" : "Cannot reach the server" };
+  } finally {
+    clearTimeout(deadline);
+    sending = false;
+  }
+  if (tokenGen !== tokenGeneration) return;
+  if (answer.status === 401) return ask("The server refused that token. Enter another.");
+  // The conversation was left while this was sent: what was sent shows when it is opened again.
+  if (gen !== composeGeneration) return;
+  if (answer.status === 200) {
+    composeText.value = "";
+    composeNote.textContent = "";
+    cancel();
+    poll(generation);
+  } else if (answer.status === 400) {
+    composeNote.textContent = answer.reason || "The server refused this (400).";
+  } else if (answer.status === 403) {
+    composeNote.textContent = "This token cannot post or send (403).";
+  } else if (answer.status === 404) {
+    composeNote.textContent = person + " is no longer a person in this account (404).";
+  } else if (answer.status === 413) {
+    composeNote.textContent = "This is too long for the server (413).";
+  } else if (answer.status === 503) {
+    composeNote.textContent = "The server is busy (503). Send again in a moment.";
+  } else {
+    composeNote.textContent = (answer.error || "The server answered " + answer.status) + ".";
+  }
 }
 
 // Fetches the page of path at offset. items picks the page's list out of the answer, or undefined if there is none.
@@ -570,6 +763,8 @@ function show(agents) {
   });
   if (items.length === 0) items.push(part("li", "note", "No agents registered in this account."));
   rows.replaceChildren(...items);
+  people = agents.filter((a) => a.person === true).map((a) => String(a.name));
+  showPicker();
 }
 
 // The sidebar key of the open conversation, as sidebarItem takes it, or undefined.
@@ -742,7 +937,7 @@ export const DASHBOARD_HTML = `<!doctype html>
 <p id="status-line" role="status"></p>
 <form id="login" hidden>
 <h1>message-cp</h1>
-<label for="token">Token for your account (read-only is enough), kept in this tab only:</label>
+<label for="token">Token for your account, kept in this tab only. A read-only token can watch; a full token can also post as one of the account's people:</label>
 <input id="token" type="password" autocomplete="off" required>
 <button type="submit">Show agents, channels and messages</button>
 </form>
@@ -754,6 +949,11 @@ export const DASHBOARD_HTML = `<!doctype html>
 <input id="search-text" type="search" maxlength="400" required aria-label="Search messages and posts" placeholder="Search messages and posts" autocomplete="off">
 <button type="submit">Search</button>
 </form>
+<span id="as-box" hidden>
+<label for="as">Post as</label>
+<select id="as"></select>
+</span>
+<p id="as-note" class="note"></p>
 <button id="show-agents" class="toggle" type="button">Agents</button>
 <button id="forget" type="button">Forget token</button>
 </header>
@@ -774,6 +974,12 @@ export const DASHBOARD_HTML = `<!doctype html>
 </div>
 <p id="log-note" class="note"></p>
 <ol id="post-rows" role="log"></ol>
+<form id="compose" hidden>
+<label id="compose-label" for="compose-text"></label>
+<textarea id="compose-text" rows="2" maxlength="${MAX_BODY_LENGTH}" required autocomplete="off"></textarea>
+<button type="submit">Send</button>
+<p id="compose-note" class="note" role="status"></p>
+</form>
 </section>
 <section id="results" hidden>
 <div class="log-head">

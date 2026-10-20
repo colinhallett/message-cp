@@ -299,6 +299,49 @@ describe("GET /api/agents", () => {
   });
 });
 
+describe("GET /api/token", () => {
+  const token = (t: string | null, method = "GET") => fetch(`${base()}/api/token`, { method, headers: auth(t) });
+
+  it("says whether the token is read-only, and nothing else, for every kind of token", async () => {
+    for (const [t, readOnly] of [
+      [OWNER_TOKEN, false],
+      [friendToken, false],
+      [ownerViewer, true],
+      [friendViewer, true],
+    ] as const) {
+      const res = await token(t);
+      expect(res.status).toBe(200);
+      expect(res.headers.get("content-type")).toBe("application/json");
+      const text = await res.text();
+      expect(JSON.parse(text)).toEqual({ readOnly });
+      for (const secret of [OWNER_TOKEN, friendToken, ownerViewer, friendViewer, friend, "owner", "friend"]) expect(text).not.toContain(secret);
+    }
+  });
+
+  it("answers 405 with Allow: GET to any method but GET, read-only token or not", async () => {
+    for (const t of [OWNER_TOKEN, friendViewer]) {
+      for (const method of ["POST", "PUT", "DELETE", "PATCH"]) {
+        const res = await token(t, method);
+        expect(res.status).toBe(405);
+        expect(res.headers.get("allow")).toBe("GET");
+      }
+    }
+  });
+
+  it("answers 401 to no token, a wrong token and a revoked token", async () => {
+    for (const t of [null, "nope"]) {
+      const res = await token(t);
+      expect(res.status).toBe(401);
+      expect(res.headers.get("www-authenticate")).toBe("Bearer");
+    }
+    expect((await token(null, "POST")).status).toBe(401);
+    const viewer = addToken(db, "friend", true);
+    expect((await token(viewer.token)).status).toBe(200);
+    revokeToken(db, viewer.id);
+    expect((await token(viewer.token)).status).toBe(401);
+  });
+});
+
 describe("message-cp token add", () => {
   const root = resolve(import.meta.dirname, "..");
   const cli = (...args: string[]) =>
