@@ -31,6 +31,12 @@ interface Row {
   read_at: number | null;
 }
 
+/** A row of read_inbox's page: a message, or with `mention` 1 a mentioning post, whose `channel` is then set. */
+interface InboxRow extends Omit<Row, "read_at"> {
+  mention: number;
+  channel: string | null;
+}
+
 export const MAX_BODY_LENGTH = 4000;
 export const DEFAULT_INBOX_LIMIT = 50;
 export const MAX_INBOX_LIMIT = 200;
@@ -110,13 +116,16 @@ export function readInbox(
            FROM messages WHERE recipient_id = ? ${unreadOnly ? "AND read_at IS NULL" : ""}
            UNION ALL
            SELECT 1, p.id, p.sender, p.body, 0, p.created_at, c.name
-           FROM mentions x JOIN channel_posts p ON p.id = x.post_id JOIN channels c ON c.id = p.channel_id
+           FROM mentions x JOIN channel_posts p ON p.id = x.post_id
+           JOIN channels c ON c.id = p.channel_id AND c.account_id = ?
            WHERE x.agent_id = ? ${unreadOnly ? "AND x.read_at IS NULL" : ""}
            ORDER BY created_at, mention, id LIMIT ? OFFSET ?`,
         )
-        .all(agent.id, agent.id, Math.min(limit, MAX_INBOX_LIMIT), offset) as (Omit<Row, "read_at"> & { mention: number; channel: string | null })[];
+        .all(agent.id, account, agent.id, Math.min(limit, MAX_INBOX_LIMIT), offset) as InboxRow[];
       const markMessage = db.prepare("UPDATE messages SET read_at = ? WHERE id = ? AND read_at IS NULL");
-      const markMention = db.prepare("UPDATE mentions SET read_at = ? WHERE agent_id = ? AND post_id = ? AND read_at IS NULL");
+      const markMention = db.prepare(
+        "UPDATE mentions SET read_at = ? WHERE agent_id = ? AND post_id = ? AND read_at IS NULL",
+      );
       const now = Date.now();
       for (const r of rows) {
         if (r.mention === 1) markMention.run(now, agent.id, r.id);

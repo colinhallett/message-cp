@@ -37,7 +37,7 @@ export function formatUnread(unread: Unread): string {
       `${unread.mentions} unread ${unread.mentions === 1 ? "mention" : "mentions"} in ${unread.mentionChannels.map((c) => `#${c}`).join(", ")}`,
     );
   }
-    return parts.join("; ");
+  return parts.join("; ");
 }
 
 /** How long the server holds a /wait request with no mail before answering 204. */

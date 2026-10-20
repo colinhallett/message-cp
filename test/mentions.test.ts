@@ -5,7 +5,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { addAccount } from "../src/accounts.js";
+import { addAccount, addToken } from "../src/accounts.js";
 import { mentionedNames } from "../src/channels.js";
 import { OWNER_ACCOUNT, openDb, type AccountId, type Db } from "../src/db.js";
 import { startHttp, type HttpServer } from "../src/http.js";
@@ -124,6 +124,15 @@ describe("read_inbox with mentions", () => {
     expect(summary("bob")).toMatchObject({ count: 0, mentions: 0, posts: 1, channels: ["dev"] });
   });
 
+  it("returns a message before a mention made in the same millisecond", async () => {
+    const alice = await connect("alice");
+    const bob = await connect("bob");
+    await ok(alice, "post", { channel: "dev", body: "@bob p" });
+    await ok(alice, "send_message", { to: "bob", body: "m" });
+    db.prepare("UPDATE messages SET created_at = (SELECT created_at FROM channel_posts)").run();
+    expect((await ok(bob, "read_inbox")).map((i: { body: string }) => i.body)).toEqual(["m", "@bob p"]);
+  });
+
   it("shares the limit between messages and mentions, and pages through both with offset when unread_only is false", async () => {
     const alice = await connect("alice");
     const bob = await connect("bob");
@@ -166,19 +175,21 @@ describe("waking on mentions", () => {
       http = await startHttp(db, { token: "t0ken", port: 0, waitHoldMs: 1500 });
     });
     afterEach(() => http.close());
-    const wait = (agent: string) =>
-      fetch(`http://127.0.0.1:${http.port}/wait?agent=${agent}`, { headers: { Authorization: "Bearer t0ken" } });
+    const wait = (agent: string, token = "t0ken") =>
+      fetch(`http://127.0.0.1:${http.port}/wait?agent=${agent}`, { headers: { Authorization: `Bearer ${token}` } });
 
     it("GET /wait fires on a mention in a channel the agent has not joined, never with the body, and holds once it is read", async () => {
       const alice = await connect("alice");
       const bob = await connect("bob");
       await connect("bob", friend);
+      const friendToken = addToken(db, "friend").token;
       const pending = wait("bob");
       await new Promise((r) => setTimeout(r, 300));
       await ok(alice, "post", { channel: "dev", body: "@bob secret body" });
       const res = await pending;
       expect(res.status).toBe(200);
       expect(await res.text()).toBe("1 unread mention in #dev\n");
+      expect((await wait("bob", friendToken)).status).toBe(204);
       await ok(bob, "read_inbox");
       expect((await wait("bob")).status).toBe(204);
     });
