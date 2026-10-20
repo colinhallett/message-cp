@@ -215,7 +215,7 @@ describe("GET /api/agents", () => {
     ]);
   });
 
-  it("counts only the account's mentions of the agent's own registration, and reading them marks none read", async () => {
+  it("counts only the account's mentions of the agent's own registration, and listing marks none read", async () => {
     registerAgent(db, OWNER_ACCOUNT, "alice", "x");
     registerAgent(db, OWNER_ACCOUNT, "bob", "x");
     registerAgent(db, friend, "fred", "x");
@@ -226,6 +226,10 @@ describe("GET /api/agents", () => {
     const mentions = async (token: string) => Object.fromEntries((await json(token)).map((a) => [a.name, a.unreadMentions]));
     for (const token of [OWNER_TOKEN, ownerViewer]) expect(await mentions(token)).toEqual({ alice: 0, bob: 0 });
     for (const token of [friendToken, friendViewer]) expect(await mentions(token)).toEqual({ bob: 2, fred: 0 });
+    // A mention row that points at another account's post never counts, even on the agent's own row.
+    const friendPost = db.prepare("SELECT MAX(id) FROM channel_posts").pluck().get();
+    db.prepare("INSERT INTO mentions (agent_id, post_id) VALUES (?, ?)").run(identityOf(db, OWNER_ACCOUNT, "alice")!.id, friendPost);
+    for (const token of [OWNER_TOKEN, ownerViewer]) expect(await mentions(token)).toEqual({ alice: 0, bob: 0 });
     // A removed bob's mention does not count for a later bob that registers the name.
     post(db, OWNER_ACCOUNT, member(OWNER_ACCOUNT, "alice"), "dev", "@bob old");
     expect(await mentions(ownerViewer)).toEqual({ alice: 0, bob: 1 });

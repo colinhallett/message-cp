@@ -207,6 +207,15 @@ export function unreadSummary(db: Db, account: AccountId, name: string): Unread 
   })();
 }
 
+interface AgentUnreadRow {
+  name: string;
+  bio: string;
+  last_seen: number;
+  messages: number;
+  posts: number;
+  mentions: number;
+}
+
 export interface AgentUnread {
   name: string;
   bio: string;
@@ -218,7 +227,8 @@ export interface AgentUnread {
 
 /**
  * One page of the account's live agents in name order, as `list_agents` pages them, each with its unread message, post
- * and mention totals counted as `unreadSummary` counts them. One query for the page, totals only: no senders or channels.
+ * and mention totals counted as `unreadSummary` counts them. One query for the page, totals only: no senders or
+ * channels.
  */
 export function listAgentsUnread(db: Db, account: AccountId, limit: number, offset: number): AgentUnread[] {
   const rows = db
@@ -235,14 +245,7 @@ export function listAgentsUnread(db: Db, account: AccountId, limit: number, offs
           WHERE x.agent_id = a.id AND x.read_at IS NULL) AS mentions
        FROM agents a WHERE a.account_id = ? AND a.removed_at IS NULL ORDER BY a.name LIMIT ? OFFSET ?`,
     )
-    .all(account, limit, offset) as {
-    name: string;
-    bio: string;
-    last_seen: number;
-    messages: number;
-    posts: number;
-    mentions: number;
-  }[];
+    .all(account, limit, offset) as AgentUnreadRow[];
   return rows.map((r) => ({
     name: r.name,
     bio: r.bio,
