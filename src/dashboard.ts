@@ -3,7 +3,8 @@ import { createHash } from "node:crypto";
 // The page served at GET / by `message-cp serve`. It holds no data and no token: it asks for a token, keeps it in
 // sessionStorage (that tab only), and polls GET /api/agents, GET /api/channels, GET /api/messages and, while one is
 // open, a channel's GET /api/channel-posts with it. It shows them as a chat app: channels and the pairs of agents that
-// have messaged each other in a sidebar, the open one as a log in the middle, and the agents on the right. It only
+// have messaged each other in a sidebar, the open one as a log in the middle, and the agents on the right. A search box
+// asks GET /api/search once per search and shows the answer in the middle in place of the open conversation. It only
 // reads, and puts agent-supplied text on the page with textContent, never as HTML.
 
 const STYLE = `
@@ -65,18 +66,22 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); ou
 #view { flex: 1; min-height: 0; display: grid; grid-template-columns: 15rem minmax(0, 1fr) 16rem; grid-template-rows: auto minmax(0, 1fr); grid-template-areas: "bar bar bar" "side chat agents"; }
 .bar { grid-area: bar; display: flex; align-items: center; gap: var(--s2); padding: var(--s2) var(--s3); border-bottom: 1px solid var(--border); }
 .bar h1 { flex: 1; }
+#search { display: flex; gap: var(--s1); flex: 0 1 20rem; min-width: 0; }
+#search input { flex: 1; min-width: 0; padding: var(--s1) var(--s2); background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); }
 .toggle { display: none; }
 #sidebar { grid-area: side; overflow-y: auto; background: var(--panel); border-right: 1px solid var(--border); }
 #agents { grid-area: agents; overflow-y: auto; background: var(--panel); border-left: 1px solid var(--border); }
 #chat { grid-area: chat; min-width: 0; display: flex; flex-direction: column; }
 #choose { margin: auto; color: var(--muted); padding: var(--s4); text-align: center; }
-#log:not([hidden]) ~ #choose { display: none; }
-#log { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+#log:not([hidden]) ~ #choose, #results:not([hidden]) ~ #choose { display: none; }
+#log, #results { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .log-head { display: flex; align-items: center; gap: var(--s2); padding: var(--s2) var(--s4); border-bottom: 1px solid var(--border); }
 .log-head h2 { flex: 1; margin: 0; font-size: 1rem; letter-spacing: normal; text-transform: none; color: var(--text); overflow-wrap: anywhere; }
 .channel::before, .item .channel-name::before { content: "# "; color: var(--muted); }
-#post-rows { flex: 1; overflow-y: auto; padding: var(--s2) 0 var(--s4); }
+#post-rows, #result-rows { flex: 1; overflow-y: auto; padding: var(--s2) 0 var(--s4); }
 .entry { display: grid; grid-template-columns: auto auto minmax(0, 1fr); grid-template-areas: "from tag time" "body body body"; column-gap: var(--s2); align-items: baseline; padding: var(--s2) var(--s4); }
+.entry.result { grid-template-columns: auto auto auto minmax(0, 1fr); grid-template-areas: "from where tag time" "body body body body"; }
+.where { grid-area: where; color: var(--muted); overflow-wrap: anywhere; }
 .entry:hover { background: var(--panel); }
 .from { grid-area: from; font-weight: 600; overflow-wrap: anywhere; }
 .time { grid-area: time; font-size: 0.8rem; color: var(--muted); }
@@ -94,6 +99,8 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); ou
 .dot.online { background: var(--online); }
 @media (max-width: 720px) {
   #view { grid-template-columns: minmax(0, 1fr); grid-template-areas: "bar" "chat"; }
+  .bar { flex-wrap: wrap; }
+  #search { order: 1; flex: 1 1 100%; }
   .toggle { display: inline-block; }
   #sidebar, #agents { display: none; border: 0; }
   #view.show-sidebar #sidebar, #view.show-agents #agents { display: block; grid-area: chat; }
@@ -122,6 +129,12 @@ const postRows = document.getElementById("post-rows");
 const pairRows = document.getElementById("pair-rows");
 const messagesNote = document.getElementById("messages-note");
 const statusLine = document.getElementById("status-line");
+const searchForm = document.getElementById("search");
+const searchText = document.getElementById("search-text");
+const results = document.getElementById("results");
+const resultsTitle = document.getElementById("results-title");
+const resultsNote = document.getElementById("results-note");
+const resultRows = document.getElementById("result-rows");
 let timer;
 let generation = 0;
 let controller;
@@ -136,6 +149,10 @@ let messages = [];
 let pairs = new Map();
 // The pair whose messages are open in the log, by pairKey, or undefined. At most one of openChannel and openPair is set.
 let openPair;
+// The search's own counter and request, separate from generation and controller, so a newer search, leaving the
+// results or ask() drops a search's answer.
+let searchGeneration = 0;
+let searchController;
 
 function say(text, isError) {
   statusLine.textContent = text;
@@ -161,6 +178,7 @@ function ask(message) {
   pairRows.replaceChildren();
   messagesNote.textContent = "";
   closeLog();
+  searchText.value = "";
   view.hidden = true;
   view.className = "";
   say(message || "", true);
@@ -183,6 +201,11 @@ document.getElementById("close-log").addEventListener("click", () => {
   closeLog();
   markOpen();
 });
+searchForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  if (searchText.value) search(searchText.value);
+});
+document.getElementById("close-results").addEventListener("click", () => closeResults());
 // On a narrow screen only one panel shows at a time: these buttons swap the conversation for the sidebar or the agents.
 document.getElementById("show-sidebar").addEventListener("click", () => panel("show-sidebar"));
 document.getElementById("show-agents").addEventListener("click", () => panel("show-agents"));
@@ -191,7 +214,9 @@ function panel(name) {
   view.className = view.className === name ? "" : name;
 }
 
+// Closes the open conversation and the search results.
 function closeLog() {
+  closeResults();
   openChannel = undefined;
   openPair = undefined;
   held = 0;
@@ -234,6 +259,58 @@ function openPairLog(key) {
   poll(generation);
 }
 
+// Drops the search in flight and empties the results.
+function closeResults() {
+  searchGeneration++;
+  if (searchController) searchController.abort();
+  resultRows.replaceChildren();
+  resultsTitle.textContent = "";
+  resultsNote.textContent = "";
+  results.hidden = true;
+}
+
+// Asks GET /api/search for the newest PAGE results and shows them in place of the open conversation. The polls never
+// refresh the results; searching again does. An answer that comes after a newer search, after the results were left or
+// after the token was forgotten is dropped.
+async function search(text) {
+  const token = sessionStorage.getItem(KEY);
+  if (!token) return ask();
+  closeLog();
+  markOpen();
+  const gen = searchGeneration;
+  const ac = new AbortController();
+  searchController = ac;
+  const deadline = setTimeout(() => ac.abort(), TIMEOUT_MS);
+  resultsTitle.textContent = "Search: " + text;
+  resultsNote.textContent = "Searching…";
+  results.hidden = false;
+  view.className = "";
+  let answer;
+  try {
+    answer = await fetchPage(token, ac.signal, "/api/search", { text }, 0, list);
+  } catch {
+    answer = { error: ac.signal.aborted ? "The server did not answer in time" : "Cannot reach the server" };
+  } finally {
+    clearTimeout(deadline);
+  }
+  if (gen !== searchGeneration) return;
+  if (answer.status === 401) return ask("The server refused that token. Enter another.");
+  if (answer.items) {
+    resultRows.replaceChildren(...answer.items.map(resultEntry));
+    resultRows.scrollTop = 0;
+    resultsNote.textContent =
+      answer.items.length === 0 ? "Nothing found." : answer.items.length === PAGE ? "Only the newest " + PAGE + " results are shown." : "";
+  } else if (answer.status === 400) {
+    resultsNote.textContent = answer.reason || "The server could not run this search (400).";
+  } else if (answer.status === 403) {
+    resultsNote.textContent = "This token cannot search (403).";
+  } else if (answer.status === 503) {
+    resultsNote.textContent = "The server is busy (503). Search again in a moment.";
+  } else {
+    resultsNote.textContent = (answer.error || "The server answered " + answer.status) + ".";
+  }
+}
+
 function start() {
   cancel();
   form.hidden = true;
@@ -254,6 +331,7 @@ async function fetchPage(token, signal, path, params, offset, items) {
     referrerPolicy: "no-referrer",
     signal,
   });
+  if (res.status === 400) return { status: 400, reason: await reasonOf(res) };
   if (!res.ok) return { status: res.status };
   let page;
   try {
@@ -263,6 +341,16 @@ async function fetchPage(token, signal, path, params, offset, items) {
   }
   if (!Array.isArray(page)) return { error: "The server sent an answer this page cannot read" };
   return { items: page };
+}
+
+// The message of an error answer, or undefined if it has none this page can read.
+async function reasonOf(res) {
+  try {
+    const message = (await res.json()).error.message;
+    return typeof message === "string" ? message : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 // Fetches every page of path, PAGE at a time.
@@ -491,6 +579,15 @@ function messageEntry(m) {
   return entry(m.from, m.broadcast ? "broadcast" : "", m.sentAt, m.body);
 }
 
+// A search result: a message shows its sender and recipient and whether it was a broadcast, a post its sender and channel.
+function resultEntry(r) {
+  const post = r.kind === "post";
+  const li = entry(r.from, r.broadcast ? "broadcast" : "", r.sentAt, r.body);
+  li.className = "entry result";
+  li.append(post ? part("span", "where channel", String(r.channel)) : part("span", "where", "→ " + String(r.to)));
+  return li;
+}
+
 function appendLog(posts) {
   held += posts.length;
   appendEntries(posts.map((p) => entry(p.from, "", p.sentAt, p.body)));
@@ -541,6 +638,10 @@ export const DASHBOARD_HTML = `<!doctype html>
 <header class="bar">
 <button id="show-sidebar" class="toggle" type="button" aria-label="Channels and conversations">☰</button>
 <h1>message-cp</h1>
+<form id="search" role="search">
+<input id="search-text" type="search" maxlength="400" required aria-label="Search messages and posts" placeholder="Search messages and posts" autocomplete="off">
+<button type="submit">Search</button>
+</form>
 <button id="show-agents" class="toggle" type="button">Agents</button>
 <button id="forget" type="button">Forget token</button>
 </header>
@@ -559,6 +660,14 @@ export const DASHBOARD_HTML = `<!doctype html>
 </div>
 <p id="log-note" class="note"></p>
 <ol id="post-rows" role="log"></ol>
+</section>
+<section id="results" hidden>
+<div class="log-head">
+<h2 id="results-title"></h2>
+<button id="close-results" type="button">Close</button>
+</div>
+<p id="results-note" class="note"></p>
+<ol id="result-rows"></ol>
 </section>
 <p id="choose">Choose a channel or a conversation.</p>
 </main>

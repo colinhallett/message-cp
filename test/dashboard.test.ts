@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runInNewContext } from "node:vm";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { addToken, revokeToken } from "../src/accounts.js";
+import { addAccount, addToken, listAccounts, revokeToken } from "../src/accounts.js";
 import { OWNER_ACCOUNT, openDb, type Db } from "../src/db.js";
 import { identityOf, registerAgent } from "../src/agents.js";
 import { joinChannel, post } from "../src/channels.js";
@@ -50,6 +50,8 @@ describe("GET /", () => {
     expect(html).toContain("/api/channels");
     expect(html).toContain("/api/channel-posts");
     expect(html).toContain("/api/messages");
+    expect(html).toContain("/api/search");
+    expect(html).toMatch(/<form id="search"[^>]*>\s*<input id="search-text"[^>]*maxlength="400" required/);
     // The query is not part of the path.
     expect((await fetch(`${base()}/?x=1`)).status).toBe(200);
   });
@@ -552,6 +554,230 @@ describe("the page's channels and messages", () => {
     await page.until(() => page.elements["status-line"].textContent.startsWith("The server refused"));
     expect(page.elements["post-rows"].children).toHaveLength(0);
     expect(page.store.size).toBe(0);
+  });
+});
+
+describe("the page's search", () => {
+  // A stub DOM element, as in the channels and messages tests above.
+  interface Stub {
+    on: Record<string, (event?: unknown) => void>;
+    hidden: boolean;
+    value: string;
+    textContent: string;
+    className: string;
+    title: string;
+    scrollTop: number;
+    scrollHeight: number;
+    children: Stub[];
+    append(...children: Stub[]): void;
+    replaceChildren(...children: Stub[]): void;
+    addEventListener(type: string, fn: (event?: unknown) => void): void;
+    focus(): void;
+  }
+  const el = (): Stub => ({
+    on: {},
+    hidden: true,
+    value: "",
+    textContent: "",
+    className: "",
+    title: "",
+    scrollTop: 0,
+    scrollHeight: 0,
+    children: [],
+    append(...children) {
+      this.children.push(...children);
+    },
+    replaceChildren(...children) {
+      this.children = children;
+    },
+    addEventListener(type, fn) {
+      this.on[type] = fn;
+    },
+    focus() {},
+  });
+  const field = (row: Stub, name: string) => row.children.find((c) => c.className === name)?.textContent;
+  // A result's sender, where it went (#channel or → recipient), tag and body.
+  const result = (row: Stub) => [
+    field(row, "from"),
+    row.children.find((c) => c.className.startsWith("where"))?.className === "where channel"
+      ? "#" + field(row, "where channel")
+      : field(row, "where"),
+    field(row, "tag"),
+    field(row, "body"),
+  ];
+
+  // Runs the served script with the given token. hold, when it returns true for a URL, keeps that request until the
+  // test releases it with the returned function; refuse answers a request with a status instead of the server.
+  async function load(token: string, options: { hold?: (url: string) => boolean; refuse?: (url: string) => number | "fail" | undefined } = {}) {
+    const html = await (await fetch(`${base()}/`)).text();
+    const script = /<script>([\s\S]*?)<\/script>/.exec(html)![1];
+    const elements: Record<string, Stub> = {};
+    const urls: string[] = [];
+    const held: (() => void)[] = [];
+    const deadlines: (() => void)[] = [];
+    const polls: (() => void)[] = [];
+    const store = new Map([["message-cp-token", token]]);
+    runInNewContext(script, {
+      AbortController,
+      URLSearchParams,
+      document: { getElementById: (id: string) => (elements[id] ??= el()), createElement: el },
+      sessionStorage: { getItem: (k: string) => store.get(k) ?? null, setItem: (k: string, v: string) => store.set(k, v), removeItem: (k: string) => store.delete(k) },
+      setTimeout: (fn: () => void, ms: number) => (ms === 5000 ? polls.push(fn) : deadlines.push(fn), 0),
+      clearTimeout: () => {},
+      fetch: async (url: string, init: RequestInit) => {
+        urls.push(url);
+        const status = options.refuse?.(url);
+        if (status === "fail") throw new TypeError("fetch failed");
+        if (status !== undefined) return new Response(null, { status });
+        if (options.hold?.(url)) await new Promise<void>((resolve) => held.push(resolve));
+        return fetch(`${base()}${url}`, init);
+      },
+    });
+    const until = async (done: () => boolean) => {
+      for (let i = 0; i < 200 && !done(); i++) await new Promise((resolve) => setTimeout(resolve, 5));
+      expect(done()).toBe(true);
+    };
+    let prevented = 0;
+    const search = (text: string) => {
+      elements["search-text"].value = text;
+      elements["search"].on.submit({ preventDefault: () => prevented++ });
+    };
+    return { elements, urls, store, held, polls, until, search, prevented: () => prevented };
+  }
+
+  const searches = (urls: string[]) => urls.filter((url) => url.startsWith("/api/search"));
+
+  it("finds this account's messages and posts with their sender, recipient or channel, and never another account's", async () => {
+    for (const name of ["alice", "bob"]) registerAgent(db, OWNER_ACCOUNT, name, "x");
+    const alice = { ...identityOf(db, OWNER_ACCOUNT, "alice")!, name: "alice" };
+    sendMessage(db, OWNER_ACCOUNT, "alice", "bob", "deploy <b>plan</b>");
+    post(db, OWNER_ACCOUNT, alice, "build", "deploy done");
+    sendMessage(db, OWNER_ACCOUNT, "bob", "all", "deploy for all");
+    sendMessage(db, OWNER_ACCOUNT, "alice", "bob", "unrelated");
+    // Another account with the same names and the same text.
+    addAccount(db, "other");
+    const other = listAccounts(db).find((a) => a.name === "other")!.id;
+    for (const name of ["alice", "bob"]) registerAgent(db, other, name, "x");
+    sendMessage(db, other, "alice", "bob", "deploy elsewhere");
+    post(db, other, { ...identityOf(db, other, "alice")!, name: "alice" }, "build", "deploy elsewhere");
+
+    const page = await load(viewer);
+    await page.until(() => page.elements["pair-rows"].children.length === 1);
+    page.urls.length = 0;
+    page.search("deploy");
+    expect(page.prevented()).toBe(1);
+    const rows = page.elements["result-rows"];
+    await page.until(() => rows.children.length > 0);
+    expect(searches(page.urls)).toEqual(["/api/search?text=deploy&limit=200&offset=0"]);
+    expect(page.urls.every((url) => !url.includes(viewer))).toBe(true);
+    expect(page.elements["results"].hidden).toBe(false);
+    expect(page.elements["results-title"].textContent).toBe("Search: deploy");
+    expect(page.elements["results-note"].textContent).toBe("");
+    // A broadcast is stored once for each recipient. These were sent in the same few milliseconds, so the order is
+    // left to the newest-first test below.
+    expect(rows.children.map(result).sort()).toEqual([
+      ["alice", "#build", undefined, "deploy done"],
+      ["alice", "→ bob", undefined, "deploy <b>plan</b>"],
+      ["bob", "→ alice", "broadcast", "deploy for all"],
+    ]);
+    // Searching marked nothing read.
+    expect(unreadSummary(db, OWNER_ACCOUNT, "bob")!.count).toBe(2);
+
+    page.elements["close-results"].on.click();
+    expect(page.elements["results"].hidden).toBe(true);
+    expect(rows.children).toHaveLength(0);
+  });
+
+  it("says when nothing is found and when only the newest 200 are shown, and puts the text on the page as text", async () => {
+    registerAgent(db, OWNER_ACCOUNT, "alice", "x");
+    const alice = { ...identityOf(db, OWNER_ACCOUNT, "alice")!, name: "alice" };
+    for (let i = 0; i < 201; i++) post(db, OWNER_ACCOUNT, alice, "build", `many ${i}`);
+    const page = await load(viewer);
+    page.search("<i>none</i>");
+    await page.until(() => page.elements["results-note"].textContent === "Nothing found.");
+    expect(page.elements["results-title"].textContent).toBe("Search: <i>none</i>");
+    page.search("many");
+    await page.until(() => page.elements["result-rows"].children.length === 200);
+    expect(page.elements["results-note"].textContent).toBe("Only the newest 200 results are shown.");
+    expect(field(page.elements["result-rows"].children[0], "body")).toBe("many 200");
+  });
+
+  it("drops an answer that comes after a newer search, after the results were left, or after the token was forgotten", async () => {
+    registerAgent(db, OWNER_ACCOUNT, "alice", "x");
+    const alice = { ...identityOf(db, OWNER_ACCOUNT, "alice")!, name: "alice" };
+    post(db, OWNER_ACCOUNT, alice, "build", "old answer");
+    post(db, OWNER_ACCOUNT, alice, "build", "new answer");
+    let hold = true;
+    const page = await load(viewer, { hold: (url) => hold && url.startsWith("/api/search") });
+    const rows = page.elements["result-rows"];
+    await page.until(() => page.elements["channel-rows"].children.length === 1);
+
+    page.search("old");
+    await page.until(() => page.held.length === 1);
+    hold = false;
+    page.search("new");
+    await page.until(() => rows.children.length === 1);
+    page.held.shift()!();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(rows.children.map((row) => field(row, "body"))).toEqual(["new answer"]);
+    expect(page.elements["results-title"].textContent).toBe("Search: new");
+
+    // Left for a channel.
+    hold = true;
+    page.search("old");
+    await page.until(() => page.held.length === 1);
+    page.elements["channel-rows"].children[0].children[0].on.click();
+    expect(page.elements["results"].hidden).toBe(true);
+    page.held.shift()!();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(page.elements["results"].hidden).toBe(true);
+    expect(rows.children).toHaveLength(0);
+
+    // The token forgotten, and another entered.
+    page.search("old");
+    await page.until(() => page.held.length === 1);
+    page.elements["forget"].on.click();
+    expect(page.elements["results"].hidden).toBe(true);
+    expect(page.elements["search-text"].value).toBe("");
+    page.store.set("message-cp-token", viewer);
+    page.held.shift()!();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(page.elements["results"].hidden).toBe(true);
+    expect(rows.children).toHaveLength(0);
+  });
+
+  it("asks for the token again when the search is refused", async () => {
+    registerAgent(db, OWNER_ACCOUNT, "alice", "x");
+    sendMessage(db, OWNER_ACCOUNT, "alice", "alice", "hello");
+    const ticket = addToken(db, "owner", true);
+    const page = await load(ticket.token);
+    await page.until(() => page.elements["pair-rows"].children.length === 1);
+    revokeToken(db, ticket.id);
+    page.search("hello");
+    await page.until(() => page.elements["status-line"].textContent.startsWith("The server refused"));
+    expect(page.store.size).toBe(0);
+    expect(page.elements["results"].hidden).toBe(true);
+    expect(page.elements["pair-rows"].children).toHaveLength(0);
+    expect(page.elements["login"].hidden).toBe(false);
+  });
+
+  it("shows a 400's reason and other failures in the results note, and keeps polling", async () => {
+    const page = await load(viewer, { refuse: (url) => (url.includes("text=busy") ? 503 : url.includes("text=gone") ? "fail" : undefined) });
+    await page.until(() => page.polls.length === 1);
+    page.search("x".repeat(201));
+    await page.until(() => page.elements["results-note"].textContent !== "Searching…");
+    expect(page.elements["results-note"].textContent).toMatch(/200/);
+    page.search("busy");
+    await page.until(() => page.elements["results-note"].textContent === "The server is busy (503). Search again in a moment.");
+    page.search("gone");
+    await page.until(() => page.elements["results-note"].textContent === "Cannot reach the server.");
+    expect(page.store.size).toBe(1);
+    // The poll scheduled before the searches still runs, and reads no search.
+    page.urls.length = 0;
+    page.polls.pop()!();
+    await page.until(() => page.polls.length === 1);
+    expect(searches(page.urls)).toEqual([]);
+    expect(page.elements["results"].hidden).toBe(false);
   });
 });
 
