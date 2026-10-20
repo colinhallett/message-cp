@@ -27,6 +27,14 @@ const STYLE = `
   --offline: #8a929b;
   --error: #b42318;
   --error-bg: #fdecea;
+  --who0: #1d4ed8;
+  --who1: #047857;
+  --who2: #b91c1c;
+  --who3: #7e22ce;
+  --who4: #a15c07;
+  --who5: #0e7490;
+  --who6: #be185d;
+  --who7: #4d7c0f;
   --s1: 0.25rem;
   --s2: 0.5rem;
   --s3: 0.75rem;
@@ -47,6 +55,14 @@ const STYLE = `
     --offline: #80868e;
     --error: #ff8a80;
     --error-bg: #3d2224;
+    --who0: #93c5fd;
+    --who1: #6ee7b7;
+    --who2: #fca5a5;
+    --who3: #d8b4fe;
+    --who4: #fcd34d;
+    --who5: #67e8f9;
+    --who6: #f9a8d4;
+    --who7: #bef264;
   }
 }
 * { box-sizing: border-box; }
@@ -99,6 +115,24 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .time { grid-area: time; font-size: 0.8rem; color: var(--muted); }
 .tag { grid-area: tag; font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--accent); border: 1px solid currentColor; border-radius: var(--radius); padding: 0 var(--s1); }
 .body { grid-area: body; white-space: pre-wrap; overflow-wrap: anywhere; }
+.entry.chat { grid-template-columns: 2.5rem auto auto auto minmax(0, 1fr); grid-template-areas: "avatar from kind tag time" "avatar body body body body"; column-gap: 0; padding-bottom: 1px; }
+.entry.chat > :not(.avatar) { margin-left: var(--s2); }
+.entry.chat > .from { color: var(--who); }
+.entry.chat > .kind { grid-area: kind; }
+.avatar { grid-area: avatar; align-self: start; display: flex; align-items: center; justify-content: center; width: 2rem; height: 2rem; margin-top: 0.15rem; border-radius: 0.4rem; background: var(--who); color: var(--bg); font-size: 0.75rem; font-weight: 700; }
+.avatar.person { border-radius: 50%; }
+.entry.cont { grid-template-areas: "time body body body body"; padding-top: 1px; }
+.entry.cont > .avatar, .entry.cont > .from, .entry.cont > .kind, .entry.cont > .tag { display: none; }
+.entry.chat.cont > .time { margin-left: 0; font-size: 0.65rem; line-height: 1.2; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: center; align-self: center; visibility: hidden; }
+.entry.cont:hover > .time { visibility: visible; }
+.c0 { --who: var(--who0); }
+.c1 { --who: var(--who1); }
+.c2 { --who: var(--who2); }
+.c3 { --who: var(--who3); }
+.c4 { --who: var(--who4); }
+.c5 { --who: var(--who5); }
+.c6 { --who: var(--who6); }
+.c7 { --who: var(--who7); }
 .delivery.failed .tag { color: var(--error); background: var(--error-bg); }
 .item { display: flex; align-items: center; gap: var(--s2); text-align: left; background: none; border: 0; border-radius: var(--radius); padding: var(--s1) var(--s2); margin: 1px var(--s2); width: calc(100% - 2 * var(--s2)); }
 .item.current { background: var(--active); font-weight: 600; }
@@ -194,6 +228,18 @@ let person;
 // The tokenGeneration a send is in flight for, or undefined. While one is, the Send button is disabled for that token,
 // so the same submit is not sent twice while it is in flight; a new token is not held by it.
 let sending;
+// The open log's last entry, as chatEntry made it: its sender in lower case, its time in ms (NaN if it could not be
+// read) and its tag, or undefined in an empty log. An entry continues its group only from this one.
+// chatRows holds each of the open log's rows as chatEntry made them, so a change in who is a person re-marks them.
+// chatTimes holds [time element, sentAt, due] for each row whose time can still change, so each poll can keep "2m ago"
+// current: due is the earliest ms its text can change at (see nextChange). A time that shows a date is not held.
+let lastEntry;
+let chatRows = [];
+let chatTimes = [];
+// The people the open log's rows were last marked with, in lower case and joined, or undefined before any were.
+let markedPeople;
+// A group ends at a gap of this much or more.
+const GROUP_MS = 5 * 60 * 1000;
 
 function say(text, isError) {
   statusLine.textContent = text;
@@ -286,6 +332,9 @@ function closeLog() {
   openDeliveries = false;
   held = 0;
   postRows.replaceChildren();
+  lastEntry = undefined;
+  chatRows = [];
+  chatTimes = [];
   logTitle.textContent = "";
   logTitle.className = "";
   logNote.textContent = "";
@@ -627,6 +676,9 @@ async function readLog(token, signal, gen, channel) {
     if (page.status === 404) {
       held = 0;
       postRows.replaceChildren();
+      lastEntry = undefined;
+      chatRows = [];
+      chatTimes = [];
       logNote.textContent = "There is no channel by this name now.";
       return { ok: true };
     }
@@ -712,6 +764,7 @@ async function poll(gen) {
     // hold.
     if (result.ok && gen === generation) {
       show(result.agents);
+      refreshChat();
       showChannels(result.channels);
       showDeliveryEntry();
       const [messages, posts] = await Promise.allSettled([
@@ -747,6 +800,19 @@ async function poll(gen) {
     say((result.error || "The server answered " + result.status) + ". Retrying…", true);
   }
   timer = setTimeout(() => poll(gen), POLL_MS);
+}
+
+// A log entry's time: "just now", "Nm ago" or "Nh ago" within the last 12 hours, else the local time today or the
+// local date and time before. A time that cannot be read is shown as given, as when shows it.
+function chatTime(iso) {
+  const date = new Date(iso);
+  const ms = Date.now() - date.getTime();
+  if (!Number.isFinite(ms)) return String(iso);
+  if (Math.abs(ms) < 60000) return "just now";
+  if (ms > 0 && ms < 12 * 3600000) return ago(iso);
+  const clock = { hour: "2-digit", minute: "2-digit" };
+  if (date.toDateString() === new Date(Date.now()).toDateString()) return date.toLocaleTimeString([], clock);
+  return date.toLocaleString([], { year: "numeric", month: "short", day: "numeric", ...clock });
 }
 
 function ago(iso) {
@@ -866,8 +932,99 @@ function entry(from, tag, sentAt, body) {
   return li;
 }
 
+// Up to two initials from a name: the first letter of its first two parts ("code-reviewer" is "CR"), or of a one-part
+// name its first two letters ("alice" is "AL").
+function initials(name) {
+  const parts = name.split(/[-_]+/).filter(Boolean);
+  const letters = parts.length > 1 ? [[...parts[0]][0], [...parts[1]][0]] : [...name].slice(0, 2);
+  return letters.join("").toUpperCase();
+}
+
+// One of the palette classes c0 to c7, by a hash of the name in lower case, so a name has the same colour on every load.
+function colourOf(name) {
+  let h = 0;
+  for (const c of name.toLowerCase()) h = (Math.imul(h, 31) + c.codePointAt(0)) >>> 0;
+  return "c" + (h % 8);
+}
+
+function isPerson(name) {
+  const lower = name.toLowerCase();
+  return people !== undefined && people.some((p) => p.toLowerCase() === lower);
+}
+
+// An entry of the open log. One from the sender of the entry before it, sent less than GROUP_MS after it, continues
+// that entry's group: it shows no avatar, name or tag of its own. A tagged entry (a broadcast) never continues a group
+// or is continued, so its tag always shows. The first entry of a group has an initials avatar in the sender's colour,
+// round for a person GET /api/agents gave and rounded-square for anyone else, and a person is labelled as one.
+function chatEntry(from, tag, sentAt, body) {
+  const name = String(from);
+  const at = Date.parse(sentAt);
+  const gap = lastEntry === undefined ? NaN : at - lastEntry.at;
+  const cont = lastEntry !== undefined && !tag && !lastEntry.tag && lastEntry.from === name.toLowerCase() && gap >= 0 && gap < GROUP_MS;
+  lastEntry = { from: name.toLowerCase(), at, tag };
+  const li = document.createElement("li");
+  li.className = "entry chat " + colourOf(name) + (cont ? " cont" : "");
+  const time = part("time", "time", chatTime(sentAt));
+  time.title = when(sentAt);
+  const due = nextChange(at);
+  if (due !== undefined) chatTimes.push([time, sentAt, due]);
+  const row = { li, name, tag, person: isPerson(name), time, body: part("div", "body", String(body)) };
+  chatRows.push(row);
+  li.append(...chatParts(row));
+  return li;
+}
+
+// A chat row's children: its avatar and name, a person's label, its tag, its time and its text.
+function chatParts(row) {
+  const parts = [part("span", row.person ? "avatar person" : "avatar", initials(row.name)), part("span", "from", row.name)];
+  if (row.person) parts.push(part("span", "kind", "person"));
+  if (row.tag) parts.push(part("span", "tag", row.tag));
+  parts.push(row.time, row.body);
+  return parts;
+}
+
+// The earliest ms chatTime of a time in ms can change at: now for one it shows as relative, a minute before it for one
+// more than a minute ahead (a clock behind the server's), when it becomes "just now", the next local midnight for one
+// it shows as the time today, and undefined for one it shows as a date or cannot read, which never changes.
+function nextChange(at) {
+  const now = Date.now();
+  if (at - now > 60000) return at - 60000;
+  if (now - at < 12 * 3600000) return now;
+  const midnight = new Date(now);
+  midnight.setHours(24, 0, 0, 0);
+  const today = new Date(now);
+  today.setHours(0, 0, 0, 0);
+  return at >= today.getTime() ? midnight.getTime() : undefined;
+}
+
+// Once a poll, after show: re-marks the open log's rows when who is a person has changed since they were marked, and
+// rewrites the times that may have changed since they were written, dropping those that never will again.
+function refreshChat() {
+  const marked = JSON.stringify((people ?? []).map((p) => p.toLowerCase()).sort());
+  if (marked !== markedPeople) {
+    markedPeople = marked;
+    for (const row of chatRows) {
+      const person = isPerson(row.name);
+      if (person === row.person) continue;
+      row.person = person;
+      row.li.replaceChildren(...chatParts(row));
+    }
+  }
+  const now = Date.now();
+  const live = [];
+  for (const entry of chatTimes) {
+    const [node, sentAt, due] = entry;
+    if (due <= now) {
+      node.textContent = chatTime(sentAt);
+      entry[2] = nextChange(Date.parse(sentAt));
+    }
+    if (entry[2] !== undefined) live.push(entry);
+  }
+  chatTimes = live;
+}
+
 function messageEntry(m) {
-  return entry(m.from, m.broadcast ? "broadcast" : "", m.sentAt, m.body);
+  return chatEntry(m.from, m.broadcast ? "broadcast" : "", m.sentAt, m.body);
 }
 
 // A search result: a message shows its sender and recipient and whether it was a broadcast, a post its sender and channel.
@@ -918,7 +1075,7 @@ function deliveryRow(d) {
 
 function appendLog(posts) {
   held += posts.length;
-  appendEntries(posts.map((p) => entry(p.from, "", p.sentAt, p.body)));
+  appendEntries(posts.map((p) => chatEntry(p.from, "", p.sentAt, p.body)));
 }
 
 function appendMessages(page) {
