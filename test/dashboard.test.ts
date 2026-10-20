@@ -4,9 +4,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runInNewContext } from "node:vm";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { addToken } from "../src/accounts.js";
+import { addToken, revokeToken } from "../src/accounts.js";
 import { OWNER_ACCOUNT, openDb, type Db } from "../src/db.js";
-import { registerAgent } from "../src/agents.js";
+import { identityOf, registerAgent } from "../src/agents.js";
+import { joinChannel, post } from "../src/channels.js";
 import { startHttp, type HttpServer } from "../src/http.js";
 
 // The dashboard page at GET /, served before the token check, and everything else still behind it.
@@ -45,6 +46,8 @@ describe("GET /", () => {
     const html = await res.text();
     expect(html).toMatch(/^<!doctype html>/);
     expect(html).toContain("/api/agents");
+    expect(html).toContain("/api/channels");
+    expect(html).toContain("/api/channel-posts");
     // The query is not part of the path.
     expect((await fetch(`${base()}/?x=1`)).status).toBe(200);
   });
@@ -94,6 +97,7 @@ describe("the page's polling", () => {
     const store = new Map([["message-cp-token", "a-token"]]);
     runInNewContext(script, {
       AbortController,
+      URLSearchParams,
       document: { getElementById: (id: string) => (elements[id] ??= el()), createElement: el },
       sessionStorage: { getItem: (k: string) => store.get(k) ?? null, setItem: (k: string, v: string) => store.set(k, v), removeItem: (k: string) => store.delete(k) },
       setTimeout: (fn: () => void, ms: number) => (timers.set(++nextTimer, { fn, ms }), nextTimer),
@@ -130,6 +134,169 @@ describe("the page's polling", () => {
     await new Promise((resolve) => setImmediate(resolve));
     expect(page.timers.size).toBe(0);
     expect(page.signals).toHaveLength(1);
+  });
+});
+
+describe("the page's channels", () => {
+  // A stub DOM element: enough for the script to build rows and for the test to read them and click buttons.
+  interface Stub {
+    on: Record<string, () => void>;
+    hidden: boolean;
+    value: string;
+    textContent: string;
+    className: string;
+    title: string;
+    children: Stub[];
+    append(...children: Stub[]): void;
+    replaceChildren(...children: Stub[]): void;
+    addEventListener(type: string, fn: () => void): void;
+    focus(): void;
+  }
+  // Elements start hidden, as the page's form, view and log do.
+  const el = (): Stub => ({
+    on: {},
+    hidden: true,
+    value: "",
+    textContent: "",
+    className: "",
+    title: "",
+    children: [],
+    append(...children) {
+      this.children.push(...children);
+    },
+    replaceChildren(...children) {
+      this.children = children;
+    },
+    addEventListener(type, fn) {
+      this.on[type] = fn;
+    },
+    focus() {},
+  });
+  const text = (row: Stub) => row.children.map((td) => td.textContent || td.children.map((c) => c.textContent).join(""));
+
+  // Runs the served script with the given token against this server, with real fetches and timers run by hand.
+  // refuse, when it returns a status, answers a request with that status instead of the server.
+  async function load(token: string, refuse: (url: string) => number | undefined = () => undefined) {
+    const html = await (await fetch(`${base()}/`)).text();
+    const script = /<script>([\s\S]*?)<\/script>/.exec(html)![1];
+    const elements: Record<string, Stub> = {};
+    const urls: string[] = [];
+    const polls: (() => void)[] = [];
+    const store = new Map([["message-cp-token", token]]);
+    runInNewContext(script, {
+      AbortController,
+      URLSearchParams,
+      document: { getElementById: (id: string) => (elements[id] ??= el()), createElement: el },
+      sessionStorage: { getItem: (k: string) => store.get(k) ?? null, setItem: (k: string, v: string) => store.set(k, v), removeItem: (k: string) => store.delete(k) },
+      setTimeout: (fn: () => void, ms: number) => (ms === 5000 && polls.push(fn), 0),
+      clearTimeout: () => {},
+      fetch: (url: string, init: RequestInit) => {
+        urls.push(url);
+        const status = refuse(url);
+        return status === undefined ? fetch(`${base()}${url}`, init) : Promise.resolve(new Response(null, { status }));
+      },
+    });
+    const until = async (done: () => boolean) => {
+      for (let i = 0; i < 200 && !done(); i++) await new Promise((resolve) => setTimeout(resolve, 5));
+      expect(done()).toBe(true);
+    };
+    // Runs the poll the page scheduled last; earlier ones belong to polls it has since cancelled.
+    const poll = () => polls.splice(0).pop()!();
+    return { elements, urls, store, until, poll };
+  }
+
+  it("lists the channels with a read-only token and shows a chosen channel's posts oldest first", async () => {
+    for (const name of ["alice", "bob"]) registerAgent(db, OWNER_ACCOUNT, name, "x");
+    const member = (name: string) => ({ ...identityOf(db, OWNER_ACCOUNT, name)!, name });
+    joinChannel(db, OWNER_ACCOUNT, member("alice"), "build");
+    joinChannel(db, OWNER_ACCOUNT, member("bob"), "build");
+    post(db, OWNER_ACCOUNT, member("alice"), "build", "first <b>post</b>");
+    post(db, OWNER_ACCOUNT, member("bob"), "build", "second");
+    post(db, OWNER_ACCOUNT, member("bob"), "ops", "elsewhere");
+
+    const page = await load(viewer);
+    const channels = page.elements["channel-rows"];
+    await page.until(() => channels.children.length === 2);
+    expect(channels.children.map(text).map((row) => row.slice(0, 3))).toEqual([
+      ["build", "alice, bob", "2"],
+      ["ops", "–", "1"],
+    ]);
+    expect(page.elements["log"].hidden).toBe(true);
+
+    const posts = page.elements["post-rows"];
+    channels.children[1].children[0].children[0].on.click();
+    await page.until(() => posts.children.length === 1);
+    expect(page.urls).toContain("/api/channel-posts?channel=ops&limit=200&offset=0");
+    channels.children[0].children[0].children[0].on.click();
+    await page.until(() => posts.children.length === 2);
+    expect(page.elements["log"].hidden).toBe(false);
+    expect(page.elements["log-title"].textContent).toBe("build");
+    expect(posts.children.map((row) => [text(row)[0], text(row)[2]])).toEqual([
+      ["alice", "first <b>post</b>"],
+      ["bob", "second"],
+    ]);
+    // The token went only in the header.
+    for (const url of page.urls) expect(url).not.toContain(viewer);
+
+    page.elements["forget"].on.click();
+    expect(channels.children).toHaveLength(0);
+    expect(posts.children).toHaveLength(0);
+    expect(page.elements["log"].hidden).toBe(true);
+    expect(page.store.size).toBe(0);
+  });
+
+  const seed = () => {
+    registerAgent(db, OWNER_ACCOUNT, "alice", "x");
+    post(db, OWNER_ACCOUNT, { ...identityOf(db, OWNER_ACCOUNT, "alice")!, name: "alice" }, "build", "hello");
+  };
+
+  it("clears the channels and the open log when the server refuses the token", async () => {
+    seed();
+    const ticket = addToken(db, "owner", true);
+    const page = await load(ticket.token);
+    const channels = page.elements["channel-rows"];
+    await page.until(() => channels.children.length === 1);
+    channels.children[0].children[0].children[0].on.click();
+    await page.until(() => page.elements["post-rows"].children.length === 1);
+
+    revokeToken(db, ticket.id);
+    page.poll();
+    await page.until(() => page.elements["status-line"].textContent.startsWith("The server refused"));
+    expect(channels.children).toHaveLength(0);
+    expect(page.elements["post-rows"].children).toHaveLength(0);
+    expect(page.elements["log"].hidden).toBe(true);
+    expect(page.store.size).toBe(0);
+  });
+
+  it("says a channel that has gone is not there, and keeps the token", async () => {
+    seed();
+    const page = await load(viewer, (url) => (url.startsWith("/api/channel-posts") ? 404 : undefined));
+    const channels = page.elements["channel-rows"];
+    await page.until(() => channels.children.length === 1);
+    channels.children[0].children[0].children[0].on.click();
+    await page.until(() => page.elements["log-note"].textContent === "There is no channel by this name now.");
+    expect(page.elements["log"].hidden).toBe(false);
+    expect(page.elements["login"].hidden).toBe(true);
+    expect(page.store.size).toBe(1);
+    expect(channels.children).toHaveLength(1);
+  });
+
+  it("pages through every channel and every post", async () => {
+    registerAgent(db, OWNER_ACCOUNT, "alice", "x");
+    const alice = { ...identityOf(db, OWNER_ACCOUNT, "alice")!, name: "alice" };
+    for (let i = 0; i < 201; i++) joinChannel(db, OWNER_ACCOUNT, alice, `c${String(i).padStart(3, "0")}`);
+    for (let i = 0; i < 201; i++) post(db, OWNER_ACCOUNT, alice, "c000", `post ${i}`);
+    const page = await load(viewer);
+    const channels = page.elements["channel-rows"];
+    await page.until(() => channels.children.length === 201);
+    expect(text(channels.children[200])[0]).toBe("c200");
+    channels.children[0].children[0].children[0].on.click();
+    const posts = page.elements["post-rows"];
+    await page.until(() => posts.children.length === 201);
+    expect(text(posts.children[0])[2]).toBe("post 0");
+    expect(text(posts.children[200])[2]).toBe("post 200");
+    expect(page.urls).toContain("/api/channels?limit=200&offset=200");
+    expect(page.urls).toContain("/api/channel-posts?channel=c000&limit=200&offset=200");
   });
 });
 
