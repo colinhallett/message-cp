@@ -2,21 +2,105 @@ import { createHash } from "node:crypto";
 
 // The page served at GET / by `message-cp serve`. It holds no data and no token: it asks for a token, keeps it in
 // sessionStorage (that tab only), and polls GET /api/agents, GET /api/channels, GET /api/messages and, while one is
-// open, a channel's GET /api/channel-posts with it. It only reads, and puts agent-supplied text on the page with textContent, never as HTML.
+// open, a channel's GET /api/channel-posts with it. It shows them as a chat app: channels and the pairs of agents that
+// have messaged each other in a sidebar, the open one as a log in the middle, and the agents on the right. It only
+// reads, and puts agent-supplied text on the page with textContent, never as HTML.
 
 const STYLE = `
-body { font: 14px/1.4 system-ui, sans-serif; margin: 2em auto; max-width: 70em; padding: 0 1em; color: #222; }
-h1 { font-size: 1.4em; }
-h2 { font-size: 1.15em; margin-top: 1.5em; }
-form { margin: 1em 0; }
-input { font: inherit; width: 30em; max-width: 100%; }
-table { border-collapse: collapse; width: 100%; }
-th, td { text-align: left; padding: 0.3em 0.6em; border-bottom: 1px solid #ddd; vertical-align: top; }
-td.n { text-align: right; }
-td.body { white-space: pre-wrap; overflow-wrap: anywhere; }
-#status-line { min-height: 1.4em; }
-#status-line.error { color: #a00; }
-[hidden] { display: none; }
+:root {
+  color-scheme: light dark;
+  --bg: #ffffff;
+  --panel: #f2f3f5;
+  --text: #1f2328;
+  --muted: #59616b;
+  --border: #d6dae0;
+  --hover: #e4e7eb;
+  --active: #d9e0f7;
+  --accent: #3451b2;
+  --online: #2b8a3e;
+  --offline: #8a929b;
+  --error: #b42318;
+  --error-bg: #fdecea;
+  --s1: 0.25rem;
+  --s2: 0.5rem;
+  --s3: 0.75rem;
+  --s4: 1rem;
+  --radius: 6px;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #1e1f22;
+    --panel: #2b2d31;
+    --text: #e3e5e8;
+    --muted: #a3a9b1;
+    --border: #3a3d43;
+    --hover: #35373c;
+    --active: #404659;
+    --accent: #9aafff;
+    --online: #3fb950;
+    --offline: #80868e;
+    --error: #ff8a80;
+    --error-bg: #3d2224;
+  }
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body { margin: 0; display: flex; flex-direction: column; font: 14px/1.45 system-ui, sans-serif; background: var(--bg); color: var(--text); }
+h1 { font-size: 1.1rem; margin: 0; }
+h2 { font-size: 0.75rem; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase; color: var(--muted); margin: var(--s4) var(--s3) var(--s2); }
+ul, ol { list-style: none; margin: 0; padding: 0; }
+button, input { font: inherit; color: inherit; }
+button { cursor: pointer; background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); padding: var(--s1) var(--s3); }
+button:hover { background: var(--hover); }
+button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.note { color: var(--muted); margin: var(--s2) var(--s3); }
+.note:empty { display: none; }
+.dim { color: var(--muted); }
+#status-line { margin: 0; padding: var(--s2) var(--s4); background: var(--panel); border-bottom: 1px solid var(--border); }
+#status-line:empty { display: none; }
+#status-line.error { color: var(--error); background: var(--error-bg); }
+#login { margin: 15vh auto 0; width: min(32rem, 100% - 2 * var(--s4)); display: flex; flex-direction: column; gap: var(--s3); }
+#login input { width: 100%; padding: var(--s2); background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); }
+#login button { align-self: flex-start; }
+#view { flex: 1; min-height: 0; display: grid; grid-template-columns: 15rem minmax(0, 1fr) 16rem; grid-template-rows: auto minmax(0, 1fr); grid-template-areas: "bar bar bar" "side chat agents"; }
+.bar { grid-area: bar; display: flex; align-items: center; gap: var(--s2); padding: var(--s2) var(--s3); border-bottom: 1px solid var(--border); }
+.bar h1 { flex: 1; }
+.toggle { display: none; }
+#sidebar { grid-area: side; overflow-y: auto; background: var(--panel); border-right: 1px solid var(--border); }
+#agents { grid-area: agents; overflow-y: auto; background: var(--panel); border-left: 1px solid var(--border); }
+#chat { grid-area: chat; min-width: 0; display: flex; flex-direction: column; }
+#choose { margin: auto; color: var(--muted); padding: var(--s4); text-align: center; }
+#log:not([hidden]) ~ #choose { display: none; }
+#log { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.log-head { display: flex; align-items: center; gap: var(--s2); padding: var(--s2) var(--s4); border-bottom: 1px solid var(--border); }
+.log-head h2 { flex: 1; margin: 0; font-size: 1rem; letter-spacing: normal; text-transform: none; color: var(--text); overflow-wrap: anywhere; }
+.channel::before, .item .channel-name::before { content: "# "; color: var(--muted); }
+#post-rows { flex: 1; overflow-y: auto; padding: var(--s2) 0 var(--s4); }
+.entry { display: grid; grid-template-columns: auto auto minmax(0, 1fr); grid-template-areas: "from tag time" "body body body"; column-gap: var(--s2); align-items: baseline; padding: var(--s2) var(--s4); }
+.entry:hover { background: var(--panel); }
+.from { grid-area: from; font-weight: 600; overflow-wrap: anywhere; }
+.time { grid-area: time; font-size: 0.8rem; color: var(--muted); }
+.tag { grid-area: tag; font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--accent); border: 1px solid currentColor; border-radius: var(--radius); padding: 0 var(--s1); }
+.body { grid-area: body; white-space: pre-wrap; overflow-wrap: anywhere; }
+.item { display: flex; align-items: center; gap: var(--s2); text-align: left; background: none; border: 0; border-radius: var(--radius); padding: var(--s1) var(--s2); margin: 1px var(--s2); width: calc(100% - 2 * var(--s2)); }
+.item.current { background: var(--active); font-weight: 600; }
+.item .label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.count { font-size: 0.75rem; color: var(--muted); }
+.agent { display: grid; grid-template-columns: auto minmax(0, 1fr); column-gap: var(--s2); padding: var(--s2) var(--s3); }
+.agent > :not(.dot) { grid-column: 2; overflow-wrap: anywhere; }
+.agent .name { font-weight: 600; }
+.agent .bio, .agent .seen, .agent .unread { font-size: 0.8rem; color: var(--muted); }
+.dot { width: 0.6rem; height: 0.6rem; margin-top: 0.35rem; border-radius: 50%; background: var(--offline); overflow: hidden; color: transparent; font-size: 0; }
+.dot.online { background: var(--online); }
+@media (max-width: 720px) {
+  #view { grid-template-columns: minmax(0, 1fr); grid-template-areas: "bar" "chat"; }
+  .toggle { display: inline-block; }
+  #sidebar, #agents { display: none; border: 0; }
+  #view.show-sidebar #sidebar, #view.show-agents #agents { display: block; grid-area: chat; }
+  #view.show-sidebar #chat, #view.show-agents #chat { display: none; }
+  .entry { padding: var(--s2) var(--s3); }
+}
+[hidden] { display: none !important; }
 `;
 
 const SCRIPT = `
@@ -35,7 +119,7 @@ const log = document.getElementById("log");
 const logTitle = document.getElementById("log-title");
 const logNote = document.getElementById("log-note");
 const postRows = document.getElementById("post-rows");
-const messageRows = document.getElementById("message-rows");
+const pairRows = document.getElementById("pair-rows");
 const messagesNote = document.getElementById("messages-note");
 const statusLine = document.getElementById("status-line");
 let timer;
@@ -44,8 +128,14 @@ let controller;
 // The channel whose log is open, or undefined, and how many of its posts the log holds.
 let openChannel;
 let held = 0;
-// How many of the account's direct messages the page holds.
+// How many of the account's direct messages the page holds, the messages themselves, oldest first, and the pairs of
+// agents that have messaged each other, by pairKey, each with its names, its count of messages and the index in
+// messages of its newest.
 let heldMessages = 0;
+let messages = [];
+let pairs = new Map();
+// The pair whose messages are open in the log, by pairKey, or undefined. At most one of openChannel and openPair is set.
+let openPair;
 
 function say(text, isError) {
   statusLine.textContent = text;
@@ -62,14 +152,17 @@ function cancel() {
 function ask(message) {
   sessionStorage.removeItem(KEY);
   cancel();
-  // Clear the tables, so one token's agents, channels and messages never show under the next token.
+  // Clear every panel, so one token's agents, channels, pairs and messages never show under the next token.
   rows.replaceChildren();
   channelRows.replaceChildren();
   heldMessages = 0;
-  messageRows.replaceChildren();
+  messages = [];
+  pairs = new Map();
+  pairRows.replaceChildren();
   messagesNote.textContent = "";
   closeLog();
   view.hidden = true;
+  view.className = "";
   say(message || "", true);
   form.hidden = false;
   input.value = "";
@@ -86,13 +179,25 @@ form.addEventListener("submit", (event) => {
 });
 
 document.getElementById("forget").addEventListener("click", () => ask());
-document.getElementById("close-log").addEventListener("click", () => closeLog());
+document.getElementById("close-log").addEventListener("click", () => {
+  closeLog();
+  markOpen();
+});
+// On a narrow screen only one panel shows at a time: these buttons swap the conversation for the sidebar or the agents.
+document.getElementById("show-sidebar").addEventListener("click", () => panel("show-sidebar"));
+document.getElementById("show-agents").addEventListener("click", () => panel("show-agents"));
+
+function panel(name) {
+  view.className = view.className === name ? "" : name;
+}
 
 function closeLog() {
   openChannel = undefined;
+  openPair = undefined;
   held = 0;
   postRows.replaceChildren();
   logTitle.textContent = "";
+  logTitle.className = "";
   logNote.textContent = "";
   log.hidden = true;
 }
@@ -100,12 +205,31 @@ function closeLog() {
 // Opens a channel's log and polls again at once; the poll in flight is dropped, so a slow answer for the channel
 // open before is never shown under this one.
 function openLog(name) {
+  closeLog();
   openChannel = name;
-  held = 0;
-  postRows.replaceChildren();
   logTitle.textContent = name;
+  logTitle.className = "channel";
   logNote.textContent = "Loading…";
   log.hidden = false;
+  view.className = "";
+  markOpen();
+  cancel();
+  poll(generation);
+}
+
+// Opens a pair's messages, oldest first, from the ones the page holds, and polls again at once to append any new ones;
+// the poll in flight is dropped, so a slow read of the channel open before never holds this pair's refresh back.
+function openPairLog(key) {
+  const pair = pairs.get(key);
+  if (!pair) return;
+  closeLog();
+  openPair = key;
+  logTitle.textContent = pair.names.join(" ↔ ");
+  log.hidden = false;
+  view.className = "";
+  postRows.replaceChildren(...messages.filter((m) => pairKey(m) === key).map(messageEntry));
+  postRows.scrollTop = postRows.scrollHeight;
+  markOpen();
   cancel();
   poll(generation);
 }
@@ -263,81 +387,127 @@ function ago(iso) {
   return Math.floor(s / 86400) + "d ago";
 }
 
-function cell(text, className) {
-  const td = document.createElement("td");
-  td.textContent = text;
-  if (className) td.className = className;
-  return td;
+function part(tag, className, text) {
+  const node = document.createElement(tag);
+  node.className = className;
+  node.textContent = text;
+  return node;
 }
 
 function show(agents) {
-  const trs = agents.map((a) => {
-    const tr = document.createElement("tr");
-    const seen = cell(ago(a.lastSeen));
+  const items = agents.map((a) => {
+    const li = document.createElement("li");
+    li.className = "agent";
+    const dot = part("span", a.online ? "dot online" : "dot", a.online ? "online" : "offline");
+    dot.title = a.online ? "online" : "offline";
+    const seen = part("span", "seen", "last seen " + ago(a.lastSeen));
     seen.title = String(a.lastSeen);
-    tr.append(
-      cell(String(a.name)),
-      cell(String(a.bio)),
-      seen,
-      cell(String(a.unreadMessages), "n"),
-      cell(String(a.unreadPosts), "n"),
-      cell(a.online ? "online" : "–"),
-    );
-    return tr;
+    const unread = part("span", "unread", "unread messages: " + a.unreadMessages + ", posts: " + a.unreadPosts);
+    li.append(dot, part("span", "name", String(a.name)), part("span", "bio", String(a.bio)), seen, unread);
+    return li;
   });
-  if (trs.length === 0) trs.push(emptyRow("No agents registered in this account.", 6));
-  rows.replaceChildren(...trs);
+  if (items.length === 0) items.push(part("li", "note", "No agents registered in this account."));
+  rows.replaceChildren(...items);
 }
 
-function emptyRow(text, columns) {
-  const td = cell(text);
-  td.colSpan = columns;
-  const tr = document.createElement("tr");
-  tr.append(td);
-  return tr;
+// The sidebar key of the open conversation, as sidebarItem takes it, or undefined.
+function openKey() {
+  if (openChannel !== undefined) return "channel " + openChannel;
+  if (openPair !== undefined) return "pair " + openPair;
+  return undefined;
+}
+
+// A sidebar entry: a button with a label and a count that opens a conversation. Its value is its key, which markOpen
+// compares with openKey().
+function sidebarItem(key, label, labelClass, count, open) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.value = key;
+  button.className = key === openKey() ? "item current" : "item";
+  button.append(part("span", labelClass ? "label " + labelClass : "label", label), part("span", "count", String(count)));
+  button.addEventListener("click", open);
+  const li = document.createElement("li");
+  li.append(button);
+  return li;
 }
 
 function showChannels(channels) {
-  const trs = channels.map((c) => {
-    const tr = document.createElement("tr");
-    const button = document.createElement("button");
-    button.type = "button";
-    button.textContent = String(c.name);
-    button.addEventListener("click", () => openLog(String(c.name)));
-    const name = document.createElement("td");
-    name.append(button);
+  const items = channels.map((c) => {
+    const name = String(c.name);
+    const li = sidebarItem("channel " + name, name, "channel-name", c.posts, () => openLog(name));
     const members = Array.isArray(c.members) ? c.members.map(String).join(", ") : "";
-    const last = cell(c.lastPostAt == null ? "–" : ago(c.lastPostAt));
-    if (c.lastPostAt != null) last.title = String(c.lastPostAt);
-    tr.append(name, cell(members || "–"), cell(String(c.posts), "n"), last);
-    return tr;
+    const last = c.lastPostAt == null ? "no posts" : "last post " + ago(c.lastPostAt);
+    li.children[0].title = "Members: " + (members || "–") + "; " + c.posts + " posts, " + last;
+    return li;
   });
-  if (trs.length === 0) trs.push(emptyRow("No channels in this account.", 4));
-  channelRows.replaceChildren(...trs);
+  if (items.length === 0) items.push(part("li", "note", "No channels in this account."));
+  channelRows.replaceChildren(...items);
+}
+
+// The two agents of a message, in name order, as one key, so alice to bob and bob to alice are the same pair.
+function pairNames(m) {
+  return [String(m.from), String(m.to)].sort();
+}
+function pairKey(m) {
+  return JSON.stringify(pairNames(m));
+}
+
+// Lists the pairs, the one with the newest message first.
+function showPairs() {
+  const items = [...pairs].sort((a, b) => b[1].newest - a[1].newest).map(([key, pair]) =>
+    sidebarItem("pair " + key, pair.names.join(" ↔ "), "", pair.count, () => openPairLog(key)),
+  );
+  pairRows.replaceChildren(...items);
+}
+
+// Marks the open channel or pair in the sidebar, in place, so the button just chosen keeps the focus.
+function markOpen() {
+  const key = openKey();
+  for (const li of [...channelRows.children, ...pairRows.children]) {
+    const button = li.children[0];
+    if (button) button.className = button.value === key ? "item current" : "item";
+  }
+}
+
+// Appends to the open log and keeps it at the bottom if it was there, so a reader scrolled back up is not moved.
+function appendEntries(entries) {
+  const atBottom = postRows.scrollHeight - postRows.scrollTop - postRows.clientHeight < 40;
+  postRows.append(...entries);
+  if (atBottom) postRows.scrollTop = postRows.scrollHeight;
+}
+
+function entry(from, tag, sentAt, body) {
+  const li = document.createElement("li");
+  li.className = "entry";
+  const time = part("time", "time", when(sentAt));
+  time.title = String(sentAt);
+  li.append(part("span", "from", String(from)));
+  if (tag) li.append(part("span", "tag", tag));
+  li.append(time, part("div", "body", String(body)));
+  return li;
+}
+
+function messageEntry(m) {
+  return entry(m.from, m.broadcast ? "broadcast" : "", m.sentAt, m.body);
 }
 
 function appendLog(posts) {
-  const trs = posts.map((p) => {
-    const tr = document.createElement("tr");
-    const time = cell(when(p.sentAt));
-    time.title = String(p.sentAt);
-    tr.append(cell(String(p.from)), time, cell(String(p.body), "body"));
-    return tr;
-  });
-  held += trs.length;
-  postRows.append(...trs);
+  held += posts.length;
+  appendEntries(posts.map((p) => entry(p.from, "", p.sentAt, p.body)));
 }
 
-function appendMessages(messages) {
-  const trs = messages.map((m) => {
-    const tr = document.createElement("tr");
-    const time = cell(when(m.sentAt));
-    time.title = String(m.sentAt);
-    tr.append(cell(String(m.from)), cell(String(m.to)), cell(m.broadcast ? "broadcast" : "–"), time, cell(String(m.body), "body"));
-    return tr;
-  });
-  heldMessages += trs.length;
-  messageRows.append(...trs);
+function appendMessages(page) {
+  heldMessages += page.length;
+  for (const m of page) {
+    const key = pairKey(m);
+    const pair = pairs.get(key) ?? { names: pairNames(m), count: 0, newest: 0 };
+    pair.count++;
+    pair.newest = messages.length;
+    pairs.set(key, pair);
+    messages.push(m);
+  }
+  if (openPair !== undefined) appendEntries(page.filter((m) => pairKey(m) === openPair).map(messageEntry));
+  if (page.length > 0) showPairs();
 }
 
 function when(iso) {
@@ -360,39 +530,42 @@ export const DASHBOARD_HTML = `<!doctype html>
 <style>${STYLE}</style>
 </head>
 <body>
-<h1>message-cp</h1>
 <p id="status-line" role="status"></p>
 <form id="login" hidden>
-<label for="token">Token for your account (read-only is enough), kept in this tab only:</label><br>
+<h1>message-cp</h1>
+<label for="token">Token for your account (read-only is enough), kept in this tab only:</label>
 <input id="token" type="password" autocomplete="off" required>
 <button type="submit">Show agents, channels and messages</button>
 </form>
 <div id="view" hidden>
-<table>
-<thead><tr><th>Name</th><th>Bio</th><th>Last seen</th><th>Unread messages</th><th>Unread posts</th><th>Online</th></tr></thead>
-<tbody id="rows"></tbody>
-</table>
+<header class="bar">
+<button id="show-sidebar" class="toggle" type="button" aria-label="Channels and conversations">☰</button>
+<h1>message-cp</h1>
+<button id="show-agents" class="toggle" type="button">Agents</button>
+<button id="forget" type="button">Forget token</button>
+</header>
+<nav id="sidebar" aria-label="Channels and conversations">
 <h2>Channels</h2>
-<table>
-<thead><tr><th>Name</th><th>Members</th><th>Posts</th><th>Last post</th></tr></thead>
-<tbody id="channel-rows"></tbody>
-</table>
-<div id="log" hidden>
-<h2>Channel <span id="log-title"></span></h2>
-<p id="log-note"></p>
-<table>
-<thead><tr><th>From</th><th>Sent</th><th>Post</th></tr></thead>
-<tbody id="post-rows"></tbody>
-</table>
-<p><button id="close-log" type="button">Close channel</button></p>
-</div>
+<ul id="channel-rows"></ul>
 <h2>Direct messages</h2>
-<p id="messages-note"></p>
-<table>
-<thead><tr><th>From</th><th>To</th><th>Broadcast</th><th>Sent</th><th>Message</th></tr></thead>
-<tbody id="message-rows"></tbody>
-</table>
-<p><button id="forget" type="button">Forget token</button></p>
+<p id="messages-note" class="note"></p>
+<ul id="pair-rows"></ul>
+</nav>
+<main id="chat">
+<section id="log" hidden>
+<div class="log-head">
+<h2 id="log-title"></h2>
+<button id="close-log" type="button">Close</button>
+</div>
+<p id="log-note" class="note"></p>
+<ol id="post-rows" role="log"></ol>
+</section>
+<p id="choose">Choose a channel or a conversation.</p>
+</main>
+<aside id="agents" aria-label="Agents">
+<h2>Agents</h2>
+<ul id="rows"></ul>
+</aside>
 </div>
 <script>${SCRIPT}</script>
 </body>
