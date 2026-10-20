@@ -100,9 +100,21 @@ function ensureChannel(db: Db, account: AccountId, channel: string, now: number)
   return findChannel(db, account, channel);
 }
 
+// `@` and a name, not inside a longer word (`a@bob`) and not cut from a longer name.
+const MENTION = /(?<![A-Za-z0-9_-])@([A-Za-z0-9_-]{1,32})(?![A-Za-z0-9_-])/g;
+
+/** The distinct names `body` mentions as `@<name>`, lower-cased since names compare without case, `all` left out. */
+export function mentionedNames(body: string): string[] {
+  const names = new Set<string>();
+  for (const [, name] of body.matchAll(MENTION)) names.add(name.toLowerCase());
+  names.delete("all");
+  return [...names];
+}
+
 /**
  * Appends a post to the account's channel `channel`, creating the channel if this is its first post. If the member had
- * read everything before it, its read position moves past its own post, so the channel stays read for it.
+ * read everything before it, its read position moves past its own post, so the channel stays read for it. Each live
+ * agent of the account the post names as `@<name>`, but the member, gets a mention, whether or not it has joined.
  */
 export function post(db: Db, account: AccountId, member: Member, channel: string, body: string): PostResult {
   validateChannelName(channel);
@@ -122,6 +134,14 @@ export function post(db: Db, account: AccountId, member: Member, channel: string
           .run(found.id, member.id, member.name, body, now).lastInsertRowid,
       );
       if (last.id === null || (read !== undefined && read.last_read_id >= last.id)) advance(db, member.id, found.id, id);
+      const names = body.includes("@") ? mentionedNames(body) : [];
+      if (names.length > 0) {
+        const mention = db.prepare(
+          `INSERT INTO mentions (agent_id, post_id)
+           SELECT id, ? FROM agents WHERE account_id = ? AND name = ? AND removed_at IS NULL AND id <> ?`,
+        );
+        for (const name of names) mention.run(id, account, name, member.id);
+      }
       return { channel: found.name, id, sentAt: new Date(now).toISOString() };
     })
     .immediate();

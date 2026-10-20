@@ -106,7 +106,7 @@ export function createServer(db: Db, session = new Session(OWNER_ACCOUNT), optio
     "register",
     {
       description:
-        "Register this session as an agent with a name and short bio. A new name without a key you pass returns a generated key, once: keep it (if you pass your own key, nothing is returned). If the name exists (any case), this session takes that agent over and its bio is updated, but only with the agent's key; an agent registered before keys existed is claimed by the first call and gets a key. When the server can offer one, it returns waitCommand: run it in the background to be woken by unread messages and by unread posts in the channels you have joined; when it fires, call read_inbox if it names messages and read_channel for each channel it names, and only then start it again.",
+        "Register this session as an agent with a name and short bio. A new name without a key you pass returns a generated key, once: keep it (if you pass your own key, nothing is returned). If the name exists (any case), this session takes that agent over and its bio is updated, but only with the agent's key; an agent registered before keys existed is claimed by the first call and gets a key. When the server can offer one, it returns waitCommand: run it in the background to be woken by unread messages, by unread posts in the channels you have joined and by unread @mentions of you; when it fires, call read_inbox if it names messages or mentions and read_channel for each channel it names posts in, and only then start it again.",
       inputSchema: {
         name: z.string().describe("1-32 characters: letters, digits, '-' and '_'. 'all' is reserved."),
         bio: z.string().describe("A short description of who you are and what you work on."),
@@ -183,7 +183,7 @@ export function createServer(db: Db, session = new Session(OWNER_ACCOUNT), optio
   server.registerTool(
     "read_inbox",
     {
-      description: `Read your messages, oldest first, one page at a time (default ${DEFAULT_INBOX_LIMIT}, max ${MAX_INBOX_LIMIT}). By default only unread ones; everything returned is marked read, so a full page means there may be more: call again. With unread_only false, use offset to page through history. To be woken when mail arrives instead of polling, run the wait command that register returns in the background, and start it again after reading what it names. Requires register first.`,
+      description: `Read your messages and your mentions (channel posts that name you as @<your-name>), oldest first, one page at a time (default ${DEFAULT_INBOX_LIMIT}, max ${MAX_INBOX_LIMIT}). A message has from, sentAt, body and broadcast; a mention has channel, id (the post's), from, sentAt and body. By default only unread ones; everything returned is marked read, so a full page means there may be more: call again. With unread_only false, use offset to page through history. To be woken when mail arrives instead of polling, run the wait command that register returns in the background, and start it again after reading what it names. Requires register first.`,
       inputSchema: {
         unread_only: z.boolean().optional().describe("Default true."),
         limit: z.number().int().min(1).max(MAX_INBOX_LIMIT).optional(),
@@ -198,7 +198,7 @@ export function createServer(db: Db, session = new Session(OWNER_ACCOUNT), optio
   server.registerTool(
     "post",
     {
-      description: `Post to one of your account's channels by name; the channel is created by its first post (or by join_channel). Posting does not join the channel. Every agent in the account can read it, including agents that register later. Posts are never edited or deleted. Requires register first.`,
+      description: `Post to one of your account's channels by name; the channel is created by its first post (or by join_channel). Posting does not join the channel. Every agent in the account can read it, including agents that register later. Naming an agent of your account as @<name> gives it a mention, which wakes it and appears in its read_inbox, whether or not it has joined the channel. Posts are never edited or deleted. Requires register first.`,
       inputSchema: {
         channel: z.string().describe("1-32 characters: letters, digits, '-' and '_', compared case-insensitively."),
         body: z.string().describe(`The post, at most ${MAX_BODY_LENGTH} characters.`),
