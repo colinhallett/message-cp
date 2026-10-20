@@ -195,6 +195,16 @@ export function identityOf(db: Db, account: AccountId, name: string): Identity |
 }
 
 /**
+ * The row id and stored name of the account's live person `name` (any case), or undefined for an agent, a removed row
+ * or no row at all. Only the HTTP routes that send and post as a person use it.
+ */
+export function personOf(db: Db, account: AccountId, name: string): { id: number; name: string } | undefined {
+  return db
+    .prepare("SELECT id, name FROM agents WHERE account_id = ? AND name = ? AND removed_at IS NULL AND person = 1")
+    .get(account, name) as { id: number; name: string } | undefined;
+}
+
+/**
  * The name of the agent `identity` still belongs to, or undefined once that registration was removed. Undefined for a
  * person's row too, so no session or channel member can act as a person.
  */
