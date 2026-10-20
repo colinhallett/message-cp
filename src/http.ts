@@ -3,10 +3,17 @@ import { createServer as createHttpServer, type IncomingMessage, type Server, ty
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import { accountForToken, type TokenAccess } from "./accounts.js";
-import { DEFAULT_LIST_LIMIT, MAX_LIST_LIMIT } from "./agents.js";
+import { DEFAULT_LIST_LIMIT, MAX_LIST_LIMIT, ToolError } from "./agents.js";
+import {
+  DEFAULT_CHANNEL_LIMIT,
+  MAX_CHANNEL_LIMIT,
+  listAccountChannels,
+  readAccountChannel,
+  type ChannelPage,
+} from "./channels.js";
 import { DASHBOARD_HEADERS, DASHBOARD_HTML } from "./dashboard.js";
 import type { AccountId, Db } from "./db.js";
-import { hasUnread, listAgentsUnread, unreadSummary, type AgentUnread, type Unread } from "./messages.js";
+import { hasUnread, listAgentsUnread, unreadSummary, type Unread } from "./messages.js";
 import { Session, createServer } from "./server.js";
 import { DEFAULT_WAIT_HOLD_MS, formatUnread } from "./wait.js";
 
@@ -59,6 +66,44 @@ function accountOf(db: Db, header: string | undefined, ownerToken: string): Toke
 function reply(res: ServerResponse, status: number, message: string, headers: Record<string, string> = {}): void {
   res.writeHead(status, { "Content-Type": "application/json", ...headers });
   res.end(JSON.stringify({ jsonrpc: "2.0", error: { code: -32000, message }, id: null }));
+}
+
+function sendJson(res: ServerResponse, value: unknown): void {
+  res.writeHead(200, { "Content-Type": "application/json" });
+  res.end(JSON.stringify(value));
+}
+
+/**
+ * The `limit` and `offset` of a GET /api/* query, or undefined if either is bad. A key given twice is refused like a
+ * bad value, so no value supplied is silently ignored.
+ */
+function page(query: URLSearchParams, defaultLimit: number, maxLimit: number): { limit: number; offset: number } | undefined {
+  const number = (key: string, fallback: number, min: number, max: number) => {
+    const values = query.getAll(key);
+    if (values.length === 0) return fallback;
+    if (values.length > 1) return undefined;
+    const raw = values[0];
+    const n = /^[0-9]+$/.test(raw) ? Number(raw) : NaN;
+    return Number.isSafeInteger(n) && n >= min && n <= max ? n : undefined;
+  };
+  const limit = number("limit", defaultLimit, 1, maxLimit);
+  const offset = number("offset", 0, 0, Number.MAX_SAFE_INTEGER);
+  return limit === undefined || offset === undefined ? undefined : { limit, offset };
+}
+
+/**
+ * Runs a read for a GET /api/* request. A lock held past the busy timeout is transient, so it answers 503 with
+ * Retry-After rather than 500, and returns undefined; any other error is thrown.
+ */
+function unlessBusy<T>(res: ServerResponse, read: () => T): T | undefined {
+  try {
+    return read();
+  } catch (err) {
+    const code = (err as { code?: unknown } | null)?.code;
+    if (typeof code !== "string" || !code.startsWith("SQLITE_BUSY")) throw err;
+    reply(res, 503, "Database busy", { "Retry-After": "1" });
+    return undefined;
+  }
 }
 
 async function readBody(req: IncomingMessage): Promise<unknown> {
@@ -199,38 +244,55 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
   const apiAgents = (req: IncomingMessage, res: ServerResponse, account: AccountId) => {
     if (req.method !== "GET") return reply(res, 405, "Method not allowed", { Allow: "GET" });
     const query = new URL(req.url ?? "", "http://x").searchParams;
-    const number = (key: string, fallback: number, min: number, max: number) => {
-      // A key given twice is refused like a bad value, so no value supplied is silently ignored.
-      const values = query.getAll(key);
-      if (values.length === 0) return fallback;
-      if (values.length > 1) return undefined;
-      const raw = values[0];
-      const n = /^[0-9]+$/.test(raw) ? Number(raw) : NaN;
-      return Number.isSafeInteger(n) && n >= min && n <= max ? n : undefined;
-    };
-    const limit = number("limit", DEFAULT_LIST_LIMIT, 1, MAX_LIST_LIMIT);
-    const offset = number("offset", 0, 0, Number.MAX_SAFE_INTEGER);
-    if (limit === undefined || offset === undefined) {
-      return reply(res, 400, `limit must be 1-${MAX_LIST_LIMIT} and offset 0 or more`);
-    }
+    const paging = page(query, DEFAULT_LIST_LIMIT, MAX_LIST_LIMIT);
+    if (paging === undefined) return reply(res, 400, `limit must be 1-${MAX_LIST_LIMIT} and offset 0 or more`);
     const waits = held.get(account);
     const recent = Date.now() - ONLINE_WINDOW_MS;
-    let page: AgentUnread[];
+    // One query, so the page and its counts describe the same moment.
+    const agents = unlessBusy(res, () => listAgentsUnread(db, account, paging.limit, paging.offset));
+    if (agents === undefined) return;
+    sendJson(
+      res,
+      agents.map((a) => ({
+        ...a,
+        online: (waits?.get(a.name.toLowerCase()) ?? 0) > 0 || Date.parse(a.lastSeen) >= recent,
+      })),
+    );
+  };
+
+  /**
+   * GET /api/channels: one page of the account's channels by name, each with its post count, last post time and the
+   * names of the live agents that have joined it. No post bodies; it reads nothing as read.
+   */
+  const apiChannels = (req: IncomingMessage, res: ServerResponse, account: AccountId) => {
+    if (req.method !== "GET") return reply(res, 405, "Method not allowed", { Allow: "GET" });
+    const query = new URL(req.url ?? "", "http://x").searchParams;
+    const paging = page(query, DEFAULT_CHANNEL_LIMIT, MAX_CHANNEL_LIMIT);
+    if (paging === undefined) return reply(res, 400, `limit must be 1-${MAX_CHANNEL_LIMIT} and offset 0 or more`);
+    const channels = unlessBusy(res, () => listAccountChannels(db, account, paging.limit, paging.offset));
+    if (channels !== undefined) sendJson(res, channels);
+  };
+
+  /**
+   * GET /api/channel-posts?channel=<name>: one page of the account's channel, oldest first, without moving any agent's
+   * read position. Another account's channel of the same name is answered like one that does not exist.
+   */
+  const apiChannelPosts = (req: IncomingMessage, res: ServerResponse, account: AccountId) => {
+    if (req.method !== "GET") return reply(res, 405, "Method not allowed", { Allow: "GET" });
+    const query = new URL(req.url ?? "", "http://x").searchParams;
+    const names = query.getAll("channel");
+    if (names.length !== 1) return reply(res, 404, "No such channel");
+    const paging = page(query, DEFAULT_CHANNEL_LIMIT, MAX_CHANNEL_LIMIT);
+    if (paging === undefined) return reply(res, 400, `limit must be 1-${MAX_CHANNEL_LIMIT} and offset 0 or more`);
+    let channel: ChannelPage | undefined;
     try {
-      // One query, so the page and its counts describe the same moment.
-      page = listAgentsUnread(db, account, limit, offset);
+      channel = unlessBusy(res, () => readAccountChannel(db, account, names[0], paging.limit, paging.offset));
     } catch (err) {
-      // A lock held past the busy timeout is transient: ask the client to try again rather than answer 500.
-      const code = (err as { code?: unknown } | null)?.code;
-      if (typeof code !== "string" || !code.startsWith("SQLITE_BUSY")) throw err;
-      return reply(res, 503, "Database busy", { "Retry-After": "1" });
+      // An invalid name and a missing channel are the same answer, so neither says more than the other.
+      if (err instanceof ToolError) return reply(res, 404, "No such channel");
+      throw err;
     }
-    const agents = page.map((a) => ({
-      ...a,
-      online: (waits?.get(a.name.toLowerCase()) ?? 0) > 0 || Date.parse(a.lastSeen) >= recent,
-    }));
-    res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(JSON.stringify(agents));
+    if (channel !== undefined) sendJson(res, channel);
   };
 
   const handle = async (req: IncomingMessage, res: ServerResponse) => {
@@ -247,6 +309,8 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
     }
     const { account } = access;
     if (path === "/api/agents") return apiAgents(req, res, account);
+    if (path === "/api/channels") return apiChannels(req, res, account);
+    if (path === "/api/channel-posts") return apiChannelPosts(req, res, account);
     // A read-only token reaches the read-only endpoints above and nothing else: /mcp can write, and so can any path added later.
     if (access.readOnly) return reply(res, 403, "This token is read-only");
     if (path === "/wait") return wait(req, res, account);
