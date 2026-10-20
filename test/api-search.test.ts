@@ -21,6 +21,7 @@ let ownerFull: string;
 
 beforeEach(async () => {
   db = openDb(join(mkdtempSync(join(tmpdir(), "message-cp-api-search-")), "db.sqlite"));
+  stamped.messages = stamped.channel_posts = 0;
   friendToken = addAccount(db, "friend").token;
   friend = listAccounts(db).find((a) => a.name === "friend")!.id;
   friendViewer = addToken(db, "friend", true).token;
@@ -64,13 +65,14 @@ const register = (account: AccountId, ...names: string[]) => {
   for (const name of names) members.set(`${account}:${name}`, { ...registerWithIdentity(db, account, name, "x").identity, name });
 };
 const member = (account: AccountId, name: string) => members.get(`${account}:${name}`)!;
-// Each message and post at its own second from a fixed past time, so newest first is a known order: the rows just
-// written, at the real time, move to the next second.
+// Each message and post at its own second from a fixed time, so newest first is a known order: the rows just
+// written, found by id whatever the real time is, move to the next second.
 let clock = Date.UTC(2026, 9, 1);
+const stamped = { messages: 0, channel_posts: 0 };
 const at = (table: "messages" | "channel_posts") => {
-  const previous = clock;
   clock += 1000;
-  db.prepare(`UPDATE ${table} SET created_at = ? WHERE created_at > ?`).run(clock, previous);
+  db.prepare(`UPDATE ${table} SET created_at = ? WHERE id > ?`).run(clock, stamped[table]);
+  stamped[table] = db.prepare(`SELECT COALESCE(MAX(id), 0) FROM ${table}`).pluck().get() as number;
 };
 const send = (account: AccountId, from: string, to: string, body: string) => {
   sendMessage(db, account, from, to, body);
