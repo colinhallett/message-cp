@@ -7,7 +7,18 @@ import { join, resolve } from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { addAccount, listAccounts } from "../src/accounts.js";
-import { PersonError, ToolError, addPerson, getAgent, listAgents, listPeople, registerAgent, registerFromEnv } from "../src/agents.js";
+import {
+  PersonError,
+  ToolError,
+  addPerson,
+  getAgent,
+  identityOf,
+  listAgents,
+  listPeople,
+  nameOfIdentity,
+  registerAgent,
+  registerFromEnv,
+} from "../src/agents.js";
 import { OWNER_ACCOUNT, openDb, type AccountId, type Db } from "../src/db.js";
 import { startHttp } from "../src/http.js";
 import { listAgentsUnread, readInbox, sendMessage } from "../src/messages.js";
@@ -151,6 +162,23 @@ describe("a person in the tools", () => {
     const before = agentsRows();
     expect(() => registerFromEnv(db, OWNER_ACCOUNT, { MESSAGE_CP_AGENT: "colin", MESSAGE_CP_AGENT_KEY: "person" })).toThrow(ToolError);
     expect(agentsRows()).toEqual(before);
+  });
+
+  it("has no identity, so no session can act as them even when bound to their row", () => {
+    addPerson(db, "owner", "colin");
+    expect(identityOf(db, OWNER_ACCOUNT, "colin")).toBeUndefined();
+    const row = db.prepare("SELECT id, registered_at, instance FROM agents WHERE name = 'colin'").get() as {
+      id: number;
+      registered_at: number;
+      instance: string | null;
+    };
+    const identity = { id: row.id, registeredAt: row.registered_at, instance: row.instance };
+    expect(nameOfIdentity(db, OWNER_ACCOUNT, identity)).toBeUndefined();
+    const session = new Session(OWNER_ACCOUNT);
+    session.attach(db);
+    session.bind(identity);
+    expect(session.current()).toBeUndefined();
+    expect(() => session.require()).toThrow(ToolError);
   });
 
   it("cannot be unregistered, with or without a key, and nothing changes", async () => {

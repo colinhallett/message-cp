@@ -184,20 +184,25 @@ export function getAgent(db: Db, account: AccountId, name: string): Agent | unde
   return row && toAgent(row);
 }
 
-/** The identity of the agent registered under `name` right now, if any. */
+/** The identity of the agent registered under `name` right now, if any. A person has none: nothing acts as one. */
 export function identityOf(db: Db, account: AccountId, name: string): Identity | undefined {
   const row = db
-    .prepare("SELECT id, registered_at, instance FROM agents WHERE account_id = ? AND name = ? AND removed_at IS NULL")
+    .prepare("SELECT id, registered_at, instance FROM agents WHERE account_id = ? AND name = ? AND removed_at IS NULL AND person = 0")
     .get(account, name) as
     | IdentityRow
     | undefined;
   return row && toIdentity(row);
 }
 
-/** The name of the agent `identity` still belongs to, or undefined once that registration was removed. */
+/**
+ * The name of the agent `identity` still belongs to, or undefined once that registration was removed. Undefined for a
+ * person's row too, so no session or channel member can act as a person.
+ */
 export function nameOfIdentity(db: Db, account: AccountId, identity: Identity): string | undefined {
   const row = db
-    .prepare("SELECT name FROM agents WHERE account_id = ? AND id = ? AND registered_at = ? AND instance IS ? AND removed_at IS NULL")
+    .prepare(
+      "SELECT name FROM agents WHERE account_id = ? AND id = ? AND registered_at = ? AND instance IS ? AND removed_at IS NULL AND person = 0",
+    )
     .get(account, identity.id, identity.registeredAt, identity.instance) as { name: string } | undefined;
   return row?.name;
 }
