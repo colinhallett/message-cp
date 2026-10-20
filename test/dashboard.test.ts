@@ -2136,6 +2136,24 @@ describe("the page's posting", () => {
       expect(list(page).hidden).toBe(true);
       await page.until(() => page.posts().length === 1 && box.value === "");
       expect(JSON.parse(page.posts()[0].body!)).toEqual({ as: "colin", channel: "build", body: "hi @b" });
+      // A key's native action that changes the selection closes an open list once it is done, at keyup.
+      type(page, "hi @b");
+      box.selectionStart = 0;
+      box.selectionEnd = box.value.length;
+      box.on.keyup({ key: "a", ctrlKey: true });
+      expect(list(page).hidden).toBe(true);
+      // A click on an entry looks again too: with the caret moved before the @, it changes nothing.
+      type(page, "hi @b");
+      const entry = list(page).children[0];
+      box.value = "hi @b and more";
+      box.selectionStart = box.selectionEnd = 1;
+      entry.on.mousedown({ preventDefault() {} });
+      expect(box.value).toBe("hi @b and more");
+      expect(list(page).hidden).toBe(true);
+      // While it still matches, a click picks the name it shows.
+      type(page, "hi @b");
+      list(page).children[1].on.mousedown({ preventDefault() {} });
+      expect(box.value).toBe("hi @Bobby ");
     });
 
     it("closes on Escape, keeping the text, and a following Enter sends", async () => {

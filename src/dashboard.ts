@@ -405,9 +405,11 @@ composeText.addEventListener("input", () => {
   grow();
   offer();
 });
-// Moving the caret without typing looks again at what is before it; leaving the box closes the list.
+// Moving the caret without typing looks again at what is before it; leaving the box closes the list. An open list looks
+// again after every key, once the browser has done what the key does (Ctrl+A selects, Shift+ArrowUp moves the caret), so
+// it never stays offered for a selection or caret it no longer matches.
 composeText.addEventListener("keyup", (event) => {
-  if (["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) offer();
+  if (offered.length > 0 || ["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) offer();
 });
 composeText.addEventListener("click", () => offer());
 composeText.addEventListener("blur", () => closeOffered());
@@ -676,10 +678,13 @@ function showOffered() {
     option.setAttribute("aria-selected", i === highlighted ? "true" : "false");
     option.append(part("span", "name", n.name));
     if (n.person) option.append(part("span", "kind", "person"));
-    // On mousedown, with its default prevented, so the box keeps the focus and the caret.
+    // On mousedown, with its default prevented, so the box keeps the focus and the caret. It looks again at the box
+    // first, and picks only a name still offered for the selection and caret as they are now.
     option.addEventListener("mousedown", (event) => {
       event.preventDefault();
-      pick(i);
+      offer();
+      const now = offered.findIndex((o) => o.name === n.name);
+      if (now >= 0) pick(now);
     });
     return option;
   }));
