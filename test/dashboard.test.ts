@@ -207,7 +207,12 @@ describe("the page's channels and messages", () => {
   // Runs the served script with the given token against this server, with real fetches and timers run by hand.
   // refuse, when it returns a status, answers a request with that status instead of the server; "hang" never answers,
   // and "fail" rejects as an unreachable server does.
-  async function load(token: string, refuse: (url: string) => number | "hang" | "fail" | undefined = () => undefined) {
+  // globals adds to or replaces what the script sees, such as a Date with a fixed now.
+  async function load(
+    token: string,
+    refuse: (url: string) => number | "hang" | "fail" | undefined = () => undefined,
+    globals: Record<string, unknown> = {},
+  ) {
     const html = await (await fetch(`${base()}/`)).text();
     const script = /<script>([\s\S]*?)<\/script>/.exec(html)![1];
     const elements: Record<string, Stub> = {};
@@ -215,6 +220,7 @@ describe("the page's channels and messages", () => {
     const polls: (() => void)[] = [];
     const store = new Map([["message-cp-token", token]]);
     runInNewContext(script, {
+      ...globals,
       AbortController,
       URLSearchParams,
       document: { getElementById: (id: string) => (elements[id] ??= el()), createElement: el },
@@ -228,6 +234,7 @@ describe("the page's channels and messages", () => {
         if (status === "fail") return Promise.reject(new TypeError("fetch failed"));
         return status === undefined ? fetch(`${base()}${url}`, init) : Promise.resolve(new Response(null, { status }));
       },
+      ...globals,
     });
     const until = async (done: () => boolean) => {
       for (let i = 0; i < 200 && !done(); i++) await new Promise((resolve) => setTimeout(resolve, 5));
@@ -573,6 +580,211 @@ describe("the page's channels and messages", () => {
     await page.until(() => page.elements["status-line"].textContent.startsWith("The server refused"));
     expect(page.elements["post-rows"].children).toHaveLength(0);
     expect(page.store.size).toBe(0);
+  });
+  describe("the log as a chat", () => {
+    const MIN = 60 * 1000;
+    // Sets when the messages and posts were sent, oldest first, as ms before now.
+    const backdate = (table: "messages" | "channel_posts", ...ago: number[]) => {
+      const ids = (db.prepare(`SELECT id FROM ${table} ORDER BY id`).all() as { id: number }[]).map((r) => r.id);
+      const now = Date.now();
+      ids.forEach((id, i) => db.prepare(`UPDATE ${table} SET created_at = ? WHERE id = ?`).run(now - ago[i], id));
+    };
+    const grouped = (log: Stub) => log.children.map((row) => [field(row, "from"), row.className.split(" ").includes("cont")]);
+    const avatar = (row: Stub) => row.children.find((c) => c.className.startsWith("avatar"))!;
+    const colour = (row: Stub) => row.className.split(" ").find((c) => /^c\d$/.test(c));
+
+    it("groups entries from one sender less than 5 minutes apart, and starts a group for another sender or a gap", async () => {
+      for (const name of ["alice", "bob"]) registerAgent(db, OWNER_ACCOUNT, name, "x");
+      for (const [from, to] of [["alice", "bob"], ["alice", "bob"], ["bob", "alice"], ["bob", "alice"], ["bob", "alice"]]) {
+        sendMessage(db, OWNER_ACCOUNT, from, to, "x");
+      }
+      // alice twice 1m apart; bob, then 5m later (a new group), then 4m59s later (the same group).
+      backdate("messages", 20 * MIN, 19 * MIN, 18 * MIN, 13 * MIN, 13 * MIN - (5 * MIN - 1000));
+      const page = await load(viewer);
+      const pairs = page.elements["pair-rows"];
+      await page.until(() => pairs.children.length === 1);
+      open(pairs.children[0]);
+      const log = page.elements["post-rows"];
+      expect(grouped(log)).toEqual([
+        ["alice", false],
+        ["alice", true],
+        ["bob", false],
+        ["bob", false],
+        ["bob", true],
+      ]);
+      // Every entry keeps its parts, and the stylesheet hides a continuation's avatar, name and tag.
+      expect(log.children.map((row) => avatar(row).textContent)).toEqual(["AL", "AL", "BO", "BO", "BO"]);
+      const html = await (await fetch(`${base()}/`)).text();
+      expect(html).toContain(".entry.cont > .avatar, .entry.cont > .from, .entry.cont > .kind, .entry.cont > .tag { display: none; }");
+
+      // A message appended by a later poll continues the group of the last entry the log holds.
+      sendMessage(db, OWNER_ACCOUNT, "bob", "alice", "y");
+      sendMessage(db, OWNER_ACCOUNT, "alice", "bob", "z");
+      page.poll();
+      await page.until(() => log.children.length === 7);
+      expect(grouped(log).slice(-2)).toEqual([
+        ["bob", false],
+        ["alice", false],
+      ]);
+      sendMessage(db, OWNER_ACCOUNT, "alice", "bob", "again");
+      page.poll();
+      await page.until(() => log.children.length === 8);
+      expect(grouped(log).slice(-1)).toEqual([["alice", true]]);
+    });
+
+    it("groups channel posts across a poll, never continues a broadcast, and leaves search results and deliveries alone", async () => {
+      for (const name of ["alice", "bob"]) registerAgent(db, OWNER_ACCOUNT, name, "x");
+      const alice = { ...identityOf(db, OWNER_ACCOUNT, "alice")!, name: "alice" };
+      post(db, OWNER_ACCOUNT, alice, "build", "one");
+      sendMessage(db, OWNER_ACCOUNT, "alice", "bob", "direct");
+      sendMessage(db, OWNER_ACCOUNT, "alice", "all", "everyone");
+      sendMessage(db, OWNER_ACCOUNT, "alice", "bob", "after");
+      const page = await load(viewer);
+      const channels = page.elements["channel-rows"];
+      const log = page.elements["post-rows"];
+      await page.until(() => channels.children.length === 1 && page.elements["pair-rows"].children.length === 1);
+      open(channels.children[0]);
+      await page.until(() => log.children.length === 1);
+      post(db, OWNER_ACCOUNT, alice, "build", "two");
+      page.poll();
+      await page.until(() => log.children.length === 2);
+      expect(grouped(log)).toEqual([
+        ["alice", false],
+        ["alice", true],
+      ]);
+
+      // A broadcast keeps its own name and tag, and the entry after it starts a group.
+      open(page.elements["pair-rows"].children[0]);
+      expect(log.children.map((row) => [field(row, "tag"), row.className.split(" ").includes("cont")])).toEqual([
+        [undefined, false],
+        ["broadcast", false],
+        [undefined, false],
+      ]);
+
+      page.elements["search-text"].value = "e";
+      page.elements["search"].on.submit({ preventDefault() {} } as never);
+      const found = page.elements["result-rows"];
+      await page.until(() => found.children.length === 4);
+      for (const row of found.children) {
+        expect(row.className).toBe("entry result");
+        expect(row.children.some((c) => c.className.startsWith("avatar"))).toBe(false);
+      }
+    });
+
+    it("gives a name the same colour on every load, in any case, and initials of at most two characters", async () => {
+      for (const name of ["alice", "code-reviewer", "Bob_the_builder", "z"]) registerAgent(db, OWNER_ACCOUNT, name, "x");
+      for (const name of ["alice", "code-reviewer", "Bob_the_builder", "z"]) {
+        post(db, OWNER_ACCOUNT, { ...identityOf(db, OWNER_ACCOUNT, name)!, name }, "build", "x");
+      }
+      // Far enough apart that every post starts a group.
+      backdate("channel_posts", 40 * MIN, 30 * MIN, 20 * MIN, 10 * MIN);
+      const read = async () => {
+        const page = await load(viewer);
+        await page.until(() => page.elements["channel-rows"].children.length === 1);
+        open(page.elements["channel-rows"].children[0]);
+        const log = page.elements["post-rows"];
+        await page.until(() => log.children.length === 4);
+        return log.children.map((row) => [avatar(row).textContent, colour(row)]);
+      };
+      const first = await read();
+      expect(first.map(([initials]) => initials)).toEqual(["AL", "CR", "BT", "Z"]);
+      for (const [, c] of first) expect(c).toMatch(/^c[0-7]$/);
+      expect(await read()).toEqual(first);
+      // The hash is of the name in lower case, so ALICE gets alice's colour.
+      sendMessage(db, OWNER_ACCOUNT, "ALICE", "z", "x");
+      const page = await load(viewer);
+      await page.until(() => page.elements["pair-rows"].children.length === 1);
+      open(page.elements["pair-rows"].children[0]);
+      expect(colour(page.elements["post-rows"].children[0])).toBe(first[0][1]);
+      // Each palette colour is defined for the light theme and again for the dark one, and the name uses it too.
+      const html = await (await fetch(`${base()}/`)).text();
+      for (let i = 0; i < 8; i++) {
+        expect(html.match(new RegExp(`--who${i}: #`, "g"))).toHaveLength(2);
+        expect(html).toContain(`.c${i} { --who: var(--who${i}); }`);
+      }
+      expect(html).toContain(".entry.chat > .from { color: var(--who); }");
+      expect(html).not.toMatch(/style=/);
+    });
+
+    it("gives a person GET /api/agents lists a round avatar and a person label, and anyone else a square one", async () => {
+      registerAgent(db, OWNER_ACCOUNT, "alice", "x");
+      addPerson(db, "owner", "colin");
+      sendMessage(db, OWNER_ACCOUNT, "alice", "colin", "hi");
+      sendMessage(db, OWNER_ACCOUNT, "colin", "alice", "hello");
+      // A sender's name is matched to the people without case, and one GET /api/agents does not list is an agent.
+      sendMessage(db, OWNER_ACCOUNT, "COLIN", "alice", "shouting");
+      sendMessage(db, OWNER_ACCOUNT, "ghost", "alice", "from no one listed");
+      const page = await load(viewer);
+      const pairs = page.elements["pair-rows"];
+      await page.until(() => pairs.children.length === 3 && page.elements["rows"].children.length === 2);
+      const log = page.elements["post-rows"];
+      const marks = (pair: string) => {
+        open(pairs.children.find((row) => item(row)[0] === pair)!);
+        return log.children.map((row) => [field(row, "from"), avatar(row).className, field(row, "kind")]);
+      };
+      expect(marks("alice ↔ colin")).toEqual([
+        ["alice", "avatar", undefined],
+        ["colin", "avatar person", "person"],
+      ]);
+      expect(marks("COLIN ↔ alice")).toEqual([["COLIN", "avatar person", "person"]]);
+      expect(marks("alice ↔ ghost")).toEqual([["ghost", "avatar", undefined]]);
+      const html = await (await fetch(`${base()}/`)).text();
+      expect(html).toContain(".avatar.person { border-radius: 50%; }");
+    });
+
+    it("shows a time as just now, minutes or hours ago, the time today or the date before, with the full time on hover", async () => {
+      // The page's clock is fixed at 23:30 local time, so 12 hours and more ago is still today.
+      const now = new Date(2026, 9, 20, 23, 30).getTime();
+      class FixedDate extends Date {
+        constructor(...args: unknown[]) {
+          super(...((args.length ? args : [now]) as []));
+        }
+        static now() {
+          return now;
+        }
+      }
+      for (const name of ["alice", "bob"]) registerAgent(db, OWNER_ACCOUNT, name, "x");
+      for (let i = 0; i < 6; i++) sendMessage(db, OWNER_ACCOUNT, i % 2 ? "bob" : "alice", i % 2 ? "alice" : "bob", "x");
+      const sent = [now - 30 * 1000, now - 2 * MIN, now - (3 * 60 + 5) * MIN, now - 12 * 60 * MIN, new Date(2026, 9, 19, 9, 5).getTime(), now + 10 * 1000];
+      const ids = (db.prepare("SELECT id FROM messages ORDER BY id").all() as { id: number }[]).map((r) => r.id);
+      ids.forEach((id, i) => db.prepare("UPDATE messages SET created_at = ? WHERE id = ?").run(sent[i], id));
+      const page = await load(viewer, undefined, { Date: FixedDate });
+      await page.until(() => page.elements["pair-rows"].children.length === 1);
+      open(page.elements["pair-rows"].children[0]);
+      const log = page.elements["post-rows"];
+      const clock = { hour: "2-digit", minute: "2-digit" } as const;
+      expect(log.children.map((row) => field(row, "time"))).toEqual([
+        "just now",
+        "2m ago",
+        "3h ago",
+        new Date(sent[3]).toLocaleTimeString([], clock),
+        new Date(sent[4]).toLocaleString([], { year: "numeric", month: "short", day: "numeric", ...clock }),
+        "just now",
+      ]);
+      expect(log.children.map((row) => row.children.find((c) => c.className === "time")!.title)).toEqual(
+        sent.map((ms) => new Date(ms).toLocaleString()),
+      );
+    });
+
+    it("shows a time it cannot read as given", async () => {
+      for (const name of ["alice", "bob"]) registerAgent(db, OWNER_ACCOUNT, name, "x");
+      sendMessage(db, OWNER_ACCOUNT, "alice", "bob", "x");
+      // The server always sends an ISO time, so the answer is changed on its way to the page.
+      const realFetch = fetch;
+      const page = await load(viewer, undefined, {
+        fetch: async (url: string, init: RequestInit) => {
+          const res = await realFetch(`${base()}${url}`, init);
+          if (!url.startsWith("/api/messages")) return res;
+          const list = (await res.json()) as { sentAt: string }[];
+          return new Response(JSON.stringify(list.map((m) => ({ ...m, sentAt: "sometime" }))));
+        },
+      });
+      await page.until(() => page.elements["pair-rows"].children.length === 1);
+      open(page.elements["pair-rows"].children[0]);
+      const row = page.elements["post-rows"].children[0];
+      const time = row.children.find((c) => c.className === "time")!;
+      expect([time.textContent, time.title]).toEqual(["sometime", "sometime"]);
+    });
   });
 });
 
