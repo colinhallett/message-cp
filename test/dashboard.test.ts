@@ -2119,6 +2119,25 @@ describe("the page's posting", () => {
       expect(page.posts()).toEqual([]);
     });
 
+    it("leaves modified arrows to the box, and looks again at the selection before a key picks", async () => {
+      const page = await ready();
+      type(page, "hi @b");
+      const box = page.elements["compose-text"];
+      for (const modifier of ["shiftKey", "ctrlKey", "altKey", "metaKey"]) {
+        let prevented = 0;
+        box.on.keydown({ key: "ArrowDown", [modifier]: true, isComposing: false, preventDefault: () => prevented++ });
+        expect(prevented).toBe(0);
+        expect(highlighted(page)).toEqual(["bob"]);
+      }
+      // Ctrl+A selects everything without an input event; the next Enter sends the text and picks nothing.
+      box.selectionStart = 0;
+      box.selectionEnd = box.value.length;
+      expect(press(page, "Enter")).toBe(1);
+      expect(list(page).hidden).toBe(true);
+      await page.until(() => page.posts().length === 1 && box.value === "");
+      expect(JSON.parse(page.posts()[0].body!)).toEqual({ as: "colin", channel: "build", body: "hi @b" });
+    });
+
     it("closes on Escape, keeping the text, and a following Enter sends", async () => {
       const page = await ready();
       type(page, "hello @bo");

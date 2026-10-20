@@ -372,17 +372,20 @@ compose.addEventListener("submit", (event) => {
 // neither (Safari ends it before the keydown, which then has keyCode 229), and one in a box of only whitespace sends
 // nothing; send() itself ignores one while a send is in flight.
 // While names are offered, the arrows move the highlight, Enter or Tab picks the highlighted name and Escape closes the
-// list, each in place of what the key would do. Enter or Tab with a modifier (Shift+Tab moves focus back) does what it
-// always does.
+// list, each in place of what the key would do. Each first looks again at the selection and the text before the caret,
+// which a key the list does not watch (Ctrl+A, say) may have changed, and does what it always does if nothing is offered
+// any more. An arrow, Enter or Tab with a modifier (Shift+Arrow selects, Shift+Tab moves focus back) does what it always
+// does.
 composeText.addEventListener("keydown", (event) => {
+  if (offered.length > 0 && !event.isComposing && event.keyCode !== 229) offer();
   if (offered.length > 0 && !event.isComposing && event.keyCode !== 229) {
-    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+    const plain = !event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey;
+    if (plain && (event.key === "ArrowDown" || event.key === "ArrowUp")) {
       event.preventDefault();
       highlighted = (highlighted + (event.key === "ArrowDown" ? 1 : offered.length - 1)) % offered.length;
       showOffered();
       return;
     }
-    const plain = !event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey;
     if (plain && (event.key === "Enter" || event.key === "Tab")) {
       event.preventDefault();
       pick(highlighted);
