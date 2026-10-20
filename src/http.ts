@@ -19,7 +19,9 @@ import {
   hasUnread,
   listAccountMessages,
   listAgentsUnread,
+  searchAccount,
   unreadSummary,
+  type SearchFilters,
   type Unread,
 } from "./messages.js";
 import { Session, createServer } from "./server.js";
@@ -319,6 +321,34 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
     sendJson(res, messages);
   };
 
+  /**
+   * GET /api/search?text=<text>: one page of the account's messages and channel posts whose body contains `text`,
+   * newest first, with the `search` tool's filters and errors. It marks nothing read and moves no read position.
+   */
+  const apiSearch = (req: IncomingMessage, res: ServerResponse, account: AccountId) => {
+    if (req.method !== "GET") return reply(res, 405, "Method not allowed", { Allow: "GET" });
+    const query = new URL(req.url ?? "", "http://x").searchParams;
+    const texts = query.getAll("text");
+    if (texts.length !== 1) return reply(res, 400, "Give text once");
+    const filters: SearchFilters = {};
+    for (const key of ["channel", "from", "since", "until"] as const) {
+      const values = query.getAll(key);
+      if (values.length > 1) return reply(res, 400, `Give ${key} at most once`);
+      if (values.length === 1) filters[key] = values[0];
+    }
+    const paging = page(query, DEFAULT_INBOX_LIMIT, MAX_INBOX_LIMIT);
+    if (paging === undefined) return reply(res, 400, `limit must be 1-${MAX_INBOX_LIMIT} and offset 0 or more`);
+    let found: ReturnType<typeof searchAccount> | undefined;
+    try {
+      found = unlessBusy(res, () => searchAccount(db, account, texts[0], filters, paging.limit, paging.offset));
+    } catch (err) {
+      if (err instanceof ToolError) return reply(res, 400, err.message);
+      throw err;
+    }
+    if (found === undefined) return;
+    sendJson(res, found);
+  };
+
   const handle = async (req: IncomingMessage, res: ServerResponse) => {
     const path = (req.url ?? "").split("?")[0];
     // The dashboard page is the same constant for everyone and holds no data, so it alone comes before the token.
@@ -336,6 +366,7 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
     if (path === "/api/channels") return apiChannels(req, res, account);
     if (path === "/api/channel-posts") return apiChannelPosts(req, res, account);
     if (path === "/api/messages") return apiMessages(req, res, account);
+    if (path === "/api/search") return apiSearch(req, res, account);
     // A read-only token reaches the read-only endpoints above and nothing else: /mcp can write, and so can any path added later.
     if (access.readOnly) return reply(res, 403, "This token is read-only");
     if (path === "/wait") return wait(req, res, account);

@@ -320,10 +320,14 @@ export interface SearchFilters {
 
 export const MAX_SEARCH_LENGTH = 200;
 
-/** A row of search's page: a message, or with `is_post` 1 a channel post, whose `channel` is then set. */
-interface SearchRow extends Omit<Row, "read_at"> {
+/**
+ * A row of a search page: a message, or with `is_post` 1 a channel post, whose `channel` is then set. `recipient` and
+ * `read_at` are set only for `searchAccount`'s messages.
+ */
+interface SearchRow extends Row {
   is_post: number;
   channel: string | null;
+  recipient: string | null;
 }
 
 // A date, or a date and time (to the millisecond) with an optional offset; a time with no offset is UTC, like a date
@@ -342,6 +346,50 @@ function parseTime(value: string, field: string): number {
   return ms;
 }
 
+/** The validated search text and filters, as `search` and `searchAccount` share them. */
+interface SearchQuery {
+  channel: string | undefined;
+  /** Each half's filters on its table `t`, in the order of `params`: body, sender, since, until. */
+  where: (t: string) => string;
+  params: (string | number | null)[];
+}
+
+/** Throws a ToolError unless `text` and `filters` are valid search arguments; otherwise the SQL filter they make. */
+function searchQuery(text: string, filters: SearchFilters): SearchQuery {
+  if (text.length === 0 || text.length > 2 * MAX_SEARCH_LENGTH || countCodePoints(text) > MAX_SEARCH_LENGTH) {
+    throw new ToolError(`Search text must be 1 to ${MAX_SEARCH_LENGTH} characters.`);
+  }
+  const { channel, from } = filters;
+  if (channel !== undefined && !NAME_PATTERN.test(channel)) {
+    throw new ToolError("Invalid channel name: use 1-32 characters from letters, digits, '-' and '_'.");
+  }
+  const since = filters.since === undefined ? null : parseTime(filters.since, "since");
+  const until = filters.until === undefined ? null : parseTime(filters.until, "until");
+  const pattern = `%${text.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
+  const where = (t: string) => `${t}.body LIKE ? ESCAPE '\\' AND (? IS NULL OR ${t}.sender = ? COLLATE NOCASE)
+    AND (? IS NULL OR ${t}.created_at >= ?) AND (? IS NULL OR ${t}.created_at < ?)`;
+  return { channel, where, params: [pattern, from ?? null, from ?? null, since, since, until, until] };
+}
+
+/** The posts half of a search, newest first, scoped to the account's channels; its first placeholder is the account. */
+const searchPosts = ({ channel, where }: SearchQuery) =>
+  `SELECT 1 AS is_post, p.id, p.sender, p.body, 0 AS broadcast, p.created_at, c.name AS channel, NULL AS recipient, NULL AS read_at
+   FROM channel_posts p JOIN channels c ON c.id = p.channel_id AND c.account_id = ?
+   WHERE ${channel === undefined ? "" : "c.name = ? AND "}${where("p")}`;
+
+// Newest first; at the same millisecond a post before a message, and each kind newest id first.
+const SEARCH_ORDER = "ORDER BY created_at DESC, is_post DESC, id DESC LIMIT ? OFFSET ?";
+
+/** A post row of a search page, as both searches return it. */
+const toPost = (r: SearchRow): PostMatch => ({
+  kind: "post",
+  channel: r.channel!,
+  id: r.id,
+  from: r.sender,
+  sentAt: new Date(r.created_at).toISOString(),
+  body: r.body,
+});
+
 /**
  * One page of what the caller could already read whose body contains `text` (ASCII letters in any case), newest
  * first: the messages it received and the posts in its account's channels. `reader` is the caller's registration, so
@@ -357,34 +405,19 @@ export function search(
   limit = DEFAULT_INBOX_LIMIT,
   offset = 0,
 ): (MessageMatch | PostMatch)[] {
-  if (text.length === 0 || text.length > 2 * MAX_SEARCH_LENGTH || countCodePoints(text) > MAX_SEARCH_LENGTH) {
-    throw new ToolError(`Search text must be 1 to ${MAX_SEARCH_LENGTH} characters.`);
-  }
-  const { channel, from } = filters;
-  if (channel !== undefined && !NAME_PATTERN.test(channel)) {
-    throw new ToolError("Invalid channel name: use 1-32 characters from letters, digits, '-' and '_'.");
-  }
-  const since = filters.since === undefined ? null : parseTime(filters.since, "since");
-  const until = filters.until === undefined ? null : parseTime(filters.until, "until");
-  const pattern = `%${text.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
-  // Each half's filters on its table `t`, in the order of their placeholders: body, sender, since, until.
-  const where = (t: string) => `${t}.body LIKE ? ESCAPE '\\' AND (? IS NULL OR ${t}.sender = ? COLLATE NOCASE)
-    AND (? IS NULL OR ${t}.created_at >= ?) AND (? IS NULL OR ${t}.created_at < ?)`;
-  const params = [pattern, from ?? null, from ?? null, since, since, until, until];
+  const query = searchQuery(text, filters);
+  const { channel, where, params } = query;
   return db.transaction((): (MessageMatch | PostMatch)[] => {
     const agent = db
       .prepare("SELECT id FROM agents WHERE account_id = ? AND id = ? AND registered_at = ? AND instance IS ? AND removed_at IS NULL")
       .get(account, reader.id, reader.registeredAt, reader.instance) as { id: number } | undefined;
     if (!agent) return [];
-    // Newest first; at the same millisecond a post before a message, and each kind newest id first.
     const rows = db
       .prepare(
         `SELECT * FROM (
-           ${channel === undefined ? `SELECT 0 AS is_post, m.id, m.sender, m.body, m.broadcast, m.created_at, NULL AS channel FROM messages m WHERE m.recipient_id = ? AND ${where("m")} UNION ALL` : ""}
-           SELECT 1 AS is_post, p.id, p.sender, p.body, 0 AS broadcast, p.created_at, c.name AS channel
-           FROM channel_posts p JOIN channels c ON c.id = p.channel_id AND c.account_id = ?
-           WHERE ${channel === undefined ? "" : "c.name = ? AND "}${where("p")})
-         ORDER BY created_at DESC, is_post DESC, id DESC LIMIT ? OFFSET ?`,
+           ${channel === undefined ? `SELECT 0 AS is_post, m.id, m.sender, m.body, m.broadcast, m.created_at, NULL AS channel, NULL AS recipient, NULL AS read_at FROM messages m WHERE m.recipient_id = ? AND ${where("m")} UNION ALL` : ""}
+           ${searchPosts(query)})
+         ${SEARCH_ORDER}`,
       )
       .all(
         ...(channel === undefined ? [agent.id, ...params] : []),
@@ -394,11 +427,64 @@ export function search(
         Math.min(limit, MAX_INBOX_LIMIT),
         offset,
       ) as SearchRow[];
-    return rows.map((r): MessageMatch | PostMatch => {
-      const sentAt = new Date(r.created_at).toISOString();
-      return r.is_post === 1
-        ? { kind: "post", channel: r.channel!, id: r.id, from: r.sender, sentAt, body: r.body }
-        : { kind: "message", from: r.sender, sentAt, body: r.body, broadcast: r.broadcast === 1 };
-    });
+    return rows.map((r): MessageMatch | PostMatch =>
+      r.is_post === 1
+        ? toPost(r)
+        : { kind: "message", from: r.sender, sentAt: new Date(r.created_at).toISOString(), body: r.body, broadcast: r.broadcast === 1 },
+    );
   })();
+}
+
+/** One of the account's messages, as `searchAccount` returns it: as `listAccountMessages` gives it. */
+export interface AccountMessageMatch extends AccountMessage {
+  kind: "message";
+}
+
+/**
+ * `search` for the account rather than for one agent: one page of the account's messages, to any of its agents, and
+ * its channels' posts whose body contains `text`, newest first, with the same arguments and errors. A message is
+ * scoped through its recipient's account, as in `listAccountMessages`, and a broadcast appears once per recipient.
+ * Reads only: nothing is marked read and no channel read position moves.
+ */
+export function searchAccount(
+  db: Db,
+  account: AccountId,
+  text: string,
+  filters: SearchFilters = {},
+  limit = DEFAULT_INBOX_LIMIT,
+  offset = 0,
+): (AccountMessageMatch | PostMatch)[] {
+  const query = searchQuery(text, filters);
+  const { channel, where, params } = query;
+  const rows = db
+    .prepare(
+      `SELECT * FROM (
+         ${channel === undefined ? `SELECT 0 AS is_post, m.id, m.sender, m.body, m.broadcast, m.created_at, NULL AS channel,
+             CASE WHEN a.removed_at IS NULL THEN a.name ELSE a.removed_name END AS recipient, m.read_at
+           FROM messages m JOIN agents a ON a.id = m.recipient_id AND a.account_id = ? WHERE ${where("m")} UNION ALL` : ""}
+         ${searchPosts(query)})
+       ${SEARCH_ORDER}`,
+    )
+    .all(
+      ...(channel === undefined ? [account, ...params] : []),
+      account,
+      ...(channel === undefined ? [] : [channel]),
+      ...params,
+      Math.min(limit, MAX_INBOX_LIMIT),
+      offset,
+    ) as SearchRow[];
+  return rows.map((r): AccountMessageMatch | PostMatch =>
+    r.is_post === 1
+      ? toPost(r)
+      : {
+          kind: "message",
+          id: r.id,
+          from: r.sender,
+          to: r.recipient!,
+          sentAt: new Date(r.created_at).toISOString(),
+          body: r.body,
+          broadcast: r.broadcast === 1,
+          read: r.read_at !== null,
+        },
+  );
 }
