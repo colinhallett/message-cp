@@ -262,7 +262,7 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
 
   /**
    * GET /api/channels: one page of the account's channels by name, each with its post count, last post time and the
-   * names of the live agents that have joined it. No post bodies; it reads nothing as read.
+   * names of the live agents that have joined it. No post bodies; it marks nothing read.
    */
   const apiChannels = (req: IncomingMessage, res: ServerResponse, account: AccountId) => {
     if (req.method !== "GET") return reply(res, 405, "Method not allowed", { Allow: "GET" });
@@ -270,12 +270,13 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
     const paging = page(query, DEFAULT_CHANNEL_LIMIT, MAX_CHANNEL_LIMIT);
     if (paging === undefined) return reply(res, 400, `limit must be 1-${MAX_CHANNEL_LIMIT} and offset 0 or more`);
     const channels = unlessBusy(res, () => listAccountChannels(db, account, paging.limit, paging.offset));
-    if (channels !== undefined) sendJson(res, channels);
+    if (channels === undefined) return;
+    sendJson(res, channels);
   };
 
   /**
    * GET /api/channel-posts?channel=<name>: one page of the account's channel, oldest first, without moving any agent's
-   * read position. Another account's channel of the same name is answered like one that does not exist.
+   * read position. A channel only another account has is answered like one that does not exist.
    */
   const apiChannelPosts = (req: IncomingMessage, res: ServerResponse, account: AccountId) => {
     if (req.method !== "GET") return reply(res, 405, "Method not allowed", { Allow: "GET" });
@@ -292,7 +293,8 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
       if (err instanceof ToolError) return reply(res, 404, "No such channel");
       throw err;
     }
-    if (channel !== undefined) sendJson(res, channel);
+    if (channel === undefined) return;
+    sendJson(res, channel);
   };
 
   const handle = async (req: IncomingMessage, res: ServerResponse) => {

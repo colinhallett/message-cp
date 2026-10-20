@@ -290,7 +290,7 @@ export function listAccountChannels(
 }
 
 /**
- * One page of the account's channel `channel`, oldest first, paged by `offset`, for the account rather than for one
+ * One page of the account's channel `channel`, oldest first, paged by `limit` and `offset`, for the account rather than for one
  * agent. Reads only, so no read position moves.
  */
 export function readAccountChannel(

@@ -77,15 +77,17 @@ describe("GET /api/channels", () => {
     post(db, OWNER_ACCOUNT, member(OWNER_ACCOUNT, "dave"), "build", "secret one");
     const last = post(db, OWNER_ACCOUNT, member(OWNER_ACCOUNT, "bob"), "build", "secret two");
     removeAgent(db, OWNER_ACCOUNT, "dave", dave);
-    // Joined before anyone posted.
-    joinChannel(db, OWNER_ACCOUNT, member(OWNER_ACCOUNT, "alice"), "Alpha");
+    // Joined before anyone posted; names sort regardless of case, so "alpha" comes before "Zed".
+    joinChannel(db, OWNER_ACCOUNT, member(OWNER_ACCOUNT, "alice"), "alpha");
+    joinChannel(db, OWNER_ACCOUNT, member(OWNER_ACCOUNT, "alice"), "Zed");
     for (const token of [OWNER_TOKEN, ownerFull, ownerViewer]) {
       const text = await (await get("/api/channels", token)).text();
       expect(text).not.toContain("secret");
       expect(text).not.toContain(token);
       expect(await channels(token)).toEqual([
-        { name: "Alpha", posts: 0, lastPostAt: null, members: ["alice"] },
+        { name: "alpha", posts: 0, lastPostAt: null, members: ["alice"] },
         { name: "build", posts: 2, lastPostAt: last.sentAt, members: ["alice", "carol"] },
+        { name: "Zed", posts: 0, lastPostAt: null, members: ["alice"] },
       ]);
     }
   });
@@ -98,6 +100,11 @@ describe("GET /api/channels", () => {
     joinChannel(db, friend, member(friend, "alice"), "build");
     post(db, friend, member(friend, "fred"), "build", "friend's post");
     post(db, friend, member(friend, "fred"), "friends-only", "friend's other post");
+    // A friend's agent joined to the owner's channel, which no tool can do, still never shows as a member.
+    db.prepare("INSERT INTO channel_reads (agent_id, channel_id, last_read_id, joined) VALUES (?, ?, 0, 1)").run(
+      member(friend, "fred").id,
+      db.prepare("SELECT id FROM channels WHERE account_id = ? AND name = 'build'").pluck().get(OWNER_ACCOUNT),
+    );
     for (const token of [OWNER_TOKEN, ownerFull, ownerViewer]) {
       expect(await channels(token)).toEqual([{ name: "build", posts: 0, lastPostAt: null, members: ["alice"] }]);
     }
@@ -159,7 +166,7 @@ describe("GET /api/channel-posts", () => {
     expect((await posts(friendViewer, "?channel=log")).posts).toHaveLength(50);
     expect((await posts(friendViewer, "?channel=log&limit=200")).posts).toHaveLength(200);
     const bad = ["&limit=0", "&limit=201", "&limit=x", "&offset=-1", "&limit=1.5", "&limit="];
-    bad.push("&limit=1&limit=x", "&offset=0&offset=-1", "&limit=2&limit=2");
+    bad.push("&limit=1&limit=x", "&limit=x&limit=1", "&offset=0&offset=-1", "&limit=2&limit=2");
     for (const query of bad) expect((await get(`/api/channel-posts?channel=log${query}`, friendViewer)).status).toBe(400);
   });
 
