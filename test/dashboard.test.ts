@@ -2026,6 +2026,12 @@ describe("the page's posting", () => {
       expect(list(page).hidden).toBe(true);
       type(page, "x @bo", 1);
       expect(list(page).hidden).toBe(true);
+      // Nor does it open over selected text.
+      page.elements["compose-text"].selectionStart = 1;
+      page.elements["compose-text"].selectionEnd = 3;
+      page.elements["compose-text"].value = "@bob";
+      page.elements["compose-text"].on.input();
+      expect(list(page).hidden).toBe(true);
       // The chosen person is never offered.
       type(page, "@c");
       expect(list(page).hidden).toBe(true);
@@ -2061,6 +2067,14 @@ describe("the page's posting", () => {
       await page.until(() => page.elements["rows"].children.length === 15);
       type(page, "@bo");
       expect(offered(page)).toHaveLength(8);
+      expect(page.elements["compose-text"].attributes["aria-expanded"]).toBe("true");
+      // An open list follows the next answer: a name that has gone is no longer offered.
+      type(page, "@bot");
+      expect(offered(page).map(([name]) => name)).toContain("bot0");
+      db.prepare("UPDATE agents SET removed_at = ? WHERE name = 'bot0'").run(Date.now());
+      await page.poll();
+      await page.until(() => !offered(page).some(([name]) => name === "bot0"));
+      expect(offered(page)).toHaveLength(8);
     });
 
     it("moves the highlight with the arrows and picks it with Enter, inserting @<name> and sending nothing", async () => {
@@ -2095,8 +2109,13 @@ describe("the page's posting", () => {
       expect(prevented).toBe(1);
       expect(page.elements["compose-text"].value).toBe("@dana and @alice ");
       expect(list(page).hidden).toBe(true);
-      // With the list closed, Tab keeps its default and moves on.
+      // With the list closed, Tab keeps its default and moves on, and Shift+Tab does even while it is open.
       expect(press(page, "Tab")).toBe(0);
+      type(page, "@a");
+      let back = 0;
+      page.elements["compose-text"].on.keydown({ key: "Tab", shiftKey: true, isComposing: false, preventDefault: () => back++ });
+      expect(back).toBe(0);
+      expect(page.elements["compose-text"].value).toBe("@a");
       expect(page.posts()).toEqual([]);
     });
 

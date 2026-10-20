@@ -277,7 +277,7 @@ let logMentions = [];
 let resultMentions = [];
 // The account's live agents and people as the last GET /api/agents gave them, each with its name and whether it is a
 // person, which the compose box offers after an "@"; ask() clears them.
-let names = [];
+let mentionable = [];
 // An "@" being typed: the text before the caret ends in one, at the start or after a character that cannot be in a
 // name (MENTION's boundary), with the name characters typed after it.
 const TYPING = /(?<![A-Za-z0-9_-])@([A-Za-z0-9_-]{0,32})$/;
@@ -319,7 +319,7 @@ function ask(message) {
   grow();
   composeNote.textContent = "";
   composeSend.disabled = false;
-  names = [];
+  mentionable = [];
   // Clear every panel, so one token's agents, channels, pairs and messages never show under the next token.
   rows.replaceChildren();
   channelRows.replaceChildren();
@@ -372,7 +372,8 @@ compose.addEventListener("submit", (event) => {
 // neither (Safari ends it before the keydown, which then has keyCode 229), and one in a box of only whitespace sends
 // nothing; send() itself ignores one while a send is in flight.
 // While names are offered, the arrows move the highlight, Enter or Tab picks the highlighted name and Escape closes the
-// list, each in place of what the key would do.
+// list, each in place of what the key would do. Enter or Tab with a modifier (Shift+Tab moves focus back) does what it
+// always does.
 composeText.addEventListener("keydown", (event) => {
   if (offered.length > 0 && !event.isComposing && event.keyCode !== 229) {
     if (event.key === "ArrowDown" || event.key === "ArrowUp") {
@@ -381,7 +382,8 @@ composeText.addEventListener("keydown", (event) => {
       showOffered();
       return;
     }
-    if (event.key === "Enter" || event.key === "Tab") {
+    const plain = !event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey;
+    if (plain && (event.key === "Enter" || event.key === "Tab")) {
       event.preventDefault();
       pick(highlighted);
       return;
@@ -640,13 +642,15 @@ function grow() {
 }
 
 // Offers the names that start with what was typed after an "@" just before the caret, ignoring case, leaving out the
-// chosen person and "all", for which the server records no mention; closes the list when there is no "@" or no match.
+// chosen person and "all", for which the server records no mention; closes the list when there is no "@" or no match,
+// or text is selected.
 function offer() {
-  const typed = compose.hidden ? null : TYPING.exec(composeText.value.slice(0, composeText.selectionStart));
+  const selected = composeText.selectionStart !== composeText.selectionEnd;
+  const typed = compose.hidden || selected ? null : TYPING.exec(composeText.value.slice(0, composeText.selectionStart));
   if (!typed) return closeOffered();
   const start = typed[1].toLowerCase();
   const me = person === undefined ? undefined : person.toLowerCase();
-  const found = names.filter((n) => {
+  const found = mentionable.filter((n) => {
     const lower = n.name.toLowerCase();
     return lower.startsWith(start) && lower !== "all" && lower !== me;
   }).slice(0, MAX_OFFERED);
@@ -677,6 +681,7 @@ function showOffered() {
     return option;
   }));
   mentionList.hidden = false;
+  composeText.setAttribute("aria-expanded", "true");
   composeText.setAttribute("aria-activedescendant", "mention-" + highlighted);
 }
 
@@ -686,6 +691,7 @@ function closeOffered() {
   highlighted = 0;
   mentionList.replaceChildren();
   mentionList.hidden = true;
+  composeText.setAttribute("aria-expanded", "false");
   composeText.removeAttribute("aria-activedescendant");
 }
 
@@ -1056,8 +1062,10 @@ function show(agents) {
   if (items.length === 0) items.push(part("li", "note", "No agents registered in this account."));
   rows.replaceChildren(...items);
   people = agents.filter((a) => a.person === true).map((a) => String(a.name));
-  names = agents.map((a) => ({ name: String(a.name), person: a.person === true }));
+  mentionable = agents.map((a) => ({ name: String(a.name), person: a.person === true }));
   showPicker();
+  // An open list follows the answer, so it never offers a name that has gone.
+  if (offered.length > 0) offer();
 }
 
 // The sidebar key of the open conversation, as sidebarItem takes it, or undefined.
@@ -1362,7 +1370,7 @@ export const DASHBOARD_HTML = `<!doctype html>
 <ul id="mentions" role="listbox" aria-label="Agents and people to mention" hidden></ul>
 <form id="compose" hidden>
 <label id="compose-label" for="compose-text"></label>
-<textarea id="compose-text" rows="2" required autocomplete="off" aria-controls="mentions" placeholder="Enter sends, Shift+Enter adds a line"></textarea>
+<textarea id="compose-text" rows="2" required autocomplete="off" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="mentions" placeholder="Enter sends, Shift+Enter adds a line"></textarea>
 <button id="compose-send" type="submit">Send</button>
 </form>
 <p id="compose-note" class="note" role="status"></p>
