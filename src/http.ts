@@ -175,7 +175,7 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
     } catch (err) {
       const code = (err as { code?: unknown } | null)?.code;
       if (typeof code !== "string" || !code.startsWith("SQLITE_BUSY")) throw err;
-      return { count: 0, senders: [], posts: 0, channels: [] };
+      return { count: 0, senders: [], posts: 0, channels: [], mentions: 0, mentionChannels: [] };
     }
   };
 

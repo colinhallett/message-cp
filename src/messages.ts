@@ -1,4 +1,4 @@
-import { ToolError, getAgent } from "./agents.js";
+import { ToolError, getAgent, type Identity } from "./agents.js";
 import type { AccountId, Db } from "./db.js";
 
 export interface Message {
@@ -6,6 +6,15 @@ export interface Message {
   sentAt: string;
   body: string;
   broadcast: boolean;
+}
+
+/** A channel post that named the reader as `@<name>`, as read_inbox returns it: `id` is the post's id. */
+export interface Mention {
+  channel: string;
+  id: number;
+  from: string;
+  sentAt: string;
+  body: string;
 }
 
 export interface SendResult {
@@ -20,6 +29,12 @@ interface Row {
   broadcast: number;
   created_at: number;
   read_at: number | null;
+}
+
+/** A row of read_inbox's page: a message, or with `mention` 1 a mentioning post, whose `channel` is then set. */
+interface InboxRow extends Omit<Row, "read_at"> {
+  mention: number;
+  channel: string | null;
 }
 
 export const MAX_BODY_LENGTH = 4000;
@@ -76,36 +91,56 @@ export function sendMessage(db: Db, account: AccountId, from: string, to: string
 }
 
 /**
- * One page of the caller's messages, oldest first. Everything returned is marked read. Unread
- * messages beyond the page stay unread for the next call; with `unreadOnly` false, use `offset`.
+ * One page of the caller's messages and mentions together, oldest first. Everything returned is marked read. Unread
+ * ones beyond the page stay unread for the next call; with `unreadOnly` false, use `offset`. Reading a mention does
+ * not move the caller's read position in its channel. `reader` is the caller's name, or its registration.
  */
 export function readInbox(
   db: Db,
   account: AccountId,
-  name: string,
+  reader: string | Identity,
   unreadOnly = true,
   limit = DEFAULT_INBOX_LIMIT,
   offset = 0,
-): Message[] {
+): (Message | Mention)[] {
   return db
-    .transaction((): Message[] => {
+    .transaction((): (Message | Mention)[] => {
+      // A session passes its registration, so a name taken over since the session checked it reads nothing.
+      const agent = (
+        typeof reader === "string"
+          ? db.prepare("SELECT id FROM agents WHERE account_id = ? AND name = ? AND removed_at IS NULL").get(account, reader)
+          : db
+              .prepare("SELECT id FROM agents WHERE account_id = ? AND id = ? AND registered_at = ? AND instance IS ? AND removed_at IS NULL")
+              .get(account, reader.id, reader.registeredAt, reader.instance)
+      ) as { id: number } | undefined;
+      if (!agent) return [];
+      // Oldest first; a message before a mention of the same millisecond, and each kind in id order.
       const rows = db
         .prepare(
-          `SELECT m.id, m.sender, m.body, m.broadcast, m.created_at, m.read_at
-           FROM messages m JOIN agents a ON a.id = m.recipient_id
-           WHERE a.account_id = ? AND a.name = ? AND a.removed_at IS NULL ${unreadOnly ? "AND m.read_at IS NULL" : ""}
-           ORDER BY m.id LIMIT ? OFFSET ?`,
+          `SELECT 0 AS mention, id, sender, body, broadcast, created_at, NULL AS channel
+           FROM messages WHERE recipient_id = ? ${unreadOnly ? "AND read_at IS NULL" : ""}
+           UNION ALL
+           SELECT 1, p.id, p.sender, p.body, 0, p.created_at, c.name
+           FROM mentions x JOIN channel_posts p ON p.id = x.post_id
+           JOIN channels c ON c.id = p.channel_id AND c.account_id = ?
+           WHERE x.agent_id = ? ${unreadOnly ? "AND x.read_at IS NULL" : ""}
+           ORDER BY created_at, mention, id LIMIT ? OFFSET ?`,
         )
-        .all(account, name, Math.min(limit, MAX_INBOX_LIMIT), offset) as Row[];
-      const mark = db.prepare("UPDATE messages SET read_at = ? WHERE id = ? AND read_at IS NULL");
+        .all(agent.id, account, agent.id, Math.min(limit, MAX_INBOX_LIMIT), offset) as InboxRow[];
+      const markMessage = db.prepare("UPDATE messages SET read_at = ? WHERE id = ? AND read_at IS NULL");
+      const markMention = db.prepare(
+        "UPDATE mentions SET read_at = ? WHERE agent_id = ? AND post_id = ? AND read_at IS NULL",
+      );
       const now = Date.now();
-      for (const r of rows) mark.run(now, r.id);
-      return rows.map((r) => ({
-        from: r.sender,
-        sentAt: new Date(r.created_at).toISOString(),
-        body: r.body,
-        broadcast: r.broadcast === 1,
-      }));
+      for (const r of rows) {
+        if (r.mention === 1) markMention.run(now, agent.id, r.id);
+        else markMessage.run(now, r.id);
+      }
+      return rows.map((r): Message | Mention =>
+        r.mention === 1
+          ? { channel: r.channel!, id: r.id, from: r.sender, sentAt: new Date(r.created_at).toISOString(), body: r.body }
+          : { from: r.sender, sentAt: new Date(r.created_at).toISOString(), body: r.body, broadcast: r.broadcast === 1 },
+      );
     })
     .immediate();
 }
@@ -117,14 +152,18 @@ export interface Unread {
   /** Unread posts in the channels the agent has joined, and which channels they are in. */
   posts: number;
   channels: string[];
+  /** Unread mentions, in any channel of the account, and which channels they are in. */
+  mentions: number;
+  mentionChannels: string[];
 }
 
-/** Whether `unread` is anything to wake for: an unread message or an unread post in a joined channel. */
-export const hasUnread = (unread: Unread) => unread.count > 0 || unread.posts > 0;
+/** Whether `unread` is anything to wake for: an unread message, an unread post in a joined channel or a mention. */
+export const hasUnread = (unread: Unread) => unread.count > 0 || unread.posts > 0 || unread.mentions > 0;
 
 /**
- * How many unread messages `name` has and who sent them, and how many unread posts are in the channels it has joined
- * and where, without reading or marking anything. Undefined if there is no such agent.
+ * How many unread messages `name` has and who sent them, how many unread posts are in the channels it has joined and
+ * where, and how many unread mentions it has and where, without reading or marking anything. Undefined if there is no
+ * such agent.
  */
 export function unreadSummary(db: Db, account: AccountId, name: string): Unread | undefined {
   // One read transaction, so the messages and the posts are counted at the same moment.
@@ -148,11 +187,22 @@ export function unreadSummary(db: Db, account: AccountId, name: string): Unread 
          WHERE a.account_id = ? AND a.name = ? AND a.removed_at IS NULL GROUP BY c.id ORDER BY MIN(p.id)`,
       )
       .all(account, agent.name) as { name: string; n: number }[];
+    const mentions = db
+      .prepare(
+        `SELECT c.name, COUNT(*) AS n FROM agents a
+         JOIN mentions x ON x.agent_id = a.id AND x.read_at IS NULL
+         JOIN channel_posts p ON p.id = x.post_id
+         JOIN channels c ON c.id = p.channel_id AND c.account_id = a.account_id
+         WHERE a.account_id = ? AND a.name = ? AND a.removed_at IS NULL GROUP BY c.id ORDER BY MIN(p.id)`,
+      )
+      .all(account, agent.name) as { name: string; n: number }[];
     return {
       count: messages.reduce((sum, r) => sum + r.n, 0),
       senders: messages.map((r) => r.sender),
       posts: posts.reduce((sum, r) => sum + r.n, 0),
       channels: posts.map((r) => r.name),
+      mentions: mentions.reduce((sum, r) => sum + r.n, 0),
+      mentionChannels: mentions.map((r) => r.name),
     };
   })();
 }

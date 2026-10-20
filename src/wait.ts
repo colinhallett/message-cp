@@ -20,8 +20,9 @@ export function waitCommand(name: string, env: NodeJS.ProcessEnv = process.env):
 
 /**
  * The one line `wait` prints, here and over HTTP: how many unread messages and from whom, then how many unread posts
- * in joined channels and in which, never the bodies. With no unread posts it is the messages part alone, as it was
- * before channels, so scripts that parse it keep working.
+ * in joined channels and in which, then how many unread mentions and in which channels, never the bodies. With no
+ * unread posts or mentions it is the messages part alone, as it was before channels, so scripts that parse it keep
+ * working.
  */
 export function formatUnread(unread: Unread): string {
   const parts: string[] = [];
@@ -30,6 +31,11 @@ export function formatUnread(unread: Unread): string {
   }
   if (unread.posts > 0) {
     parts.push(`${unread.posts} unread ${unread.posts === 1 ? "post" : "posts"} in ${unread.channels.map((c) => `#${c}`).join(", ")}`);
+  }
+  if (unread.mentions > 0) {
+    parts.push(
+      `${unread.mentions} unread ${unread.mentions === 1 ? "mention" : "mentions"} in ${unread.mentionChannels.map((c) => `#${c}`).join(", ")}`,
+    );
   }
   return parts.join("; ");
 }
@@ -76,7 +82,7 @@ export function instructions(env: NodeJS.ProcessEnv = process.env, remote = fals
   return [
     "message-cp does not push messages; an agent has to ask for them.",
     `To be woken when a message arrives, register and then run this as a background command (in Claude Code, a Bash call with run_in_background): ${command}`,
-    "It exits as soon as you have unread mail, or unread posts in a channel you joined with join_channel, and prints how many, from whom and in which channels, without reading them.",
-    "When it fires, call read_inbox if it names messages and read_channel for each channel it names, and only then start the command again; starting it before reading fires at once on the same mail.",
+    "It exits as soon as you have unread mail, unread posts in a channel you joined with join_channel, or an unread @mention of you, and prints how many, from whom and in which channels, without reading them.",
+    "When it fires, call read_inbox if it names messages or mentions and read_channel for each channel it names posts in, and only then start the command again; starting it before reading fires at once on the same mail.",
   ].join("\n");
 }

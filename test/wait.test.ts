@@ -53,7 +53,7 @@ describe("message-cp wait", () => {
     expect(await w.exited).toBe(0);
     expect(w.out().trim()).toBe("1 unread message from b");
     expect(w.out()).not.toContain("secret body");
-    expect(unreadSummary(db, OWNER_ACCOUNT, "a")).toEqual({ count: 1, senders: ["b"], posts: 0, channels: [] });
+    expect(unreadSummary(db, OWNER_ACCOUNT, "a")).toEqual({ count: 1, senders: ["b"], posts: 0, channels: [], mentions: 0, mentionChannels: [] });
   }, 20_000);
 
   it("keeps waiting until a message arrives from another process", async () => {
@@ -77,7 +77,7 @@ describe("message-cp wait", () => {
     sendMessage(db, OWNER_ACCOUNT, "b", "a", "old");
     readInbox(db, OWNER_ACCOUNT, "a");
     sendMessage(db, OWNER_ACCOUNT, "a", "b", "not for a");
-    expect(unreadSummary(db, OWNER_ACCOUNT, "a")).toEqual({ count: 0, senders: [], posts: 0, channels: [] });
+    expect(unreadSummary(db, OWNER_ACCOUNT, "a")).toEqual({ count: 0, senders: [], posts: 0, channels: [], mentions: 0, mentionChannels: [] });
   });
 
   it("wakes for a post in a joined channel, names the channel and not the body, and not again once it is read", async () => {

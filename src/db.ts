@@ -95,6 +95,17 @@ CREATE TABLE IF NOT EXISTS channel_reads (
   joined INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (agent_id, channel_id)
 );
+
+-- A post that names \`@<agent>\` records one row for each live agent of its account with that name, but the poster.
+-- Keyed on the agent's row, like channel_reads, so a later agent that registers a removed agent's name never sees it.
+-- \`read_at\` is set when read_inbox returns it.
+CREATE TABLE IF NOT EXISTS mentions (
+  agent_id INTEGER NOT NULL REFERENCES agents(id),
+  post_id INTEGER NOT NULL REFERENCES channel_posts(id),
+  read_at INTEGER,
+  PRIMARY KEY (agent_id, post_id)
+);
+CREATE INDEX IF NOT EXISTS mentions_unread ON mentions (agent_id, read_at, post_id);
 `;
 
 // CREATE TABLE IF NOT EXISTS leaves an existing table alone, so columns added later are added here, only when missing.
