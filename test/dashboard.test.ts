@@ -201,7 +201,13 @@ describe("the page's channels and messages", () => {
   const item = (row: Stub) => row.children[0].children.map((c) => c.textContent);
   const open = (row: Stub) => row.children[0].on.click();
   // A chat-log entry's field by class name: from, tag, time or body.
-  const field = (row: Stub, name: string) => row.children.find((c) => c.className === name)?.textContent;
+  // An element's text as a browser reads it: the stub's textContent does not join its children's, so a split body's
+  // pieces are joined here.
+  const text = (node: Stub): string => (node.children.length > 0 ? node.children.map(text).join("") : node.textContent);
+  const field = (row: Stub, name: string) => {
+    const node = row.children.find((c) => c.className === name);
+    return node && text(node);
+  };
   const entries = (log: Stub) => log.children.map((row) => [field(row, "from"), field(row, "body")]);
 
   // Runs the served script with the given token against this server, with real fetches and timers run by hand.
@@ -920,6 +926,142 @@ describe("the page's channels and messages", () => {
       await page.until(() => time().textContent === "just now");
     });
 
+    // The mentions of a row's body: each one's text and classes.
+    const mentions = (row: Stub) =>
+      row.children.find((c) => c.className === "body")!.children.filter((c) => c.className.startsWith("mention")).map((c) => [c.textContent, c.className]);
+
+    it("splits each @name out of an entry's text as a mention, as the server finds them, and keeps the rest as text", async () => {
+      registerAgent(db, OWNER_ACCOUNT, "bob", "x");
+      const bob = { ...identityOf(db, OWNER_ACCOUNT, "bob")!, name: "bob" };
+      const long = "x".repeat(33);
+      const body = `ship it @bob <b>now</b>\n@all, a@bob @${long} @${"y".repeat(32)}`;
+      post(db, OWNER_ACCOUNT, bob, "build", body);
+      post(db, OWNER_ACCOUNT, bob, "build", "no mention here");
+      const page = await load(viewer);
+      await page.until(() => page.elements["channel-rows"].children.length === 1);
+      open(page.elements["channel-rows"].children[0]);
+      const log = page.elements["post-rows"];
+      await page.until(() => log.children.length === 2);
+      // The whole text reads the same, <b> and the line break included.
+      expect(entries(log)).toEqual([
+        ["bob", body],
+        ["bob", "no mention here"],
+      ]);
+      // a@bob and the 33-character name are not mentions; @all and a 32-character name are.
+      expect(mentions(log.children[0])).toEqual([
+        ["@bob", "mention"],
+        ["@all", "mention"],
+        ["@" + "y".repeat(32), "mention"],
+      ]);
+      const pieces = log.children[0].children.find((c) => c.className === "body")!.children;
+      expect(pieces.map((c) => c.textContent)).toEqual(["ship it ", "@bob", ` <b>now</b>\n`, "@all", `, a@bob @${long} `, "@" + "y".repeat(32)]);
+      expect(pieces.every((c) => c.children.length === 0)).toBe(true);
+      // A body with no mention is plain text.
+      const plain = log.children[1].children.find((c) => c.className === "body")!;
+      expect([plain.children.length, plain.textContent]).toEqual([0, "no mention here"]);
+      // Both themes define the mention colours, and the reader's own mention has its own look.
+      const html = await (await fetch(`${base()}/`)).text();
+      for (const name of ["--mention-bg", "--me", "--me-bg"]) expect(html.match(new RegExp(`${name}: #`, "g"))).toHaveLength(2);
+      expect(html).toContain(".mention.me {");
+      expect(html).not.toMatch(/style="/);
+    });
+
+    it("marks the chosen person's own mentions, and re-marks them when the person changes or is cleared", async () => {
+      registerAgent(db, OWNER_ACCOUNT, "bob", "x");
+      addPerson(db, "owner", "colin");
+      addPerson(db, "owner", "dana");
+      const bob = { ...identityOf(db, OWNER_ACCOUNT, "bob")!, name: "bob" };
+      post(db, OWNER_ACCOUNT, bob, "build", "@Colin and @dana, see @bob");
+      const page = await load(OWNER_TOKEN);
+      await page.until(() => page.elements["as"].children.length === 3 && page.elements["channel-rows"].children.length === 1);
+      open(page.elements["channel-rows"].children[0]);
+      const log = page.elements["post-rows"];
+      await page.until(() => log.children.length === 1);
+      const row = log.children[0];
+      expect(mentions(row)).toEqual([
+        ["@Colin", "mention"],
+        ["@dana", "mention"],
+        ["@bob", "mention"],
+      ]);
+      const choose = (name: string) => {
+        page.elements["as"].value = name;
+        page.elements["as"].on.change();
+      };
+      choose("colin");
+      // Compared without case, and in place: the row is the same one.
+      expect(log.children[0]).toBe(row);
+      expect(mentions(row)).toEqual([
+        ["@Colin", "mention me"],
+        ["@dana", "mention"],
+        ["@bob", "mention"],
+      ]);
+      choose("dana");
+      expect(mentions(row).map(([, c]) => c)).toEqual(["mention", "mention me", "mention"]);
+      // An entry that arrives later is marked as it is made.
+      post(db, OWNER_ACCOUNT, bob, "build", "@dana again");
+      page.poll();
+      await page.until(() => log.children.length === 2);
+      expect(mentions(log.children[1])).toEqual([["@dana", "mention me"]]);
+      choose("");
+      expect(log.children[0]).toBe(row);
+      expect([...mentions(row), ...mentions(log.children[1])].map(([, c]) => c)).toEqual(["mention", "mention", "mention", "mention"]);
+    });
+
+    it("marks no mention as the reader's with a read-only token", async () => {
+      registerAgent(db, OWNER_ACCOUNT, "bob", "x");
+      addPerson(db, "owner", "colin");
+      post(db, OWNER_ACCOUNT, { ...identityOf(db, OWNER_ACCOUNT, "bob")!, name: "bob" }, "build", "@colin");
+      const page = await load(viewer);
+      await page.until(() => page.elements["channel-rows"].children.length === 1);
+      open(page.elements["channel-rows"].children[0]);
+      const log = page.elements["post-rows"];
+      await page.until(() => log.children.length === 1);
+      page.elements["as"].value = "colin";
+      page.elements["as"].on.change();
+      expect(mentions(log.children[0])).toEqual([["@colin", "mention"]]);
+    });
+
+    it("highlights mentions in search results, and the chosen person's own there too", async () => {
+      for (const name of ["alice", "bob"]) registerAgent(db, OWNER_ACCOUNT, name, "x");
+      addPerson(db, "owner", "colin");
+      sendMessage(db, OWNER_ACCOUNT, "alice", "bob", "deploy @bob <i>now</i>");
+      post(db, OWNER_ACCOUNT, { ...identityOf(db, OWNER_ACCOUNT, "alice")!, name: "alice" }, "build", "deploy, @colin");
+      const page = await load(OWNER_TOKEN);
+      await page.until(() => page.elements["as"].children.length === 2);
+      page.elements["search-text"].value = "deploy";
+      page.elements["search"].on.submit({ preventDefault() {} } as never);
+      const found = page.elements["result-rows"];
+      await page.until(() => found.children.length === 2);
+      expect(found.children.map((r) => field(r, "body")).sort()).toEqual(["deploy @bob <i>now</i>", "deploy, @colin"]);
+      expect(found.children.flatMap(mentions).sort()).toEqual([
+        ["@bob", "mention"],
+        ["@colin", "mention"],
+      ]);
+      page.elements["as"].value = "colin";
+      page.elements["as"].on.change();
+      expect(found.children.flatMap(mentions).sort()).toEqual([
+        ["@bob", "mention"],
+        ["@colin", "mention me"],
+      ]);
+    });
+
+    it("sits a short log at the bottom with CSS, and keeps the webhook deliveries at the top", async () => {
+      registerAgent(db, OWNER_ACCOUNT, "bob", "x");
+      post(db, OWNER_ACCOUNT, { ...identityOf(db, OWNER_ACCOUNT, "bob")!, name: "bob" }, "build", "x");
+      const html = await (await fetch(`${base()}/`)).text();
+      expect(html).toContain("#post-rows { display: flex; flex-direction: column; }");
+      expect(html).toContain("#post-rows > :first-child { margin-top: auto; }");
+      expect(html).toContain("#post-rows.top > :first-child { margin-top: 0; }");
+      expect(html).not.toContain("justify-content: flex-end");
+      const page = await load(viewer);
+      await page.until(() => page.elements["channel-rows"].children.length === 1 && page.elements["delivery-entry"].children.length === 1);
+      const log = page.elements["post-rows"];
+      page.elements["delivery-entry"].children[0].children[0].on.click();
+      expect(log.className).toBe("top");
+      open(page.elements["channel-rows"].children[0]);
+      expect(log.className).toBe("");
+    });
+
     it("shows a time it cannot read as given", async () => {
       for (const name of ["alice", "bob"]) registerAgent(db, OWNER_ACCOUNT, name, "x");
       sendMessage(db, OWNER_ACCOUNT, "alice", "bob", "x");
@@ -980,7 +1122,13 @@ describe("the page's search", () => {
     },
     focus() {},
   });
-  const field = (row: Stub, name: string) => row.children.find((c) => c.className === name)?.textContent;
+  // An element's text as a browser reads it: the stub's textContent does not join its children's, so a split body's
+  // pieces are joined here.
+  const text = (node: Stub): string => (node.children.length > 0 ? node.children.map(text).join("") : node.textContent);
+  const field = (row: Stub, name: string) => {
+    const node = row.children.find((c) => c.className === name);
+    return node && text(node);
+  };
   // A result's sender, where it went (#channel or → recipient), tag and body.
   const result = (row: Stub) => [
     field(row, "from"),
@@ -1204,7 +1352,13 @@ describe("the page's webhook deliveries", () => {
     },
     focus() {},
   });
-  const field = (row: Stub, name: string) => row.children.find((c) => c.className === name)?.textContent;
+  // An element's text as a browser reads it: the stub's textContent does not join its children's, so a split body's
+  // pieces are joined here.
+  const text = (node: Stub): string => (node.children.length > 0 ? node.children.map(text).join("") : node.textContent);
+  const field = (row: Stub, name: string) => {
+    const node = row.children.find((c) => c.className === name);
+    return node && text(node);
+  };
   // A delivery row's on, status, whether it is marked failed, and its webhook, attempts and delivery time.
   const delivery = (row: Stub) => [field(row, "from"), field(row, "tag"), row.className.includes("failed"), field(row, "body")];
 
@@ -1490,7 +1644,13 @@ describe("the page's posting", () => {
     },
     focus() {},
   });
-  const field = (row: Stub, name: string) => row.children.find((c) => c.className === name)?.textContent;
+  // An element's text as a browser reads it: the stub's textContent does not join its children's, so a split body's
+  // pieces are joined here.
+  const text = (node: Stub): string => (node.children.length > 0 ? node.children.map(text).join("") : node.textContent);
+  const field = (row: Stub, name: string) => {
+    const node = row.children.find((c) => c.className === name);
+    return node && text(node);
+  };
   const entries = (log: Stub) => log.children.map((row) => [field(row, "from"), field(row, "body")]);
   const label = (row: Stub) => row.children[0].children[0].textContent;
   const open = (rows: Stub, name: string) => rows.children.find((row) => label(row) === name)!.children[0].on.click();
