@@ -891,6 +891,35 @@ describe("the page's channels and messages", () => {
       expect(time(0).textContent).toBe("unchanged");
     });
 
+    it("leaves a time more than a minute ahead as it is until it becomes just now", async () => {
+      let now = Date.now();
+      class MovingDate extends Date {
+        constructor(...args: unknown[]) {
+          super(...((args.length ? args : [now]) as []));
+        }
+        static now() {
+          return now;
+        }
+      }
+      for (const name of ["alice", "bob"]) registerAgent(db, OWNER_ACCOUNT, name, "x");
+      sendMessage(db, OWNER_ACCOUNT, "alice", "bob", "from a server clock ahead of the page's");
+      db.prepare("UPDATE messages SET created_at = ?").run(now + 30 * MIN);
+      const page = await load(viewer, undefined, { Date: MovingDate });
+      await page.until(() => page.elements["pair-rows"].children.length === 1);
+      open(page.elements["pair-rows"].children[0]);
+      const time = () => page.elements["post-rows"].children[0].children.find((c) => c.className === "time")!;
+      expect(time().textContent).not.toBe("just now");
+      time().textContent = "unchanged";
+      now += 10 * MIN;
+      await page.until(page.scheduled);
+      page.poll();
+      await page.until(page.scheduled);
+      expect(time().textContent).toBe("unchanged");
+      now += 20 * MIN;
+      page.poll();
+      await page.until(() => time().textContent === "just now");
+    });
+
     it("shows a time it cannot read as given", async () => {
       for (const name of ["alice", "bob"]) registerAgent(db, OWNER_ACCOUNT, name, "x");
       sendMessage(db, OWNER_ACCOUNT, "alice", "bob", "x");

@@ -983,11 +983,12 @@ function chatParts(row) {
   return parts;
 }
 
-// The earliest ms chatTime of a time in ms can change at: now for one it shows as relative (or in the future), the next
-// local midnight for one it shows as the time today, and undefined for one it shows as a date or cannot read, which
-// never changes.
+// The earliest ms chatTime of a time in ms can change at: now for one it shows as relative, a minute before it for one
+// more than a minute ahead (a clock behind the server's), when it becomes "just now", the next local midnight for one
+// it shows as the time today, and undefined for one it shows as a date or cannot read, which never changes.
 function nextChange(at) {
   const now = Date.now();
+  if (at - now > 60000) return at - 60000;
   if (now - at < 12 * 3600000) return now;
   const midnight = new Date(now);
   midnight.setHours(24, 0, 0, 0);
