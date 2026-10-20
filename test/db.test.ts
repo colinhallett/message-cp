@@ -1,11 +1,12 @@
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync, mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import Database from "better-sqlite3";
 import { OWNER_ACCOUNT, openDb, preAccountsCopy } from "../src/db.js";
-import { addAccount, addToken } from "../src/accounts.js";
+import { accountForToken, addAccount, addToken } from "../src/accounts.js";
 import { getAgent, registerAgent } from "../src/agents.js";
 import { readInbox, sendMessage } from "../src/messages.js";
 
@@ -56,6 +57,21 @@ describe("openDb", () => {
     expect(db.prepare("SELECT agent_id, channel_id, last_read_id, joined FROM channel_reads").all()).toEqual([
       { agent_id: 1, channel_id: 1, last_read_id: 7, joined: 0 },
     ]);
+    db.close();
+  });
+
+  it("adds read-only tokens to a database from before them, with every existing token a full one that still works", () => {
+    const file = join(mkdtempSync(join(tmpdir(), "message-cp-")), "db.sqlite");
+    const old = new Database(file);
+    old.exec(`CREATE TABLE accounts (id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE COLLATE NOCASE, created_at INTEGER NOT NULL);
+      CREATE TABLE tokens (id INTEGER PRIMARY KEY, account_id INTEGER NOT NULL REFERENCES accounts(id), hash TEXT NOT NULL UNIQUE,
+        created_at INTEGER NOT NULL, revoked_at INTEGER);
+      INSERT INTO accounts VALUES (1, 'owner', 0), (2, 'friend', 0);
+      INSERT INTO tokens VALUES (1, 2, '${createHash("sha256").update("old-token").digest("hex")}', 0, NULL);`);
+    old.close();
+    const db = openDb(file);
+    expect(db.prepare("SELECT id, read_only FROM tokens").all()).toEqual([{ id: 1, read_only: 0 }]);
+    expect(accountForToken(db, "old-token", "owner-token")).toEqual({ account: 2, readOnly: false });
     db.close();
   });
 

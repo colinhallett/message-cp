@@ -46,7 +46,8 @@ CREATE TABLE IF NOT EXISTS tokens (
   account_id INTEGER NOT NULL REFERENCES accounts(id),
   hash TEXT NOT NULL UNIQUE,
   created_at INTEGER NOT NULL,
-  revoked_at INTEGER
+  revoked_at INTEGER,
+  read_only INTEGER NOT NULL DEFAULT 0
 );
 ${agentsTable("agents")}
 
@@ -208,6 +209,8 @@ function migrate(db: Db, path: string): void {
   addColumn(db, "removed_at", "INTEGER");
   addColumn(db, "removed_name", "TEXT");
   addColumn(db, "joined", "INTEGER NOT NULL DEFAULT 0", "channel_reads");
+  // 1 for a token that can only read (`token add --read-only`); tokens made before it existed keep full access.
+  addColumn(db, "read_only", "INTEGER NOT NULL DEFAULT 0", "tokens");
   db.exec(DROP_REMOVED);
   db.prepare("INSERT OR IGNORE INTO accounts (id, name, created_at) VALUES (?, 'owner', ?)").run(OWNER_ACCOUNT, Date.now());
   addAccounts(db, path);
