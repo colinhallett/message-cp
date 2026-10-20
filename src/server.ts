@@ -15,7 +15,15 @@ import {
 } from "./agents.js";
 import { OWNER_ACCOUNT, type AccountId, type Db } from "./db.js";
 import { httpWaitCommand, instructions, waitCommand } from "./wait.js";
-import { DEFAULT_INBOX_LIMIT, MAX_BODY_LENGTH, MAX_INBOX_LIMIT, readInbox, sendMessage } from "./messages.js";
+import {
+  DEFAULT_INBOX_LIMIT,
+  MAX_BODY_LENGTH,
+  MAX_INBOX_LIMIT,
+  MAX_SEARCH_LENGTH,
+  readInbox,
+  search,
+  sendMessage,
+} from "./messages.js";
 import {
   DEFAULT_CHANNEL_LIMIT,
   MAX_CHANNEL_LIMIT,
@@ -192,6 +200,33 @@ export function createServer(db: Db, session = new Session(OWNER_ACCOUNT), optio
     },
     tool(({ unread_only, limit, offset }: { unread_only?: boolean; limit?: number; offset?: number }) =>
       readInbox(db, account, session.requireAgent(), unread_only, limit, offset),
+    ),
+  );
+
+  server.registerTool(
+    "search",
+    {
+      description: `Search the messages you have received and your account's channel posts for text, newest first, one page at a time (default ${DEFAULT_INBOX_LIMIT}, max ${MAX_INBOX_LIMIT}); a full page means there may be more, so call again with a higher offset. A message has kind "message", from, sentAt, body and broadcast; a post has kind "post", channel, id (the post's), from, sentAt and body. Marks nothing read and does not move your read position in any channel. Requires register first.`,
+      inputSchema: {
+        text: z.string().describe(`1-${MAX_SEARCH_LENGTH} characters, found anywhere in the body; ASCII letters match in any case, and % and _ are literal.`),
+        channel: z.string().optional().describe("Only this channel's posts, and no messages."),
+        from: z.string().optional().describe("Only what this agent sent, by name in any case."),
+        since: z.string().optional().describe("ISO 8601 time, such as 2026-10-20 or 2026-10-20T12:00:00Z: sent at or after it."),
+        until: z.string().optional().describe("ISO 8601 time: sent before it."),
+        limit: z.number().int().min(1).max(MAX_INBOX_LIMIT).optional(),
+        offset: z.number().int().min(0).optional(),
+      },
+    },
+    tool(
+      ({ text, channel, from, since, until, limit, offset }: {
+        text: string;
+        channel?: string;
+        from?: string;
+        since?: string;
+        until?: string;
+        limit?: number;
+        offset?: number;
+      }) => search(db, account, session.requireAgent(), text, { channel, from, since, until }, limit, offset),
     ),
   );
 
