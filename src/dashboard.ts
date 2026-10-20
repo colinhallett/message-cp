@@ -228,7 +228,9 @@ async function poll(gen) {
       ]);
       const failed = [messages, posts].find((r) => r.status === "rejected");
       if (failed) throw failed.reason;
-      result = messages.value.ok ? posts.value : messages.value;
+      // A refused token from either read wins, so a failure of the other never leaves the page showing its data.
+      const values = [messages.value, posts.value];
+      result = values.find((v) => v.status === 401) ?? values.find((v) => !v.ok) ?? posts.value;
     }
   } catch {
     result = { error: ac.signal.aborted ? "The server did not answer in time" : "Cannot reach the server" };

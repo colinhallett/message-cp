@@ -417,6 +417,23 @@ describe("the page's channels and messages", () => {
     await page.until(() => page.elements["post-rows"].children.length === 1);
     await page.until(() => page.elements["status-line"].textContent === "The server is busy (503). Retrying…");
   });
+
+  it("asks for another token when the log is refused while the messages fail", async () => {
+    seed();
+    let revoked = false;
+    const page = await load(viewer, (url) =>
+      url.startsWith("/api/messages") ? 503 : revoked && url.startsWith("/api/channel-posts") ? 401 : undefined,
+    );
+    const channels = page.elements["channel-rows"];
+    await page.until(() => channels.children.length === 1);
+    channels.children[0].children[0].children[0].on.click();
+    await page.until(() => page.elements["post-rows"].children.length === 1);
+    revoked = true;
+    page.poll();
+    await page.until(() => page.elements["status-line"].textContent.startsWith("The server refused"));
+    expect(page.elements["post-rows"].children).toHaveLength(0);
+    expect(page.store.size).toBe(0);
+  });
 });
 
 describe("everything but GET / still needs the token", () => {
