@@ -452,7 +452,6 @@ async function search(text) {
   if (gen !== searchGeneration) return;
   if (answer.status === 401) return ask("The server refused that token. Enter another.");
   if (answer.items) {
-    resultMentions = [];
     resultRows.replaceChildren(...answer.items.map(resultEntry));
     resultRows.scrollTop = 0;
     resultsNote.textContent =

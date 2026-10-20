@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runInNewContext } from "node:vm";
@@ -964,6 +964,9 @@ describe("the page's channels and messages", () => {
       for (const name of ["--mention-bg", "--me", "--me-bg"]) expect(html.match(new RegExp(`${name}: #`, "g"))).toHaveLength(2);
       expect(html).toContain(".mention.me {");
       expect(html).not.toMatch(/style="/);
+      // The page's pattern is the server's.
+      const server = /^const MENTION = .*;$/m.exec(readFileSync(new URL("../src/channels.ts", import.meta.url), "utf8"))![0];
+      expect(html).toContain(server);
     });
 
     it("marks the chosen person's own mentions, and re-marks them when the person changes or is cleared", async () => {
