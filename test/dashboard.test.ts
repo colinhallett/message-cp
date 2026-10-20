@@ -175,8 +175,8 @@ describe("the page's channels", () => {
   const text = (row: Stub) => row.children.map((td) => td.textContent || td.children.map((c) => c.textContent).join(""));
 
   // Runs the served script with the given token against this server, with real fetches and timers run by hand.
-  // refuse, when it returns a status, answers a request with that status instead of the server.
-  async function load(token: string, refuse: (url: string) => number | undefined = () => undefined) {
+  // refuse, when it returns a status, answers a request with that status instead of the server; "hang" never answers.
+  async function load(token: string, refuse: (url: string) => number | "hang" | undefined = () => undefined) {
     const html = await (await fetch(`${base()}/`)).text();
     const script = /<script>([\s\S]*?)<\/script>/.exec(html)![1];
     const elements: Record<string, Stub> = {};
@@ -193,6 +193,7 @@ describe("the page's channels", () => {
       fetch: (url: string, init: RequestInit) => {
         urls.push(url);
         const status = refuse(url);
+        if (status === "hang") return new Promise<Response>(() => {});
         return status === undefined ? fetch(`${base()}${url}`, init) : Promise.resolve(new Response(null, { status }));
       },
     });
@@ -297,6 +298,48 @@ describe("the page's channels", () => {
     expect(text(posts.children[200])[2]).toBe("post 200");
     expect(page.urls).toContain("/api/channels?limit=200&offset=200");
     expect(page.urls).toContain("/api/channel-posts?channel=c000&limit=200&offset=200");
+  });
+  it("reads only the posts past the ones the log holds on each poll, and shows the agents and channels first", async () => {
+    seed();
+    const alice = { ...identityOf(db, OWNER_ACCOUNT, "alice")!, name: "alice" };
+    let hang = false;
+    const page = await load(viewer, (url) => (hang && url.startsWith("/api/channel-posts") ? "hang" : undefined));
+    const channels = page.elements["channel-rows"];
+    const posts = page.elements["post-rows"];
+    await page.until(() => channels.children.length === 1);
+    channels.children[0].children[0].children[0].on.click();
+    await page.until(() => posts.children.length === 1);
+
+    post(db, OWNER_ACCOUNT, alice, "build", "second");
+    page.urls.length = 0;
+    page.poll();
+    await page.until(() => posts.children.length === 2);
+    expect(page.urls).toContain("/api/channel-posts?channel=build&limit=200&offset=1");
+    expect(page.urls).not.toContain("/api/channel-posts?channel=build&limit=200&offset=0");
+    expect(posts.children.map((row) => text(row)[2])).toEqual(["hello", "second"]);
+
+    // A log read that has not answered yet does not hold back the agents and channels.
+    joinChannel(db, OWNER_ACCOUNT, alice, "ops");
+    hang = true;
+    page.poll();
+    await page.until(() => channels.children.length === 2);
+    expect(posts.children).toHaveLength(2);
+  });
+
+  it("lists a channel once when its page boundary moves between reads", async () => {
+    registerAgent(db, OWNER_ACCOUNT, "alice", "x");
+    const alice = { ...identityOf(db, OWNER_ACCOUNT, "alice")!, name: "alice" };
+    for (let i = 1; i <= 200; i++) joinChannel(db, OWNER_ACCOUNT, alice, `c${String(i).padStart(3, "0")}`);
+    // After the first page is read, a channel that sorts first is created, so c200 comes back on the second page too.
+    const page = await load(viewer, (url) => {
+      if (url === "/api/channels?limit=200&offset=200") joinChannel(db, OWNER_ACCOUNT, alice, "a000");
+      return undefined;
+    });
+    const channels = page.elements["channel-rows"];
+    await page.until(() => channels.children.length > 0);
+    const names = channels.children.map((row) => text(row)[0]);
+    expect(names).toHaveLength(200);
+    expect(new Set(names).size).toBe(200);
   });
 });
 

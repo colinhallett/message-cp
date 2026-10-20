@@ -39,8 +39,9 @@ const statusLine = document.getElementById("status-line");
 let timer;
 let generation = 0;
 let controller;
-// The channel whose log is open, or undefined.
+// The channel whose log is open, or undefined, and how many of its posts the log holds.
 let openChannel;
+let held = 0;
 
 function say(text, isError) {
   statusLine.textContent = text;
@@ -82,6 +83,7 @@ document.getElementById("close-log").addEventListener("click", () => closeLog())
 
 function closeLog() {
   openChannel = undefined;
+  held = 0;
   postRows.replaceChildren();
   logTitle.textContent = "";
   logNote.textContent = "";
@@ -92,6 +94,7 @@ function closeLog() {
 // open before is never shown under this one.
 function openLog(name) {
   openChannel = name;
+  held = 0;
   postRows.replaceChildren();
   logTitle.textContent = name;
   logNote.textContent = "Loading…";
@@ -108,47 +111,76 @@ function start() {
   poll(generation);
 }
 
-// Fetches every page of path, PAGE at a time. items picks a page's list out of its answer, or undefined if there is none.
-async function fetchAll(token, signal, path, params, items) {
+// Fetches the page of path at offset. items picks the page's list out of the answer, or undefined if there is none.
+async function fetchPage(token, signal, path, params, offset, items) {
+  const query = new URLSearchParams(params);
+  query.set("limit", String(PAGE));
+  query.set("offset", String(offset));
+  const res = await fetch(path + "?" + query, {
+    headers: { Authorization: "Bearer " + token },
+    cache: "no-store",
+    credentials: "omit",
+    referrerPolicy: "no-referrer",
+    signal,
+  });
+  if (!res.ok) return { status: res.status };
+  let page;
+  try {
+    page = items(await res.json());
+  } catch {
+    page = undefined;
+  }
+  if (!Array.isArray(page)) return { error: "The server sent an answer this page cannot read" };
+  return { items: page };
+}
+
+// Fetches every page of path, PAGE at a time.
+async function fetchAll(token, signal, path, items) {
   const all = [];
   for (let offset = 0; ; offset += PAGE) {
-    const query = new URLSearchParams(params);
-    query.set("limit", String(PAGE));
-    query.set("offset", String(offset));
-    const res = await fetch(path + "?" + query, {
-      headers: { Authorization: "Bearer " + token },
-      cache: "no-store",
-      credentials: "omit",
-      referrerPolicy: "no-referrer",
-      signal,
-    });
-    if (!res.ok) return { status: res.status };
-    let page;
-    try {
-      page = items(await res.json());
-    } catch {
-      page = undefined;
-    }
-    if (!Array.isArray(page)) return { error: "The server sent an answer this page cannot read" };
-    all.push(...page);
-    if (page.length < PAGE) return { items: all };
+    const page = await fetchPage(token, signal, path, {}, offset, items);
+    if (!page.items) return page;
+    all.push(...page.items);
+    if (page.items.length < PAGE) return { items: all };
   }
 }
 
 const list = (answer) => answer;
 const postsOf = (answer) => (answer && typeof answer === "object" ? answer.posts : undefined);
 
-// Fetches the agents, the channels and the open channel's posts in turn, stopping at the first that fails (a channel
-// that has gone, 404, is not a failure).
-async function fetchView(token, signal, channel) {
-  const agents = await fetchAll(token, signal, "/api/agents", {}, list);
+// Fetches the agents, then the channels, stopping at the first that fails.
+async function fetchView(token, signal) {
+  const agents = await fetchAll(token, signal, "/api/agents", list);
   if (!agents.items) return agents;
-  const channels = await fetchAll(token, signal, "/api/channels", {}, list);
+  const channels = await fetchAll(token, signal, "/api/channels", list);
   if (!channels.items) return channels;
-  if (channel === undefined) return { agents: agents.items, channels: channels.items };
-  const channelPosts = await fetchAll(token, signal, "/api/channel-posts", { channel }, postsOf);
-  if (!channelPosts.items && channelPosts.status !== 404) return channelPosts;
-  return { agents: agents.items, channels: channels.items, posts: channelPosts.items };
+  // A channel created while the pages were read can shift one already read onto the next page; list each name once.
+  const names = new Set();
+  const unique = channels.items.filter((c) => !names.has(String(c.name)) && names.add(String(c.name)));
+  return { ok: true, agents: agents.items, channels: unique };
+}
+
+// Reads the open channel's posts past the ones the log holds and appends each page as it comes. Posts are only ever
+// added, oldest first, so a poll reads only what is new, and one that runs out of time keeps the pages it read.
+// A channel that is not there (404) is shown in the log, not as a failure.
+async function readLog(token, signal, gen, channel) {
+  for (;;) {
+    const page = await fetchPage(token, signal, "/api/channel-posts", { channel }, held, postsOf);
+    // A newer poll, or the log was closed, while this page was read: leave the log to them.
+    if (gen !== generation || channel !== openChannel) return { ok: true };
+    if (page.status === 404) {
+      held = 0;
+      postRows.replaceChildren();
+      logNote.textContent = "There is no channel by this name now.";
+      return { ok: true };
+    }
+    if (!page.items) return page;
+    appendLog(page.items);
+    if (page.items.length < PAGE) {
+      logNote.textContent = held === 0 ? "No posts yet." : "";
+      return { ok: true };
+    }
+  }
 }
 
 async function poll(gen) {
@@ -160,7 +192,13 @@ async function poll(gen) {
   const channel = openChannel;
   let result;
   try {
-    result = await fetchView(token, ac.signal, channel);
+    result = await fetchView(token, ac.signal);
+    // The agents and channels go up before the log is read, so a long or slow log never holds them back.
+    if (result.ok && gen === generation) {
+      show(result.agents);
+      showChannels(result.channels);
+      if (channel !== undefined) result = await readLog(token, ac.signal, gen, channel);
+    }
   } catch {
     result = { error: ac.signal.aborted ? "The server did not answer in time" : "Cannot reach the server" };
   } finally {
@@ -169,11 +207,7 @@ async function poll(gen) {
   // A newer token or a sign-out since this poll began: drop its answer.
   if (gen !== generation) return;
   if (result.status === 401) return ask("The server refused that token. Enter another.");
-  if (result.agents) {
-    show(result.agents);
-    showChannels(result.channels);
-    // The log may have been closed while this poll ran (opening one starts a new poll).
-    if (channel !== undefined && channel === openChannel) showLog(result.posts);
+  if (result.ok) {
     say("", false);
   } else if (result.status === 403) {
     say("This token cannot read agents or channels (403). Retrying…", true);
@@ -248,13 +282,7 @@ function showChannels(channels) {
   channelRows.replaceChildren(...trs);
 }
 
-// posts is undefined when the open channel was not found.
-function showLog(posts) {
-  if (!posts) {
-    postRows.replaceChildren();
-    logNote.textContent = "There is no channel by this name now.";
-    return;
-  }
+function appendLog(posts) {
   const trs = posts.map((p) => {
     const tr = document.createElement("tr");
     const time = cell(when(p.sentAt));
@@ -262,8 +290,8 @@ function showLog(posts) {
     tr.append(cell(String(p.from)), time, cell(String(p.body), "body"));
     return tr;
   });
-  logNote.textContent = trs.length === 0 ? "No posts yet." : "";
-  postRows.replaceChildren(...trs);
+  held += trs.length;
+  postRows.append(...trs);
 }
 
 function when(iso) {
