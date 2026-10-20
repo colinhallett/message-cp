@@ -129,14 +129,13 @@ let controller;
 let openChannel;
 let held = 0;
 // How many of the account's direct messages the page holds, the messages themselves, oldest first, and the pairs of
-// agents that have messaged each other, by pairKey.
+// agents that have messaged each other, by pairKey, each with its names, its count of messages and the index in
+// messages of its newest.
 let heldMessages = 0;
 let messages = [];
 let pairs = new Map();
 // The pair whose messages are open in the log, by pairKey, or undefined. At most one of openChannel and openPair is set.
 let openPair;
-// The channels last listed, so the sidebar can mark the open one again without waiting for a poll.
-let channelsShown = [];
 
 function say(text, isError) {
   statusLine.textContent = text;
@@ -156,7 +155,6 @@ function ask(message) {
   // Clear every panel, so one token's agents, channels, pairs and messages never show under the next token.
   rows.replaceChildren();
   channelRows.replaceChildren();
-  channelsShown = [];
   heldMessages = 0;
   messages = [];
   pairs = new Map();
@@ -401,7 +399,7 @@ function show(agents) {
     dot.title = a.online ? "online" : "offline";
     const seen = part("span", "seen", "last seen " + ago(a.lastSeen));
     seen.title = String(a.lastSeen);
-    const unread = part("span", "unread", "unread: " + a.unreadMessages + " messages, " + a.unreadPosts + " posts");
+    const unread = part("span", "unread", "unread messages: " + a.unreadMessages + ", posts: " + a.unreadPosts);
     li.append(dot, part("span", "name", String(a.name)), part("span", "bio", String(a.bio)), seen, unread);
     return li;
   });
@@ -409,12 +407,21 @@ function show(agents) {
   rows.replaceChildren(...items);
 }
 
-// A sidebar entry: a button with a label and a count that opens a conversation.
-function sidebarItem(label, labelClass, count, current, open) {
+// The sidebar key of the open conversation, as sidebarItem takes it, or undefined.
+function openKey() {
+  if (openChannel !== undefined) return "channel " + openChannel;
+  if (openPair !== undefined) return "pair " + openPair;
+  return undefined;
+}
+
+// A sidebar entry: a button with a label and a count that opens a conversation. Its value is its key, which markOpen
+// compares with openKey().
+function sidebarItem(key, label, labelClass, count, open) {
   const button = document.createElement("button");
   button.type = "button";
-  button.className = current ? "item current" : "item";
-  button.append(part("span", "label " + labelClass, label), part("span", "count", String(count)));
+  button.value = key;
+  button.className = key === openKey() ? "item current" : "item";
+  button.append(part("span", labelClass ? "label " + labelClass : "label", label), part("span", "count", String(count)));
   button.addEventListener("click", open);
   const li = document.createElement("li");
   li.append(button);
@@ -422,10 +429,9 @@ function sidebarItem(label, labelClass, count, current, open) {
 }
 
 function showChannels(channels) {
-  channelsShown = channels;
   const items = channels.map((c) => {
     const name = String(c.name);
-    const li = sidebarItem(name, "channel-name", c.posts, name === openChannel, () => openLog(name));
+    const li = sidebarItem("channel " + name, name, "channel-name", c.posts, () => openLog(name));
     const members = Array.isArray(c.members) ? c.members.map(String).join(", ") : "";
     const last = c.lastPostAt == null ? "no posts" : "last post " + ago(c.lastPostAt);
     li.children[0].title = "Members: " + (members || "–") + "; " + c.posts + " posts, " + last;
@@ -445,16 +451,19 @@ function pairKey(m) {
 
 // Lists the pairs, the one with the newest message first.
 function showPairs() {
-  const items = [...pairs].sort((a, b) => b[1].last - a[1].last).map(([key, pair]) =>
-    sidebarItem(pair.names.join(" ↔ "), "", pair.count, key === openPair, () => openPairLog(key)),
+  const items = [...pairs].sort((a, b) => b[1].newest - a[1].newest).map(([key, pair]) =>
+    sidebarItem("pair " + key, pair.names.join(" ↔ "), "", pair.count, () => openPairLog(key)),
   );
   pairRows.replaceChildren(...items);
 }
 
-// Marks the open channel or pair in the sidebar.
+// Marks the open channel or pair in the sidebar, in place, so the button just chosen keeps the focus.
 function markOpen() {
-  showChannels(channelsShown);
-  showPairs();
+  const key = openKey();
+  for (const li of [...channelRows.children, ...pairRows.children]) {
+    const button = li.children[0];
+    if (button) button.className = button.value === key ? "item current" : "item";
+  }
 }
 
 // Appends to the open log and keeps it at the bottom if it was there, so a reader scrolled back up is not moved.
@@ -488,9 +497,9 @@ function appendMessages(page) {
   heldMessages += page.length;
   for (const m of page) {
     const key = pairKey(m);
-    const pair = pairs.get(key) ?? { names: pairNames(m), count: 0, last: 0 };
+    const pair = pairs.get(key) ?? { names: pairNames(m), count: 0, newest: 0 };
     pair.count++;
-    pair.last = messages.length;
+    pair.newest = messages.length;
     pairs.set(key, pair);
     messages.push(m);
   }
@@ -546,7 +555,7 @@ export const DASHBOARD_HTML = `<!doctype html>
 <button id="close-log" type="button">Close</button>
 </div>
 <p id="log-note" class="note"></p>
-<ol id="post-rows" aria-live="polite"></ol>
+<ol id="post-rows" role="log"></ol>
 </section>
 <p id="choose">Choose a channel or a conversation.</p>
 </main>
