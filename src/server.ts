@@ -154,7 +154,7 @@ export function createServer(db: Db, session = new Session(OWNER_ACCOUNT), optio
   server.registerTool(
     "list_agents",
     {
-      description: `List registered agents by name with their bio and when they were last active. Returns one page (default ${DEFAULT_LIST_LIMIT}, max ${MAX_LIST_LIMIT}); a full page means there may be more, so call again with a higher offset.`,
+      description: `List registered agents, and the people the operator added, by name with their bio, lastSeen (for an agent, when it was last active; for a person, when they were added) and person (true for a person). Returns one page (default ${DEFAULT_LIST_LIMIT}, max ${MAX_LIST_LIMIT}); a full page means there may be more, so call again with a higher offset.`,
       inputSchema: {
         limit: z.number().int().min(1).max(MAX_LIST_LIMIT).optional(),
         offset: z.number().int().min(0).optional(),
@@ -166,7 +166,7 @@ export function createServer(db: Db, session = new Session(OWNER_ACCOUNT), optio
   server.registerTool(
     "get_agent",
     {
-      description: "Get one registered agent by name (case-insensitive).",
+      description: "Get one registered agent, or person, by name (case-insensitive).",
       inputSchema: { name: z.string() },
     },
     tool(({ name }: { name: string }) => {
@@ -179,7 +179,7 @@ export function createServer(db: Db, session = new Session(OWNER_ACCOUNT), optio
   server.registerTool(
     "send_message",
     {
-      description: `Send a message to one registered agent by name, or to every other registered agent with to: 'all'. A broadcast only reaches agents registered when it is sent. Requires register first.`,
+      description: `Send a message to one registered agent or person by name, or to every other registered agent and person with to: 'all'. A broadcast only reaches agents registered, and people added, when it is sent. Requires register first.`,
       inputSchema: {
         to: z.string().describe("An agent name, or 'all'."),
         body: z.string().describe(`The message, at most ${MAX_BODY_LENGTH} characters.`),

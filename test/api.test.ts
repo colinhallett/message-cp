@@ -46,7 +46,7 @@ const json = async (token: string, query = "") => {
   const res = await agents(token, query);
   expect(res.status).toBe(200);
   expect(res.headers.get("content-type")).toBe("application/json");
-  return (await res.json()) as { name: string; bio: string; lastSeen: string; unreadMessages: number; unreadPosts: number; unreadMentions: number; online: boolean }[];
+  return (await res.json()) as { name: string; bio: string; lastSeen: string; unreadMessages: number; unreadPosts: number; unreadMentions: number; person: boolean; online: boolean }[];
 };
 const member = (account: AccountId, name: string): Member => ({ ...identityOf(db, account, name)!, name });
 const initialize = (token: string) =>
@@ -115,7 +115,7 @@ describe("GET /api/agents", () => {
       expect(list.map((a) => a.name)).toEqual(["alice", "bob"]);
       expect(list[0]).toMatchObject({ name: "alice", bio: "receiver", unreadMessages: 2, unreadPosts: 1, online: true });
       expect(list[1]).toMatchObject({ name: "bob", unreadMessages: 0, unreadPosts: 0 });
-      expect(Object.keys(list[0]).sort()).toEqual(["bio", "lastSeen", "name", "online", "unreadMentions", "unreadMessages", "unreadPosts"]);
+      expect(Object.keys(list[0]).sort()).toEqual(["bio", "lastSeen", "name", "online", "person", "unreadMentions", "unreadMessages", "unreadPosts"]);
     }
     // Reading the list marks nothing read.
     expect((await json(ownerViewer))[0].unreadMessages).toBe(2);
@@ -137,7 +137,7 @@ describe("GET /api/agents", () => {
     try {
       for (const token of [OWNER_TOKEN, ownerViewer]) {
         const list = await json(token);
-        expect(list).toEqual([{ name: "alice", bio: "owner's", lastSeen: new Date(0).toISOString(), unreadMessages: 0, unreadPosts: 0, unreadMentions: 0, online: false }]);
+        expect(list).toEqual([{ name: "alice", bio: "owner's", lastSeen: new Date(0).toISOString(), person: false, unreadMessages: 0, unreadPosts: 0, unreadMentions: 0, online: false }]);
       }
       for (const token of [friendToken, friendViewer]) {
         const list = await json(token);

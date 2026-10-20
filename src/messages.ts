@@ -219,6 +219,7 @@ interface AgentUnreadRow {
   name: string;
   bio: string;
   last_seen: number;
+  person: number;
   messages: number;
   posts: number;
   mentions: number;
@@ -228,6 +229,8 @@ export interface AgentUnread {
   name: string;
   bio: string;
   lastSeen: string;
+  /** True for a person added with `message-cp person add`, as `list_agents` gives it. */
+  person: boolean;
   unreadMessages: number;
   unreadPosts: number;
   unreadMentions: number;
@@ -241,7 +244,7 @@ export interface AgentUnread {
 export function listAgentsUnread(db: Db, account: AccountId, limit: number, offset: number): AgentUnread[] {
   const rows = db
     .prepare(
-      `SELECT a.name, a.bio, a.last_seen,
+      `SELECT a.name, a.bio, a.last_seen, a.person,
          (SELECT COUNT(*) FROM messages m WHERE m.recipient_id = a.id AND m.read_at IS NULL) AS messages,
          (SELECT COUNT(*) FROM channel_reads r
             JOIN channels c ON c.id = r.channel_id AND c.account_id = a.account_id
@@ -258,6 +261,7 @@ export function listAgentsUnread(db: Db, account: AccountId, limit: number, offs
     name: r.name,
     bio: r.bio,
     lastSeen: new Date(r.last_seen).toISOString(),
+    person: r.person === 1,
     unreadMessages: r.messages,
     unreadPosts: r.posts,
     unreadMentions: r.mentions,

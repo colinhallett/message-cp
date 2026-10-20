@@ -14,6 +14,8 @@ export interface Agent {
   bio: string;
   registeredAt: string;
   lastSeen: string;
+  /** True for a person the operator added with `message-cp person add`, false for an agent. */
+  person: boolean;
 }
 
 interface Row {
@@ -21,6 +23,7 @@ interface Row {
   bio: string;
   registered_at: number;
   last_seen: number;
+  person: number;
 }
 
 export const NAME_PATTERN = /^[A-Za-z0-9_-]{1,32}$/;
@@ -32,8 +35,12 @@ function toAgent(row: Row): Agent {
     bio: row.bio,
     registeredAt: new Date(row.registered_at).toISOString(),
     lastSeen: new Date(row.last_seen).toISOString(),
+    person: row.person === 1,
   };
 }
+
+/** The refusal for `register` and `unregister` on a person's name. */
+const personRefusal = (name: string) => `The name '${name}' belongs to a person, not an agent. No agent can register or remove it.`;
 
 export function validateName(name: string): void {
   if (!NAME_PATTERN.test(name)) {
@@ -106,10 +113,12 @@ export const registerWithIdentity = (
     }
     if (key !== undefined) validateKey(key);
     const existing = db
-      .prepare("SELECT key_hash FROM agents WHERE account_id = ? AND name = ? AND removed_at IS NULL")
+      .prepare("SELECT name, key_hash, person FROM agents WHERE account_id = ? AND name = ? AND removed_at IS NULL")
       .get(account, name) as
-      | { key_hash: string | null }
+      | { name: string; key_hash: string | null; person: number }
       | undefined;
+    // Before the key check: no key, not even a right one, makes a person's name an agent's.
+    if (existing?.person === 1) throw new ToolError(personRefusal(existing.name));
     if (existing && existing.key_hash !== null && (key === undefined || !sameHash(hashKey(key), existing.key_hash))) {
       throw new ToolError(
         `Agent '${name}' is already registered and has a key. Pass its key to take it over.`,
@@ -124,7 +133,7 @@ export const registerWithIdentity = (
         `INSERT INTO agents (account_id, name, bio, registered_at, last_seen, key_hash, instance) VALUES (?, ?, ?, ?, ?, ?, ?)
          -- Reached on a conflict only after the key check above passed. Another account's agent of the same name never conflicts.
          ON CONFLICT(account_id, name) DO UPDATE SET bio = COALESCE(?, bio), last_seen = excluded.last_seen, key_hash = excluded.key_hash
-         RETURNING id, name, bio, registered_at, last_seen, instance`,
+         RETURNING id, name, bio, registered_at, last_seen, person, instance`,
       )
       .get(account, name, bio ?? "", now, now, keyHash, randomBytes(16).toString("hex"), bio ?? null) as Row & IdentityRow;
     // A caller that supplied its own key already has it.
@@ -162,7 +171,7 @@ export const MAX_LIST_LIMIT = 200;
 export function listAgents(db: Db, account: AccountId, limit = DEFAULT_LIST_LIMIT, offset = 0): Agent[] {
   const rows = db
     .prepare(
-      "SELECT name, bio, registered_at, last_seen FROM agents WHERE account_id = ? AND removed_at IS NULL ORDER BY name LIMIT ? OFFSET ?",
+      "SELECT name, bio, registered_at, last_seen, person FROM agents WHERE account_id = ? AND removed_at IS NULL ORDER BY name LIMIT ? OFFSET ?",
     )
     .all(account, Math.min(limit, MAX_LIST_LIMIT), offset) as Row[];
   return rows.map(toAgent);
@@ -170,25 +179,30 @@ export function listAgents(db: Db, account: AccountId, limit = DEFAULT_LIST_LIMI
 
 export function getAgent(db: Db, account: AccountId, name: string): Agent | undefined {
   const row = db
-    .prepare("SELECT name, bio, registered_at, last_seen FROM agents WHERE account_id = ? AND name = ? AND removed_at IS NULL")
+    .prepare("SELECT name, bio, registered_at, last_seen, person FROM agents WHERE account_id = ? AND name = ? AND removed_at IS NULL")
     .get(account, name) as Row | undefined;
   return row && toAgent(row);
 }
 
-/** The identity of the agent registered under `name` right now, if any. */
+/** The identity of the agent registered under `name` right now, if any. A person has none: nothing acts as one. */
 export function identityOf(db: Db, account: AccountId, name: string): Identity | undefined {
   const row = db
-    .prepare("SELECT id, registered_at, instance FROM agents WHERE account_id = ? AND name = ? AND removed_at IS NULL")
+    .prepare("SELECT id, registered_at, instance FROM agents WHERE account_id = ? AND name = ? AND removed_at IS NULL AND person = 0")
     .get(account, name) as
     | IdentityRow
     | undefined;
   return row && toIdentity(row);
 }
 
-/** The name of the agent `identity` still belongs to, or undefined once that registration was removed. */
+/**
+ * The name of the agent `identity` still belongs to, or undefined once that registration was removed. Undefined for a
+ * person's row too, so no session or channel member can act as a person.
+ */
 export function nameOfIdentity(db: Db, account: AccountId, identity: Identity): string | undefined {
   const row = db
-    .prepare("SELECT name FROM agents WHERE account_id = ? AND id = ? AND registered_at = ? AND instance IS ? AND removed_at IS NULL")
+    .prepare(
+      "SELECT name FROM agents WHERE account_id = ? AND id = ? AND registered_at = ? AND instance IS ? AND removed_at IS NULL AND person = 0",
+    )
     .get(account, identity.id, identity.registeredAt, identity.instance) as { name: string } | undefined;
   return row?.name;
 }
@@ -227,12 +241,13 @@ export const removeAgent = (db: Db, account: AccountId, name: string, key?: stri
       own
         ? db
             .prepare(
-              "SELECT id, name, key_hash FROM agents WHERE account_id = ? AND id = ? AND registered_at = ? AND instance IS ? AND removed_at IS NULL",
+              "SELECT id, name, key_hash, person FROM agents WHERE account_id = ? AND id = ? AND registered_at = ? AND instance IS ? AND removed_at IS NULL",
             )
             .get(account, own.id, own.registeredAt, own.instance)
-        : db.prepare("SELECT id, name, key_hash FROM agents WHERE account_id = ? AND name = ? AND removed_at IS NULL").get(account, name)
-    ) as { id: number; name: string; key_hash: string | null } | undefined;
+        : db.prepare("SELECT id, name, key_hash, person FROM agents WHERE account_id = ? AND name = ? AND removed_at IS NULL").get(account, name)
+    ) as { id: number; name: string; key_hash: string | null; person: number } | undefined;
     if (!row) throw new ToolError(own ? NOT_REGISTERED : `No agent named '${name}'.`);
+    if (row.person === 1) throw new ToolError(personRefusal(row.name));
     if (row.key_hash !== null && !own) {
       if (key === undefined) throw new ToolError(`Agent '${row.name}' has a key. Pass its key to remove it.`);
       if (!sameHash(hashKey(key), row.key_hash)) throw new ToolError(`Wrong key for agent '${row.name}'.`);
@@ -243,3 +258,57 @@ export const removeAgent = (db: Db, account: AccountId, name: string, key?: stri
     const keptMessages = (db.prepare("SELECT COUNT(*) AS n FROM messages WHERE recipient_id = ?").get(row.id) as { n: number }).n;
     return { removed: row.name, keptMessages };
   }).immediate();
+
+export class PersonError extends Error {}
+
+export interface Person {
+  name: string;
+  account: string;
+  addedAt: string;
+}
+
+// Matches no key and no session's instance, like REMOVED_KEY_HASH, so nothing can act as a person. The `person`
+// checks in registerWithIdentity and removeAgent are what refuse; this only keeps an older release from claiming it.
+const PERSON_KEY_HASH = "person";
+const PERSON_INSTANCE = "person";
+
+/**
+ * Adds the person `name` to the account named `account`, as a row of `agents` marked `person`, so messages, mentions
+ * and webhooks reach it as they reach an agent. Refuses a name a live agent or person of that account has (any case).
+ */
+export const addPerson = (db: Db, account: string, name: string): Person =>
+  db.transaction((): Person => {
+    try {
+      validateName(name);
+    } catch (err) {
+      if (err instanceof ToolError) throw new PersonError(err.message);
+      throw err;
+    }
+    const acct = db.prepare("SELECT id, name FROM accounts WHERE name = ?").get(account) as { id: AccountId; name: string } | undefined;
+    if (!acct) throw new PersonError(`No account named '${account}'.`);
+    const taken = db
+      .prepare("SELECT name, person FROM agents WHERE account_id = ? AND name = ? AND removed_at IS NULL")
+      .get(acct.id, name) as { name: string; person: number } | undefined;
+    if (taken) throw new PersonError(`The name '${taken.name}' is already used by ${taken.person === 1 ? "a person" : "an agent"} in account '${acct.name}'.`);
+    const now = Date.now();
+    db.prepare(
+      "INSERT INTO agents (account_id, name, bio, registered_at, last_seen, key_hash, instance, person) VALUES (?, ?, '', ?, ?, ?, ?, 1)",
+    ).run(acct.id, name, now, now, PERSON_KEY_HASH, PERSON_INSTANCE);
+    return { name, account: acct.name, addedAt: new Date(now).toISOString() };
+  }).immediate();
+
+/** The live people of the account named `account`, or of every account without it, by account then name. */
+export function listPeople(db: Db, account?: string): Person[] {
+  if (account !== undefined && !db.prepare("SELECT 1 FROM accounts WHERE name = ?").get(account)) {
+    throw new PersonError(`No account named '${account}'.`);
+  }
+  const rows = db
+    .prepare(
+      `SELECT agents.name, accounts.name AS account, agents.registered_at
+       FROM agents JOIN accounts ON accounts.id = agents.account_id
+       WHERE agents.person = 1 AND agents.removed_at IS NULL AND (? IS NULL OR accounts.name = ?)
+       ORDER BY accounts.name, agents.name`,
+    )
+    .all(account ?? null, account ?? null) as { name: string; account: string; registered_at: number }[];
+  return rows.map((r) => ({ name: r.name, account: r.account, addedAt: new Date(r.registered_at).toISOString() }));
+}
