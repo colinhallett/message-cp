@@ -226,11 +226,12 @@ async function poll(gen) {
         readMessages(token, ac.signal, gen),
         channel === undefined ? { ok: true } : readLog(token, ac.signal, gen, channel),
       ]);
-      const failed = [messages, posts].find((r) => r.status === "rejected");
-      if (failed) throw failed.reason;
       // A refused token from either read wins, so a failure of the other never leaves the page showing its data.
-      const values = [messages.value, posts.value];
-      result = values.find((v) => v.status === 401) ?? values.find((v) => !v.ok) ?? posts.value;
+      const values = [messages, posts].filter((r) => r.status === "fulfilled").map((r) => r.value);
+      const refused = values.find((v) => v.status === 401);
+      const failed = [messages, posts].find((r) => r.status === "rejected");
+      if (failed && !refused) throw failed.reason;
+      result = refused ?? values.find((v) => !v.ok) ?? posts.value;
     }
   } catch {
     result = { error: ac.signal.aborted ? "The server did not answer in time" : "Cannot reach the server" };

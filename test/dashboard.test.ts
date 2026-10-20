@@ -177,8 +177,9 @@ describe("the page's channels and messages", () => {
   const text = (row: Stub) => row.children.map((td) => td.textContent || td.children.map((c) => c.textContent).join(""));
 
   // Runs the served script with the given token against this server, with real fetches and timers run by hand.
-  // refuse, when it returns a status, answers a request with that status instead of the server; "hang" never answers.
-  async function load(token: string, refuse: (url: string) => number | "hang" | undefined = () => undefined) {
+  // refuse, when it returns a status, answers a request with that status instead of the server; "hang" never answers,
+  // and "fail" rejects as an unreachable server does.
+  async function load(token: string, refuse: (url: string) => number | "hang" | "fail" | undefined = () => undefined) {
     const html = await (await fetch(`${base()}/`)).text();
     const script = /<script>([\s\S]*?)<\/script>/.exec(html)![1];
     const elements: Record<string, Stub> = {};
@@ -196,6 +197,7 @@ describe("the page's channels and messages", () => {
         urls.push(url);
         const status = refuse(url);
         if (status === "hang") return new Promise<Response>(() => {});
+        if (status === "fail") return Promise.reject(new TypeError("fetch failed"));
         return status === undefined ? fetch(`${base()}${url}`, init) : Promise.resolve(new Response(null, { status }));
       },
     });
@@ -418,11 +420,11 @@ describe("the page's channels and messages", () => {
     await page.until(() => page.elements["status-line"].textContent === "The server is busy (503). Retrying…");
   });
 
-  it("asks for another token when the log is refused while the messages fail", async () => {
+  it.each([503, "fail"] as const)("asks for another token when the log is refused while the messages %s", async (failure) => {
     seed();
     let revoked = false;
     const page = await load(viewer, (url) =>
-      url.startsWith("/api/messages") ? 503 : revoked && url.startsWith("/api/channel-posts") ? 401 : undefined,
+      url.startsWith("/api/messages") ? failure : revoked && url.startsWith("/api/channel-posts") ? 401 : undefined,
     );
     const channels = page.elements["channel-rows"];
     await page.until(() => channels.children.length === 1);
