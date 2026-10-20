@@ -3,8 +3,8 @@ import { NAME_PATTERN } from "./agents.js";
 import type { AccountId, Db } from "./db.js";
 
 // Outgoing webhooks. The operator manages them with `message-cp webhook` on the server; no agent or token can.
-// Nothing is delivered yet. A webhook's secret is shown once, when it is added, and stored as is so that deliveries
-// can sign with it.
+// Messages and posts a webhook is for are queued in `webhook_deliveries` when they are stored, but nothing sends them
+// yet. A webhook's secret is shown once, when it is added, and stored as is so that deliveries can sign with it.
 
 export class WebhookError extends Error {}
 
@@ -105,4 +105,45 @@ export function removeWebhook(db: Db, id: number): string {
     .get(id) as { account: string } | undefined;
   if (!row) throw new WebhookError(`No webhook with id ${id}.`);
   return row.account;
+}
+
+/** The JSON body a delivery carries. Never an account id, a secret or a token. */
+export interface DeliveryBody {
+  event: WebhookEvent;
+  /** For a post. */
+  channel?: string;
+  /** For a message. */
+  recipient?: string;
+  sender: string;
+  sentAt: string;
+  /** Only when the webhook was added without `--no-text`. */
+  text?: string;
+}
+
+/** The body of the queued delivery `id`, built from its message or post as it is now, or undefined if there is none. */
+export function deliveryBody(db: Db, id: number): DeliveryBody | undefined {
+  const row = db
+    .prepare(
+      `SELECT w.event, w.include_text, c.name AS channel,
+              CASE WHEN a.removed_at IS NULL THEN a.name ELSE a.removed_name END AS recipient,
+              COALESCE(m.sender, p.sender) AS sender, COALESCE(m.created_at, p.created_at) AS created_at, COALESCE(m.body, p.body) AS body
+       FROM webhook_deliveries d
+       JOIN webhooks w ON w.id = d.webhook_id
+       LEFT JOIN messages m ON m.id = d.message_id
+       LEFT JOIN agents a ON a.id = m.recipient_id
+       LEFT JOIN channel_posts p ON p.id = d.post_id
+       LEFT JOIN channels c ON c.id = p.channel_id
+       WHERE d.id = ?`,
+    )
+    .get(id) as
+    | { event: WebhookEvent; include_text: number; channel: string | null; recipient: string | null; sender: string; created_at: number; body: string }
+    | undefined;
+  if (!row) return undefined;
+  return {
+    event: row.event,
+    ...(row.channel !== null ? { channel: row.channel } : { recipient: row.recipient! }),
+    sender: row.sender,
+    sentAt: new Date(row.created_at).toISOString(),
+    ...(row.include_text === 1 ? { text: row.body } : {}),
+  };
 }

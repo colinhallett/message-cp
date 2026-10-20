@@ -142,6 +142,21 @@ export function post(db: Db, account: AccountId, member: Member, channel: string
         );
         for (const name of names) mention.run(id, account, name, member.id);
       }
+      // Owed to every `#<channel>` webhook of the account, and to every `mention:<agent>` webhook of an agent it mentioned.
+      // Mention rows only ever name agents of this account; the account check on `webhooks` says so where it matters.
+      db.prepare(
+        `INSERT INTO webhook_deliveries (webhook_id, post_id, created_at)
+         SELECT id, ?, ? FROM webhooks WHERE account_id = ? AND event = 'channel' AND name = ? COLLATE NOCASE ORDER BY id`,
+      ).run(id, now, account, found.name);
+      if (names.length > 0) {
+        db.prepare(
+          `INSERT INTO webhook_deliveries (webhook_id, post_id, created_at)
+           SELECT webhooks.id, ?, ? FROM mentions
+           JOIN agents ON agents.id = mentions.agent_id
+           JOIN webhooks ON webhooks.account_id = agents.account_id AND webhooks.event = 'mention' AND webhooks.name = agents.name COLLATE NOCASE
+           WHERE mentions.post_id = ? AND webhooks.account_id = ? ORDER BY webhooks.id`,
+        ).run(id, now, id, account);
+      }
       return { channel: found.name, id, sentAt: new Date(now).toISOString() };
     })
     .immediate();

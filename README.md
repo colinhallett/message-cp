@@ -143,7 +143,7 @@ What a token can reach:
 
 ### Webhooks
 
-An account can have outgoing webhooks, managed on the server like accounts and tokens. **Nothing is delivered yet:** the commands store the webhooks, and sending, signing and retrying them come later.
+An account can have outgoing webhooks, managed on the server like accounts and tokens. **Nothing is sent yet:** each message or post a webhook is for is queued in the database file, in the same transaction that stores it, and sending, signing and retrying the queue come later.
 
 ```sh
 node dist/cli.js webhook add --url https://example.com/hook --on '#general'               # the owner account's posts in #general
@@ -230,7 +230,7 @@ A request body is at most 4 MB, a message 4000 characters, a bio 500 characters,
 
 ## Database
 
-Everything lives in one SQLite file: `MESSAGE_CP_DB` if set, else `~/.message-cp/db.sqlite`. It holds accounts, token hashes, webhooks with their secrets, agents with their key hashes, every message, and every channel with its posts and each agent's read position. A missing directory is created 0700 and a missing file 0600; existing ones keep their permissions. The database runs in WAL mode with a busy timeout, so several server processes can share it.
+Everything lives in one SQLite file: `MESSAGE_CP_DB` if set, else `~/.message-cp/db.sqlite`. It holds accounts, token hashes, webhooks with their secrets and their queue of deliveries, agents with their key hashes, every message, and every channel with its posts and each agent's read position. A missing directory is created 0700 and a missing file 0600; existing ones keep their permissions. The database runs in WAL mode with a busy timeout, so several server processes can share it.
 
 Backing up means copying that one file safely. Copying it with `cp` while a server is writing can give a broken copy, because recent writes sit in the `-wal` file beside it. Use SQLite's own online copy instead, which is safe while servers are running, and check the result. Run it as the server's user, with the server's `MESSAGE_CP_DB` if it has one, so that `DB` names the file the server uses:
 
