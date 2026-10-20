@@ -22,6 +22,8 @@ const SCRIPT = `
 const KEY = "message-cp-token";
 const PAGE = 200;
 const POLL_MS = 5000;
+// A poll that has not finished by then is abandoned, so a request that never completes cannot stop the polling.
+const TIMEOUT_MS = 15000;
 const form = document.getElementById("login");
 const input = document.getElementById("token");
 const view = document.getElementById("view");
@@ -29,16 +31,23 @@ const rows = document.getElementById("rows");
 const statusLine = document.getElementById("status-line");
 let timer;
 let generation = 0;
+let controller;
 
 function say(text, isError) {
   statusLine.textContent = text;
   statusLine.className = isError ? "error" : "";
 }
 
-function ask(message) {
-  sessionStorage.removeItem(KEY);
+// Ends the current poll: its answer is dropped, its timer cleared and its request aborted.
+function cancel() {
   generation++;
   clearTimeout(timer);
+  if (controller) controller.abort();
+}
+
+function ask(message) {
+  sessionStorage.removeItem(KEY);
+  cancel();
   // Clear the table, so one token's agents never show under the next token.
   rows.replaceChildren();
   view.hidden = true;
@@ -60,15 +69,14 @@ form.addEventListener("submit", (event) => {
 document.getElementById("forget").addEventListener("click", () => ask());
 
 function start() {
-  generation++;
-  clearTimeout(timer);
+  cancel();
   form.hidden = true;
   view.hidden = false;
   say("Loading…", false);
   poll(generation);
 }
 
-async function fetchAll(token) {
+async function fetchAll(token, signal) {
   const agents = [];
   for (let offset = 0; ; offset += PAGE) {
     const res = await fetch("/api/agents?limit=" + PAGE + "&offset=" + offset, {
@@ -76,6 +84,7 @@ async function fetchAll(token) {
       cache: "no-store",
       credentials: "omit",
       referrerPolicy: "no-referrer",
+      signal,
     });
     if (!res.ok) return { status: res.status };
     let page;
@@ -93,11 +102,16 @@ async function fetchAll(token) {
 async function poll(gen) {
   const token = sessionStorage.getItem(KEY);
   if (!token) return ask();
+  const ac = new AbortController();
+  controller = ac;
+  const deadline = setTimeout(() => ac.abort(), TIMEOUT_MS);
   let result;
   try {
-    result = await fetchAll(token);
+    result = await fetchAll(token, ac.signal);
   } catch {
-    result = { error: "Cannot reach the server" };
+    result = { error: ac.signal.aborted ? "The server did not answer in time" : "Cannot reach the server" };
+  } finally {
+    clearTimeout(deadline);
   }
   // A newer token or a sign-out since this poll began: drop its answer.
   if (gen !== generation) return;

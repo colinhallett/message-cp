@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { runInNewContext } from "node:vm";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { addToken } from "../src/accounts.js";
 import { OWNER_ACCOUNT, openDb, type Db } from "../src/db.js";
@@ -74,6 +75,61 @@ describe("GET /", () => {
     const style = /<style>([\s\S]*?)<\/style>/.exec(html)![1];
     expect(csp).toContain(`script-src ${sha(script)}`);
     expect(csp).toContain(`style-src ${sha(style)}`);
+  });
+});
+
+describe("the page's polling", () => {
+  // Runs the served script against stub DOM elements, a fetch that never answers, and timers run by hand.
+  async function load() {
+    const html = await (await fetch(`${base()}/`)).text();
+    const script = /<script>([\s\S]*?)<\/script>/.exec(html)![1];
+    const el = () => {
+      const on: Record<string, () => void> = {};
+      return { on, hidden: false, value: "", textContent: "", className: "", addEventListener: (type: string, fn: () => void) => void (on[type] = fn), focus() {}, replaceChildren() {} };
+    };
+    const elements: Record<string, ReturnType<typeof el>> = {};
+    const timers = new Map<number, { fn: () => void; ms: number }>();
+    let nextTimer = 0;
+    const signals: AbortSignal[] = [];
+    const store = new Map([["message-cp-token", "a-token"]]);
+    runInNewContext(script, {
+      AbortController,
+      document: { getElementById: (id: string) => (elements[id] ??= el()), createElement: el },
+      sessionStorage: { getItem: (k: string) => store.get(k) ?? null, setItem: (k: string, v: string) => store.set(k, v), removeItem: (k: string) => store.delete(k) },
+      setTimeout: (fn: () => void, ms: number) => (timers.set(++nextTimer, { fn, ms }), nextTimer),
+      clearTimeout: (id: number) => timers.delete(id),
+      fetch: (_url: string, init: { signal: AbortSignal }) => {
+        signals.push(init.signal);
+        return new Promise((_resolve, reject) => init.signal.addEventListener("abort", () => reject(new Error("aborted"))));
+      },
+    });
+    const fire = async (ms: number) => {
+      const [id, timer] = [...timers].find(([, t]) => t.ms === ms)!;
+      timers.delete(id);
+      timer.fn();
+      await new Promise((resolve) => setImmediate(resolve));
+    };
+    return { status: elements["status-line"], forget: elements["forget"], timers, signals, fire };
+  }
+
+  it("abandons a request that never answers and polls again", async () => {
+    const page = await load();
+    expect(page.signals).toHaveLength(1);
+    await page.fire(15000);
+    expect(page.signals[0].aborted).toBe(true);
+    expect(page.status.textContent).toBe("The server did not answer in time. Retrying…");
+    await page.fire(5000);
+    expect(page.signals).toHaveLength(2);
+    expect(page.signals[1].aborted).toBe(false);
+  });
+
+  it("aborts the request in flight when the token is forgotten", async () => {
+    const page = await load();
+    page.forget.on.click();
+    expect(page.signals[0].aborted).toBe(true);
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(page.timers.size).toBe(0);
+    expect(page.signals).toHaveLength(1);
   });
 });
 
