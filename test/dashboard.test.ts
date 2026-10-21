@@ -1873,7 +1873,8 @@ describe("the page's posting", () => {
   });
 
   describe("starting a direct conversation with New message", () => {
-    const options = (select: Stub) => select.children.map((o) => [o.value, o.textContent]);
+    // A select's names, without the empty first option that asks for a choice.
+    const options = (select: Stub) => select.children.filter((o) => o.value !== "").map((o) => [o.value, o.textContent]);
     const ready = async (page: Awaited<ReturnType<typeof load>>) => {
       await page.until(() => page.picker().length > 0 && page.elements["rows"].children.length > 0 && !page.elements["new-message"].hidden);
     };
@@ -1969,7 +1970,71 @@ describe("the page's posting", () => {
       page.elements["new-message"].on.click();
       expect(page.elements["new-note"].textContent).toContain("message-cp person add");
       expect(page.elements["new-fields"].hidden).toBe(true);
-      expect(page.elements["new-from"].children).toEqual([]);
+      expect(options(page.elements["new-from"])).toEqual([]);
+    });
+
+    it("asks for a new choice, never another name, when the chosen From or To leaves the list while the form is open", async () => {
+      // The answer to GET /api/agents is stubbed, so a name can leave it between polls.
+      const agent = (name: string, person: boolean) => ({ name, bio: "x", person, online: false, lastSeen: new Date().toISOString(), unreadMessages: 0, unreadPosts: 0, unreadMentions: 0 });
+      let listed = [agent("bob", false), agent("zed", false), agent("colin", true), agent("dana", true)];
+      const page = await load(OWNER_TOKEN, (url) => (url.startsWith("/api/agents") ? { status: 200, body: JSON.stringify(listed) } : undefined));
+      await page.until(() => page.picker().length === 2 && page.elements["rows"].children.length === 4 && !page.elements["new-message"].hidden);
+      page.elements["new-message"].on.click();
+      // With no "Post as" person, both selects start at their empty first option.
+      expect(page.elements["new-from"].children[0].value).toBe("");
+      expect(page.elements["new-from"].value).toBe("");
+      expect(page.elements["new-to"].children[0].value).toBe("");
+      expect(page.elements["new-to"].value).toBe("");
+      page.elements["new-from"].value = "dana";
+      page.elements["new-from"].on.change();
+      page.elements["new-to"].value = "zed";
+      // zed leaves while the form is open: To asks again rather than taking bob, and Open opens nothing.
+      listed = listed.filter((a) => a.name !== "zed");
+      await page.poll();
+      await page.until(() => page.elements["rows"].children.length === 3);
+      expect(options(page.elements["new-to"]).map(([value]) => value).sort()).toEqual(["bob", "colin"]);
+      expect(page.elements["new-to"].value).toBe("");
+      expect(page.elements["new-from"].value).toBe("dana");
+      page.elements["new-form"].on.submit({ preventDefault() {} });
+      expect(page.elements["log"].hidden).toBe(true);
+      expect(page.elements["new-form"].hidden).toBe(false);
+      expect(page.elements["pair-rows"].children).toEqual([]);
+      // dana leaves: From asks again rather than taking colin, so even a To still listed opens nothing.
+      listed = listed.filter((a) => a.name !== "dana");
+      await page.poll();
+      await page.until(() => page.picker().length === 1);
+      expect(page.elements["new-from"].value).toBe("");
+      page.elements["new-to"].value = "bob";
+      page.elements["new-form"].on.submit({ preventDefault() {} });
+      expect(page.elements["log"].hidden).toBe(true);
+      page.send("should not go");
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(page.posts()).toEqual([]);
+    });
+
+    it("keeps an empty pair first whatever messages arrive in other pairs", async () => {
+      registerAgent(db, OWNER_ACCOUNT, "bob", "x");
+      registerAgent(db, OWNER_ACCOUNT, "zed", "x");
+      addPerson(db, "owner", "colin");
+      sendMessage(db, OWNER_ACCOUNT, "bob", "zed", "one");
+      const page = await load(OWNER_TOKEN);
+      await ready(page);
+      await page.until(() => page.elements["pair-rows"].children.length === 1);
+      start(page, "colin", "zed");
+      expect(page.elements["pair-rows"].children.map(label)).toEqual(["colin ↔ zed", "bob ↔ zed"]);
+      sendMessage(db, OWNER_ACCOUNT, "bob", "zed", "two");
+      sendMessage(db, OWNER_ACCOUNT, "zed", "bob", "three");
+      await page.poll();
+      await page.until(() => page.elements["pair-rows"].children[1]?.children[0].children[1].textContent === "3");
+      expect(page.elements["pair-rows"].children.map(label)).toEqual(["colin ↔ zed", "bob ↔ zed"]);
+      // Once it has a message, it takes its place by recency like the rest.
+      page.send("hello zed");
+      await page.until(() => page.elements["post-rows"].children.length === 1);
+      expect(page.elements["pair-rows"].children.map(label)).toEqual(["colin ↔ zed", "bob ↔ zed"]);
+      sendMessage(db, OWNER_ACCOUNT, "bob", "zed", "four");
+      await page.poll();
+      await page.until(() => page.elements["pair-rows"].children[0]?.children[0].children[1].textContent === "4");
+      expect(page.elements["pair-rows"].children.map(label)).toEqual(["bob ↔ zed", "colin ↔ zed"]);
     });
 
     it("opens an empty pair with the compose box, sends { as, to, body } to /api/send, and keeps the pair one entry", async () => {

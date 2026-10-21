@@ -671,7 +671,8 @@ function closeNew(refocus) {
 
 // Builds the "New message" form's selects from the last GET /api/agents: From lists the account's people, and To its
 // agents and people, each person marked as one, without "all" or the From name, compared without case. Each select
-// keeps its choice while that name is still listed, and is rebuilt only when its list changes.
+// keeps its choice while that name is still listed, and is rebuilt only when its list changes. When the chosen name
+// goes, the select falls back to its empty first option rather than another name, so a refresh never retargets it.
 function fillNew() {
   const known = people ?? [];
   const none = people !== undefined && known.length === 0;
@@ -682,14 +683,13 @@ function fillNew() {
   if (fromNow !== fromKey) {
     fromKey = fromNow;
     const chosen = newFrom.value;
-    newFrom.replaceChildren(...known.map((name) => {
+    newFrom.replaceChildren(choose("Choose a person"), ...known.map((name) => {
       const option = document.createElement("option");
       option.value = name;
       option.textContent = name;
       return option;
     }));
-    if (known.includes(chosen)) newFrom.value = chosen;
-    else if (known.length > 0) newFrom.value = known[0];
+    newFrom.value = known.includes(chosen) ? chosen : "";
   }
   const from = known.includes(newFrom.value) ? newFrom.value.toLowerCase() : undefined;
   const to = mentionable.filter((n) => {
@@ -700,16 +700,23 @@ function fillNew() {
   if (toNow !== toKey) {
     toKey = toNow;
     const chosen = newTo.value;
-    newTo.replaceChildren(...to.map((n) => {
+    newTo.replaceChildren(choose("Choose a recipient"), ...to.map((n) => {
       const option = document.createElement("option");
       option.value = n.name;
       option.textContent = n.person ? n.name + " (person)" : n.name;
       return option;
     }));
-    if (to.some((n) => n.name === chosen)) newTo.value = chosen;
-    else if (to.length > 0) newTo.value = to[0].name;
+    newTo.value = to.some((n) => n.name === chosen) ? chosen : "";
   }
   newOpen.disabled = to.length === 0;
+}
+
+// The empty first option of a "New message" select, chosen while no listed name is, so startPair opens nothing.
+function choose(text) {
+  const option = document.createElement("option");
+  option.value = "";
+  option.textContent = text;
+  return option;
 }
 
 // Opens the pair of from and to as a conversation, as choosing it in the sidebar does, with from chosen as the person
@@ -1261,9 +1268,11 @@ function pairKey(m) {
   return JSON.stringify(pairNames(m));
 }
 
-// Lists the pairs, the one with the newest message first, and of pairs started with none the one started last.
+// Lists the pairs started with no messages first, the one started last on top, then the rest, the one with the newest
+// message first. A started pair takes its place among the rest once its first message comes.
 function showPairs() {
-  const items = [...pairs].sort((a, b) => b[1].newest - a[1].newest || (b[1].made ?? 0) - (a[1].made ?? 0)).map(([key, pair]) =>
+  const empty = (pair) => (pair.count === 0 ? pair.made ?? 0 : 0);
+  const items = [...pairs].sort((a, b) => empty(b[1]) - empty(a[1]) || b[1].newest - a[1].newest).map(([key, pair]) =>
     sidebarItem("pair " + key, pair.names.join(" ↔ "), "", pair.count, () => openPairLog(key)),
   );
   pairRows.replaceChildren(...items);
