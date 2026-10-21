@@ -2283,7 +2283,7 @@ describe("the page's posting", () => {
     const script = /<script>([\s\S]*?)<\/script>/.exec(html)![1];
     const elements: Record<string, Stub> = {};
     const made: Stub[] = [];
-    const requests: { url: string; method: string; body?: string; headers: Record<string, string> }[] = [];
+    const requests: { url: string; method: string; body?: string; headers: Record<string, string>; init: RequestInit }[] = [];
     const polls: (() => void)[] = [];
     const store = new Map([["message-cp-token", token]]);
     // The document's own listeners, such as the one for Escape.
@@ -2306,7 +2306,7 @@ describe("the page's posting", () => {
       clearTimeout: () => {},
       fetch: (url: string, init: RequestInit) => {
         const method = init.method ?? "GET";
-        requests.push({ url, method, body: init.body as string | undefined, headers: init.headers as Record<string, string> });
+        requests.push({ url, method, body: init.body as string | undefined, headers: init.headers as Record<string, string>, init });
         const given = answer(url, method);
         const reply = () =>
           given?.status !== undefined ? new Response(given.body ?? null, { status: given.status }) : fetch(`${base()}${url}`, init);
@@ -3746,6 +3746,8 @@ describe("the page's posting", () => {
       expect(request.url).toBe("/api/conversation?a=bob&b=colin");
       expect(request.headers).toEqual({ Authorization: `Bearer ${OWNER_TOKEN}` });
       expect(request.url).not.toContain(OWNER_TOKEN);
+      expect(request.init).toMatchObject({ credentials: "omit", referrerPolicy: "no-referrer", cache: "no-store" });
+      expect(request.init.signal).toBeInstanceOf(AbortSignal);
       const reads = () => page.requests.filter((r) => r.url.startsWith("/api/messages")).map((r) => r.url);
       const before = reads().length;
       release();
@@ -3765,6 +3767,33 @@ describe("the page's posting", () => {
       await page.until(() => page.elements["pair-rows"].children.length === 2);
       const again = page.elements["pair-rows"].children.find((row) => label(row) === "bob ↔ colin")!;
       expect(again.children[0].children[1].textContent).toBe("1");
+    });
+
+    it("keeps a conversation from New message open when a delete started elsewhere answers", async () => {
+      seedPairs();
+      let release!: () => void;
+      const hold = new Promise<void>((resolve) => (release = resolve));
+      const page = await load(OWNER_TOKEN, (url, method) => (method === "DELETE" ? { hold } : undefined));
+      await openReady(page, "bob ↔ colin");
+      confirmDelete(page);
+      await page.until(() => !page.elements["new-message"].hidden && page.elements["rows"].children.length === 3);
+      page.elements["new-message"].on.click();
+      page.elements["new-from"].value = "colin";
+      page.elements["new-from"].on.change();
+      page.elements["new-to"].value = "dana";
+      page.elements["new-form"].on.submit({ preventDefault() {} });
+      page.choose("colin");
+      expect(page.elements["compose"].hidden).toBe(false);
+      release();
+      await page.until(() => page.elements["pair-rows"].children.length === 2 && stored().length === 1);
+      expect(page.elements["pair-rows"].children.map(label)).toEqual(["colin ↔ dana", "bob ↔ dana"]);
+      expect(page.elements["log"].hidden).toBe(false);
+      expect(page.elements["log-title"].textContent).toBe("colin ↔ dana");
+      expect(page.elements["log-note"].textContent).toBe("No messages yet.");
+      expect(page.elements["compose"].hidden).toBe(false);
+      page.send("first");
+      await page.until(() => stored().length === 2);
+      expect(stored()[1]).toEqual({ f: "colin", t: "dana" });
     });
 
     it("asks for a token again on a 401", async () => {

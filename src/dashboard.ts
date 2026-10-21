@@ -1357,6 +1357,8 @@ async function deletePair() {
     if (same && answer.status === 200) {
       closeLog();
       markOpen();
+      // The log the focus was in is gone, so it goes to the search box, at the top of the page.
+      searchText.focus();
     } else if (openPair !== undefined) {
       // The open pair's rows are read again with the rest, so they are emptied rather than shown twice.
       closeDelete(false);
@@ -1374,15 +1376,21 @@ async function deletePair() {
     }
     heldMessages = 0;
     messages = [];
-    pairs = new Map();
+    // The re-read brings back every pair that still has messages. A pair started from "New message" that has none yet
+    // is kept, so one open now stays open with its compose box.
+    pairs = new Map([...pairs].filter(([k, p]) => k !== key && p.count === 0).map(([k, p]) => [k, { ...p, newest: 0 }]));
+    if (openPair !== undefined && pairs.has(openPair)) logNote.textContent = "No messages yet.";
     showPairs();
+    showPicker();
     showDelete();
+    if (same && answer.error) document.getElementById("close-log").focus();
     cancel();
     poll(generation);
     return;
   }
   if (!same) return;
   closeDelete(false);
+  deleteButton.focus();
   if (answer.status === 400) {
     deleteNote.textContent = answer.reason || "The server refused this (400).";
   } else if (answer.status === 403) {
