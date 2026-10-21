@@ -177,6 +177,30 @@
         ]
       },
       "action": "planner"
+    },
+    "direction-changed": {
+      "on": [
+        "github:push"
+      ],
+      "when": {
+        "event.ref": "refs/heads/main",
+        "event.repository.full_name": "colinhallett/message-cp",
+        "event.head_commit.modified": {
+          "any": {
+            "equals": "DIRECTION.md"
+          }
+        }
+      },
+      "concurrency": {
+        "debounce": "120s",
+        "keys": [
+          {
+            "key": "planner:message-cp",
+            "limit": 1
+          }
+        ]
+      },
+      "action": "planner"
     }
   },
   "schedules": {

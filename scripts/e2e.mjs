@@ -5,7 +5,8 @@
 //
 // Prints one line per step it saw pass and exits 0, or names the step that failed and exits 1 (2 for bad usage).
 // It never prints the token, and of message bodies only the one it sent. The agents it registers are named
-// e2e-<random>-a and -b and are unregistered before it exits, even when a step fails.
+// e2e-<random>-a and -b and are unregistered before it exits, and every direct message to or from either name is
+// then deleted, even when a step fails.
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { spawn } from "node:child_process";
@@ -20,6 +21,8 @@ const NO_MAIL_MS = 2000;
 /** How soon after a send /wait must answer 200; the server checks for mail about once a second. */
 const WAKE_MS = 10_000;
 const CALL_TIMEOUT_MS = 15_000;
+/** How long deleting the e2e messages may take in all, however long the account's history is. */
+const DELETE_TIMEOUT_MS = 60_000;
 
 class StepError extends Error {}
 
@@ -175,6 +178,53 @@ async function main() {
     return { status: res.status, text: await res.text() };
   };
 
+  /**
+   * One request to the account's dashboard API with the run's token, given up at `deadline`: resolves to the parsed
+   * JSON of a 200 answer.
+   */
+  const api = async (method, path, query, deadline) => {
+    const late = () => new Error(`deleting did not finish within ${DELETE_TIMEOUT_MS / 1000}s`);
+    const left = deadline - Date.now();
+    if (left <= 0) throw late();
+    const url = new URL(server.url);
+    url.pathname = `${url.pathname.replace(/\/$/, "")}${path}`;
+    for (const [k, v] of Object.entries(query)) url.searchParams.set(k, v);
+    const res = await fetch(url, {
+      method,
+      headers: { Authorization: `Bearer ${server.token}` },
+      signal: AbortSignal.timeout(Math.min(CALL_TIMEOUT_MS, left)),
+    }).catch((err) => {
+      throw Date.now() >= deadline ? late() : err;
+    });
+    if (res.status !== 200) {
+      await res.body?.cancel();
+      throw new Error(`${method} ${path} got ${res.status}`);
+    }
+    // The parser's message quotes the answer, so it is not shown.
+    return res.json().catch((err) => {
+      if (!(err instanceof SyntaxError)) throw err;
+      throw new Error(`${method} ${path} answered something that is not JSON`);
+    });
+  };
+
+  /** Deletes every direct conversation of the account that involves either e2e name, without printing any body. */
+  const deleteMessages = async () => {
+    const deadline = Date.now() + DELETE_TIMEOUT_MS;
+    const names = new Set(agents.map((a) => a.name.toLowerCase()));
+    const pairs = new Map();
+    // Every page is read before anything is deleted, so this run's deletions cannot shift a later page.
+    for (let offset = 0; ; offset += 200) {
+      const page = await api("GET", "/api/messages", { limit: "200", offset: String(offset) }, deadline);
+      if (!Array.isArray(page)) throw new Error("GET /api/messages did not answer a list");
+      for (const m of page) {
+        if (!names.has(String(m.from).toLowerCase()) && !names.has(String(m.to).toLowerCase())) continue;
+        pairs.set([m.from, m.to].map((n) => String(n).toLowerCase()).sort().join("\n"), [m.from, m.to]);
+      }
+      if (page.length < 200) break;
+    }
+    for (const [a, b] of pairs.values()) await api("DELETE", "/api/conversation", { a, b }, deadline);
+  };
+
   try {
     if (!server) await step("start dist/cli.js serve", async () => (server = await startLocal()).url);
     else console.log(`     checking ${server.url}`);
@@ -295,6 +345,16 @@ async function main() {
       failure ??= "FAIL cleanup";
     } finally {
       await within(cleanup?.close() ?? Promise.resolve(), CALL_TIMEOUT_MS, "close").catch(() => {});
+    }
+  }
+  // Unregistering keeps an agent's messages, so delete every direct message to or from either name, including any
+  // that someone else sent them during the run.
+  if (agents.some((a) => a.registering)) {
+    try {
+      await deleteMessages();
+    } catch (err) {
+      console.error(`FAIL cleanup: could not delete the e2e messages: ${describe(err)}`);
+      failure ??= "FAIL cleanup";
     }
   }
   for (const agent of agents) {
