@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { readFileSync } from "node:fs";
 import { DEFAULT_HTTP_HOST, DEFAULT_HTTP_PORT, startHttp } from "./http.js";
 import { PersonError, PurgeError, addPerson, listPeople, purgeAgent, removePerson } from "./agents.js";
 import { AccountError, addAccount, addToken, listAccounts, revokeToken } from "./accounts.js";
@@ -113,10 +114,11 @@ if (command === "serve") {
   db.close();
 } else if (command === "webhook") {
   // Run on the server, like `account` and `token`. A new webhook's secret is printed this once, to stdout; everything
-  // else goes to stderr, except `list`, which never prints a secret.
+  // else goes to stderr, except `list`, which never prints a secret. `--header-stdin` reads the header line from stdin,
+  // so its value is never in an argument list, and the value is never printed.
   const usage = () => {
     console.error(
-      "usage: message-cp webhook add --url <url> --on <#channel | mention:<agent> | agent:<agent>> [--account <name>] [--no-text] | message-cp webhook list [--account <name>] | message-cp webhook remove <webhook id>",
+      "usage: message-cp webhook add --url <url> --on <#channel | mention:<agent> | agent:<agent>> [--account <name>] [--no-text] [--header-stdin] | message-cp webhook list [--account <name>] | message-cp webhook remove <webhook id>",
     );
     process.exit(2);
   };
@@ -124,11 +126,16 @@ if (command === "serve") {
   const valued = action === "add" ? ["--url", "--on", "--account"] : action === "list" ? ["--account"] : [];
   const opts = new Map<string, string>();
   let noText = false;
+  let headerStdin = false;
   if (action === "add" || action === "list") {
     for (let i = 0; i < args.length; i++) {
       const name = args[i]!;
       if (action === "add" && name === "--no-text" && !noText) {
         noText = true;
+        continue;
+      }
+      if (action === "add" && name === "--header-stdin" && !headerStdin) {
+        headerStdin = true;
         continue;
       }
       const value = args[++i];
@@ -140,12 +147,21 @@ if (command === "serve") {
   try {
     if (action === "add" && opts.has("--url") && opts.has("--on")) {
       const account = opts.get("--account") ?? "owner";
-      const w = addWebhook(db, account, opts.get("--url")!, opts.get("--on")!, !noText);
+      let header: string | undefined;
+      if (headerStdin) {
+        // One line, with at most one trailing newline; checked in addWebhook, which never repeats the value.
+        const lines = readFileSync(0, "utf8").replace(/\r?\n$/, "").split(/\r?\n/);
+        if (lines.filter((l) => l !== "").length > 1) throw new WebhookError("--header-stdin takes one line '<Name>: <value>'.");
+        header = lines.find((l) => l !== "") ?? "";
+        if (header === "") throw new WebhookError("--header-stdin read nothing: give one line '<Name>: <value>' on stdin.");
+      }
+      const w = addWebhook(db, account, opts.get("--url")!, opts.get("--on")!, !noText, header);
       console.error(`message-cp: webhook ${w.id} for account '${w.account}'. Its secret is shown only now; keep it.`);
       console.log(w.secret);
     } else if (action === "list") {
       for (const w of listWebhooks(db, opts.get("--account"))) {
-        console.log(`${w.id}\t${w.account}\t${w.url}\t${formatOn(w)}\t${w.includeText ? "text" : "no text"}`);
+        const header = w.headerName === null ? "" : `\theader: ${w.headerName}`;
+        console.log(`${w.id}\t${w.account}\t${w.url}\t${formatOn(w)}\t${w.includeText ? "text" : "no text"}${header}`);
       }
     } else if (action === "remove" && args.length === 1) {
       const arg = args[0]!;

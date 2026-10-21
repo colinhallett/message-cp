@@ -112,6 +112,8 @@ CREATE INDEX IF NOT EXISTS mentions_unread ON mentions (agent_id, read_at, post_
 
 -- Outgoing webhooks, managed only with \`message-cp webhook\`. \`event\` is 'channel', 'mention' or 'agent' and \`name\` the
 -- channel or agent in the same account, which need not exist yet. The secret is stored as is: deliveries sign with it.
+-- So is the value of the one header a webhook may carry (\`header_name\`, \`header_value\`, added in \`migrate\`), since
+-- deliveries send it.
 CREATE TABLE IF NOT EXISTS webhooks (
   id INTEGER PRIMARY KEY,
   account_id INTEGER NOT NULL REFERENCES accounts(id),
@@ -275,6 +277,9 @@ function migrate(db: Db, path: string): void {
   addColumn(db, "read_only", "INTEGER NOT NULL DEFAULT 0", "tokens");
   // Until when the request of the sender that last claimed the delivery may be in flight; no sender takes it before then.
   addColumn(db, "claimed_until", "INTEGER", "webhook_deliveries");
+  // The one header a webhook's deliveries carry (`webhook add --header-stdin`); both null for a webhook without one.
+  addColumn(db, "header_name", "TEXT", "webhooks");
+  addColumn(db, "header_value", "TEXT", "webhooks");
   db.exec(DROP_REMOVED);
   db.prepare("INSERT OR IGNORE INTO accounts (id, name, created_at) VALUES (?, 'owner', ?)").run(OWNER_ACCOUNT, Date.now());
   addAccounts(db, path);
