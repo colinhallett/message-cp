@@ -329,7 +329,8 @@ let channelFromKey = "";
 let channelNames;
 // The names, in lower case, that "New channel" has sent a post for under this token and that got a 200 or no answer, so
 // may be stored. A channel list read before the post was stored leaves these out, so they are kept apart from
-// channelNames, which each list replaces, and are refused too until ask() clears them.
+// channelNames, which each list replaces, and are refused too until ask() clears them. This guards only this page while
+// it holds the token: POST /api/post creates a channel or adds to it, so the server cannot refuse an existing name.
 let channelsSent = new Set();
 // A channel name as the server takes one: a copy of NAME_PATTERN in src/agents.ts, to be kept in step with it.
 const CHANNEL_NAME = /^[A-Za-z0-9_-]{1,32}$/;
@@ -828,7 +829,7 @@ function channelProblem(from, name, body) {
 // in the sidebar does, under the name the server stored it as, with that person chosen in "Post as". Nothing is sent
 // unless channelProblem finds nothing, and Create stays disabled while the request is in flight. A 200 that comes after
 // the form was closed opens nothing. Any other answer keeps the text and says why in the form's note; with no answer the
-// post may have been stored, so the name is refused under this token from then on (channelsSent). An answer that comes
+// post may have been stored, so the name is refused until the token is forgotten (channelsSent). An answer that comes
 // after the token was forgotten is dropped.
 async function createChannel() {
   const token = sessionStorage.getItem(KEY);
