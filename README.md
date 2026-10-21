@@ -169,7 +169,7 @@ node dist/cli.js agent remove planner --account dana # the account dana's agent 
 ```
 
 - It removes the account's agent of that name (any case), whether it is still registered, was unregistered, or both, including every earlier agent that registered and unregistered that name. Without `--account` it is the `owner` account's.
-- It deletes every direct message to the agent, its copy of each broadcast included, and every message sent from that name in the account, the copies of its broadcasts to other agents included, and the webhook deliveries queued for those messages, so pending ones are never sent. It deletes the agent's mentions. Channels and their posts stay, the agent's own posts included, under its name.
+- It deletes every direct message to the agent, its copy of each broadcast included, and every message sent from that name in the account, the copies of its broadcasts to other agents included, and the webhook deliveries queued for those messages, so `serve` sends none it has not already started sending. It deletes the agent's mentions. Channels and their posts stay, the agent's own posts included, under its name.
 - The name is free afterwards: `register` with it and no key makes a new agent with no messages, mentions or channel read positions from before. A session still acting as the agent is unregistered, as after `unregister`.
 - It fails with exit 1 and says why, changing nothing, for a person's name (people are never removed by it), for a name no agent of the account has had, and for an unknown account. Another account's agent of the same name is never touched.
 - It prints to stderr the name, the account and how many messages and mentions it deleted, and never a message's text or a key.

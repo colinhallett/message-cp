@@ -141,7 +141,7 @@ describe("purgeAgent", () => {
 
   it("leaves another account's agent of the same name, its messages and its mentions untouched", async () => {
     await conversation(OWNER_ACCOUNT, "owner ");
-    await conversation(friend, "friend ");
+    const friendPair = await conversation(friend, "friend ");
     const friendMessages = rows("SELECT m.* FROM messages m JOIN agents a ON a.id = m.recipient_id WHERE a.account_id = ? ORDER BY m.id", friend);
     const friendMentions = mentionsOf(friend);
     const friendAgents = rows("SELECT * FROM agents WHERE account_id = ? ORDER BY id", friend);
@@ -154,6 +154,12 @@ describe("purgeAgent", () => {
     expect(mentionsOf(friend)).toEqual(friendMentions);
     expect(friendMentions).toHaveLength(2);
     expect(rows("SELECT * FROM agents WHERE account_id = ? ORDER BY id", friend)).toEqual(friendAgents);
+
+    // The other account's alice, once unregistered with her messages and mention kept, is untouched too.
+    await call(friendPair.alice.client, "unregister");
+    const friendBefore = ["messages", "mentions", "agents"].map((t) => rows(`SELECT * FROM ${t} ORDER BY rowid`));
+    expect(purgeAgent(db, "owner", "alice")).toMatchObject({ messages: 0, mentions: 0 });
+    expect(["messages", "mentions", "agents"].map((t) => rows(`SELECT * FROM ${t} ORDER BY rowid`))).toEqual(friendBefore);
 
     // And the other way round.
     expect(purgeAgent(db, "friend", "alice")).toMatchObject({ account: "friend", messages: 5, mentions: 1 });
