@@ -21,6 +21,8 @@ const NO_MAIL_MS = 2000;
 /** How soon after a send /wait must answer 200; the server checks for mail about once a second. */
 const WAKE_MS = 10_000;
 const CALL_TIMEOUT_MS = 15_000;
+/** How long deleting the e2e messages may take in all, however long the account's history is. */
+const DELETE_TIMEOUT_MS = 60_000;
 
 class StepError extends Error {}
 
@@ -176,14 +178,23 @@ async function main() {
     return { status: res.status, text: await res.text() };
   };
 
-  /** One request to the account's dashboard API with the run's token: resolves to the parsed JSON of a 200 answer. */
-  const api = async (method, path, query) => {
-    const url = new URL(`${server.url}${path}`);
+  /**
+   * One request to the account's dashboard API with the run's token, given up at `deadline`: resolves to the parsed
+   * JSON of a 200 answer.
+   */
+  const api = async (method, path, query, deadline) => {
+    const late = () => new Error(`deleting did not finish within ${DELETE_TIMEOUT_MS / 1000}s`);
+    const left = deadline - Date.now();
+    if (left <= 0) throw late();
+    const url = new URL(server.url);
+    url.pathname = `${url.pathname.replace(/\/$/, "")}${path}`;
     for (const [k, v] of Object.entries(query)) url.searchParams.set(k, v);
     const res = await fetch(url, {
       method,
       headers: { Authorization: `Bearer ${server.token}` },
-      signal: AbortSignal.timeout(CALL_TIMEOUT_MS),
+      signal: AbortSignal.timeout(Math.min(CALL_TIMEOUT_MS, left)),
+    }).catch((err) => {
+      throw Date.now() >= deadline ? late() : err;
     });
     if (res.status !== 200) {
       await res.body?.cancel();
@@ -198,11 +209,12 @@ async function main() {
 
   /** Deletes every direct conversation of the account that involves either e2e name, without printing any body. */
   const deleteMessages = async () => {
+    const deadline = Date.now() + DELETE_TIMEOUT_MS;
     const names = new Set(agents.map((a) => a.name.toLowerCase()));
     const pairs = new Map();
     // Every page is read before anything is deleted, so this run's deletions cannot shift a later page.
     for (let offset = 0; ; offset += 200) {
-      const page = await api("GET", "/api/messages", { limit: "200", offset: String(offset) });
+      const page = await api("GET", "/api/messages", { limit: "200", offset: String(offset) }, deadline);
       if (!Array.isArray(page)) throw new Error("GET /api/messages did not answer a list");
       for (const m of page) {
         if (!names.has(String(m.from).toLowerCase()) && !names.has(String(m.to).toLowerCase())) continue;
@@ -210,7 +222,7 @@ async function main() {
       }
       if (page.length < 200) break;
     }
-    for (const [a, b] of pairs.values()) await api("DELETE", "/api/conversation", { a, b });
+    for (const [a, b] of pairs.values()) await api("DELETE", "/api/conversation", { a, b }, deadline);
   };
 
   try {
