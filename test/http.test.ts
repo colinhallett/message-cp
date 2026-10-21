@@ -9,7 +9,7 @@ import { addAccount } from "../src/accounts.js";
 import { purgeAgent } from "../src/agents.js";
 import { openDb, type Db } from "../src/db.js";
 import { startHttp, type HttpServer } from "../src/http.js";
-import { createServer } from "../src/server.js";
+import { Session, createServer } from "../src/server.js";
 
 const TOKEN = "s3cret-token";
 let db: Db;
@@ -289,6 +289,32 @@ describe("restart", () => {
     expect(refused.status).toBe(500);
     await restart();
     expect((await fetch(url(), { method: "DELETE", headers: auth })).status).toBe(200);
+    await restart();
+    expect(await status(sid)).toBe(404);
+  });
+
+  it("does not record a register that finishes after DELETE ended a session that had no row", async () => {
+    const client = await connect();
+    const sid = (client.transport as StreamableHTTPClientTransport).sessionId!;
+    // Hold this register's bind until the DELETE has been answered, as a register still running when it arrives would.
+    let release!: () => void;
+    const held = new Promise<void>((r) => (release = r));
+    const bind = Session.prototype.bind;
+    const bound = new Promise<void>((done) => {
+      vi.spyOn(Session.prototype, "bind").mockImplementation(function (this: Session, identity) {
+        void held.then(() => {
+          bind.call(this, identity);
+          done();
+        });
+      });
+    });
+    await call(client, "register", { name: "ann", bio: "x", key: "ann-key" });
+    const auth = { Authorization: `Bearer ${TOKEN}`, "mcp-session-id": sid, "mcp-protocol-version": "2025-03-26" };
+    expect((await fetch(url(), { method: "DELETE", headers: auth })).status).toBe(200);
+    release();
+    await bound;
+    vi.restoreAllMocks();
+    expect(db.prepare("SELECT count(*) AS n FROM http_sessions").get()).toEqual({ n: 0 });
     await restart();
     expect(await status(sid)).toBe(404);
   });

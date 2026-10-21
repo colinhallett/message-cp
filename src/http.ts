@@ -635,7 +635,12 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
     transport.onclose = () => {
       if (transport.sessionId) sessions.delete(transport.sessionId);
     };
-    const session = new Session(account, (identity) => recordSession(() => saveSession(db, transport.sessionId!, account, identity)));
+    // Only a session this server still holds is recorded: a `register` that finishes after a DELETE ended it, before it
+    // had a row to mark, must not make it restorable.
+    const session = new Session(account, (identity) => {
+      const sid = transport.sessionId!;
+      if (sessions.get(sid) === live) recordSession(() => saveSession(db, sid, account, identity));
+    });
     await createServer(db, session, { remote: true, publicUrl: options.publicUrl }).connect(transport);
     await transport.handleRequest(req, res, body);
   };
@@ -660,7 +665,9 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
     };
     live.ready = (async () => {
       try {
-        const session = new Session(account, (bound) => recordSession(() => saveSession(db, id, account, bound)));
+        const session = new Session(account, (bound) => {
+          if (sessions.get(id) === live) recordSession(() => saveSession(db, id, account, bound));
+        });
         await createServer(db, session, { remote: true, publicUrl: options.publicUrl }).connect(transport);
         // Its row is already there, so it is not recorded again: one another server deleted meanwhile stays deleted.
         session.restore(identity);
