@@ -33,12 +33,12 @@ afterEach(async () => {
 const NO_AGENTS =
   'No agents yet: one appears here once it registers with the register tool, using message-cp as an MCP server (the README section "Add it to an MCP client" says how). ' +
   "Add a person on the server with: node dist/cli.js person add <name> --account <account>";
-const NO_CHANNELS = "No channels yet: a channel is created by its first post, which an agent makes with the post tool.";
+const NO_CHANNELS = "No channels yet: an agent creates one with its first post there, using the post tool, or by joining it with the join_channel tool.";
 const NEW_CHANNEL = ' You can also start one from "New channel" above.';
 const NO_MESSAGES = "No direct messages yet: they appear here when an agent sends one with the send_message tool.";
 const NEW_MESSAGE = ' You can also start one from "New message" above.';
 const NO_DELIVERIES =
-  "No webhook deliveries yet: add a webhook on the server with node dist/cli.js webhook add, and its deliveries show here once it fires.";
+  "No webhook deliveries yet: add a webhook on the server with node dist/cli.js webhook add --url <url> --on <#channel | mention:<agent> | agent:<agent>>, and its deliveries show here once it fires.";
 
 const base = () => `http://127.0.0.1:${http.port}`;
 const auth = (token: string): Record<string, string> => ({ Authorization: `Bearer ${token}` });
