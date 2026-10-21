@@ -4,7 +4,7 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { addAccount } from "../src/accounts.js";
 import { purgeAgent } from "../src/agents.js";
 import { openDb, type Db } from "../src/db.js";
@@ -272,6 +272,39 @@ describe("restart", () => {
     expect(db.prepare("SELECT count(*) AS n FROM http_sessions").get()).toEqual({ n: 0 });
     await restart();
     expect(await status(sid)).toBe(404);
+  });
+
+  it("refuses a DELETE it cannot forget, leaving the session open and restorable", async () => {
+    const sid = await registered("ann");
+    const prepare = db.prepare.bind(db);
+    vi.spyOn(db, "prepare").mockImplementation(((sql: string) => {
+      if (sql.startsWith("DELETE FROM http_sessions WHERE hash")) {
+        throw Object.assign(new Error("database is locked"), { code: "SQLITE_BUSY" });
+      }
+      return prepare(sql);
+    }) as typeof db.prepare);
+    const auth = { Authorization: `Bearer ${TOKEN}`, "mcp-session-id": sid };
+    const refused = await fetch(url(), { method: "DELETE", headers: auth });
+    vi.restoreAllMocks();
+    expect(refused.status).toBe(503);
+    expect(refused.headers.get("retry-after")).toBe("1");
+    expect(await status(sid)).toBe(200);
+    await restart();
+    expect(await status(sid)).toBe(200);
+  });
+
+  it("restores a session without recording its row again", async () => {
+    const sid = await registered("ann");
+    await restart();
+    const prepare = db.prepare.bind(db);
+    const writes: string[] = [];
+    vi.spyOn(db, "prepare").mockImplementation(((sql: string) => {
+      if (sql.startsWith("INSERT INTO http_sessions")) writes.push(sql);
+      return prepare(sql);
+    }) as typeof db.prepare);
+    expect(await status(sid)).toBe(200);
+    vi.restoreAllMocks();
+    expect(writes).toEqual([]);
   });
 
   it("refuses a session idle past the timeout", async () => {

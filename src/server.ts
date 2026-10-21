@@ -66,6 +66,11 @@ export class Session {
     this.onBind?.(identity);
   }
 
+  /** Binds the session to a registration that is already recorded, as a restore does, without telling `onBind`. */
+  restore(identity: Identity): void {
+    this.identity = identity;
+  }
+
   /** The registration this session belongs to, as last checked by `current`/`require`. */
   get registration(): Identity | undefined {
     return this.identity;

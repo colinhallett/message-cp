@@ -82,6 +82,8 @@ interface Live {
   account: AccountId;
   /** For a restored session, settles once its transport has been initialized; requests wait for it. */
   ready?: Promise<void>;
+  /** The tools' session, whose registration is recorded again if a DELETE is refused after its row was forgotten. */
+  session?: Session;
 }
 
 const isBusy = (err: unknown) => {
@@ -91,8 +93,8 @@ const isBusy = (err: unknown) => {
 
 /**
  * Runs the database work that keeps a registered session restorable. It never throws: if it fails, the session works
- * as before and a restart may lose it. A lock held past the busy timeout is retried on its next use; any other error
- * logs one fixed line, never anything about the session.
+ * as before, but the work is not retried, so a restart may lose the session. A lock held past the busy timeout is
+ * skipped quietly; any other error logs one fixed line, never anything about the session.
  */
 function recordSession(work: () => void): void {
   try {
@@ -604,13 +606,23 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
       // Another account's session looks like one that does not exist.
       if (!live || live.account !== account) return reply(res, 404, "Unknown session");
       await live.ready;
+      // A DELETE ends the session for good, so its row is forgotten before the DELETE is accepted: if that fails the
+      // DELETE is refused, rather than answered 200 with the session still restorable after a restart.
+      if (req.method === "DELETE" && unlessBusy(res, () => (forgetSession(db, id), true)) === undefined) return;
       live.lastUsed = Date.now();
       await live.transport.handleRequest(req, res, body);
       live.lastUsed = Date.now();
-      // A DELETE that ended the session ends it for good. A session dropped by close() while a request was open keeps
-      // its row, so the restart can restore it; any other request keeps a registered one restorable for another idle timeout.
-      if (req.method === "DELETE" && res.statusCode === 200) recordSession(() => forgetSession(db, id));
-      else if (sessions.get(id) === live) recordSession(() => touchSession(db, id, live.lastUsed));
+      if (req.method === "DELETE") {
+        // A DELETE the transport refused leaves the session open, so its registration is recorded again.
+        const registration = live.session?.registration;
+        if (res.statusCode !== 200 && sessions.get(id) === live && registration) {
+          recordSession(() => saveSession(db, id, account, registration, live.lastUsed));
+        }
+        return;
+      }
+      // A session dropped by close() while a request was open keeps its row, so the restart can restore it; any other
+      // request keeps a registered one restorable for another idle timeout.
+      if (sessions.get(id) === live) recordSession(() => touchSession(db, id, live.lastUsed));
       return;
     }
 
@@ -629,6 +641,7 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
       if (transport.sessionId) sessions.delete(transport.sessionId);
     };
     const session = new Session(account, (identity) => recordSession(() => saveSession(db, transport.sessionId!, account, identity)));
+    live.session = session;
     await createServer(db, session, { remote: true, publicUrl: options.publicUrl }).connect(transport);
     await transport.handleRequest(req, res, body);
   };
@@ -648,8 +661,11 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
     live.ready = (async () => {
       try {
         const session = new Session(account, (bound) => recordSession(() => saveSession(db, id, account, bound)));
+        live.session = session;
         await createServer(db, session, { remote: true, publicUrl: options.publicUrl }).connect(transport);
-        session.bind(identity);
+        // Its row is already there. Binding without recording it again means a row another server deleted meanwhile
+        // (by a DELETE, say) is not brought back.
+        session.restore(identity);
         await prime(transport);
       } catch (err) {
         drop(id);
