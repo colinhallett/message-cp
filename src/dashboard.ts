@@ -750,6 +750,7 @@ function showNewButton() {
   }
   // The empty notes that name these buttons follow them at once rather than on the next poll.
   if (noChannels) noChannels.textContent = channelsEmpty();
+  // Both of the direct messages' empty texts start with NO_MESSAGES; any other note is left as it is.
   if (messagesNote.textContent.startsWith(NO_MESSAGES)) messagesNote.textContent = messagesEmpty();
 }
 
