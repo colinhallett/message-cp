@@ -1317,8 +1317,9 @@ function closeDelete(refocus) {
 // start, since GET /api/messages pages by offset and the rows before heldMessages are now fewer. The confirm button stays
 // disabled while the request is in flight. A 200 closes the pair if it is still open and forgets what this tab had seen
 // of it; with no answer the messages may already be deleted, so they are read again too and the pair stays open with a
-// note, its rows emptied until the read shows what is left. Any other answer keeps the pair open with its reason. An answer that comes after the token was forgotten is
-// dropped; one that comes after another conversation opened changes only the messages the page holds.
+// note, its rows emptied until the read shows what is left. Any other answer keeps the pair open with its reason. An
+// answer that comes after the token was forgotten is dropped; one that comes after another conversation opened changes
+// only the messages the page holds.
 async function deletePair() {
   const token = sessionStorage.getItem(KEY);
   if (!token) return ask();
