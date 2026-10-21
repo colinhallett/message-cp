@@ -319,6 +319,26 @@ export function listAccountMessages(db: Db, account: AccountId, limit: number, o
   }));
 }
 
+/**
+ * Deletes the account's messages between `first` and `second`, either way and in any case: exactly the rows
+ * `listAccountMessages` lists with that `from` and `to`, broadcasts and messages to a removed agent's old name included.
+ * Their webhook deliveries go with them. Returns how many were deleted.
+ */
+export function deleteConversation(db: Db, account: AccountId, first: string, second: string): number {
+  // One statement per direction, so each reads only the messages_by_sender rows for that pair, not the account's history.
+  const fromTo = db.prepare(
+    `DELETE FROM messages
+     WHERE recipient_id IN (SELECT id FROM agents WHERE account_id = ?
+                              AND (CASE WHEN removed_at IS NULL THEN name ELSE removed_name END) = ? COLLATE NOCASE)
+       AND sender = ? COLLATE NOCASE`,
+  );
+  return db.transaction((): number => {
+    const there = fromTo.run(account, second, first).changes;
+    // A conversation with oneself is one direction; running it twice would only find nothing the second time.
+    return there + fromTo.run(account, first, second).changes;
+  }).immediate();
+}
+
 /** A message the caller received, as `search` returns it. */
 export interface MessageMatch extends Message {
   kind: "message";
