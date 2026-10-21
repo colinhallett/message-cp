@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { addAccount, addToken, listAccounts, revokeToken } from "../src/accounts.js";
 import { OWNER_ACCOUNT, openDb, type Db } from "../src/db.js";
 import { addPerson, identityOf, registerAgent } from "../src/agents.js";
-import { joinChannel, post } from "../src/channels.js";
+import { joinChannel, leaveChannel, post } from "../src/channels.js";
 import { MAX_BODY_LENGTH, sendMessage, unreadSummary } from "../src/messages.js";
 import { startHttp, type HttpServer } from "../src/http.js";
 import { addWebhook } from "../src/webhooks.js";
@@ -594,6 +594,110 @@ describe("the page's channels and messages", () => {
     await page.until(() => page.elements["status-line"].textContent.startsWith("The server refused"));
     expect(page.elements["post-rows"].children).toHaveLength(0);
     expect(page.store.size).toBe(0);
+  });
+
+  describe("the header bar", () => {
+    const member = (name: string) => ({ ...identityOf(db, OWNER_ACCOUNT, name)!, name });
+    const members = (page: { elements: Record<string, Stub> }) => {
+      const line = page.elements["log-members"];
+      return line.hidden ? undefined : [line.textContent, line.title];
+    };
+
+    it("shows an open channel's members under its name, in the server's order", async () => {
+      for (const name of ["bob", "alice"]) registerAgent(db, OWNER_ACCOUNT, name, "x");
+      joinChannel(db, OWNER_ACCOUNT, member("bob"), "build");
+      joinChannel(db, OWNER_ACCOUNT, member("alice"), "build");
+      const page = await load(viewer);
+      const channels = page.elements["channel-rows"];
+      await page.until(() => channels.children.length === 1);
+      expect(members(page)).toBeUndefined();
+      open(channels.children[0]);
+      await page.until(() => members(page) !== undefined);
+      expect(page.elements["log-title"].textContent).toBe("build");
+      expect(members(page)).toEqual(["Members: alice, bob", "Members: alice, bob"]);
+    });
+
+    it("says a channel nobody has joined has no members yet", async () => {
+      seed();
+      const page = await load(viewer);
+      const channels = page.elements["channel-rows"];
+      await page.until(() => channels.children.length === 1);
+      open(channels.children[0]);
+      await page.until(() => members(page) !== undefined);
+      expect(members(page)).toEqual(["No members yet", "No members yet"]);
+    });
+
+    it("follows agents joining and leaving the open channel on the next poll, and keeps the last ones shown when the channel is no longer listed", async () => {
+      for (const name of ["alice", "bob"]) registerAgent(db, OWNER_ACCOUNT, name, "x");
+      joinChannel(db, OWNER_ACCOUNT, member("alice"), "build");
+      const page = await load(viewer);
+      const channels = page.elements["channel-rows"];
+      await page.until(() => channels.children.length === 1);
+      open(channels.children[0]);
+      await page.until(() => members(page)?.[0] === "Members: alice" && page.scheduled());
+
+      joinChannel(db, OWNER_ACCOUNT, member("bob"), "build");
+      page.poll();
+      await page.until(() => members(page)?.[0] === "Members: alice, bob" && page.scheduled());
+      leaveChannel(db, OWNER_ACCOUNT, member("alice"), "build");
+      page.poll();
+      await page.until(() => members(page)?.[0] === "Members: bob" && page.scheduled());
+
+      // A channel the answer no longer lists keeps the members last shown, and the log says it is not there.
+      db.prepare("DELETE FROM channel_reads").run();
+      db.prepare("DELETE FROM channels").run();
+      page.poll();
+      await page.until(() => page.elements["log-note"].textContent === "There is no channel by this name now.");
+      expect(channels.children.map((row) => row.textContent)).toEqual(["No channels in this account."]);
+      expect(members(page)).toEqual(["Members: bob", "Members: bob"]);
+    });
+
+    it("shows no members line for a pair or the webhook deliveries", async () => {
+      for (const name of ["alice", "bob"]) registerAgent(db, OWNER_ACCOUNT, name, "x");
+      joinChannel(db, OWNER_ACCOUNT, member("alice"), "build");
+      sendMessage(db, OWNER_ACCOUNT, "alice", "bob", "hi");
+      const page = await load(viewer);
+      const channels = page.elements["channel-rows"];
+      const pairs = page.elements["pair-rows"];
+      await page.until(() => channels.children.length === 1 && pairs.children.length === 1);
+      open(channels.children[0]);
+      await page.until(() => members(page) !== undefined);
+
+      open(pairs.children[0]);
+      expect(page.elements["log-title"].textContent).toBe("alice ↔ bob");
+      expect(members(page)).toBeUndefined();
+      expect(page.elements["log-members"].textContent).toBe("");
+      // A poll while the pair is open does not bring the channel's members back.
+      await page.until(() => page.scheduled());
+      page.poll();
+      await page.until(() => page.scheduled());
+      expect(members(page)).toBeUndefined();
+
+      open(page.elements["delivery-entry"].children[0]);
+      expect(page.elements["log-title"].textContent).toBe("Webhook deliveries");
+      expect(members(page)).toBeUndefined();
+    });
+
+    it("clears the members line when the log closes or the token goes", async () => {
+      registerAgent(db, OWNER_ACCOUNT, "alice", "x");
+      joinChannel(db, OWNER_ACCOUNT, member("alice"), "build");
+      const page = await load(viewer);
+      const channels = page.elements["channel-rows"];
+      await page.until(() => channels.children.length === 1);
+      open(channels.children[0]);
+      await page.until(() => members(page) !== undefined);
+      page.elements["close-log"].on.click();
+      expect(members(page)).toBeUndefined();
+      expect(page.elements["log-members"].textContent).toBe("");
+      expect(page.elements["log-members"].title).toBe("");
+
+      open(channels.children[0]);
+      await page.until(() => members(page) !== undefined);
+      page.elements["forget"].on.click();
+      expect(members(page)).toBeUndefined();
+      expect(page.elements["log-members"].textContent).toBe("");
+      expect(page.elements["log-members"].title).toBe("");
+    });
   });
 
   describe("unread badges", () => {
