@@ -82,6 +82,8 @@ interface Live {
   account: AccountId;
   /** For a restored session, settles once its transport has been initialized; requests wait for it. */
   ready?: Promise<void>;
+  /** The session its tools act through, which knows the agent it is currently registered as. */
+  session?: Session;
 }
 
 const isBusy = (err: unknown) => {
@@ -92,14 +94,17 @@ const isBusy = (err: unknown) => {
 /**
  * Runs the database work that keeps a registered session restorable. It never throws: if it fails, the session works
  * as before, but the work is not retried, so a restart may lose the session. A lock held past the busy timeout is
- * skipped quietly; any other error logs one fixed line, never anything about the session.
+ * skipped quietly; any other error logs one fixed line, never anything about the session. Returns false if the lock was
+ * held past the busy timeout.
  */
-function recordSession(work: () => void): void {
+function recordSession(work: () => void): boolean {
   try {
     work();
   } catch (err) {
-    if (!isBusy(err)) console.error("message-cp serve: could not record a session for restarts");
+    if (isBusy(err)) return false;
+    console.error("message-cp serve: could not record a session for restarts");
   }
+  return true;
 }
 
 /**
@@ -226,6 +231,46 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
     else held.delete(account);
   };
 
+  /**
+   * The lower-cased name of the agent `live` is currently registered as, or undefined if none. It never throws: a lock
+   * held past the busy timeout is `null`, to try again later; any other error logs one fixed line and counts as none.
+   */
+  const agentOf = (live: Live): string | undefined | null => {
+    try {
+      return live.session?.current()?.toLowerCase();
+    } catch (err) {
+      if (isBusy(err)) return null;
+      console.error("message-cp serve: could not check a session's agent");
+      return undefined;
+    }
+  };
+
+  /** Whether `live`'s current agent has a GET /wait held, looked up under the session's own account only. */
+  const agentWaiting = (live: Live): boolean | null => {
+    const waits = held.get(live.account);
+    if (!waits) return false;
+    const name = agentOf(live);
+    return name === null ? null : name !== undefined && waits.has(name);
+  };
+
+  /**
+   * Marks used now every session of `account` currently registered as `name`. It waits out the busy timeout once at
+   * most: after a busy write the rest are marked used here but not recorded, and a busy read ends the pass.
+   */
+  const touchSessionsOf = (account: AccountId, name: string) => {
+    const key = name.toLowerCase();
+    const now = Date.now();
+    let busy = false;
+    for (const [id, live] of sessions) {
+      if (live.account !== account) continue;
+      const agent = agentOf(live);
+      if (agent === null) return;
+      if (agent !== key) continue;
+      live.lastUsed = now;
+      if (!busy) busy = !recordSession(() => touchSession(db, id, now));
+    }
+  };
+
   const drop = (id: string) => {
     const live = sessions.get(id);
     if (!live) return;
@@ -237,11 +282,25 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
   // Ended rows are kept for a second idle timeout, which covers every server's live copy only while the servers sharing
   // the database use the same timeout (`serve` always uses the default). Should one be swept early and recorded again,
   // it can still only restore the registration that recorded it, and not once that is removed.
+  // A session whose agent has a GET /wait held counts as used now, so an agent stays registered while it waits. After the
+  // first busy result a pass does no more database work, so it waits out the busy timeout once at most: an idle session
+  // whose account has a wait held is kept for this pass, any other is dropped, and rows are forgotten on a later pass.
   const sweep = setInterval(
     () => {
-      const cutoff = Date.now() - idleTimeoutMs;
-      for (const [id, live] of sessions) if (live.lastUsed < cutoff) drop(id);
-      recordSession(() => forgetIdleSessions(db, cutoff, cutoff - idleTimeoutMs));
+      const now = Date.now();
+      const cutoff = now - idleTimeoutMs;
+      let busy = false;
+      for (const [id, live] of sessions) {
+        if (live.lastUsed >= cutoff) continue;
+        const waiting = busy ? (held.has(live.account) ? null : false) : agentWaiting(live);
+        if (waiting === false) drop(id);
+        else if (waiting === null) busy = true;
+        else {
+          live.lastUsed = now;
+          if (!recordSession(() => touchSession(db, id, now))) busy = true;
+        }
+      }
+      if (!busy) recordSession(() => forgetIdleSessions(db, cutoff, cutoff - idleTimeoutMs));
     },
     Math.max(10, Math.min(60_000, idleTimeoutMs / 2)),
   );
@@ -309,6 +368,8 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
     } finally {
       waiting--;
       holding(account, name!, -1);
+      // The agent's sessions count as used as the hold ends, so the gap before the wait loop asks again cannot drop them.
+      touchSessionsOf(account, name!);
     }
   };
 
@@ -644,6 +705,7 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
       const sid = transport.sessionId!;
       if (sessions.get(sid) === live) recordSession(() => saveSession(db, sid, account, identity));
     });
+    live.session = session;
     await createServer(db, session, { remote: true, publicUrl: options.publicUrl }).connect(transport);
     await transport.handleRequest(req, res, body);
   };
@@ -674,6 +736,7 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
         await createServer(db, session, { remote: true, publicUrl: options.publicUrl }).connect(transport);
         // Its row is already there, so it is not recorded again: one another server deleted meanwhile stays deleted.
         session.restore(identity);
+        live.session = session;
         await prime(transport);
       } catch (err) {
         drop(id);

@@ -1,14 +1,16 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import Database from "better-sqlite3";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { addAccount } from "../src/accounts.js";
 import { purgeAgent } from "../src/agents.js";
-import { openDb, type Db } from "../src/db.js";
+import { OWNER_ACCOUNT, openDb, type Db } from "../src/db.js";
 import { startHttp, type HttpServer } from "../src/http.js";
+import { sendMessage } from "../src/messages.js";
 import { Session, createServer } from "../src/server.js";
 
 const TOKEN = "s3cret-token";
@@ -114,6 +116,170 @@ describe("sessions", () => {
     expect(http.sessionCount()).toBe(1);
     await new Promise((r) => setTimeout(r, 300));
     expect(http.sessionCount()).toBe(0);
+  });
+});
+
+describe("waiting keeps a session", () => {
+  const IDLE_MS = 600;
+
+  beforeEach(async () => {
+    await http.close();
+    http = await startHttp(db, { token: TOKEN, port: 0, idleTimeoutMs: IDLE_MS, waitHoldMs: 300 });
+  });
+
+  /** A session registered as `name` with `token`, and its id. */
+  async function registered(name: string, token = TOKEN): Promise<{ client: Client; sid: string }> {
+    const client = await connect(token);
+    expect((await call(client, "register", { name, bio: "x" })).isError).toBe(false);
+    return { client, sid: (client.transport as StreamableHTTPClientTransport).sessionId! };
+  }
+
+  const wait = (agent: string, token = TOKEN) =>
+    fetch(`http://127.0.0.1:${http.port}/wait?agent=${agent}`, { headers: { Authorization: `Bearer ${token}` } });
+
+  /** Runs the wait loop for `agent` for `ms`, asking again at once after each 204, as `waitCommand` does. */
+  async function waitLoop(agent: string, ms: number, token = TOKEN): Promise<void> {
+    const end = Date.now() + ms;
+    while (Date.now() < end) expect((await wait(agent, token)).status).toBe(204);
+  }
+
+  /** How many restorable session rows the account named `account` has. */
+  const rowsFor = (account: string) =>
+    (
+      db
+        .prepare("SELECT COUNT(*) AS n FROM http_sessions JOIN accounts ON accounts.id = account_id WHERE accounts.name = ?")
+        .get(account) as { n: number }
+    ).n;
+
+  it("keeps a registered session whose agent waits well past the timeout, acting as its agent after", async () => {
+    const ann = await registered("ann");
+    const bob = await connect();
+    await call(bob, "register", { name: "bob", bio: "y" });
+    await waitLoop("ann", IDLE_MS * 3);
+    // bob made /mcp requests only before the loop, so only ann's session is left.
+    expect(http.sessionCount()).toBe(1);
+    expect(rowsFor("owner")).toBe(1);
+    // A held wait answers when mail comes, and the old session reads it with no new register.
+    const pending = wait("ann");
+    await new Promise((r) => setTimeout(r, 50));
+    sendMessage(db, OWNER_ACCOUNT, "bob", "ann", "while waiting");
+    expect((await pending).status).toBe(200);
+    const inbox = await call(ann.client, "read_inbox", {});
+    expect(inbox.isError).toBe(false);
+    expect(inbox.text).toContain("while waiting");
+  });
+
+  it("keeps the session through one hold longer than the timeout, then lets it idle out", async () => {
+    await http.close();
+    http = await startHttp(db, { token: TOKEN, port: 0, idleTimeoutMs: IDLE_MS, waitHoldMs: IDLE_MS * 4 });
+    const ann = await registered("ann");
+    expect((await wait("ann")).status).toBe(204);
+    expect(http.sessionCount()).toBe(1);
+    expect(rowsFor("owner")).toBe(1);
+    expect((await call(ann.client, "read_inbox", {})).isError).toBe(false);
+    await new Promise((r) => setTimeout(r, IDLE_MS * 3));
+    expect(http.sessionCount()).toBe(0);
+  });
+
+  it("counts a session as used when a hold for its agent ends, so the gap before the next one cannot drop it", async () => {
+    // With a 1000ms timeout the sweep runs every 500ms from start. Times are taken from when registration completed:
+    // pass `k` is the first more than 50ms after it, and the hold runs between it and the next one, so no pass sees it
+    // held. Pass `k + 2` is the first whose cutoff is past the registration: only the end of the hold can keep the
+    // session through it.
+    await http.close();
+    const start = Date.now();
+    http = await startHttp(db, { token: TOKEN, port: 0, idleTimeoutMs: 1000, waitHoldMs: 300 });
+    await registered("ann");
+    const k = Math.floor((Date.now() + 50 - start) / 500) + 1;
+    const until = (ms: number) => new Promise((r) => setTimeout(r, start + ms - Date.now()));
+    await until(500 * k + 100);
+    expect((await wait("ann")).status).toBe(204);
+    expect(Date.now() - start).toBeLessThan(500 * (k + 1));
+    await until(500 * (k + 2) + 250);
+    expect(http.sessionCount()).toBe(1);
+  });
+
+  it("waits out a busy database once at most in a sweep pass, however many waiting sessions it reaches", async () => {
+    await http.close();
+    http = await startHttp(db, { token: TOKEN, port: 0, idleTimeoutMs: 200, waitHoldMs: 5000 });
+    const names = ["a0", "a1", "a2", "a3", "a4", "a5", "a6", "a7"];
+    for (const name of names) await registered(name);
+    const holds = names.map((name) => wait(name));
+    await new Promise((r) => setTimeout(r, 300));
+    db.pragma("busy_timeout = 200");
+    const other = new Database(db.name);
+    other.exec("BEGIN IMMEDIATE");
+    // The longest the event loop is blocked while the lock is held: one busy timeout is 200ms, one per session 1600ms.
+    let longest = 0;
+    try {
+      let last = Date.now();
+      const end = last + 1200;
+      while (Date.now() < end) {
+        await new Promise((r) => setTimeout(r, 5));
+        longest = Math.max(longest, Date.now() - last);
+        last = Date.now();
+      }
+    } finally {
+      other.exec("ROLLBACK");
+      other.close();
+    }
+    expect(longest).toBeLessThan(800);
+    expect(http.sessionCount()).toBe(8);
+    for (const c of open) await c.close().catch(() => {});
+    open = [];
+    await http.close();
+    await Promise.allSettled(holds);
+  });
+
+  it("keeps a restored session whose agent waits", async () => {
+    const { sid } = await registered("ann");
+    for (const c of open) await c.close().catch(() => {});
+    open = [];
+    await http.close();
+    http = await startHttp(db, { token: TOKEN, port: 0, idleTimeoutMs: IDLE_MS, waitHoldMs: 300 });
+    const resumed = new Client({ name: "test", version: "0" });
+    await resumed.connect(
+      new StreamableHTTPClientTransport(url(), { sessionId: sid, requestInit: { headers: { Authorization: `Bearer ${TOKEN}` } } }),
+    );
+    open.push(resumed);
+    expect((await call(resumed, "read_inbox", {})).isError).toBe(false);
+    await waitLoop("ann", IDLE_MS * 3);
+    expect(http.sessionCount()).toBe(1);
+    expect(rowsFor("owner")).toBe(1);
+    expect((await call(resumed, "read_inbox", {})).isError).toBe(false);
+  });
+
+  it("drops a registered session whose agent is not waiting, and forgets its row", async () => {
+    await registered("ann");
+    await new Promise((r) => setTimeout(r, IDLE_MS * 3));
+    expect(http.sessionCount()).toBe(0);
+    expect(rowsFor("owner")).toBe(0);
+  });
+
+  it("does not keep a session that never registered, or one whose registration is no longer current", async () => {
+    const first = await registered("ann");
+    await call(first.client, "unregister", {});
+    // A new agent takes the name and is waited for; only its own session is kept.
+    const second = await registered("ann");
+    await post({ Authorization: `Bearer ${TOKEN}` });
+    expect(http.sessionCount()).toBe(3);
+    await waitLoop("ann", IDLE_MS * 3);
+    expect(http.sessionCount()).toBe(1);
+    expect(rowsFor("owner")).toBe(1);
+    expect((await call(second.client, "read_inbox", {})).isError).toBe(false);
+  });
+
+  it("does not keep another agent's session, or another account's session for an agent with the same name", async () => {
+    const other = addAccount(db, "other").token;
+    await registered("ann");
+    await registered("bob");
+    await registered("ann", other);
+    expect(http.sessionCount()).toBe(3);
+    await waitLoop("ann", IDLE_MS * 3, other);
+    // Only the other account's ann is left.
+    expect(http.sessionCount()).toBe(1);
+    expect(rowsFor("owner")).toBe(0);
+    expect(rowsFor("other")).toBe(1);
   });
 });
 
