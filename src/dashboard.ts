@@ -1284,6 +1284,14 @@ function deletable() {
   return canPost && pair && pair.count > 0 ? pair : undefined;
 }
 
+// The keys of the held pairs that DELETE /api/conversation with key's two names deletes too: the server matches names
+// with SQLite's NOCASE, which folds only A-Z, so Bob and bob, which the page lists apart, are one conversation to it.
+function deletedWith(key) {
+  const fold = (names) => JSON.stringify(names.map((n) => n.replace(/[A-Z]/g, (c) => c.toLowerCase())).sort());
+  const folded = fold(pairs.get(key).names);
+  return [...pairs].filter(([, p]) => p.count > 0 && fold(p.names) === folded).map(([k]) => k);
+}
+
 // Shows the Delete button in the open pair's header bar while it is deletable and not asking, and keeps the confirmation's
 // count to the messages the page holds for the pair; dismisses the confirmation once the pair is not deletable.
 function showDelete() {
@@ -1291,7 +1299,11 @@ function showDelete() {
   if (!pair) closeDelete(false);
   deleteButton.hidden = !pair || !deleteConfirm.hidden;
   if (pair && !deleteConfirm.hidden) {
-    deleteText.textContent = "Delete the " + plural(pair.count, "message") + " between " + pair.names[0] + " and " + pair.names[1] + "? This cannot be undone.";
+    // Every pair the server deletes with this one is named and counted, so the confirmation covers all it removes.
+    const held = deletedWith(openPair).map((k) => pairs.get(k));
+    const count = held.reduce((sum, p) => sum + p.count, 0);
+    const between = held.map((p) => p.names[0] + " and " + p.names[1]).join(", and between ");
+    deleteText.textContent = "Delete the " + plural(count, "message") + " between " + between + "? This cannot be undone.";
   }
 }
 
@@ -1327,6 +1339,7 @@ async function deletePair() {
   const pair = deletable();
   if (!pair || deleteConfirm.hidden || deleting === tokenGen) return;
   const key = openPair;
+  const gone = deletedWith(key);
   const [a, b] = pair.names;
   deleting = tokenGen;
   deleteYes.disabled = true;
@@ -1369,10 +1382,12 @@ async function deletePair() {
       logMentions = [];
       if (same) deleteNote.textContent = answer.error;
     }
-    // Once deleted, the pair starts with nothing seen if it comes back; with no answer it may still be there, as seen.
+    // Once deleted, the pairs start with nothing seen if they come back; with no answer they may still be there, as seen.
     if (answer.status === 200) {
-      seen.delete("pair " + key);
-      shownTotals.delete("pair " + key);
+      for (const k of gone) {
+        seen.delete("pair " + k);
+        shownTotals.delete("pair " + k);
+      }
     }
     heldMessages = 0;
     messages = [];

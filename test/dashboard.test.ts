@@ -3769,6 +3769,31 @@ describe("the page's posting", () => {
       expect(again.children[0].children[1].textContent).toBe("1");
     });
 
+    it("names and counts the pairs that differ only in A-Z case, which the server deletes with it", async () => {
+      seedPairs();
+      sendMessage(db, OWNER_ACCOUNT, "Bob", "dana", "from the other Bob");
+      sendMessage(db, OWNER_ACCOUNT, "Bob", "dana", "and again");
+      const page = await load(OWNER_TOKEN);
+      await page.until(() => page.elements["pair-rows"].children.length === 3);
+      open(page.elements["pair-rows"], "bob ↔ dana");
+      await page.until(() => !page.elements["delete-pair"].hidden);
+      page.elements["delete-pair"].on.click();
+      expect(page.elements["delete-text"].textContent).toBe(
+        "Delete the 3 messages between bob and dana, and between Bob and dana? This cannot be undone.",
+      );
+      page.elements["delete-yes"].on.click();
+      await page.until(() => page.elements["log"].hidden && page.elements["pair-rows"].children.length === 1);
+      expect(deletes(page).map((r) => r.url)).toEqual(["/api/conversation?a=bob&b=dana"]);
+      expect(stored()).toHaveLength(2);
+      expect(page.elements["pair-rows"].children.map(label)).toEqual(["bob ↔ colin"]);
+      // Both start again with nothing seen when they come back.
+      sendMessage(db, OWNER_ACCOUNT, "Bob", "dana", "back");
+      await page.poll();
+      await page.until(() => page.elements["pair-rows"].children.length === 2);
+      const back = page.elements["pair-rows"].children.find((row) => label(row) === "Bob ↔ dana")!;
+      expect(back.children[0].children[1].textContent).toBe("1");
+    });
+
     it("keeps a conversation from New message open when a delete started elsewhere answers", async () => {
       seedPairs();
       let release!: () => void;
