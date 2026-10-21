@@ -147,13 +147,15 @@ CREATE INDEX IF NOT EXISTS webhook_deliveries_by_message ON webhook_deliveries (
 -- The HTTP sessions that have registered, so a session keeps its agent when \`serve\` restarts. Only a hash of the
 -- session id is kept: the id is a bearer credential alongside the token. The agent fields are the session's \`Identity\`,
 -- checked again before a restore, so a removed registration is never restored. \`last_used\` is for the idle timeout.
+-- \`ended\` is set once a DELETE ends the session; nothing clears it, so no server can make the id restorable again.
 CREATE TABLE IF NOT EXISTS http_sessions (
   hash TEXT PRIMARY KEY,
   account_id INTEGER NOT NULL REFERENCES accounts(id),
   agent_id INTEGER NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
   registered_at INTEGER NOT NULL,
   instance TEXT,
-  last_used INTEGER NOT NULL
+  last_used INTEGER NOT NULL,
+  ended INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS http_sessions_by_last_used ON http_sessions (last_used);
 `;
@@ -280,6 +282,8 @@ function migrate(db: Db, path: string): void {
   // The one header a webhook's deliveries carry (`webhook add --header-stdin`); both null for a webhook without one.
   addColumn(db, "header_name", "TEXT", "webhooks");
   addColumn(db, "header_value", "TEXT", "webhooks");
+  // Set once a DELETE ends an HTTP session, so no server restores it or records it again.
+  addColumn(db, "ended", "INTEGER NOT NULL DEFAULT 0", "http_sessions");
   db.exec(DROP_REMOVED);
   db.prepare("INSERT OR IGNORE INTO accounts (id, name, created_at) VALUES (?, 'owner', ?)").run(OWNER_ACCOUNT, Date.now());
   addAccounts(db, path);

@@ -29,7 +29,7 @@ import {
   type Unread,
 } from "./messages.js";
 import { Session, createServer } from "./server.js";
-import { forgetIdleSessions, forgetSession, restorableSession, saveSession, touchSession } from "./sessions.js";
+import { endSession, forgetIdleSessions, restorableSession, saveSession, sessionEnded, touchSession } from "./sessions.js";
 import { DEFAULT_WAIT_HOLD_MS, formatUnread } from "./wait.js";
 import { listAccountDeliveries, sendOptions, sendPending, type SendOptions } from "./webhooks.js";
 
@@ -82,8 +82,6 @@ interface Live {
   account: AccountId;
   /** For a restored session, settles once its transport has been initialized; requests wait for it. */
   ready?: Promise<void>;
-  /** The tools' session, whose registration is recorded again if a DELETE is refused after its row was forgotten. */
-  session?: Session;
 }
 
 const isBusy = (err: unknown) => {
@@ -240,7 +238,7 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
     () => {
       const cutoff = Date.now() - idleTimeoutMs;
       for (const [id, live] of sessions) if (live.lastUsed < cutoff) drop(id);
-      recordSession(() => forgetIdleSessions(db, cutoff));
+      recordSession(() => forgetIdleSessions(db, cutoff, cutoff - idleTimeoutMs));
     },
     Math.max(10, Math.min(60_000, idleTimeoutMs / 2)),
   );
@@ -606,23 +604,19 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
       // Another account's session looks like one that does not exist.
       if (!live || live.account !== account) return reply(res, 404, "Unknown session");
       await live.ready;
-      // A DELETE ends the session for good, so its row is forgotten before the DELETE is accepted: if that fails the
-      // DELETE is refused, rather than answered 200 with the session still restorable after a restart.
-      if (req.method === "DELETE" && unlessBusy(res, () => (forgetSession(db, id), true)) === undefined) return;
+      // A session another server sharing the database ended with DELETE is ended here too.
+      const ended = unlessBusy(res, () => sessionEnded(db, id));
+      if (ended === undefined) return;
+      if (ended) {
+        drop(id);
+        return reply(res, 404, "Unknown session");
+      }
       live.lastUsed = Date.now();
       await live.transport.handleRequest(req, res, body);
       live.lastUsed = Date.now();
-      if (req.method === "DELETE") {
-        // A DELETE the transport refused leaves the session open, so its registration is recorded again.
-        const registration = live.session?.registration;
-        if (res.statusCode !== 200 && sessions.get(id) === live && registration) {
-          recordSession(() => saveSession(db, id, account, registration, live.lastUsed));
-        }
-        return;
-      }
       // A session dropped by close() while a request was open keeps its row, so the restart can restore it; any other
       // request keeps a registered one restorable for another idle timeout.
-      if (sessions.get(id) === live) recordSession(() => touchSession(db, id, live.lastUsed));
+      if (req.method !== "DELETE" && sessions.get(id) === live) recordSession(() => touchSession(db, id, live.lastUsed));
       return;
     }
 
@@ -635,16 +629,22 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
       onsessioninitialized: (sid) => {
         sessions.set(sid, live);
       },
+      onsessionclosed: endRecorded,
     });
     live.transport = transport;
     transport.onclose = () => {
       if (transport.sessionId) sessions.delete(transport.sessionId);
     };
     const session = new Session(account, (identity) => recordSession(() => saveSession(db, transport.sessionId!, account, identity)));
-    live.session = session;
     await createServer(db, session, { remote: true, publicUrl: options.publicUrl }).connect(transport);
     await transport.handleRequest(req, res, body);
   };
+
+  /**
+   * Called by a transport once it has accepted a DELETE, before it answers. If the session cannot be marked ended, this
+   * throws, so the transport answers 500 instead of 200. The row stays restorable, so the DELETE can be sent again.
+   */
+  const endRecorded = (sid: string) => endSession(db, sid);
 
   /**
    * Holds session `id` again, bound to `identity`, which `restorableSession` has just checked. It takes its place in
@@ -652,7 +652,7 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
    * initialized it is dropped again.
    */
   const restore = (id: string, account: AccountId, identity: Identity) => {
-    const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: () => id });
+    const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: () => id, onsessionclosed: endRecorded });
     const live: Live = { lastUsed: Date.now(), transport, account };
     sessions.set(id, live);
     transport.onclose = () => {
@@ -661,10 +661,8 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
     live.ready = (async () => {
       try {
         const session = new Session(account, (bound) => recordSession(() => saveSession(db, id, account, bound)));
-        live.session = session;
         await createServer(db, session, { remote: true, publicUrl: options.publicUrl }).connect(transport);
-        // Its row is already there. Binding without recording it again means a row another server deleted meanwhile
-        // (by a DELETE, say) is not brought back.
+        // Its row is already there, so it is not recorded again: one another server deleted meanwhile stays deleted.
         session.restore(identity);
         await prime(transport);
       } catch (err) {

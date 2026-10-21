@@ -269,28 +269,49 @@ describe("restart", () => {
     expect(await status(sid)).toBe(200);
     const auth = { Authorization: `Bearer ${TOKEN}`, "mcp-session-id": sid, "mcp-protocol-version": "2025-03-26" };
     expect((await fetch(url(), { method: "DELETE", headers: auth })).status).toBe(200);
-    expect(db.prepare("SELECT count(*) AS n FROM http_sessions").get()).toEqual({ n: 0 });
+    expect(db.prepare("SELECT ended FROM http_sessions").all()).toEqual([{ ended: 1 }]);
     await restart();
     expect(await status(sid)).toBe(404);
   });
 
-  it("refuses a DELETE it cannot forget, leaving the session open and restorable", async () => {
+  it("answers 500 to a DELETE it cannot record, leaving the session restorable so the DELETE can be sent again", async () => {
     const sid = await registered("ann");
     const prepare = db.prepare.bind(db);
     vi.spyOn(db, "prepare").mockImplementation(((sql: string) => {
-      if (sql.startsWith("DELETE FROM http_sessions WHERE hash")) {
+      if (sql.startsWith("UPDATE http_sessions SET ended")) {
         throw Object.assign(new Error("database is locked"), { code: "SQLITE_BUSY" });
       }
       return prepare(sql);
     }) as typeof db.prepare);
-    const auth = { Authorization: `Bearer ${TOKEN}`, "mcp-session-id": sid };
+    const auth = { Authorization: `Bearer ${TOKEN}`, "mcp-session-id": sid, "mcp-protocol-version": "2025-03-26" };
     const refused = await fetch(url(), { method: "DELETE", headers: auth });
     vi.restoreAllMocks();
-    expect(refused.status).toBe(503);
-    expect(refused.headers.get("retry-after")).toBe("1");
-    expect(await status(sid)).toBe(200);
+    expect(refused.status).toBe(500);
     await restart();
-    expect(await status(sid)).toBe(200);
+    expect((await fetch(url(), { method: "DELETE", headers: auth })).status).toBe(200);
+    await restart();
+    expect(await status(sid)).toBe(404);
+  });
+
+  it("keeps a DELETE on one server final for another server sharing the database", async () => {
+    const sid = await registered("ann");
+    const other = await startHttp(db, { token: TOKEN, port: 0 });
+    try {
+      // The other server restores the session and so holds a live copy of it.
+      const onOther = await resume(other, sid);
+      expect((await call(onOther, "read_inbox", {})).isError).toBe(false);
+      const auth = { Authorization: `Bearer ${TOKEN}`, "mcp-session-id": sid, "mcp-protocol-version": "2025-03-26" };
+      expect((await fetch(url(), { method: "DELETE", headers: auth })).status).toBe(200);
+      // The other copy is ended too, so a register on it is refused, and nothing records the session again.
+      await expect(call(onOther, "register", { name: "ann", bio: "x", key: "ann-key" })).rejects.toThrow("Unknown session");
+      expect(other.sessionCount()).toBe(0);
+      expect(db.prepare("SELECT ended FROM http_sessions").all()).toEqual([{ ended: 1 }]);
+      expect(await status(sid)).toBe(404);
+      await restart();
+      expect(await status(sid)).toBe(404);
+    } finally {
+      await other.close();
+    }
   });
 
   it("restores a session without recording its row again", async () => {
