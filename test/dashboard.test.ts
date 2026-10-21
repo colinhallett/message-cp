@@ -693,6 +693,34 @@ describe("the page's channels and messages", () => {
       expect(badges(channels)).toEqual({ build: "", ops: "1" });
     });
 
+    it("keeps a post the open log showed as seen when the first poll that reads every message sets the baseline", async () => {
+      const alice = setup();
+      let busy = true;
+      let late = false;
+      const page = await load(viewer, (url) => {
+        if (busy && url.startsWith("/api/messages")) return 503;
+        // A post that lands after GET /api/channels answered and before the open log is read.
+        if (late && url.startsWith("/api/channel-posts")) {
+          late = false;
+          post(db, OWNER_ACCOUNT, alice, "ops", "late");
+        }
+        return undefined;
+      });
+      const channels = page.elements["channel-rows"];
+      await page.until(() => page.scheduled() && channels.children.length === 2);
+      open(channels.children[1]);
+      await page.until(() => page.elements["post-rows"].children.length === 1);
+      await page.until(page.scheduled);
+      busy = false;
+      late = true;
+      await pollOnce(page);
+      expect(page.elements["post-rows"].children).toHaveLength(2);
+      open(channels.children[0]);
+      await page.until(page.scheduled);
+      await pollOnce(page);
+      expect(badges(channels)).toEqual({ build: "", ops: "" });
+    });
+
     it("shows none on a pair started from New message", async () => {
       setup();
       addPerson(db, "owner", "colin");

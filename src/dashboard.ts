@@ -1343,10 +1343,12 @@ async function poll(gen) {
       const refused = values.find((v) => v.status === 401);
       const failed = [messages, posts].find((r) => r.status === "rejected");
       if (failed && !refused) throw failed.reason;
-      // Everything the first poll for this token read counts as seen, so loading the page shows no badges.
+      // Everything the first poll for this token read counts as seen, so loading the page shows no badges. It never
+      // lowers a count, so a post the open log showed after GET /api/channels answered stays seen.
       if (!seenAll && !refused && messages.status === "fulfilled" && messages.value.ok && gen === generation) {
-        for (const c of result.channels) seen.set("channel " + String(c.name), c.posts);
-        for (const [key, pair] of pairs) seen.set("pair " + key, pair.count);
+        const atLeast = (key, n) => seen.set(key, Math.max(seen.get(key) ?? 0, n));
+        for (const c of result.channels) atLeast("channel " + String(c.name), c.posts);
+        for (const [key, pair] of pairs) atLeast("pair " + key, pair.count);
         seenAll = true;
       }
       result = refused ?? values.find((v) => !v.ok) ?? posts.value;
