@@ -117,6 +117,101 @@ describe("sessions", () => {
   });
 });
 
+describe("waiting keeps a session", () => {
+  const IDLE_MS = 200;
+
+  beforeEach(async () => {
+    await http.close();
+    http = await startHttp(db, { token: TOKEN, port: 0, idleTimeoutMs: IDLE_MS, waitHoldMs: 120 });
+  });
+
+  /** A session registered as `name` with `token`, and its id. */
+  async function registered(name: string, token = TOKEN): Promise<{ client: Client; sid: string }> {
+    const client = await connect(token);
+    expect((await call(client, "register", { name, bio: "x" })).isError).toBe(false);
+    return { client, sid: (client.transport as StreamableHTTPClientTransport).sessionId! };
+  }
+
+  const wait = (agent: string, token = TOKEN) =>
+    fetch(`http://127.0.0.1:${http.port}/wait?agent=${agent}`, { headers: { Authorization: `Bearer ${token}` } });
+
+  /** Runs the wait loop for `agent` for `ms`, asking again at once after each 204, as `waitCommand` does. */
+  async function waitLoop(agent: string, ms: number, token = TOKEN): Promise<void> {
+    const end = Date.now() + ms;
+    while (Date.now() < end) expect((await wait(agent, token)).status).toBe(204);
+  }
+
+  /** How many restorable session rows the account named `account` has. */
+  const rowsFor = (account: string) =>
+    (
+      db
+        .prepare("SELECT COUNT(*) AS n FROM http_sessions JOIN accounts ON accounts.id = account_id WHERE accounts.name = ?")
+        .get(account) as { n: number }
+    ).n;
+
+  it("keeps a registered session whose agent waits well past the timeout, acting as its agent after", async () => {
+    const ann = await registered("ann");
+    await waitLoop("ann", IDLE_MS * 4);
+    expect(http.sessionCount()).toBe(1);
+    expect(rowsFor("owner")).toBe(1);
+    // A held wait answers when mail comes, and the old session reads it with no new register.
+    const pending = wait("ann");
+    await new Promise((r) => setTimeout(r, 50));
+    const bob = await connect();
+    await call(bob, "register", { name: "bob", bio: "y" });
+    await call(bob, "send_message", { to: "ann", body: "while waiting" });
+    expect((await pending).status).toBe(200);
+    const inbox = await call(ann.client, "read_inbox", {});
+    expect(inbox.isError).toBe(false);
+    expect(inbox.text).toContain("while waiting");
+  });
+
+  it("keeps the session through one hold longer than the timeout, then lets it idle out", async () => {
+    await http.close();
+    http = await startHttp(db, { token: TOKEN, port: 0, idleTimeoutMs: IDLE_MS, waitHoldMs: IDLE_MS * 4 });
+    const ann = await registered("ann");
+    expect((await wait("ann")).status).toBe(204);
+    expect(http.sessionCount()).toBe(1);
+    expect(rowsFor("owner")).toBe(1);
+    expect((await call(ann.client, "read_inbox", {})).isError).toBe(false);
+    await new Promise((r) => setTimeout(r, IDLE_MS * 3));
+    expect(http.sessionCount()).toBe(0);
+  });
+
+  it("drops a registered session whose agent is not waiting, and forgets its row", async () => {
+    await registered("ann");
+    await new Promise((r) => setTimeout(r, IDLE_MS * 3));
+    expect(http.sessionCount()).toBe(0);
+    expect(rowsFor("owner")).toBe(0);
+  });
+
+  it("does not keep a session that never registered, or one whose registration is no longer current", async () => {
+    await post({ Authorization: `Bearer ${TOKEN}` });
+    const first = await registered("ann");
+    await call(first.client, "unregister", {});
+    // A new agent takes the name and is waited for; only its own session is kept.
+    const second = await registered("ann");
+    expect(http.sessionCount()).toBe(3);
+    await waitLoop("ann", IDLE_MS * 4);
+    expect(http.sessionCount()).toBe(1);
+    expect(rowsFor("owner")).toBe(1);
+    expect((await call(second.client, "read_inbox", {})).isError).toBe(false);
+  });
+
+  it("does not keep another agent's session, or another account's session for an agent with the same name", async () => {
+    const other = addAccount(db, "other").token;
+    await registered("ann");
+    await registered("bob");
+    await registered("ann", other);
+    expect(http.sessionCount()).toBe(3);
+    await waitLoop("ann", IDLE_MS * 4, other);
+    // Only the other account's ann is left.
+    expect(http.sessionCount()).toBe(1);
+    expect(rowsFor("owner")).toBe(0);
+    expect(rowsFor("other")).toBe(1);
+  });
+});
+
 describe("limits", () => {
   it("refuses initializes past maxSessions until one ends", async () => {
     await http.close();

@@ -82,6 +82,8 @@ interface Live {
   account: AccountId;
   /** For a restored session, settles once its transport has been initialized; requests wait for it. */
   ready?: Promise<void>;
+  /** The session its tools act through, which knows the agent it is currently registered as. */
+  session?: Session;
 }
 
 const isBusy = (err: unknown) => {
@@ -226,6 +228,22 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
     else held.delete(account);
   };
 
+  /**
+   * The lower-cased name of the agent `live` is currently registered as, if that agent has a GET /wait held now.
+   * Only the session's own account is looked in. A lock held past the busy timeout is `busy`, so the caller can try again.
+   */
+  const waitingAgent = (live: Live): string | "busy" | undefined => {
+    const waits = held.get(live.account);
+    if (!waits || !live.session) return undefined;
+    try {
+      const name = live.session.current()?.toLowerCase();
+      return name !== undefined && (waits.get(name) ?? 0) > 0 ? name : undefined;
+    } catch (err) {
+      if (isBusy(err)) return "busy";
+      throw err;
+    }
+  };
+
   const drop = (id: string) => {
     const live = sessions.get(id);
     if (!live) return;
@@ -237,10 +255,21 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
   // Ended rows are kept for a second idle timeout, which covers every server's live copy only while the servers sharing
   // the database use the same timeout (`serve` always uses the default). Should one be swept early and recorded again,
   // it can still only restore the registration that recorded it, and not once that is removed.
+  // A session whose agent has a GET /wait held counts as used now, so an agent stays registered while it waits; a busy
+  // database keeps it for this pass only.
   const sweep = setInterval(
     () => {
-      const cutoff = Date.now() - idleTimeoutMs;
-      for (const [id, live] of sessions) if (live.lastUsed < cutoff) drop(id);
+      const now = Date.now();
+      const cutoff = now - idleTimeoutMs;
+      for (const [id, live] of sessions) {
+        if (live.lastUsed >= cutoff) continue;
+        const waiting = waitingAgent(live);
+        if (waiting === undefined) drop(id);
+        else if (waiting !== "busy") {
+          live.lastUsed = now;
+          recordSession(() => touchSession(db, id, now));
+        }
+      }
       recordSession(() => forgetIdleSessions(db, cutoff, cutoff - idleTimeoutMs));
     },
     Math.max(10, Math.min(60_000, idleTimeoutMs / 2)),
@@ -309,6 +338,27 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
     } finally {
       waiting--;
       holding(account, name!, -1);
+      // The agent's sessions count as used as the hold ends, so the gap before the wait loop asks again cannot drop them.
+      touchSessionsOf(account, name!);
+    }
+  };
+
+  /** Marks used now every session of `account` currently registered as `name`. A busy database skips a session. */
+  const touchSessionsOf = (account: AccountId, name: string) => {
+    const key = name.toLowerCase();
+    const now = Date.now();
+    for (const [id, live] of sessions) {
+      if (live.account !== account || !live.session) continue;
+      let current: string | undefined;
+      try {
+        current = live.session.current();
+      } catch (err) {
+        if (isBusy(err)) continue;
+        throw err;
+      }
+      if (current?.toLowerCase() !== key) continue;
+      live.lastUsed = now;
+      recordSession(() => touchSession(db, id, now));
     }
   };
 
@@ -644,6 +694,7 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
       const sid = transport.sessionId!;
       if (sessions.get(sid) === live) recordSession(() => saveSession(db, sid, account, identity));
     });
+    live.session = session;
     await createServer(db, session, { remote: true, publicUrl: options.publicUrl }).connect(transport);
     await transport.handleRequest(req, res, body);
   };
@@ -674,6 +725,7 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
         await createServer(db, session, { remote: true, publicUrl: options.publicUrl }).connect(transport);
         // Its row is already there, so it is not recorded again: one another server deleted meanwhile stays deleted.
         session.restore(identity);
+        live.session = session;
         await prime(transport);
       } catch (err) {
         drop(id);
