@@ -102,7 +102,7 @@ const REFUSED_HEADERS = [
   `Authorization: ${HEADER_VALUE}\u007f`,
   `Authorization: ${HEADER_VALUE}\u0085`,
   `Authorization: ${HEADER_VALUE}日本`,
-  ...["Content-Type", "x-message-cp-signature", "CONTENT-LENGTH", "Host", "transfer-encoding", "Connection", "Keep-Alive", "upgrade", "Expect"].map((n) => `${n}: ${HEADER_VALUE}`),
+  ...["Content-Type", "content-encoding", "x-message-cp-signature", "CONTENT-LENGTH", "Host", "transfer-encoding", "Connection", "Keep-Alive", "upgrade", "Expect"].map((n) => `${n}: ${HEADER_VALUE}`),
 ];
 
 describe("webhookHeader", () => {

@@ -70,9 +70,13 @@ export function webhookOn(on: string): { event: WebhookEvent; name: string } {
   return { event: prefix === "#" ? "channel" : (prefix.slice(0, -1) as WebhookEvent), name: name! };
 }
 
-/** Header names message-cp sets on a delivery itself or that `fetch` controls or refuses to send, in lower case. */
+/**
+ * Header names message-cp sets on a delivery itself, that `fetch` controls or refuses to send, or that would describe
+ * the plain JSON body wrongly, in lower case.
+ */
 const RESERVED_HEADERS = [
   "content-type",
+  "content-encoding",
   "x-message-cp-signature",
   "content-length",
   "host",
