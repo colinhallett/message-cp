@@ -229,18 +229,35 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
   };
 
   /**
-   * The lower-cased name of the agent `live` is currently registered as, if that agent has a GET /wait held now.
-   * Only the session's own account is looked in. A lock held past the busy timeout is `busy`, so the caller can try again.
+   * The lower-cased name of the agent `live` is currently registered as, or undefined if none. It never throws: a lock
+   * held past the busy timeout is `null`, to try again later; any other error logs one fixed line and counts as none.
    */
-  const waitingAgent = (live: Live): string | "busy" | undefined => {
-    const waits = held.get(live.account);
-    if (!waits || !live.session) return undefined;
+  const agentOf = (live: Live): string | undefined | null => {
     try {
-      const name = live.session.current()?.toLowerCase();
-      return name !== undefined && (waits.get(name) ?? 0) > 0 ? name : undefined;
+      return live.session?.current()?.toLowerCase();
     } catch (err) {
-      if (isBusy(err)) return "busy";
-      throw err;
+      if (isBusy(err)) return null;
+      console.error("message-cp serve: could not check a session's agent");
+      return undefined;
+    }
+  };
+
+  /** Whether `live`'s current agent has a GET /wait held, looked up under the session's own account only. */
+  const agentWaiting = (live: Live): boolean | null => {
+    const waits = held.get(live.account);
+    if (!waits) return false;
+    const name = agentOf(live);
+    return name === null ? null : name !== undefined && waits.has(name);
+  };
+
+  /** Marks used now every session of `account` currently registered as `name`. */
+  const touchSessionsOf = (account: AccountId, name: string) => {
+    const key = name.toLowerCase();
+    const now = Date.now();
+    for (const [id, live] of sessions) {
+      if (live.account !== account || agentOf(live) !== key) continue;
+      live.lastUsed = now;
+      recordSession(() => touchSession(db, id, now));
     }
   };
 
@@ -256,16 +273,16 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
   // the database use the same timeout (`serve` always uses the default). Should one be swept early and recorded again,
   // it can still only restore the registration that recorded it, and not once that is removed.
   // A session whose agent has a GET /wait held counts as used now, so an agent stays registered while it waits; a busy
-  // database keeps it for this pass only.
+  // database keeps an idle session for this pass only.
   const sweep = setInterval(
     () => {
       const now = Date.now();
       const cutoff = now - idleTimeoutMs;
       for (const [id, live] of sessions) {
         if (live.lastUsed >= cutoff) continue;
-        const waiting = waitingAgent(live);
-        if (waiting === undefined) drop(id);
-        else if (waiting !== "busy") {
+        const waiting = agentWaiting(live);
+        if (waiting === false) drop(id);
+        else if (waiting) {
           live.lastUsed = now;
           recordSession(() => touchSession(db, id, now));
         }
@@ -340,25 +357,6 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
       holding(account, name!, -1);
       // The agent's sessions count as used as the hold ends, so the gap before the wait loop asks again cannot drop them.
       touchSessionsOf(account, name!);
-    }
-  };
-
-  /** Marks used now every session of `account` currently registered as `name`. A busy database skips a session. */
-  const touchSessionsOf = (account: AccountId, name: string) => {
-    const key = name.toLowerCase();
-    const now = Date.now();
-    for (const [id, live] of sessions) {
-      if (live.account !== account || !live.session) continue;
-      let current: string | undefined;
-      try {
-        current = live.session.current();
-      } catch (err) {
-        if (isBusy(err)) continue;
-        throw err;
-      }
-      if (current?.toLowerCase() !== key) continue;
-      live.lastUsed = now;
-      recordSession(() => touchSession(db, id, now));
     }
   };
 

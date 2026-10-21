@@ -7,8 +7,9 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { addAccount } from "../src/accounts.js";
 import { purgeAgent } from "../src/agents.js";
-import { openDb, type Db } from "../src/db.js";
+import { OWNER_ACCOUNT, openDb, type Db } from "../src/db.js";
 import { startHttp, type HttpServer } from "../src/http.js";
+import { sendMessage } from "../src/messages.js";
 import { Session, createServer } from "../src/server.js";
 
 const TOKEN = "s3cret-token";
@@ -118,11 +119,11 @@ describe("sessions", () => {
 });
 
 describe("waiting keeps a session", () => {
-  const IDLE_MS = 200;
+  const IDLE_MS = 600;
 
   beforeEach(async () => {
     await http.close();
-    http = await startHttp(db, { token: TOKEN, port: 0, idleTimeoutMs: IDLE_MS, waitHoldMs: 120 });
+    http = await startHttp(db, { token: TOKEN, port: 0, idleTimeoutMs: IDLE_MS, waitHoldMs: 300 });
   });
 
   /** A session registered as `name` with `token`, and its id. */
@@ -151,15 +152,16 @@ describe("waiting keeps a session", () => {
 
   it("keeps a registered session whose agent waits well past the timeout, acting as its agent after", async () => {
     const ann = await registered("ann");
-    await waitLoop("ann", IDLE_MS * 4);
+    const bob = await connect();
+    await call(bob, "register", { name: "bob", bio: "y" });
+    await waitLoop("ann", IDLE_MS * 3);
+    // bob made /mcp requests only before the loop, so only ann's session is left.
     expect(http.sessionCount()).toBe(1);
     expect(rowsFor("owner")).toBe(1);
     // A held wait answers when mail comes, and the old session reads it with no new register.
     const pending = wait("ann");
     await new Promise((r) => setTimeout(r, 50));
-    const bob = await connect();
-    await call(bob, "register", { name: "bob", bio: "y" });
-    await call(bob, "send_message", { to: "ann", body: "while waiting" });
+    sendMessage(db, OWNER_ACCOUNT, "bob", "ann", "while waiting");
     expect((await pending).status).toBe(200);
     const inbox = await call(ann.client, "read_inbox", {});
     expect(inbox.isError).toBe(false);
@@ -178,6 +180,38 @@ describe("waiting keeps a session", () => {
     expect(http.sessionCount()).toBe(0);
   });
 
+  it("counts a session as used when a hold for its agent ends, so the gap before the next one cannot drop it", async () => {
+    // With a 1000ms timeout the sweep runs every 500ms from start. The hold runs between passes, from 600ms to 900ms,
+    // so no pass sees it held: only the end of the hold can keep the session through the pass at 1500ms.
+    await http.close();
+    const start = Date.now();
+    http = await startHttp(db, { token: TOKEN, port: 0, idleTimeoutMs: 1000, waitHoldMs: 300 });
+    await registered("ann");
+    const until = (ms: number) => new Promise((r) => setTimeout(r, start + ms - Date.now()));
+    await until(600);
+    expect((await wait("ann")).status).toBe(204);
+    await until(1750);
+    expect(http.sessionCount()).toBe(1);
+  });
+
+  it("keeps a restored session whose agent waits", async () => {
+    const { sid } = await registered("ann");
+    for (const c of open) await c.close().catch(() => {});
+    open = [];
+    await http.close();
+    http = await startHttp(db, { token: TOKEN, port: 0, idleTimeoutMs: IDLE_MS, waitHoldMs: 300 });
+    const resumed = new Client({ name: "test", version: "0" });
+    await resumed.connect(
+      new StreamableHTTPClientTransport(url(), { sessionId: sid, requestInit: { headers: { Authorization: `Bearer ${TOKEN}` } } }),
+    );
+    open.push(resumed);
+    expect((await call(resumed, "read_inbox", {})).isError).toBe(false);
+    await waitLoop("ann", IDLE_MS * 3);
+    expect(http.sessionCount()).toBe(1);
+    expect(rowsFor("owner")).toBe(1);
+    expect((await call(resumed, "read_inbox", {})).isError).toBe(false);
+  });
+
   it("drops a registered session whose agent is not waiting, and forgets its row", async () => {
     await registered("ann");
     await new Promise((r) => setTimeout(r, IDLE_MS * 3));
@@ -186,13 +220,13 @@ describe("waiting keeps a session", () => {
   });
 
   it("does not keep a session that never registered, or one whose registration is no longer current", async () => {
-    await post({ Authorization: `Bearer ${TOKEN}` });
     const first = await registered("ann");
     await call(first.client, "unregister", {});
     // A new agent takes the name and is waited for; only its own session is kept.
     const second = await registered("ann");
+    await post({ Authorization: `Bearer ${TOKEN}` });
     expect(http.sessionCount()).toBe(3);
-    await waitLoop("ann", IDLE_MS * 4);
+    await waitLoop("ann", IDLE_MS * 3);
     expect(http.sessionCount()).toBe(1);
     expect(rowsFor("owner")).toBe(1);
     expect((await call(second.client, "read_inbox", {})).isError).toBe(false);
@@ -204,7 +238,7 @@ describe("waiting keeps a session", () => {
     await registered("bob");
     await registered("ann", other);
     expect(http.sessionCount()).toBe(3);
-    await waitLoop("ann", IDLE_MS * 4, other);
+    await waitLoop("ann", IDLE_MS * 3, other);
     // Only the other account's ann is left.
     expect(http.sessionCount()).toBe(1);
     expect(rowsFor("owner")).toBe(0);
