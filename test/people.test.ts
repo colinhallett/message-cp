@@ -321,6 +321,23 @@ describe("removePerson", () => {
     expect(snapshot()).toEqual(before);
   });
 
+  it("leaves the messages of an earlier agent of the same name to `agent remove`", async () => {
+    const old = await agent("colin");
+    await agent("dave");
+    await call(old.client, "send_message", { to: "dave", body: "old colin to dave" });
+    await call(old.client, "send_message", { to: "all", body: "old colin to all" });
+    expect((await call(old.client, "unregister")).isError).toBe(false);
+    // Sent before the person was added, even on a fast clock.
+    db.prepare("UPDATE messages SET created_at = created_at - 1000").run();
+    await personConversation();
+
+    // The person's: to them, from them, their broadcast's three copies and their copy of alice's.
+    expect(removePerson(db, "owner", "colin")).toMatchObject({ messages: 6, mentions: 1 });
+    expect(bodies(OWNER_ACCOUNT)).toEqual(["old colin to dave", "old colin to all", "alice to all", "alice to all"]);
+    expect(purgeAgent(db, "owner", "colin")).toMatchObject({ messages: 2 });
+    expect(bodies(OWNER_ACCOUNT)).toEqual(["alice to all", "alice to all"]);
+  });
+
   it("leaves another account's person and agents of the same names, their messages and mentions untouched", async () => {
     await personConversation(OWNER_ACCOUNT, "owner ");
     await personConversation(friend, "friend ");

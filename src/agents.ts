@@ -358,27 +358,29 @@ export const addPerson = (db: Db, account: string, name: string): Person =>
 
 /**
  * For `message-cp person remove`: removes the live person `name` (any case) of the account named `account`, with every
- * direct message to or from them and their mentions, and frees the name, as `purgeAgent` does for an agent. Channels,
- * posts and read positions stay, and so does the row, marked removed. Removed rows of earlier agents with that name
- * are left to `agent remove`. Refuses, changing nothing, an agent's name, a name no live person of the account has, or
- * an unknown account.
+ * direct message to them or sent from the name since they were added, and their mentions, and frees the name, as
+ * `purgeAgent` does for an agent. Channels, posts and read positions stay, and so does the row, marked removed.
+ * Removed rows of earlier agents with that name, and the messages they sent, are left to `agent remove`. Refuses,
+ * changing nothing, an agent's name, a name no live person of the account has, or an unknown account.
  */
 export const removePerson = (db: Db, account: string, name: string): Purged =>
   db.transaction((): Purged => {
     const acct = db.prepare("SELECT id, name FROM accounts WHERE name = ?").get(account) as { id: AccountId; name: string } | undefined;
     if (!acct) throw new PersonError(`No account named '${account}'.`);
     const live = db
-      .prepare("SELECT id, name, person FROM agents WHERE account_id = ? AND name = ? AND removed_at IS NULL")
-      .get(acct.id, name) as { id: number; name: string; person: number } | undefined;
+      .prepare("SELECT id, name, person, registered_at FROM agents WHERE account_id = ? AND name = ? AND removed_at IS NULL")
+      .get(acct.id, name) as { id: number; name: string; person: number; registered_at: number } | undefined;
     // Before anything is deleted, so an agent's messages are never touched.
     if (live?.person === 0) throw new PersonError(`The name '${live.name}' belongs to an agent, not a person. Remove it with \`agent remove\`.`);
     if (!live) throw new PersonError(`No person named '${name}' in account '${acct.name}'.`);
+    // Only the person sends under the name while it is theirs, so messages from it since they were added are theirs;
+    // older ones are an earlier agent's, which keeps them until `agent remove`.
     const messages = db
       .prepare(
         `DELETE FROM messages WHERE recipient_id = ?
-         OR (sender = ? COLLATE NOCASE AND recipient_id IN (SELECT id FROM agents WHERE account_id = ?))`,
+         OR (sender = ? COLLATE NOCASE AND created_at >= ? AND recipient_id IN (SELECT id FROM agents WHERE account_id = ?))`,
       )
-      .run(live.id, live.name, acct.id).changes;
+      .run(live.id, live.name, live.registered_at, acct.id).changes;
     const mentions = db.prepare("DELETE FROM mentions WHERE agent_id = ?").run(live.id).changes;
     db.prepare(
       "UPDATE agents SET name = ?, removed_name = name, removed_at = ?, key_hash = ?, instance = ? WHERE id = ?",
