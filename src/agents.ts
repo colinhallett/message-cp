@@ -299,14 +299,16 @@ export const purgeAgent = (db: Db, account: string, name: string): Purged =>
       .all(acct.id, name) as { id: number; removed_name: string }[];
     const ids = [...(live ? [live.id] : []), ...removed.map((r) => r.id)];
     if (ids.length === 0) throw new PurgeError(`No agent named '${name}' in account '${acct.name}'.`);
-    const marks = ids.map(() => "?").join(", ");
+    // The same rows as `ids`, as a subquery, so no statement needs one bound variable per registration.
+    const rows = `SELECT id FROM agents WHERE account_id = ? AND (id = ? OR (removed_at IS NOT NULL AND removed_name = ? COLLATE NOCASE))`;
+    const rowArgs = [acct.id, live?.id ?? null, name];
     const messages = db
       .prepare(
-        `DELETE FROM messages WHERE recipient_id IN (${marks})
+        `DELETE FROM messages WHERE recipient_id IN (${rows})
          OR (sender = ? COLLATE NOCASE AND recipient_id IN (SELECT id FROM agents WHERE account_id = ?))`,
       )
-      .run(...ids, name, acct.id).changes;
-    const mentions = db.prepare(`DELETE FROM mentions WHERE agent_id IN (${marks})`).run(...ids).changes;
+      .run(...rowArgs, name, acct.id).changes;
+    const mentions = db.prepare(`DELETE FROM mentions WHERE agent_id IN (${rows})`).run(...rowArgs).changes;
     if (live) {
       db.prepare(
         "UPDATE agents SET name = ?, removed_name = name, removed_at = ?, key_hash = ?, instance = ? WHERE id = ?",

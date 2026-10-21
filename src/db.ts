@@ -263,6 +263,8 @@ function migrate(db: Db, path: string): void {
   addAccounts(db, path);
   // Broadcast reads every live agent of one account in name order; this keeps it from scanning the removed rows too.
   db.exec("CREATE INDEX IF NOT EXISTS agents_live ON agents (account_id, name) WHERE removed_at IS NULL");
+  // Deleting a message (`agent remove`) cascades to its deliveries; this keeps each delete from scanning them all.
+  db.exec("CREATE INDEX IF NOT EXISTS webhook_deliveries_by_message ON webhook_deliveries (message_id)");
 }
 
 // Several processes switching a new file to WAL at once make the losers fail with SQLITE_BUSY straight away,

@@ -197,6 +197,23 @@ describe("purgeAgent", () => {
     expect(snapshot()).toEqual(before);
   });
 
+  it("removes a name with more removed rows than SQLite allows bound variables in one statement", async () => {
+    const bob = await agent("bob");
+    const alice = await agent("alice");
+    await call(alice.client, "send_message", { to: "bob", body: "from the last" });
+    await call(bob.client, "send_message", { to: "alice", body: "to the last" });
+    await call(alice.client, "unregister");
+    // Earlier registrations, as `unregister` leaves them, past this build's limit of 32766.
+    const insert = db.prepare(
+      "INSERT INTO agents (account_id, name, bio, registered_at, last_seen, removed_at, removed_name) VALUES (?, ?, '', 0, 0, 0, 'alice')",
+    );
+    db.transaction(() => {
+      for (let i = 0; i < 33000; i++) insert.run(OWNER_ACCOUNT, `old:${i}`);
+    })();
+    expect(purgeAgent(db, "owner", "alice")).toMatchObject({ messages: 2, mentions: 0 });
+    expect(bodies(OWNER_ACCOUNT)).toEqual([]);
+  });
+
   it("refuses a person who has the name of an older removed agent, keeping the person's messages", async () => {
     const alice = await agent("alice");
     const bob = await agent("bob");
