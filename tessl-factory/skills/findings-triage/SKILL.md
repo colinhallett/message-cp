@@ -108,8 +108,8 @@ one that must be written.
   only adding lines to `AGENTS.md` is not one, so that goes under "Do it").
   File an owner ticket as the planner's "Filing" step 4 describes, link it to
   the finding, set the finding `in-progress`, and also send its URL to the
-  owner's planning agent with `node tessl-factory/scripts/message-cp.mjs send
-  claude-c "<one line>"`.
+  owner's planning agent with the message-cp `send_message` tool (to
+  `claude-c`, one line).
 - **Do it.** Everything else that, checked, is real and worth the work.
   Write a ticket with the planner's template ("Writing a ticket"), where
   `Traces to:` is `Tessl finding <id>: "<finding title>"`, the Outcome states
