@@ -2382,7 +2382,7 @@ describe("the page's posting", () => {
       expect(page.posts()).toHaveLength(1);
     });
 
-    it("refuses the name after no answer until the channel list is read again, so a retry adds no second first post", async () => {
+    it("refuses the name after no answer, even once a channel list that leaves it out is read, so a retry adds no second first post", async () => {
       seed();
       const page = await load(OWNER_TOKEN, (url, method) => (url === "/api/post" && method === "POST" ? { lose: true } : undefined));
       await ready(page);
@@ -2390,8 +2390,17 @@ describe("the page's posting", () => {
       await page.until(() => page.elements["channel-note"].textContent.includes("check the channel list"));
       create(page, "colin", "FRESH", "first");
       expect(page.elements["channel-note"].textContent).toContain("already exists");
+      // A channel list read before the lost post was stored leaves fresh out, and the name is still refused.
+      await page.until(() => page.elements["channel-rows"].children.length === 2);
+      for (const table of ["channel_reads", "channel_posts"]) {
+        db.prepare(`DELETE FROM ${table} WHERE channel_id = (SELECT id FROM channels WHERE name = 'fresh')`).run();
+      }
+      db.prepare("DELETE FROM channels WHERE name = 'fresh'").run();
+      await page.poll();
+      await page.until(() => page.elements["channel-rows"].children.length === 1);
+      create(page, "colin", "fresh", "first");
+      expect(page.elements["channel-note"].textContent).toContain("already exists");
       expect(page.posts()).toHaveLength(1);
-      expect(db.prepare("SELECT COUNT(*) AS n FROM channel_posts").get()).toEqual({ n: 2 });
     });
 
     it("closes on Escape, Cancel, another conversation and ask(), and only one of New message and New channel is open", async () => {

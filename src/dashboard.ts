@@ -327,6 +327,10 @@ let channelFromKey = "";
 // The names of the channels the sidebar last listed, in lower case, or undefined until GET /api/channels has answered
 // for this token. Channel names are unique without case, so "New channel" refuses one of these rather than posting in it.
 let channelNames;
+// The names, in lower case, that "New channel" has sent a post for under this token and that got a 200 or no answer, so
+// may be stored. A channel list read before the post was stored leaves these out, so they are kept apart from
+// channelNames, which each list replaces, and are refused too until ask() clears them.
+let channelsSent = new Set();
 // A channel name as the server takes one: a copy of NAME_PATTERN in src/agents.ts, to be kept in step with it.
 const CHANNEL_NAME = /^[A-Za-z0-9_-]{1,32}$/;
 const NO_PEOPLE_TO_POST = "No people to post as. Add one with: message-cp person add <name>";
@@ -377,6 +381,7 @@ function ask(message) {
   // So do the "New channel" form, its select, its note and its text, and the channel names it compared against.
   channelFromKey = "";
   channelNames = undefined;
+  channelsSent = new Set();
   channelFrom.replaceChildren();
   channelName.value = "";
   channelBody.value = "";
@@ -811,7 +816,7 @@ function fillChannel() {
 function channelProblem(from, name, body) {
   if (!CHANNEL_NAME.test(name)) return "A channel name is 1 to 32 letters, digits, - or _.";
   if (channelNames === undefined) return "The channel list has not loaded yet. Try again in a moment.";
-  if (channelNames.includes(name.toLowerCase())) return "#" + name + " already exists. Open it from the channel list to post in it.";
+  if (channelNames.includes(name.toLowerCase()) || channelsSent.has(name.toLowerCase())) return "#" + name + " already exists. Open it from the channel list to post in it.";
   if (!people || !people.includes(from)) return "Choose who you are under From.";
   if (body.trim() === "") return "Write a first post.";
   // The server counts characters as code points, as send() does.
@@ -823,8 +828,8 @@ function channelProblem(from, name, body) {
 // in the sidebar does, under the name the server stored it as, with that person chosen in "Post as". Nothing is sent
 // unless channelProblem finds nothing, and Create stays disabled while the request is in flight. A 200 that comes after
 // the form was closed opens nothing. Any other answer keeps the text and says why in the form's note; with no answer the
-// post may have been stored, so the name is refused until the channel list is read again. An answer that comes after
-// the token was forgotten is dropped.
+// post may have been stored, so the name is refused under this token from then on (channelsSent). An answer that comes
+// after the token was forgotten is dropped.
 async function createChannel() {
   const token = sessionStorage.getItem(KEY);
   if (!token) return ask();
@@ -858,7 +863,7 @@ async function createChannel() {
     answer = res.status === 400 ? { status: 400, reason: await reasonOf(res) } : { status: res.status };
     if (res.status === 200) answer.channel = await storedName(res, name);
   } catch {
-    answer = { error: "No answer from the server, so the channel may have been created: check the channel list before trying again." };
+    answer = { error: "No answer from the server, so the channel may have been created: check the channel list, or use another name." };
   } finally {
     clearTimeout(deadline);
   }
@@ -867,8 +872,8 @@ async function createChannel() {
   channelCreate.disabled = false;
   if (answer.status === 401) return ask("The server refused that token. Enter another.");
   if (answer.status === 200) {
-    // The name is now taken, until the poll lists it, and text typed while the request was in flight stays.
-    if (channelNames !== undefined) channelNames.push(name.toLowerCase());
+    // The name is now taken, and text typed while the request was in flight stays.
+    channelsSent.add(name.toLowerCase());
     if (channelName.value === name) channelName.value = "";
     if (channelBody.value === body) channelBody.value = "";
     // The reader closed the form, or opened something else, while it was in flight: the poll lists the channel.
@@ -883,8 +888,8 @@ async function createChannel() {
   }
   if (answer.error) {
     channelNote.textContent = answer.error;
-    // Refused until showChannels lists the channels again, so a retry cannot add a second first post to one stored.
-    if (channelNames !== undefined) channelNames.push(name.toLowerCase());
+    // The post may yet be stored, even after a list that leaves it out, so a retry could add a second first post.
+    channelsSent.add(name.toLowerCase());
     // Read again at once, so the channel list shows whether it arrived.
     cancel();
     poll(generation);
