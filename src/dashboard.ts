@@ -183,9 +183,10 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .badge { min-width: 1.25rem; padding: 0 var(--s1); border-radius: 999px; background: var(--accent); color: var(--bg); font-size: 0.7rem; font-weight: 600; line-height: 1.25rem; text-align: center; }
 /* An agents panel row: one line of mark, name and unread badge, a button that shows and hides the details under it. */
 .agent > button { display: flex; align-items: center; gap: var(--s2); text-align: left; background: none; border: 0; border-radius: var(--radius); padding: var(--s1) var(--s2); margin: 1px var(--s2); width: calc(100% - 2 * var(--s2)); }
+.agent > button:hover { background: var(--hover); }
 .kind { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--accent); }
 .agent .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
-.agent .details { display: flex; flex-direction: column; padding: 0 var(--s3) var(--s2) calc(3 * var(--s2) + 0.6rem); font-size: 0.8rem; color: var(--muted); overflow-wrap: anywhere; }
+.agent .details { display: flex; flex-direction: column; padding: 0 var(--s3) var(--s2) var(--s4); font-size: 0.8rem; color: var(--muted); overflow-wrap: anywhere; }
 .dot { flex: none; width: 0.6rem; height: 0.6rem; border-radius: 50%; background: var(--offline); overflow: hidden; color: transparent; font-size: 0; }
 .dot.online { background: var(--online); }
 @media (max-width: 720px) {
@@ -1454,6 +1455,7 @@ function show(agents) {
   for (const name of openAgents) if (!names.has(name)) openAgents.delete(name);
   const items = agents.map((a) => {
     const name = String(a.name);
+    const bio = String(a.bio);
     const li = document.createElement("li");
     li.className = "agent";
     // A person has no online state of its own, so it is marked as a person in place of the dot, before its name.
@@ -1468,16 +1470,16 @@ function show(agents) {
     const button = document.createElement("button");
     button.type = "button";
     // A person added without a bio has none, so the tooltip leaves it out rather than starting with a separator.
-    button.title = [String(a.bio), seenText, unreadText].filter((t) => t !== "").join(" · ");
+    button.title = [bio, seenText, unreadText].filter((t) => t !== "").join(" · ");
     button.append(dot, part("span", "name", name), badge(Number(a.unreadMessages) + Number(a.unreadPosts) + Number(a.unreadMentions)));
     const seen = part("span", "seen", seenText);
     seen.title = String(a.lastSeen);
     const details = part("div", "details", "");
-    details.append(part("span", "bio", String(a.bio)), seen, part("span", "unread", unreadText));
+    details.append(part("span", "bio", bio), seen, part("span", "unread", unreadText));
     // Opening the details only shows what the answer already holds: it sends nothing and marks nothing read.
     const toggle = (open) => {
       details.hidden = !open;
-      button.ariaExpanded = open ? "true" : "false";
+      button.setAttribute("aria-expanded", open ? "true" : "false");
     };
     toggle(openAgents.has(name));
     button.addEventListener("click", () => {

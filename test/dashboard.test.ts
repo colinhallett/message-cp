@@ -157,7 +157,7 @@ describe("the page's channels and messages", () => {
     title: string;
     // Set by the script on the buttons it builds.
     type?: string;
-    ariaExpanded?: string;
+    attributes: Record<string, string>;
     children: Stub[];
     top: number;
     scrollTop: number;
@@ -179,6 +179,7 @@ describe("the page's channels and messages", () => {
     className: "",
     title: "",
     children: [],
+    attributes: {},
     // A box 100px high whose rows are 20px each, scrolled as a browser does: never past the last row.
     top: 0,
     get scrollHeight() {
@@ -200,8 +201,12 @@ describe("the page's channels and messages", () => {
     addEventListener(type, fn) {
       this.on[type] = fn;
     },
-    setAttribute() {},
-    removeAttribute() {},
+    setAttribute(name, value) {
+      this.attributes[name] = value;
+    },
+    removeAttribute(name) {
+      delete this.attributes[name];
+    },
     focus() {},
   });
   // A sidebar item's label and its unread badge as shown ("" when hidden), and the button that opens it.
@@ -417,6 +422,17 @@ describe("the page's channels and messages", () => {
       await page.until(() => rows.children.length === 2);
       expect(agentButton(rows.children[1]).title).toMatch(/^builds the site · last seen \d+s ago · unread: 1 message, 0 posts, 2 mentions$/);
       expect(agentButton(rows.children[0]).title).toMatch(/^writes the docs · last seen \d+s ago · unread: 0 messages, 0 posts, 0 mentions$/);
+      // Each total is counted in its own singular or plural.
+      const bob = { ...identityOf(db, OWNER_ACCOUNT, "bob")!, name: "bob" };
+      joinChannel(db, OWNER_ACCOUNT, { ...identityOf(db, OWNER_ACCOUNT, "alice")!, name: "alice" }, "ops");
+      post(db, OWNER_ACCOUNT, bob, "ops", "one");
+      post(db, OWNER_ACCOUNT, bob, "build", "two");
+      sendMessage(db, OWNER_ACCOUNT, "bob", "alice", "hi");
+      await page.until(page.scheduled);
+      page.poll();
+      await page.until(() => page.scheduled() && agentButton(rows.children[0]).title.includes("1 message, 2 posts"));
+      expect(agentButton(rows.children[0]).title).toMatch(/· unread: 1 message, 2 posts, 0 mentions$/);
+      expect(agentLine(rows.children[0])).toEqual(["online", "alice", "3"]);
       for (const row of rows.children) expect(details(row).hidden).toBe(true);
       const visible = rows.children.map((row) => agentButton(row).children.map((c) => c.textContent).join(" "));
       for (const line of visible) expect(line).not.toMatch(/builds|writes|seen|unread/);
@@ -429,12 +445,12 @@ describe("the page's channels and messages", () => {
       await page.until(() => page.scheduled() && rows.children.length === 2);
       const bob = () => rows.children[1];
       expect(agentButton(bob()).type).toBe("button");
-      expect(agentButton(bob()).ariaExpanded).toBe("false");
+      expect(agentButton(bob()).attributes["aria-expanded"]).toBe("false");
 
       const before = page.urls.length;
       agentButton(bob()).on.click();
       expect(page.urls.length).toBe(before);
-      expect(agentButton(bob()).ariaExpanded).toBe("true");
+      expect(agentButton(bob()).attributes["aria-expanded"]).toBe("true");
       expect(details(bob()).hidden).toBe(false);
       expect(details(bob()).children.map((c) => c.className)).toEqual(["bio", "seen", "unread"]);
       expect(field(details(bob()), "bio")).toBe("builds the site");
@@ -445,14 +461,14 @@ describe("the page's channels and messages", () => {
       const row = bob();
       page.poll();
       await page.until(() => page.scheduled() && bob() !== row);
-      expect(agentButton(bob()).ariaExpanded).toBe("true");
+      expect(agentButton(bob()).attributes["aria-expanded"]).toBe("true");
       expect(details(bob()).hidden).toBe(false);
       expect(details(rows.children[0]).hidden).toBe(true);
       // Nothing was marked read for bob.
       expect(agentLine(bob())).toEqual(["online", "bob", "3"]);
 
       agentButton(bob()).on.click();
-      expect(agentButton(bob()).ariaExpanded).toBe("false");
+      expect(agentButton(bob()).attributes["aria-expanded"]).toBe("false");
       expect(details(bob()).hidden).toBe(true);
     });
 
@@ -470,7 +486,7 @@ describe("the page's channels and messages", () => {
       page.elements["login"].on.submit({ preventDefault() {} } as never);
       await page.until(() => rows.children.length === 2);
       expect(rows.children.map((row) => details(row).hidden)).toEqual([true, true]);
-      expect(rows.children.map((row) => agentButton(row).ariaExpanded)).toEqual(["false", "false"]);
+      expect(rows.children.map((row) => agentButton(row).attributes["aria-expanded"])).toEqual(["false", "false"]);
     });
 
     it("still says when an account has no agents", async () => {
@@ -1523,6 +1539,7 @@ describe("the page's search", () => {
     append(...children: Stub[]): void;
     replaceChildren(...children: Stub[]): void;
     addEventListener(type: string, fn: (event?: unknown) => void): void;
+    setAttribute(name: string, value: string): void;
     focus(): void;
   }
   const el = (): Stub => ({
@@ -1544,6 +1561,7 @@ describe("the page's search", () => {
     addEventListener(type, fn) {
       this.on[type] = fn;
     },
+    setAttribute() {},
     focus() {},
   });
   // An element's text as a browser reads it: the stub's textContent does not join its children's, so a split body's
@@ -1753,6 +1771,7 @@ describe("the page's webhook deliveries", () => {
     append(...children: Stub[]): void;
     replaceChildren(...children: Stub[]): void;
     addEventListener(type: string, fn: () => void): void;
+    setAttribute(name: string, value: string): void;
     focus(): void;
   }
   const el = (): Stub => ({
@@ -1774,6 +1793,7 @@ describe("the page's webhook deliveries", () => {
     addEventListener(type, fn) {
       this.on[type] = fn;
     },
+    setAttribute() {},
     focus() {},
   });
   // An element's text as a browser reads it: the stub's textContent does not join its children's, so a split body's
