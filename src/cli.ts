@@ -7,7 +7,7 @@ import { OWNER_ACCOUNT, openDb } from "./db.js";
 import { hasUnread, unreadSummary } from "./messages.js";
 import { setting } from "./settings.js";
 import { formatUnread } from "./wait.js";
-import { WebhookError, addWebhook, formatOn, listWebhooks, removeWebhook } from "./webhooks.js";
+import { WebhookError, addWebhook, formatOn, listWebhooks, removeWebhook, webhookMaxPerHour } from "./webhooks.js";
 
 const [command, ...rest] = process.argv.slice(2);
 
@@ -118,12 +118,12 @@ if (command === "serve") {
   // so its value is never in an argument list, and the value is never printed.
   const usage = () => {
     console.error(
-      "usage: message-cp webhook add --url <url> --on <#channel | mention:<agent> | agent:<agent>> [--account <name>] [--no-text] [--header-stdin] | message-cp webhook list [--account <name>] | message-cp webhook remove <webhook id>",
+      "usage: message-cp webhook add --url <url> --on <#channel | mention:<agent> | agent:<agent>> [--account <name>] [--no-text] [--header-stdin] [--max-per-hour <n>] | message-cp webhook list [--account <name>] | message-cp webhook remove <webhook id>",
     );
     process.exit(2);
   };
   const [action, ...args] = rest;
-  const valued = action === "add" ? ["--url", "--on", "--account"] : action === "list" ? ["--account"] : [];
+  const valued = action === "add" ? ["--url", "--on", "--account", "--max-per-hour"] : action === "list" ? ["--account"] : [];
   const opts = new Map<string, string>();
   let noText = false;
   let headerStdin = false;
@@ -147,6 +147,8 @@ if (command === "serve") {
   try {
     if (action === "add" && opts.has("--url") && opts.has("--on")) {
       const account = opts.get("--account") ?? "owner";
+      const max = opts.get("--max-per-hour");
+      const maxPerHour = max === undefined ? undefined : webhookMaxPerHour(max);
       let header: string | undefined;
       if (headerStdin) {
         // One line, with at most one trailing newline; checked in addWebhook, which never repeats the value.
@@ -155,13 +157,14 @@ if (command === "serve") {
         header = lines.find((l) => l !== "") ?? "";
         if (header === "") throw new WebhookError("--header-stdin read nothing: give one line '<Name>: <value>' on stdin.");
       }
-      const w = addWebhook(db, account, opts.get("--url")!, opts.get("--on")!, !noText, header);
+      const w = addWebhook(db, account, opts.get("--url")!, opts.get("--on")!, !noText, header, maxPerHour);
       console.error(`message-cp: webhook ${w.id} for account '${w.account}'. Its secret is shown only now; keep it.`);
       console.log(w.secret);
     } else if (action === "list") {
       for (const w of listWebhooks(db, opts.get("--account"))) {
         const header = w.headerName === null ? "" : `\theader: ${w.headerName}`;
-        console.log(`${w.id}\t${w.account}\t${w.url}\t${formatOn(w)}\t${w.includeText ? "text" : "no text"}${header}`);
+        const max = w.maxPerHour === null ? "" : `\tmax: ${w.maxPerHour}/hour`;
+        console.log(`${w.id}\t${w.account}\t${w.url}\t${formatOn(w)}\t${w.includeText ? "text" : "no text"}${header}${max}`);
       }
     } else if (action === "remove" && args.length === 1) {
       const arg = args[0]!;
