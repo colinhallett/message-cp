@@ -191,7 +191,7 @@ async function main() {
     }
     // The parser's message quotes the answer, so it is not shown.
     return res.json().catch((err) => {
-      if (err?.name === "TimeoutError") throw err;
+      if (!(err instanceof SyntaxError)) throw err;
       throw new Error(`${method} ${path} answered something that is not JSON`);
     });
   };
@@ -200,13 +200,13 @@ async function main() {
   const deleteMessages = async () => {
     const names = new Set(agents.map((a) => a.name.toLowerCase()));
     const pairs = new Map();
-    // Every page is read before anything is deleted, so a deletion cannot shift a later page's offset.
+    // Every page is read before anything is deleted, so this run's deletions cannot shift a later page.
     for (let offset = 0; ; offset += 200) {
       const page = await api("GET", "/api/messages", { limit: "200", offset: String(offset) });
       if (!Array.isArray(page)) throw new Error("GET /api/messages did not answer a list");
       for (const m of page) {
         if (!names.has(String(m.from).toLowerCase()) && !names.has(String(m.to).toLowerCase())) continue;
-        pairs.set([m.from, m.to].map((n) => n.toLowerCase()).sort().join("\n"), [m.from, m.to]);
+        pairs.set([m.from, m.to].map((n) => String(n).toLowerCase()).sort().join("\n"), [m.from, m.to]);
       }
       if (page.length < 200) break;
     }
