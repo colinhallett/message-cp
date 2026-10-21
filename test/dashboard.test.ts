@@ -2286,6 +2286,8 @@ describe("the page's posting", () => {
     const requests: { url: string; method: string; body?: string; headers: Record<string, string> }[] = [];
     const polls: (() => void)[] = [];
     const store = new Map([["message-cp-token", token]]);
+    // The document's own listeners, such as the one for Escape.
+    const documentOn: Record<string, (event?: unknown) => void> = {};
     const make = () => {
       const stub = el();
       made.push(stub);
@@ -2294,7 +2296,11 @@ describe("the page's posting", () => {
     runInNewContext(script, {
       AbortController,
       URLSearchParams,
-      document: { getElementById: (id: string) => (elements[id] ??= make()), createElement: make, addEventListener() {} },
+      document: {
+        getElementById: (id: string) => (elements[id] ??= make()),
+        createElement: make,
+        addEventListener: (type: string, fn: (event?: unknown) => void) => void (documentOn[type] = fn),
+      },
       sessionStorage: { getItem: (k: string) => store.get(k) ?? null, setItem: (k: string, v: string) => store.set(k, v), removeItem: (k: string) => store.delete(k) },
       setTimeout: (fn: () => void, ms: number) => (ms === 5000 && polls.push(fn), 0),
       clearTimeout: () => {},
@@ -2331,7 +2337,7 @@ describe("the page's posting", () => {
       await until(() => polls.length > 0);
       polls.splice(0).pop()!();
     };
-    return { elements, made, requests, store, until, choose, send, posts, picker, poll, prevented: () => prevented };
+    return { elements, made, requests, store, documentOn, until, choose, send, posts, picker, poll, prevented: () => prevented };
   }
 
   const seed = () => {
@@ -3610,6 +3616,211 @@ describe("the page's posting", () => {
     await page.until(() => page.elements["compose"].hidden);
     expect(page.picker()).toEqual([]);
     expect(page.elements["as-note"].textContent).toContain("message-cp person add");
+  });
+
+  describe("deleting a direct conversation", () => {
+    // bob and colin have two messages, bob and dana one, and bob has a post in #build.
+    const seedPairs = () => {
+      seed();
+      sendMessage(db, OWNER_ACCOUNT, "colin", "bob", "hi bob");
+      addPerson(db, "owner", "dana");
+      sendMessage(db, OWNER_ACCOUNT, "bob", "dana", "hi dana");
+    };
+    const deletes = (page: Awaited<ReturnType<typeof load>>) => page.requests.filter((r) => r.method === "DELETE");
+    const ready = async (page: Awaited<ReturnType<typeof load>>) => {
+      await page.until(() => page.elements["pair-rows"].children.length === 2 && page.elements["channel-rows"].children.length === 1);
+    };
+    const openReady = async (page: Awaited<ReturnType<typeof load>>, name: string) => {
+      await ready(page);
+      open(page.elements["pair-rows"], name);
+      await page.until(() => !page.elements["delete-pair"].hidden);
+    };
+    const confirmDelete = (page: Awaited<ReturnType<typeof load>>) => {
+      page.elements["delete-pair"].on.click();
+      page.elements["delete-yes"].on.click();
+    };
+    const stored = () => db.prepare("SELECT m.sender AS f, a.name AS t FROM messages m JOIN agents a ON a.id = m.recipient_id ORDER BY m.id").all();
+
+    it("sits a hidden Delete button and confirmation in the log's header bar, under the same strict CSP", async () => {
+      const res = await fetch(`${base()}/`);
+      const html = await res.text();
+      const head = /<section id="log" hidden>\s*<div class="log-head">([\s\S]*?)<button id="close-log"/.exec(html)![1];
+      expect(head).toMatch(/<button id="delete-pair" type="button" hidden>Delete<\/button>\s*$/);
+      expect(head).toMatch(/<div id="delete-confirm"[^>]*hidden>\s*<span id="delete-text"><\/span>\s*<button id="delete-yes" type="button">Delete<\/button>\s*<button id="delete-no" type="button">Cancel<\/button>/);
+      expect(html).not.toContain("confirm(");
+      expect(res.headers.get("content-security-policy") ?? "").not.toContain("unsafe-inline");
+    });
+
+    it("shows Delete only with a full token and an open pair that has messages", async () => {
+      seedPairs();
+      // A read-only token never sees it, and a click by hand sends nothing.
+      const reader = await load(viewer);
+      await ready(reader);
+      open(reader.elements["pair-rows"], "bob ↔ colin");
+      await reader.until(() => reader.elements["post-rows"].children.length === 2);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(reader.elements["delete-pair"].hidden).toBe(true);
+      confirmDelete(reader);
+      expect(reader.elements["delete-confirm"].hidden).toBe(true);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(deletes(reader)).toEqual([]);
+
+      const page = await load(OWNER_TOKEN);
+      await openReady(page, "bob ↔ colin");
+      // Not for a channel, the webhook deliveries, search results or no conversation.
+      open(page.elements["channel-rows"], "build");
+      expect(page.elements["delete-pair"].hidden).toBe(true);
+      page.elements["delivery-entry"].children[0].children[0].on.click();
+      expect(page.elements["delete-pair"].hidden).toBe(true);
+      page.elements["search-text"].value = "hi";
+      page.elements["search"].on.submit({ preventDefault() {} });
+      expect(page.elements["delete-pair"].hidden).toBe(true);
+      page.elements["close-results"].on.click();
+      expect(page.elements["delete-pair"].hidden).toBe(true);
+      // Nor for a pair started from New message with no messages yet.
+      await page.until(() => !page.elements["new-message"].hidden && page.elements["rows"].children.length === 3);
+      page.elements["new-message"].on.click();
+      page.elements["new-from"].value = "colin";
+      page.elements["new-from"].on.change();
+      page.elements["new-to"].value = "dana";
+      page.elements["new-form"].on.submit({ preventDefault() {} });
+      expect(page.elements["log-note"].textContent).toBe("No messages yet.");
+      expect(page.elements["delete-pair"].hidden).toBe(true);
+      page.elements["delete-pair"].on.click();
+      expect(page.elements["delete-confirm"].hidden).toBe(true);
+      expect(deletes(page)).toEqual([]);
+    });
+
+    it("asks first, naming both sides and the count, and Cancel, Escape, another conversation, Close or a new token send nothing", async () => {
+      seedPairs();
+      const page = await load(OWNER_TOKEN);
+      await openReady(page, "bob ↔ colin");
+      const ask = () => {
+        page.elements["delete-pair"].on.click();
+        expect(page.elements["delete-confirm"].hidden).toBe(false);
+        expect(page.elements["delete-pair"].hidden).toBe(true);
+      };
+      ask();
+      expect(page.elements["delete-text"].textContent).toBe("Delete the 2 messages between bob and colin? This cannot be undone.");
+      page.elements["delete-no"].on.click();
+      expect(page.elements["delete-confirm"].hidden).toBe(true);
+      expect(page.elements["delete-pair"].hidden).toBe(false);
+      ask();
+      let prevented = 0;
+      page.documentOn.keydown({ key: "Escape", defaultPrevented: false, preventDefault: () => prevented++ });
+      expect(prevented).toBe(1);
+      expect(page.elements["delete-confirm"].hidden).toBe(true);
+      ask();
+      open(page.elements["pair-rows"], "bob ↔ dana");
+      expect(page.elements["delete-confirm"].hidden).toBe(true);
+      page.elements["delete-pair"].on.click();
+      expect(page.elements["delete-text"].textContent).toBe("Delete the 1 message between bob and dana? This cannot be undone.");
+      page.elements["close-log"].on.click();
+      expect(page.elements["delete-confirm"].hidden).toBe(true);
+      expect(page.elements["delete-pair"].hidden).toBe(true);
+      // Pressing confirm once dismissed sends nothing.
+      page.elements["delete-yes"].on.click();
+      open(page.elements["pair-rows"], "bob ↔ dana");
+      page.elements["delete-pair"].on.click();
+      page.elements["forget"].on.click();
+      expect(page.elements["delete-confirm"].hidden).toBe(true);
+      expect(page.elements["delete-pair"].hidden).toBe(true);
+      page.elements["delete-yes"].on.click();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(deletes(page)).toEqual([]);
+      expect(stored()).toHaveLength(3);
+    });
+
+    it("deletes the pair on the server with the token only in its header, and the sidebar rebuilds from the messages", async () => {
+      seedPairs();
+      let release!: () => void;
+      const hold = new Promise<void>((resolve) => (release = resolve));
+      const page = await load(OWNER_TOKEN, (url, method) => (method === "DELETE" ? { hold } : undefined));
+      await openReady(page, "bob ↔ colin");
+      confirmDelete(page);
+      expect(page.elements["delete-yes"].disabled).toBe(true);
+      // While it is held, a second press sends nothing.
+      page.elements["delete-yes"].on.click();
+      expect(deletes(page)).toHaveLength(1);
+      const [request] = deletes(page);
+      expect(request.url).toBe("/api/conversation?a=bob&b=colin");
+      expect(request.headers).toEqual({ Authorization: `Bearer ${OWNER_TOKEN}` });
+      expect(request.url).not.toContain(OWNER_TOKEN);
+      const reads = () => page.requests.filter((r) => r.url.startsWith("/api/messages")).map((r) => r.url);
+      const before = reads().length;
+      release();
+      await page.until(() => page.elements["log"].hidden && page.elements["pair-rows"].children.length === 1);
+      expect(page.elements["delete-yes"].disabled).toBe(false);
+      expect(stored()).toEqual([{ f: "bob", t: "dana" }]);
+      const res = await fetch(`${base()}/api/messages`, { headers: auth(OWNER_TOKEN) });
+      expect((await res.json()).map((m: { from: string; to: string }) => [m.from, m.to])).toEqual([["bob", "dana"]]);
+      // The page read the messages again from the start, and kept the other pair's.
+      expect(reads().slice(before)).toContain("/api/messages?limit=200&offset=0");
+      expect(label(page.elements["pair-rows"].children[0])).toBe("bob ↔ dana");
+      open(page.elements["pair-rows"], "bob ↔ dana");
+      expect(entries(page.elements["post-rows"])).toEqual([["bob", "hi dana"]]);
+      // A new message between them starts the pair again, with only it unread.
+      sendMessage(db, OWNER_ACCOUNT, "bob", "colin", "again");
+      await page.poll();
+      await page.until(() => page.elements["pair-rows"].children.length === 2);
+      const again = page.elements["pair-rows"].children.find((row) => label(row) === "bob ↔ colin")!;
+      expect(again.children[0].children[1].textContent).toBe("1");
+    });
+
+    it("asks for a token again on a 401", async () => {
+      seedPairs();
+      const page = await load(OWNER_TOKEN, (url, method) => (method === "DELETE" ? { status: 401 } : undefined));
+      await openReady(page, "bob ↔ colin");
+      confirmDelete(page);
+      await page.until(() => page.elements["status-line"].textContent === "The server refused that token. Enter another.");
+      expect(page.store.size).toBe(0);
+      expect(page.elements["log"].hidden).toBe(true);
+      expect(page.elements["delete-pair"].hidden).toBe(true);
+      expect(stored()).toHaveLength(3);
+    });
+
+    it("keeps the conversation open with the reason on a refusal", async () => {
+      seedPairs();
+      for (const [status, note] of [
+        [403, "This token cannot delete conversations (403)."],
+        [400, "Give a and b once each"],
+        [503, "The server is busy (503). Try again in a moment."],
+        [500, "The server answered 500."],
+      ] as const) {
+        const body = status === 400 ? JSON.stringify({ error: { message: note } }) : undefined;
+        const page = await load(OWNER_TOKEN, (url, method) => (method === "DELETE" ? { status, body } : undefined));
+        await openReady(page, "bob ↔ colin");
+        confirmDelete(page);
+        await page.until(() => page.elements["delete-note"].textContent === note);
+        expect(page.elements["log"].hidden).toBe(false);
+        expect(page.elements["log-title"].textContent).toBe("bob ↔ colin");
+        expect(page.elements["post-rows"].children).toHaveLength(2);
+        expect(page.elements["delete-confirm"].hidden).toBe(true);
+        expect(page.elements["delete-pair"].hidden).toBe(false);
+        expect(page.elements["delete-yes"].disabled).toBe(false);
+        // Opening another conversation clears the note.
+        open(page.elements["pair-rows"], "bob ↔ dana");
+        expect(page.elements["delete-note"].textContent).toBe("");
+      }
+      expect(stored()).toHaveLength(3);
+    });
+
+    it("with no answer, says the messages may already be deleted and reads them again from the start", async () => {
+      seedPairs();
+      // The DELETE is taken by the server and its connection then fails.
+      const page = await load(OWNER_TOKEN, (url, method) => (method === "DELETE" ? { lose: true } : undefined));
+      await openReady(page, "bob ↔ colin");
+      const reads = () => page.requests.filter((r) => r.url.startsWith("/api/messages")).map((r) => r.url);
+      const before = reads().length;
+      confirmDelete(page);
+      await page.until(() => page.elements["delete-note"].textContent.startsWith("No answer from the server"));
+      expect(page.elements["delete-note"].textContent).toBe("No answer from the server, so the messages may already be deleted. Reading them again.");
+      await page.until(() => page.elements["pair-rows"].children.length === 1);
+      expect(reads().slice(before)).toContain("/api/messages?limit=200&offset=0");
+      expect(stored()).toEqual([{ f: "bob", t: "dana" }]);
+      expect(page.elements["post-rows"].children).toEqual([]);
+      expect(page.elements["delete-pair"].hidden).toBe(true);
+    });
   });
 
   it("never sends as a name GET /api/agents did not give as a person", async () => {
