@@ -2396,7 +2396,8 @@ describe("the page's posting", () => {
         db.prepare(`DELETE FROM ${table} WHERE channel_id = (SELECT id FROM channels WHERE name = 'fresh')`).run();
       }
       db.prepare("DELETE FROM channels WHERE name = 'fresh'").run();
-      await page.poll();
+      // Opening a channel starts a fresh poll, whatever poll or timer is left from before.
+      open(page.elements["channel-rows"], "build");
       await page.until(() => page.elements["channel-rows"].children.length === 1);
       create(page, "colin", "fresh", "first");
       expect(page.elements["channel-note"].textContent).toContain("already exists");
