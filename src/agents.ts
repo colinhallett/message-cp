@@ -373,8 +373,8 @@ export const removePerson = (db: Db, account: string, name: string): Purged =>
     // Before anything is deleted, so an agent's messages are never touched.
     if (live?.person === 0) throw new PersonError(`The name '${live.name}' belongs to an agent, not a person. Remove it with \`agent remove\`.`);
     if (!live) throw new PersonError(`No person named '${name}' in account '${acct.name}'.`);
-    // Only the person sends under the name while it is theirs, so messages from it since they were added are theirs;
-    // older ones are an earlier agent's, which keeps them until `agent remove`.
+    // Only the person sends under the name while it is theirs, so messages from it since they were added, by the
+    // server's clock, are theirs; older ones are an earlier agent's, which keeps them until `agent remove`.
     const messages = db
       .prepare(
         `DELETE FROM messages WHERE recipient_id = ?
