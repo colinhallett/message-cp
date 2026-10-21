@@ -359,11 +359,13 @@ export async function sendPending(db: Db, options: SendOptions = {}): Promise<{ 
   const claim = db.prepare(
     "UPDATE webhook_deliveries SET attempts = attempts + 1, claimed_until = ? WHERE id = ? AND attempts = ? AND delivered_at IS NULL",
   );
-  const window = db.prepare("SELECT max_per_hour, window_started_at, window_count FROM webhooks WHERE id = ?");
+  const windowOf = db.prepare("SELECT max_per_hour, window_started_at, window_count FROM webhooks WHERE id = ?");
   const use = db.prepare("UPDATE webhooks SET window_started_at = ?, window_count = ? WHERE id = ?");
-  // Claims the row if its webhook has allowance left, using one request of it; true if claimed.
+  // Claims the row if its webhook has allowance left, using one request of it; true if claimed. Counted at the claim, as
+  // attempts are, so a claim that sends nothing (a stored URL that no longer passes, a deleted message) uses one too.
+  // `fresh` must match the `allowance` CASE in the pick query above.
   const claimWithin = db.transaction((row: (typeof rows)[number]): boolean => {
-    const w = window.get(row.webhook_id) as { max_per_hour: number | null; window_started_at: number | null; window_count: number } | undefined;
+    const w = windowOf.get(row.webhook_id) as { max_per_hour: number | null; window_started_at: number | null; window_count: number } | undefined;
     if (!w) return false;
     const at = Date.now();
     const fresh = w.window_started_at === null || w.window_started_at + WEBHOOK_WINDOW_MS <= at;
