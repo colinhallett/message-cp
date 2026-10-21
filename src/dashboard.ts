@@ -131,8 +131,13 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 #choose { margin: auto; color: var(--muted); padding: var(--s4); text-align: center; }
 #log:not([hidden]) ~ #choose, #results:not([hidden]) ~ #choose { display: none; }
 #log, #results { flex: 1; min-height: 0; display: flex; flex-direction: column; }
-.log-head { display: flex; align-items: center; gap: var(--s2); padding: var(--s2) var(--s4); border-bottom: 1px solid var(--border); }
+/* The open conversation's header bar sits above the log, outside #post-rows, so it stays put while the log scrolls. */
+.log-head { display: flex; align-items: center; gap: var(--s2); padding: var(--s2) var(--s4); background: var(--panel); border-bottom: 1px solid var(--border); }
 .log-head h2 { flex: 1; margin: 0; font-size: 1rem; letter-spacing: normal; text-transform: none; color: var(--text); overflow-wrap: anywhere; }
+.log-head button { flex: none; }
+/* The name and, for a channel, its members stack; a long members line is cut with an ellipsis, the full list in its title. */
+.log-name { flex: 1; min-width: 0; }
+#log-members { margin: 0; font-size: 0.8rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .channel::before, .item .channel-name::before { content: "# "; color: var(--muted); }
 #post-rows, #result-rows { flex: 1; overflow-y: auto; padding: var(--s2) 0 var(--s4); }
 /* A short log sits at the bottom, above the compose box, by an auto margin: justifying the content to the end would
@@ -210,6 +215,7 @@ const rows = document.getElementById("rows");
 const channelRows = document.getElementById("channel-rows");
 const log = document.getElementById("log");
 const logTitle = document.getElementById("log-title");
+const logMembers = document.getElementById("log-members");
 const logNote = document.getElementById("log-note");
 const postRows = document.getElementById("post-rows");
 const pairRows = document.getElementById("pair-rows");
@@ -548,6 +554,9 @@ function closeLog() {
   logMentions = [];
   logTitle.textContent = "";
   logTitle.className = "";
+  logMembers.textContent = "";
+  logMembers.title = "";
+  logMembers.hidden = true;
   logNote.textContent = "";
   log.hidden = true;
   closeOffered();
@@ -1505,6 +1514,12 @@ function showChannels(channels) {
     const members = Array.isArray(c.members) ? c.members.map(String).join(", ") : "";
     const last = c.lastPostAt == null ? "no posts" : "last post " + ago(c.lastPostAt);
     li.children[0].title = "Members: " + (members || "–") + "; " + c.posts + " posts, " + last;
+    // The open channel's members go in the header too; a channel no longer listed keeps the last ones shown.
+    if (name === openChannel) {
+      logMembers.textContent = members ? "Members: " + members : "No members yet";
+      logMembers.title = logMembers.textContent;
+      logMembers.hidden = false;
+    }
     return li;
   });
   if (items.length === 0) items.push(part("li", "note", "No channels in this account."));
@@ -1819,7 +1834,10 @@ export const DASHBOARD_HTML = `<!doctype html>
 <main id="chat">
 <section id="log" hidden>
 <div class="log-head">
+<div class="log-name">
 <h2 id="log-title"></h2>
+<p id="log-members" class="note" hidden></p>
+</div>
 <button id="close-log" type="button">Close</button>
 </div>
 <p id="log-note" class="note"></p>
