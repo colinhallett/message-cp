@@ -11,8 +11,7 @@ import { MAX_BODY_LENGTH } from "./messages.js";
 // token it lets a person choose which of the account's people they are, post in the open channel with POST /api/post and
 // reply in an open direct conversation of theirs, or start one with anyone in the account from "New message", with
 // POST /api/send, or create a channel from "New channel" by its first post, with POST /api/post; that is all it ever
-// writes. With a read-only token
-// it only reads. It puts agent- and person-supplied text on the page with textContent, never as HTML.
+// writes. With a read-only token it only reads. It puts agent- and person-supplied text on the page with textContent, never as HTML.
 
 const STYLE = `
 :root {
@@ -864,8 +863,10 @@ async function createChannel() {
   if (answer.status === 200) {
     // openLog's showPicker sets the "Post as" select to the person, and its poll reads the first post.
     person = from;
-    channelName.value = "";
-    channelBody.value = "";
+    // The name is now taken, until the poll lists it, and text typed while the request was in flight stays.
+    if (channelNames !== undefined) channelNames.push(name.toLowerCase());
+    if (channelName.value === name) channelName.value = "";
+    if (channelBody.value === body) channelBody.value = "";
     channelNote.textContent = "";
     closeChannelForm(false);
     openLog(name);
@@ -928,7 +929,7 @@ function showPicker() {
   if (person !== undefined && !known.includes(person)) person = undefined;
   const conversation = openChannel !== undefined || openPair !== undefined;
   asBox.hidden = !canPost || !conversation || known.length === 0;
-  asNote.textContent = canPost && conversation && people !== undefined && known.length === 0 ? "No people to post as. Add one with: message-cp person add <name>" : "";
+  asNote.textContent = canPost && conversation && people !== undefined && known.length === 0 ? NO_PEOPLE_TO_POST : "";
   const key = canPost ? JSON.stringify(known) : "";
   if (key !== pickerKey) {
     pickerKey = key;
