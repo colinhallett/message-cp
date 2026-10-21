@@ -17,6 +17,7 @@ import {
   WebhookError,
   addWebhook,
   deliveryBody,
+  listAccountDeliveries,
   listWebhooks,
   removeWebhook,
   sendPending,
@@ -99,8 +100,9 @@ const REFUSED_HEADERS = [
   `Authorization: ${HEADER_VALUE}\u0000`,
   `Authorization: ${HEADER_VALUE}\tx`,
   `Authorization: ${HEADER_VALUE}\u007f`,
+  `Authorization: ${HEADER_VALUE}\u0085`,
   `Authorization: ${HEADER_VALUE}日本`,
-  ...["Content-Type", "x-message-cp-signature", "CONTENT-LENGTH", "Host", "transfer-encoding", "Connection"].map((n) => `${n}: ${HEADER_VALUE}`),
+  ...["Content-Type", "x-message-cp-signature", "CONTENT-LENGTH", "Host", "transfer-encoding", "Connection", "Keep-Alive", "upgrade", "Expect"].map((n) => `${n}: ${HEADER_VALUE}`),
 ];
 
 describe("webhookHeader", () => {
@@ -457,6 +459,10 @@ describe("sendPending", () => {
     expect(plain.headers.authorization).toBeUndefined();
     const names = (g: Got) => Object.keys(g.headers).sort();
     expect(names(got!)).toEqual([...names(plain), "authorization"].sort());
+    // What GET /api/webhook-deliveries returns names neither the header nor its value.
+    const listed = JSON.stringify(listAccountDeliveries(db, OWNER_ACCOUNT, 3, 50, 0));
+    expect(listed).not.toContain(HEADER_VALUE);
+    expect(listed.toLowerCase()).not.toContain("authorization");
   });
 
   it("never sends one account's webhook header with another account's deliveries", async () => {

@@ -70,8 +70,18 @@ export function webhookOn(on: string): { event: WebhookEvent; name: string } {
   return { event: prefix === "#" ? "channel" : (prefix.slice(0, -1) as WebhookEvent), name: name! };
 }
 
-/** Header names message-cp sets on a delivery itself or that `fetch` controls, in lower case. */
-const RESERVED_HEADERS = ["content-type", "x-message-cp-signature", "content-length", "host", "transfer-encoding", "connection"];
+/** Header names message-cp sets on a delivery itself or that `fetch` controls or refuses to send, in lower case. */
+const RESERVED_HEADERS = [
+  "content-type",
+  "x-message-cp-signature",
+  "content-length",
+  "host",
+  "transfer-encoding",
+  "connection",
+  "keep-alive",
+  "upgrade",
+  "expect",
+];
 
 /**
  * Parses the one header line `--header-stdin` reads, `<Name>: <value>`: the name an HTTP token that message-cp does not
@@ -90,8 +100,8 @@ export function webhookHeader(line: string): { name: string; value: string } {
     throw new WebhookError(`Invalid header: message-cp sets ${name} itself; choose another header.`);
   }
   if (value === "") throw new WebhookError("Invalid header: its value is empty.");
-  // Tab included: inside a value it is a control character like CR and LF.
-  if (/[\x00-\x1f\x7f]/.test(value)) throw new WebhookError("Invalid header: its value contains a control character.");
+  // Tab included: inside a value it is a control character like CR and LF. So are U+0080-U+009F.
+  if (/[\x00-\x1f\x7f-\x9f]/.test(value)) throw new WebhookError("Invalid header: its value contains a control character.");
   // `fetch` refuses a header value with a character past U+00FF, so every delivery would fail.
   if (/[^\x00-\xff]/.test(value)) throw new WebhookError("Invalid header: its value has a character past U+00FF, which HTTP cannot send.");
   return { name, value };
