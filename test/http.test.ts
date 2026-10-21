@@ -263,6 +263,17 @@ describe("restart", () => {
     expect(await status(sid)).toBe(404);
   });
 
+  it("forgets a restored session ended with DELETE", async () => {
+    const sid = await registered("ann");
+    await restart();
+    expect(await status(sid)).toBe(200);
+    const auth = { Authorization: `Bearer ${TOKEN}`, "mcp-session-id": sid, "mcp-protocol-version": "2025-03-26" };
+    expect((await fetch(url(), { method: "DELETE", headers: auth })).status).toBe(200);
+    expect(db.prepare("SELECT count(*) AS n FROM http_sessions").get()).toEqual({ n: 0 });
+    await restart();
+    expect(await status(sid)).toBe(404);
+  });
+
   it("refuses a session idle past the timeout", async () => {
     await restart({ idleTimeoutMs: 100 });
     const sid = await registered("ann");

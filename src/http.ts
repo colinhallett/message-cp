@@ -90,14 +90,15 @@ const isBusy = (err: unknown) => {
 };
 
 /**
- * Runs the database work that keeps a registered session restorable. A lock held past the busy timeout skips it this
- * time; the session works as before, and a restart may then lose it. Nothing about the session is logged.
+ * Runs the database work that keeps a registered session restorable. It never throws: if it fails, the session works
+ * as before and a restart may lose it. A lock held past the busy timeout is retried on its next use; any other error
+ * logs one fixed line, never anything about the session.
  */
 function recordSession(work: () => void): void {
   try {
     work();
   } catch (err) {
-    if (!isBusy(err)) throw err;
+    if (!isBusy(err)) console.error("message-cp serve: could not record a session for restarts");
   }
 }
 
@@ -606,9 +607,9 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
       live.lastUsed = Date.now();
       await live.transport.handleRequest(req, res, body);
       live.lastUsed = Date.now();
-      // A DELETE ends the session for good. A session dropped by close() while a request was open keeps its row, so
-      // the restart can restore it; any other request keeps a registered one restorable for another idle timeout.
-      if (req.method === "DELETE") recordSession(() => forgetSession(db, id));
+      // A DELETE that ended the session ends it for good. A session dropped by close() while a request was open keeps
+      // its row, so the restart can restore it; any other request keeps a registered one restorable for another idle timeout.
+      if (req.method === "DELETE" && res.statusCode === 200) recordSession(() => forgetSession(db, id));
       else if (sessions.get(id) === live) recordSession(() => touchSession(db, id, live.lastUsed));
       return;
     }
