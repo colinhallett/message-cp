@@ -159,6 +159,27 @@
         ]
       },
       "action": "shepherd-session"
+    },
+    "pr-merged": {
+      "on": [
+        "github:pull_request.closed"
+      ],
+      "when": {
+        "event.pull_request.merged": true,
+        "event.pull_request.base.ref": "main",
+        "event.pull_request.head.repo.full_name": "colinhallett/message-cp",
+        "event.pull_request.user.login": "tessl-helper[bot]"
+      },
+      "concurrency": {
+        "debounce": "120s",
+        "keys": [
+          {
+            "key": "planner:message-cp",
+            "limit": 1
+          }
+        ]
+      },
+      "action": "planner"
     }
   },
   "schedules": {
