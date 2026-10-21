@@ -36,8 +36,10 @@ import {
 } from "./channels.js";
 
 /**
- * Who this server process is acting as. Lives only in memory, never in the database, but every use is checked
- * against the registration it was made for: once that is removed the session is unregistered again.
+ * Who this server process is acting as. Over HTTP, `serve` also records a registered session's registration in the
+ * database under a hash of its session id, so that a restarted server can restore it; over stdio it lives only in
+ * memory. Every use is checked against the registration it was made for: once that is removed the session is
+ * unregistered again.
  * A session belongs to one account for its whole life, and every tool reads and writes only that account's agents
  * and messages: the owner's for stdio, the account of the token that started it over HTTP.
  */
@@ -45,8 +47,14 @@ export class Session {
   private identity: Identity | undefined;
   private db: Db | undefined;
 
-  /** No default, so a caller has to say which account a session acts as. */
-  constructor(readonly account: AccountId) {}
+  /**
+   * No default, so a caller has to say which account a session acts as. `onBind` is told each registration the
+   * session is bound to.
+   */
+  constructor(
+    readonly account: AccountId,
+    private readonly onBind?: (identity: Identity) => void,
+  ) {}
 
   /** The database the identity is checked against. `createServer` calls this. */
   attach(db: Db): void {
@@ -55,6 +63,7 @@ export class Session {
 
   bind(identity: Identity): void {
     this.identity = identity;
+    this.onBind?.(identity);
   }
 
   /** The registration this session belongs to, as last checked by `current`/`require`. */

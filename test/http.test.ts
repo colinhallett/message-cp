@@ -5,6 +5,8 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { addAccount } from "../src/accounts.js";
+import { purgeAgent } from "../src/agents.js";
 import { openDb, type Db } from "../src/db.js";
 import { startHttp, type HttpServer } from "../src/http.js";
 import { createServer } from "../src/server.js";
@@ -162,5 +164,143 @@ describe("stdio and HTTP on one database", () => {
     expect((await call(local, "list_agents", {})).text).toContain("rem");
     expect(local.getInstructions()).toContain("wait");
     await local.close();
+  });
+});
+
+describe("restart", () => {
+  const rawUrl = (server: HttpServer) => new URL(`http://127.0.0.1:${server.port}/mcp`);
+
+  /** A client on `sessionId`, as one that held it before the restart reconnects. */
+  async function resume(server: HttpServer, sessionId: string, token = TOKEN): Promise<Client> {
+    const client = new Client({ name: "test", version: "0" });
+    await client.connect(
+      new StreamableHTTPClientTransport(rawUrl(server), {
+        sessionId,
+        requestInit: { headers: { Authorization: `Bearer ${token}` } },
+      }),
+    );
+    open.push(client);
+    return client;
+  }
+
+  /** A registered session on the current server, and its id. */
+  async function registered(name: string): Promise<string> {
+    const client = await connect();
+    expect((await call(client, "register", { name, bio: "x", key: `${name}-key` })).isError).toBe(false);
+    return (client.transport as StreamableHTTPClientTransport).sessionId!;
+  }
+
+  async function restart(options: { idleTimeoutMs?: number; maxSessions?: number } = {}): Promise<void> {
+    for (const c of open) await c.close().catch(() => {});
+    open = [];
+    await http.close();
+    http = await startHttp(db, { token: TOKEN, port: 0, ...options });
+  }
+
+  /** The status of one tools/list on `sessionId`, as a raw request so nothing retries or reinitializes. */
+  const status = async (sessionId: string, token = TOKEN) =>
+    (
+      await fetch(rawUrl(http), {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "application/json, text/event-stream",
+          Authorization: `Bearer ${token}`,
+          "mcp-session-id": sessionId,
+        },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/list" }),
+      })
+    ).status;
+
+  it("restores a registered session on a new server, acting as its agent", async () => {
+    const sid = await registered("ann");
+    const bob = await connect();
+    await call(bob, "register", { name: "bob", bio: "y", key: "bob-key" });
+    await call(bob, "send_message", { to: "ann", body: "before restart" });
+    await restart();
+    expect(http.sessionCount()).toBe(0);
+    const ann = await resume(http, sid);
+    expect((await call(ann, "read_inbox", {})).text).toContain("before restart");
+    expect(http.sessionCount()).toBe(1);
+    expect((await call(ann, "send_message", { to: "bob", body: "after restart" })).isError).toBe(false);
+    const bobAgain = await connect();
+    await call(bobAgain, "register", { name: "bob", bio: "y", key: "bob-key" });
+    const inbox = JSON.parse((await call(bobAgain, "read_inbox", {})).text);
+    expect(inbox).toEqual([expect.objectContaining({ from: "ann", body: "after restart" })]);
+    // It survives a second restart too.
+    await restart();
+    expect(await status(sid)).toBe(200);
+  });
+
+  it("never stores a session id in plain form", async () => {
+    const sid = await registered("ann");
+    const rows = db.prepare("SELECT * FROM http_sessions").all();
+    expect(rows).toHaveLength(1);
+    expect(JSON.stringify(rows)).not.toContain(sid);
+  });
+
+  it("does not restore a session that never registered", async () => {
+    const res = await post({ Authorization: `Bearer ${TOKEN}` });
+    const sid = res.headers.get("mcp-session-id")!;
+    await restart();
+    expect(await status(sid)).toBe(404);
+  });
+
+  it("refuses another account's token, and still restores for its own", async () => {
+    const sid = await registered("ann");
+    const other = addAccount(db, "other").token;
+    await restart();
+    expect(await status(sid, other)).toBe(404);
+    expect(http.sessionCount()).toBe(0);
+    expect(await status(sid)).toBe(200);
+  });
+
+  it("refuses a session ended with DELETE", async () => {
+    const sid = await registered("ann");
+    const auth = { Authorization: `Bearer ${TOKEN}`, "mcp-session-id": sid };
+    expect((await fetch(url(), { method: "DELETE", headers: auth })).status).toBe(200);
+    await restart();
+    expect(await status(sid)).toBe(404);
+  });
+
+  it("refuses a session idle past the timeout", async () => {
+    await restart({ idleTimeoutMs: 100 });
+    const sid = await registered("ann");
+    await restart({ idleTimeoutMs: 100 });
+    await new Promise((r) => setTimeout(r, 250));
+    expect(await status(sid)).toBe(404);
+  });
+
+  it("refuses a session whose agent was removed, even after its name is registered again", async () => {
+    const sid = await registered("ann");
+    const unregistered = await registered("cid");
+    await call(await connect(), "unregister", { name: "cid", key: "cid-key" });
+    purgeAgent(db, "owner", "ann");
+    // A later agent with the same name is not the one the session registered as.
+    await call(await connect(), "register", { name: "ann", bio: "new", key: "ann-key" });
+    await restart();
+    expect(await status(sid)).toBe(404);
+    expect(await status(unregistered)).toBe(404);
+    expect(http.sessionCount()).toBe(0);
+    expect(db.prepare("SELECT count(*) AS n FROM http_sessions").get()).toEqual({ n: 1 });
+  });
+
+  it("counts a restore against maxSessions and answers 503 at the cap", async () => {
+    const sid = await registered("ann");
+    await restart({ maxSessions: 1 });
+    const auth = { Authorization: `Bearer ${TOKEN}` };
+    const first = await post(auth);
+    expect(first.status).toBe(200);
+    const refused = await fetch(rawUrl(http), {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json, text/event-stream", ...auth, "mcp-session-id": sid },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/list" }),
+    });
+    expect(refused.status).toBe(503);
+    expect(refused.headers.get("connection")).toBe("close");
+    expect(http.sessionCount()).toBe(1);
+    await fetch(url(), { method: "DELETE", headers: { ...auth, "mcp-session-id": first.headers.get("mcp-session-id")! } });
+    expect(await status(sid)).toBe(200);
+    expect(http.sessionCount()).toBe(1);
   });
 });
