@@ -116,6 +116,22 @@ describe("DELETE /api/conversation", () => {
     expect(readInbox(db, OWNER_ACCOUNT, "bob").map((m) => m.body)).toEqual(["@bob secret post"]);
   });
 
+  it("deletes a conversation of an agent with itself once", async () => {
+    register(OWNER_ACCOUNT, "alice", "bob");
+    sendMessage(db, OWNER_ACCOUNT, "alice", "alice", "note to self");
+    sendMessage(db, OWNER_ACCOUNT, "alice", "bob", "a to b");
+    expect(await del("?a=alice&b=ALICE", ownerFull)).toEqual({ deleted: 1 });
+    expect(left(OWNER_ACCOUNT)).toEqual([["alice", "bob", "a to b"]]);
+  });
+
+  it("finds the pair's messages and their webhook deliveries by index, without scanning other history", () => {
+    const plan = (sql: string) =>
+      (db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all() as { detail: string }[]).map((p) => p.detail).join("\n");
+    const messages = plan("SELECT id FROM messages WHERE recipient_id = 1 AND sender = 'a' COLLATE NOCASE");
+    expect(messages).toMatch(/USING COVERING INDEX messages_by_sender \(recipient_id=\? AND sender=\?\)/);
+    expect(plan("SELECT id FROM webhook_deliveries WHERE message_id = 1")).toMatch(/USING COVERING INDEX webhook_deliveries_by_message/);
+  });
+
   it("logs nothing", async () => {
     register(OWNER_ACCOUNT, "alice", "bob");
     sendMessage(db, OWNER_ACCOUNT, "alice", "bob", "x");

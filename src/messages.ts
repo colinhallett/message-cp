@@ -325,18 +325,17 @@ export function listAccountMessages(db: Db, account: AccountId, limit: number, o
  * Their webhook deliveries go with them. Returns how many were deleted.
  */
 export function deleteConversation(db: Db, account: AccountId, first: string, second: string): number {
-  const recipient = "CASE WHEN a.removed_at IS NULL THEN a.name ELSE a.removed_name END";
+  // One statement per direction, so each reads only the messages_by_sender rows for that pair, not the account's history.
+  const fromTo = db.prepare(
+    `DELETE FROM messages
+     WHERE recipient_id IN (SELECT id FROM agents WHERE account_id = ?
+                              AND (CASE WHEN removed_at IS NULL THEN name ELSE removed_name END) = ? COLLATE NOCASE)
+       AND sender = ? COLLATE NOCASE`,
+  );
   return db.transaction((): number => {
-    const deleted = db
-      .prepare(
-        `DELETE FROM messages WHERE id IN (
-           SELECT m.id FROM messages m JOIN agents a ON a.id = m.recipient_id
-           WHERE a.account_id = ?
-             AND ((m.sender = ? COLLATE NOCASE AND ${recipient} = ? COLLATE NOCASE)
-               OR (m.sender = ? COLLATE NOCASE AND ${recipient} = ? COLLATE NOCASE)))`,
-      )
-      .run(account, first, second, second, first);
-    return deleted.changes;
+    const there = fromTo.run(account, second, first).changes;
+    // A conversation with oneself is one direction; running it twice would only find nothing the second time.
+    return there + fromTo.run(account, first, second).changes;
   }).immediate();
 }
 
