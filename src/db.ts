@@ -113,7 +113,9 @@ CREATE INDEX IF NOT EXISTS mentions_unread ON mentions (agent_id, read_at, post_
 -- Outgoing webhooks, managed only with \`message-cp webhook\`. \`event\` is 'channel', 'mention' or 'agent' and \`name\` the
 -- channel or agent in the same account, which need not exist yet. The secret is stored as is: deliveries sign with it.
 -- So is the value of the one header a webhook may carry (\`header_name\`, \`header_value\`, added in \`migrate\`), since
--- deliveries send it.
+-- deliveries send it. \`max_per_hour\` (also added in \`migrate\`, null for none) caps its delivery requests in a fixed
+-- window: \`window_started_at\` is when the first request after the last window ended was claimed, and \`window_count\`
+-- how many requests have been claimed since; the window lasts 60 minutes.
 CREATE TABLE IF NOT EXISTS webhooks (
   id INTEGER PRIMARY KEY,
   account_id INTEGER NOT NULL REFERENCES accounts(id),
@@ -141,6 +143,8 @@ CREATE TABLE IF NOT EXISTS webhook_deliveries (
 );
 CREATE INDEX IF NOT EXISTS webhook_deliveries_pending ON webhook_deliveries (delivered_at, id);
 CREATE INDEX IF NOT EXISTS webhook_deliveries_by_webhook ON webhook_deliveries (webhook_id);
+-- \`sendPending\` reads each webhook's oldest pending rows through this, up to what it may send, not the whole queue.
+CREATE INDEX IF NOT EXISTS webhook_deliveries_pending_by_webhook ON webhook_deliveries (webhook_id, delivered_at, id);
 -- Deleting a message finds its queued deliveries (ON DELETE CASCADE) through this, not by scanning the table.
 CREATE INDEX IF NOT EXISTS webhook_deliveries_by_message ON webhook_deliveries (message_id);
 
@@ -282,6 +286,10 @@ function migrate(db: Db, path: string): void {
   // The one header a webhook's deliveries carry (`webhook add --header-stdin`); both null for a webhook without one.
   addColumn(db, "header_name", "TEXT", "webhooks");
   addColumn(db, "header_value", "TEXT", "webhooks");
+  // A webhook's cap on delivery requests per window (`webhook add --max-per-hour`); null, so no cap, for one without.
+  addColumn(db, "max_per_hour", "INTEGER", "webhooks");
+  addColumn(db, "window_started_at", "INTEGER", "webhooks");
+  addColumn(db, "window_count", "INTEGER NOT NULL DEFAULT 0", "webhooks");
   // Set once a DELETE ends an HTTP session, so no server restores it or records it again.
   addColumn(db, "ended", "INTEGER NOT NULL DEFAULT 0", "http_sessions");
   db.exec(DROP_REMOVED);

@@ -21,7 +21,9 @@ import {
   listWebhooks,
   removeWebhook,
   sendPending,
+  WEBHOOK_WINDOW_MS,
   webhookHeader,
+  webhookMaxPerHour,
   webhookOn,
   webhookUrl,
   type NewWebhook,
@@ -177,6 +179,22 @@ describe("addWebhook, listWebhooks and removeWebhook", () => {
     expect(listWebhooks(db)).toEqual([]);
   });
 
+  it("stores a limit, lists it, and refuses one that is not a whole number from 1 to 10000", () => {
+    const w = addWebhook(db, "owner", "https://example.com/", "agent:bob", true, undefined, 10000);
+    expect(w.maxPerHour).toBe(10000);
+    expect(addWebhook(db, "owner", "https://example.com/", "agent:bob", true).maxPerHour).toBeNull();
+    expect(listWebhooks(db).map((x) => x.maxPerHour)).toEqual([10000, null]);
+    for (const bad of [0, -1, 1.5, 10001, NaN, Infinity]) {
+      expect(() => addWebhook(db, "owner", "https://example.com/", "agent:bob", true, undefined, bad), String(bad)).toThrow(WebhookError);
+    }
+    expect(listWebhooks(db)).toHaveLength(2);
+    expect(webhookMaxPerHour("1")).toBe(1);
+    expect(webhookMaxPerHour("10000")).toBe(10000);
+    for (const bad of ["0", "-1", "1.5", "10001", "abc", "", "+5", " 5", "1e3", "0x10", "99999999999999999999"]) {
+      expect(() => webhookMaxPerHour(bad), JSON.stringify(bad)).toThrow(/Invalid --max-per-hour/);
+    }
+  });
+
   it("gives an existing database the table on open", () => {
     db.close();
     const raw = new Database(dbFile);
@@ -197,6 +215,23 @@ describe("addWebhook, listWebhooks and removeWebhook", () => {
     expect(listWebhooks(db)).toEqual([expect.objectContaining({ id: old.id, headerName: null })]);
     addWebhook(db, "owner", "https://example.com/", "#x", true, `Authorization: ${HEADER_VALUE}`);
     expect(listWebhooks(db).map((w) => w.headerName)).toEqual([null, "Authorization"]);
+  });
+
+  it("gives an existing webhooks table the limit columns on open, its webhooks without a limit", () => {
+    const old = addWebhook(db, "owner", "https://example.com/", "#x", true);
+    db.close();
+    const raw = new Database(dbFile);
+    for (const column of ["max_per_hour", "window_started_at", "window_count"]) raw.exec(`ALTER TABLE webhooks DROP COLUMN ${column}`);
+    raw.close();
+    db = openDb(dbFile);
+    expect(listWebhooks(db)).toEqual([expect.objectContaining({ id: old.id, maxPerHour: null })]);
+    expect(db.prepare("SELECT max_per_hour, window_started_at, window_count FROM webhooks").get()).toEqual({
+      max_per_hour: null,
+      window_started_at: null,
+      window_count: 0,
+    });
+    addWebhook(db, "owner", "https://example.com/", "#x", true, undefined, 3);
+    expect(listWebhooks(db).map((w) => w.maxPerHour)).toEqual([null, 3]);
   });
 });
 
@@ -644,6 +679,156 @@ describe("sendPending", () => {
     expect(await sendPending(db, { batch: 3 })).toEqual({ delivered: 2, failed: 0 });
   });
 
+  describe("with --max-per-hour", () => {
+    const pending = () => listAccountDeliveries(db, OWNER_ACCOUNT, 3, 100, 0).filter((d) => d.status === "pending");
+    const texts = (got: Got[]) => got.map((g) => JSON.parse(g.body).text);
+    /** Moves the webhook's window back by a full window, as if an hour had passed. */
+    const windowPasses = (id: number) => db.prepare("UPDATE webhooks SET window_started_at = window_started_at - ? WHERE id = ?").run(WEBHOOK_WINDOW_MS, id);
+
+    beforeEach(() => {
+      member(OWNER_ACCOUNT, "alice");
+      member(OWNER_ACCOUNT, "bob");
+      member(OWNER_ACCOUNT, "carol");
+    });
+
+    it("stops at the limit, leaving the rest pending with no attempt used, and sends them oldest first once the window passes", async () => {
+      const r = await receiver();
+      const hook = addWebhook(db, "owner", r.url, "agent:bob", true, undefined, 2);
+      for (let i = 0; i < 5; i++) sendMessage(db, OWNER_ACCOUNT, "alice", "bob", `m${i}`);
+      expect(await sendPending(db)).toEqual({ delivered: 2, failed: 0 });
+      expect(await sendPending(db)).toEqual({ delivered: 0, failed: 0 });
+      expect(texts(r.got).sort()).toEqual(["m0", "m1"]);
+      expect(pending().map((d) => d.attempts)).toEqual([0, 0, 0]);
+
+      // A window that has not quite ended still holds them.
+      db.prepare("UPDATE webhooks SET window_started_at = ? WHERE id = ?").run(Date.now() - WEBHOOK_WINDOW_MS + 60_000, hook.id);
+      expect(await sendPending(db)).toEqual({ delivered: 0, failed: 0 });
+
+      windowPasses(hook.id);
+      expect(await sendPending(db)).toEqual({ delivered: 2, failed: 0 });
+      expect(texts(r.got).slice(2).sort()).toEqual(["m2", "m3"]);
+      expect(pending()).toHaveLength(1);
+      windowPasses(hook.id);
+      expect(await sendPending(db)).toEqual({ delivered: 1, failed: 0 });
+      expect(texts(r.got)[4]).toBe("m4");
+    });
+
+    it("counts each retry as a request", async () => {
+      const r = await receiver(() => 500);
+      const hook = addWebhook(db, "owner", r.url, "agent:bob", true, undefined, 2);
+      sendMessage(db, OWNER_ACCOUNT, "alice", "bob", "hi");
+      expect(await sendPending(db, later)).toEqual({ delivered: 0, failed: 1 });
+      unclaim();
+      expect(await sendPending(db, later)).toEqual({ delivered: 0, failed: 1 });
+      unclaim();
+      expect(await sendPending(db, later)).toEqual({ delivered: 0, failed: 0 });
+      expect(r.got).toHaveLength(2);
+      expect(row()).toEqual({ attempts: 2, delivered_at: null });
+      expect(pending()).toHaveLength(1);
+      windowPasses(hook.id);
+      expect(await sendPending(db, later)).toEqual({ delivered: 0, failed: 1 });
+      expect(row()).toEqual({ attempts: 3, delivered_at: null });
+    });
+
+    it("never holds up another webhook's deliveries, even when the oldest rows are all the limited one's", async () => {
+      const limited = await receiver();
+      const other = await receiver();
+      addWebhook(db, "owner", limited.url, "agent:bob", true, undefined, 1);
+      addWebhook(db, "owner", other.url, "agent:carol", true);
+      for (let i = 0; i < 5; i++) sendMessage(db, OWNER_ACCOUNT, "alice", "bob", `bob${i}`);
+      for (let i = 0; i < 3; i++) sendMessage(db, OWNER_ACCOUNT, "alice", "carol", `carol${i}`);
+      expect(await sendPending(db, { batch: 3 })).toEqual({ delivered: 3, failed: 0 });
+      expect(texts(limited.got)).toEqual(["bob0"]);
+      expect(texts(other.got).sort()).toEqual(["carol0", "carol1"]);
+      expect(await sendPending(db, { batch: 3 })).toEqual({ delivered: 1, failed: 0 });
+      expect(texts(other.got).sort()).toEqual(["carol0", "carol1", "carol2"]);
+      expect(limited.got).toHaveLength(1);
+    });
+
+    it("reads only what each webhook may send, through an index, so a held backlog is not read on each pass", async () => {
+      const plan = db
+        .prepare(
+          `EXPLAIN QUERY PLAN SELECT id, attempts FROM webhook_deliveries
+           WHERE webhook_id = ? AND delivered_at IS NULL AND attempts < ? AND (claimed_until IS NULL OR claimed_until <= ?)
+           ORDER BY id LIMIT ?`,
+        )
+        .all(1, 3, 0, 1) as { detail: string }[];
+      const detail = plan.map((p) => p.detail).join("\n");
+      expect(detail).toMatch(/USING INDEX webhook_deliveries_pending_by_webhook \(webhook_id=\? AND delivered_at=\?\)/);
+      expect(detail).not.toMatch(/TEMP B-TREE/);
+
+      const r = await receiver();
+      const hook = addWebhook(db, "owner", r.url, "agent:bob", true, undefined, 1);
+      for (let i = 0; i < 50; i++) sendMessage(db, OWNER_ACCOUNT, "alice", "bob", `m${i}`);
+      expect(await sendPending(db)).toEqual({ delivered: 1, failed: 0 });
+      expect(await sendPending(db)).toEqual({ delivered: 0, failed: 0 });
+      expect(pending()).toHaveLength(49);
+      windowPasses(hook.id);
+      expect(await sendPending(db)).toEqual({ delivered: 1, failed: 0 });
+      expect(texts(r.got)).toEqual(["m0", "m1"]);
+    });
+
+    it("keeps each webhook's allowance its own, across accounts with the same --on", async () => {
+      const mine = await receiver();
+      const theirs = await receiver();
+      member(friend, "alice");
+      member(friend, "bob");
+      addWebhook(db, "owner", mine.url, "agent:bob", true, undefined, 1);
+      addWebhook(db, "friend", theirs.url, "agent:bob", true, undefined, 2);
+      for (let i = 0; i < 3; i++) {
+        sendMessage(db, OWNER_ACCOUNT, "alice", "bob", `owner${i}`);
+        sendMessage(db, friend, "alice", "bob", `friend${i}`);
+      }
+      expect(await sendPending(db)).toEqual({ delivered: 3, failed: 0 });
+      expect(texts(mine.got)).toEqual(["owner0"]);
+      expect(texts(theirs.got).sort()).toEqual(["friend0", "friend1"]);
+    });
+
+    it("never lets two senders on one file go past the limit together", async () => {
+      const r = await receiver(() => null);
+      addWebhook(db, "owner", r.url, "agent:bob", true, undefined, 6);
+      for (let i = 0; i < 10; i++) sendMessage(db, OWNER_ACCOUNT, "alice", "bob", `m${i}`);
+      const other = openDb(dbFile);
+      try {
+        // The first sender picks 6 rows and claims 4, its concurrency, then waits on the receiver.
+        const first = sendPending(db, { timeoutMs: 300 });
+        await vi.waitFor(() => expect(r.got).toHaveLength(4));
+        // The second uses up the rest of the allowance in the meantime.
+        const second = sendPending(other, { timeoutMs: 300 });
+        await vi.waitFor(() => expect(r.got).toHaveLength(6));
+        // A third finds none left, and the first's other picks were taken: 6 requests in all.
+        expect(await Promise.all([first, second, sendPending(other, { timeoutMs: 300 })])).toEqual([
+          { delivered: 0, failed: 4 },
+          { delivered: 0, failed: 2 },
+          { delivered: 0, failed: 0 },
+        ]);
+        expect(r.got).toHaveLength(6);
+        expect(db.prepare("SELECT window_count FROM webhooks").get()).toEqual({ window_count: 6 });
+        expect(pending().filter((d) => d.attempts === 0)).toHaveLength(4);
+      } finally {
+        other.close();
+      }
+    });
+
+    it("rechecks the allowance when claiming, after another sender has used it since the pass picked its rows", async () => {
+      const r = await receiver(() => null);
+      const hook = addWebhook(db, "owner", r.url, "agent:bob", true, undefined, 6);
+      for (let i = 0; i < 6; i++) sendMessage(db, OWNER_ACCOUNT, "alice", "bob", `m${i}`);
+      const other = openDb(dbFile);
+      try {
+        const first = sendPending(db, { timeoutMs: 300 });
+        await vi.waitFor(() => expect(r.got).toHaveLength(4));
+        // As another sender would record two requests of its own.
+        other.prepare("UPDATE webhooks SET window_count = window_count + 2 WHERE id = ?").run(hook.id);
+        expect(await first).toEqual({ delivered: 0, failed: 4 });
+        expect(r.got).toHaveLength(4);
+        expect(pending().filter((d) => d.attempts === 0)).toHaveLength(2);
+      } finally {
+        other.close();
+      }
+    });
+  });
+
   it("is sent by serve on its timer, and close() waits for the pass in progress", async () => {
     const r = await receiver();
     member(OWNER_ACCOUNT, "alice");
@@ -689,6 +874,25 @@ describe("message-cp webhook", () => {
     expect(list.stdout + list.stderr).not.toContain(HEADER_VALUE);
     expect(db.prepare("SELECT header_value FROM webhooks WHERE id = 2").get()).toEqual({ header_value: HEADER_VALUE });
   }, 60_000);
+
+  it("adds a webhook with --max-per-hour and lists it after any header, refusing a bad value with exit 1", () => {
+    expect(cli(...ADD, "--max-per-hour", "5").status).toBe(0);
+    expect(cliWith(`Authorization: ${HEADER_VALUE}\n`, ...ADD, "--header-stdin", "--max-per-hour", "10000").status).toBe(0);
+    expect(cli(...ADD, "--max-per-hour", "1", "--account", "friend").status).toBe(0);
+    expect(cli(...ADD).status).toBe(0);
+    for (const bad of ["0", "-1", "1.5", "abc", "10001", "1e3", "+5"]) {
+      const res = cli(...ADD, "--max-per-hour", bad);
+      expect(res.status, bad).toBe(1);
+      expect(res.stdout).toBe("");
+      expect(res.stderr).toContain("message-cp: Invalid --max-per-hour");
+    }
+    expect(cli("webhook", "list").stdout.trim().split("\n")).toEqual([
+      "1\towner\thttps://example.com/hook\tagent:bob\ttext\tmax: 5/hour",
+      "2\towner\thttps://example.com/hook\tagent:bob\ttext\theader: Authorization\tmax: 10000/hour",
+      "3\tfriend\thttps://example.com/hook\tagent:bob\ttext\tmax: 1/hour",
+      "4\towner\thttps://example.com/hook\tagent:bob\ttext",
+    ]);
+  }, 120_000);
 
   it("refuses each bad header line, empty stdin or more than one line with exit 1, without echoing the value", () => {
     for (const input of [...REFUSED_HEADERS.map((l) => `${l}\n`), "", "\n", `Authorization: ${HEADER_VALUE}\nX-Other: s3cr3t\n`]) {
@@ -761,6 +965,11 @@ describe("message-cp webhook", () => {
       ["webhook", "add", "--url", "https://example.com/", "--on", "#x", "--no-text", "--no-text"],
       ["webhook", "add", "--url", "https://example.com/", "--on", "#x", "--header-stdin", "--header-stdin"],
       ["webhook", "list", "--header-stdin"],
+      ["webhook", "add", "--url", "https://example.com/", "--on", "#x", "--max-per-hour"],
+      ["webhook", "add", "--url", "https://example.com/", "--on", "#x", "--max-per-hour", ""],
+      ["webhook", "add", "--url", "https://example.com/", "--on", "#x", "--max-per-hour", "1", "--max-per-hour", "2"],
+      ["webhook", "add", "--url", "https://example.com/", "--on", "#x", "--max-per-hour", "--no-text"],
+      ["webhook", "list", "--max-per-hour", "1"],
       ["webhook", "add", "--url", "https://example.com/", "--on"],
       ["webhook", "add", "--url", "--on", "#x"],
       ["webhook", "add", "--url", "", "--on", "#x"],
