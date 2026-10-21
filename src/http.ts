@@ -1,9 +1,10 @@
 import { randomUUID } from "node:crypto";
-import { createServer as createHttpServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import { IncomingMessage, ServerResponse, createServer as createHttpServer, type Server } from "node:http";
+import { PassThrough } from "node:stream";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
+import { LATEST_PROTOCOL_VERSION, isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import { accountForToken, type TokenAccess } from "./accounts.js";
-import { DEFAULT_LIST_LIMIT, MAX_LIST_LIMIT, ToolError } from "./agents.js";
+import { DEFAULT_LIST_LIMIT, MAX_LIST_LIMIT, ToolError, type Identity } from "./agents.js";
 import {
   DEFAULT_CHANNEL_LIMIT,
   MAX_CHANNEL_LIMIT,
@@ -28,6 +29,7 @@ import {
   type Unread,
 } from "./messages.js";
 import { Session, createServer } from "./server.js";
+import { endSession, forgetIdleSessions, restorableSession, saveSession, sessionEnded, touchSession } from "./sessions.js";
 import { DEFAULT_WAIT_HOLD_MS, formatUnread } from "./wait.js";
 import { listAccountDeliveries, sendOptions, sendPending, type SendOptions } from "./webhooks.js";
 
@@ -78,6 +80,56 @@ interface Live {
   lastUsed: number;
   /** The account whose token started the session; only that account's tokens can use it. */
   account: AccountId;
+  /** For a restored session, settles once its transport has been initialized; requests wait for it. */
+  ready?: Promise<void>;
+}
+
+const isBusy = (err: unknown) => {
+  const code = (err as { code?: unknown } | null)?.code;
+  return typeof code === "string" && code.startsWith("SQLITE_BUSY");
+};
+
+/**
+ * Runs the database work that keeps a registered session restorable. It never throws: if it fails, the session works
+ * as before, but the work is not retried, so a restart may lose the session. A lock held past the busy timeout is
+ * skipped quietly; any other error logs one fixed line, never anything about the session.
+ */
+function recordSession(work: () => void): void {
+  try {
+    work();
+  } catch (err) {
+    if (!isBusy(err)) console.error("message-cp serve: could not record a session for restarts");
+  }
+}
+
+/**
+ * Initializes a new transport for a restored session in-process, so that it accepts the client's requests on the
+ * session id it already holds. The transport accepts nothing but an initialize until it has handled one. Its answer
+ * is discarded; the server reads nothing from it.
+ */
+async function prime(transport: StreamableHTTPServerTransport): Promise<void> {
+  const socket = new PassThrough();
+  socket.resume();
+  const req = new IncomingMessage(socket as never);
+  req.method = "POST";
+  req.url = "/mcp";
+  // The transport builds a URL from the Host header, so it needs one; nothing else reads it.
+  const headers = { host: DEFAULT_HTTP_HOST, "content-type": "application/json", accept: "application/json, text/event-stream" };
+  req.headers = headers;
+  req.rawHeaders = Object.entries(headers).flat();
+  req.push(null);
+  const res = new ServerResponse(req);
+  res.assignSocket(socket as never);
+  const finished = new Promise<void>((resolve) => res.on("finish", () => resolve()));
+  await transport.handleRequest(req, res, {
+    jsonrpc: "2.0",
+    id: 0,
+    method: "initialize",
+    params: { protocolVersion: LATEST_PROTOCOL_VERSION, capabilities: {}, clientInfo: { name: "message-cp restore", version: "0" } },
+  });
+  await finished;
+  socket.destroy();
+  if (res.statusCode !== 200) throw new Error("could not restore a session");
 }
 
 /** The account the request's bearer token belongs to, checked afresh on every request so a revoked token stops at once. */
@@ -181,10 +233,15 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
     void live.transport.close().catch(() => {});
   };
 
+  // Dropping a session in close() keeps its row, so the restart it is part of can restore it; the sweep forgets it.
+  // Ended rows are kept for a second idle timeout, which covers every server's live copy only while the servers sharing
+  // the database use the same timeout (`serve` always uses the default). Should one be swept early and recorded again,
+  // it can still only restore the registration that recorded it, and not once that is removed.
   const sweep = setInterval(
     () => {
       const cutoff = Date.now() - idleTimeoutMs;
       for (const [id, live] of sessions) if (live.lastUsed < cutoff) drop(id);
+      recordSession(() => forgetIdleSessions(db, cutoff, cutoff - idleTimeoutMs));
     },
     Math.max(10, Math.min(60_000, idleTimeoutMs / 2)),
   );
@@ -512,6 +569,15 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
 
     const header = req.headers["mcp-session-id"];
     const id = Array.isArray(header) ? header[0] : header;
+    // A session id this server does not hold may be one a server before it gave out: one that registered is restored
+    // if it still may be. Anything else is answered at once, so that only a restore can meet the cap below.
+    if (id && !sessions.has(id)) {
+      const identity = unlessBusy(res, () => restorableSession(db, id, account, Date.now() - idleTimeoutMs) ?? null);
+      if (identity === undefined) return;
+      if (identity === null) return reply(res, 404, "Unknown session", { Connection: "close" });
+      if (sessions.size + initializing >= maxSessions) return reply(res, 503, "Too many sessions", { Connection: "close" });
+      restore(id, account, identity);
+    }
     // A request without a session can only start one. Refuse it at the cap, closing the connection so an unread
     // body cannot hold it open; otherwise take a slot now, before the body is buffered, and give it back at the end.
     if (!id && sessions.size + initializing >= maxSessions) {
@@ -540,9 +606,20 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
       const live = sessions.get(id);
       // Another account's session looks like one that does not exist.
       if (!live || live.account !== account) return reply(res, 404, "Unknown session");
+      await live.ready;
+      // A session another server sharing the database ended with DELETE is ended here too.
+      const ended = unlessBusy(res, () => sessionEnded(db, id));
+      if (ended === undefined) return;
+      if (ended) {
+        drop(id);
+        return reply(res, 404, "Unknown session");
+      }
       live.lastUsed = Date.now();
       await live.transport.handleRequest(req, res, body);
       live.lastUsed = Date.now();
+      // A session dropped by close() while a request was open keeps its row, so the restart can restore it; any other
+      // request keeps a registered one restorable for another idle timeout.
+      if (req.method !== "DELETE" && sessions.get(id) === live) recordSession(() => touchSession(db, id, live.lastUsed));
       return;
     }
 
@@ -555,13 +632,56 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
       onsessioninitialized: (sid) => {
         sessions.set(sid, live);
       },
+      onsessionclosed: endRecorded,
     });
     live.transport = transport;
     transport.onclose = () => {
       if (transport.sessionId) sessions.delete(transport.sessionId);
     };
-    await createServer(db, new Session(account), { remote: true, publicUrl: options.publicUrl }).connect(transport);
+    // Only a session this server still holds is recorded: a `register` that finishes after a DELETE ended it, before it
+    // had a row to mark, must not make it restorable.
+    const session = new Session(account, (identity) => {
+      const sid = transport.sessionId!;
+      if (sessions.get(sid) === live) recordSession(() => saveSession(db, sid, account, identity));
+    });
+    await createServer(db, session, { remote: true, publicUrl: options.publicUrl }).connect(transport);
     await transport.handleRequest(req, res, body);
+  };
+
+  /**
+   * Called by a transport once it has accepted a DELETE, before it answers. If the session cannot be marked ended, this
+   * throws, so the transport answers 500 instead of 200. The row stays restorable, so the DELETE can be sent again.
+   */
+  const endRecorded = (sid: string) => endSession(db, sid);
+
+  /**
+   * Holds session `id` again, bound to `identity`, which `restorableSession` has just checked. It takes its place in
+   * `sessions` at once, so it counts against the cap and a second request on it waits for this one; if it cannot be
+   * initialized it is dropped again.
+   */
+  const restore = (id: string, account: AccountId, identity: Identity) => {
+    const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: () => id, onsessionclosed: endRecorded });
+    const live: Live = { lastUsed: Date.now(), transport, account };
+    sessions.set(id, live);
+    transport.onclose = () => {
+      if (sessions.get(id) === live) sessions.delete(id);
+    };
+    live.ready = (async () => {
+      try {
+        const session = new Session(account, (bound) => {
+          if (sessions.get(id) === live) recordSession(() => saveSession(db, id, account, bound));
+        });
+        await createServer(db, session, { remote: true, publicUrl: options.publicUrl }).connect(transport);
+        // Its row is already there, so it is not recorded again: one another server deleted meanwhile stays deleted.
+        session.restore(identity);
+        await prime(transport);
+      } catch (err) {
+        drop(id);
+        throw err;
+      }
+    })();
+    // Each request awaits it and answers 500 if it failed; this keeps the failure from going unhandled meanwhile.
+    live.ready.catch(() => {});
   };
 
   const server = createHttpServer((req, res) => {
