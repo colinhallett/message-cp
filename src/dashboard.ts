@@ -198,11 +198,19 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   .bar { flex-wrap: wrap; }
   #search { order: 1; flex: 1 1 100%; }
   .toggle { display: inline-block; }
-  #sidebar, #agents { display: none; border: 0; }
-  #view.show-sidebar #sidebar, #view.show-agents #agents { display: block; grid-area: chat; }
-  #view.show-sidebar #chat, #view.show-agents #chat { display: none; }
+  /* The sidebar and the agents panel lie over the conversation, under the header bar, and slide in from the left and the
+     right. Off screen they are hidden too, so Tab and screen readers do not reach them; the visibility change waits for
+     the slide out to end. */
+  #view { position: relative; overflow: hidden; }
+  #sidebar, #agents { position: absolute; grid-area: chat; top: 0; bottom: 0; z-index: 2; width: min(20rem, 85%); visibility: hidden; box-shadow: 0 0 12px rgb(0 0 0 / 0.3); transition: transform 0.2s ease, visibility 0.2s; }
+  #sidebar { left: 0; transform: translateX(-100%); }
+  #agents { right: 0; transform: translateX(100%); }
+  #view.show-sidebar #sidebar, #view.show-agents #agents { visibility: visible; transform: none; }
   .entry { padding: var(--s2) var(--s3); }
   #writer { padding: var(--s2) var(--s3); }
+}
+@media (prefers-reduced-motion: reduce) {
+  #sidebar, #agents { transition: none; }
 }
 [hidden] { display: none !important; }
 `;
@@ -217,6 +225,9 @@ const TIMEOUT_MS = 15000;
 const form = document.getElementById("login");
 const input = document.getElementById("token");
 const view = document.getElementById("view");
+const chat = document.getElementById("chat");
+const sidebarButton = document.getElementById("show-sidebar");
+const agentsButton = document.getElementById("show-agents");
 const rows = document.getElementById("rows");
 const channelRows = document.getElementById("channel-rows");
 const log = document.getElementById("log");
@@ -446,7 +457,7 @@ function ask(message) {
   closeLog();
   searchText.value = "";
   view.hidden = true;
-  view.className = "";
+  panel("");
   say(message || "", true);
   form.hidden = false;
   input.value = "";
@@ -555,12 +566,43 @@ composeText.addEventListener("keyup", (event) => {
 });
 composeText.addEventListener("click", () => offer());
 composeText.addEventListener("blur", () => closeOffered());
-// On a narrow screen only one panel shows at a time: these buttons swap the conversation for the sidebar or the agents.
-document.getElementById("show-sidebar").addEventListener("click", () => panel("show-sidebar"));
-document.getElementById("show-agents").addEventListener("click", () => panel("show-agents"));
+// On a narrow screen these buttons slide the sidebar or the agents over the conversation; pressing one again closes its
+// panel, and pressing the other swaps them.
+sidebarButton.addEventListener("click", () => panel(view.className === "show-sidebar" ? "" : "show-sidebar"));
+agentsButton.addEventListener("click", () => panel(view.className === "show-agents" ? "" : "show-agents"));
+// Escape closes the open panel and puts focus back on its button, unless something inside took the key first (the New
+// message and New channel forms and the mention list close themselves on it).
+document.addEventListener("keydown", (event) => {
+  if (event.key !== "Escape" || event.defaultPrevented || !covering()) return;
+  event.preventDefault();
+  const button = view.className === "show-sidebar" ? sidebarButton : agentsButton;
+  panel("");
+  button.focus();
+});
+// A tap on the part of the conversation an open panel leaves uncovered closes the panel, and does nothing else.
+chat.addEventListener(
+  "click",
+  (event) => {
+    if (!covering()) return;
+    event.preventDefault();
+    event.stopPropagation();
+    panel("");
+  },
+  true,
+);
 
+// Whether a panel lies over the conversation: one is open and the screen is narrow, which is when the toggles show (a
+// hidden button has no offsetParent). A panel left open when the screen widens covers nothing.
+function covering() {
+  return view.className !== "" && sidebarButton.offsetParent !== null;
+}
+
+// Shows the named panel ("show-sidebar" or "show-agents") over the conversation, or neither for "", and keeps the
+// buttons' aria-expanded in step.
 function panel(name) {
-  view.className = view.className === name ? "" : name;
+  view.className = name;
+  sidebarButton.setAttribute("aria-expanded", name === "show-sidebar" ? "true" : "false");
+  agentsButton.setAttribute("aria-expanded", name === "show-agents" ? "true" : "false");
 }
 
 // Closes the open conversation and the search results.
@@ -604,7 +646,7 @@ function openLog(name) {
   logTitle.className = "channel";
   logNote.textContent = "Loading…";
   log.hidden = false;
-  view.className = "";
+  panel("");
   markOpen();
   showPicker();
   cancel();
@@ -620,7 +662,7 @@ function openPairLog(key) {
   openPair = key;
   logTitle.textContent = pair.names.join(" ↔ ");
   log.hidden = false;
-  view.className = "";
+  panel("");
   postRows.replaceChildren(...messages.filter((m) => pairKey(m) === key).map(messageEntry));
   postRows.scrollTop = postRows.scrollHeight;
   // Only a pair started from "New message" can have none.
@@ -639,7 +681,7 @@ function openDeliveryLog() {
   logTitle.textContent = "Webhook deliveries";
   logNote.textContent = "Loading…";
   log.hidden = false;
-  view.className = "";
+  panel("");
   markOpen();
   cancel();
   poll(generation);
@@ -671,7 +713,7 @@ async function search(text) {
   resultsTitle.textContent = "Search: " + text;
   resultsNote.textContent = "Searching…";
   results.hidden = false;
-  view.className = "";
+  panel("");
   let answer;
   try {
     answer = await fetchPage(token, ac.signal, "/api/search", { text }, 0, list);
@@ -1855,13 +1897,13 @@ export const DASHBOARD_HTML = `<!doctype html>
 </form>
 <div id="view" hidden>
 <header class="bar">
-<button id="show-sidebar" class="toggle" type="button" aria-label="Channels and conversations">☰</button>
+<button id="show-sidebar" class="toggle" type="button" aria-label="Channels and conversations" aria-expanded="false" aria-controls="sidebar">☰</button>
 <h1>message-cp</h1>
 <form id="search" role="search">
 <input id="search-text" type="search" maxlength="400" required aria-label="Search messages and posts" placeholder="Search messages and posts" autocomplete="off">
 <button type="submit">Search</button>
 </form>
-<button id="show-agents" class="toggle" type="button">Agents</button>
+<button id="show-agents" class="toggle" type="button" aria-expanded="false" aria-controls="agents">Agents</button>
 <button id="forget" type="button">Forget token</button>
 </header>
 <nav id="sidebar" aria-label="Channels and conversations">
