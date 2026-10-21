@@ -10,8 +10,8 @@ import { MAX_BODY_LENGTH } from "./messages.js";
 // middle the same way, refreshed with each poll. It asks GET /api/token once whether the token is read-only. With a full
 // token it lets a person choose which of the account's people they are, post in the open channel with POST /api/post and
 // reply in an open direct conversation of theirs, or start one with anyone in the account from "New message", with
-// POST /api/send, or create a channel from "New channel" by its first post, with POST /api/post; that is all it ever
-// writes. With a read-only token it only reads. It puts agent- and person-supplied text on the page with textContent, never as HTML.
+// POST /api/send, or create a channel from "New channel" by its first post, with POST /api/post, and delete an open
+// direct conversation, after confirming, with DELETE /api/conversation; that is all it ever writes. With a read-only token it only reads. It puts agent- and person-supplied text on the page with textContent, never as HTML.
 
 const STYLE = `
 :root {
@@ -137,9 +137,13 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 #log, #results { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 /* The header bar of the open conversation and of the search results sits outside the rows, so it stays put while they
    scroll. */
-.log-head { display: flex; align-items: center; gap: var(--s2); padding: var(--s2) var(--s4); background: var(--panel); border-bottom: 1px solid var(--border); }
+.log-head { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2); padding: var(--s2) var(--s4); background: var(--panel); border-bottom: 1px solid var(--border); }
 .log-head h2 { flex: 1; margin: 0; font-size: 1rem; letter-spacing: normal; text-transform: none; color: var(--text); overflow-wrap: anywhere; }
 .log-head button { flex: none; }
+/* Deleting a direct conversation asks first, and says why it could not, on a line of its own under the name. */
+#delete-confirm, #delete-note { flex: 1 1 100%; order: 1; margin: 0; }
+#delete-confirm { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2); }
+#delete-text { flex: 1 1 12rem; }
 /* The name and, for a channel, its members stack; a long members line is cut with an ellipsis, the full list in its title. */
 .log-name { flex: 1; min-width: 0; }
 #log-members { margin: 0; font-size: 0.8rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -272,6 +276,11 @@ const channelFrom = document.getElementById("channel-from");
 const channelName = document.getElementById("channel-name");
 const channelBody = document.getElementById("channel-body");
 const channelCreate = document.getElementById("channel-create");
+const deleteButton = document.getElementById("delete-pair");
+const deleteConfirm = document.getElementById("delete-confirm");
+const deleteText = document.getElementById("delete-text");
+const deleteYes = document.getElementById("delete-yes");
+const deleteNote = document.getElementById("delete-note");
 let timer;
 let generation = 0;
 let controller;
@@ -390,6 +399,8 @@ let noChannels;
 let creating;
 // How many times the "New channel" form has closed, so a create that answers after its form was closed opens nothing.
 let channelClosings = 0;
+// The tokenGeneration a DELETE /api/conversation is in flight for, or undefined, as sending is for the compose box.
+let deleting;
 
 function say(text, isError) {
   statusLine.textContent = text;
@@ -485,6 +496,9 @@ searchForm.addEventListener("submit", (event) => {
   if (searchText.value) search(searchText.value);
 });
 document.getElementById("close-results").addEventListener("click", () => closeResults());
+deleteButton.addEventListener("click", () => openDelete());
+deleteYes.addEventListener("click", () => deletePair());
+document.getElementById("delete-no").addEventListener("click", () => closeDelete(true));
 newButton.addEventListener("click", () => (newForm.hidden ? openNew() : closeNew(true)));
 document.getElementById("new-cancel").addEventListener("click", () => closeNew(true));
 // Escape closes the form from inside it or from its button.
@@ -573,9 +587,16 @@ composeText.addEventListener("blur", () => closeOffered());
 sidebarButton.addEventListener("click", () => panel(view.className === "show-sidebar" ? "" : "show-sidebar"));
 agentsButton.addEventListener("click", () => panel(view.className === "show-agents" ? "" : "show-agents"));
 // Escape closes the open panel and puts focus back on its button, unless something inside took the key first (the New
-// message and New channel forms and the mention list close themselves on it).
+// message and New channel forms and the mention list close themselves on it). An open delete confirmation is dismissed
+// first, wherever the focus is.
 document.addEventListener("keydown", (event) => {
-  if (event.key !== "Escape" || event.defaultPrevented || !covering()) return;
+  if (event.key !== "Escape" || event.defaultPrevented) return;
+  if (!deleteConfirm.hidden) {
+    event.preventDefault();
+    closeDelete(true);
+    return;
+  }
+  if (!covering()) return;
   event.preventDefault();
   const button = view.className === "show-sidebar" ? sidebarButton : agentsButton;
   panel("");
@@ -639,9 +660,13 @@ function closeLog() {
   asBox.hidden = true;
   asNote.textContent = "";
   writer.hidden = true;
-  // Opening another conversation, or none, closes the "New message" and "New channel" forms.
+  // Opening another conversation, or none, closes the "New message" and "New channel" forms, and dismisses a delete
+  // confirmation without sending anything.
   closeNew(false);
   closeChannelForm(false);
+  closeDelete(false);
+  deleteNote.textContent = "";
+  showDelete();
 }
 
 // Opens a channel's log and polls again at once; the poll in flight is dropped, so a slow answer for the channel
@@ -676,6 +701,7 @@ function openPairLog(key) {
   logNote.textContent = pair.count === 0 ? "No messages yet." : "";
   markOpen();
   showPicker();
+  showDelete();
   cancel();
   poll(generation);
 }
@@ -797,6 +823,7 @@ function showNewButton() {
     closeNew(false);
     closeChannelForm(false);
   }
+  showDelete();
   // The empty notes that name these buttons follow them at once rather than on the next poll.
   if (noChannels) noChannels.textContent = channelsEmpty();
   // Both of the direct messages' empty texts start with NO_MESSAGES; any other note is left as it is.
@@ -1249,6 +1276,145 @@ async function send() {
   }
   sending = undefined;
   composeSend.disabled = false;
+}
+
+// The open pair, while its Delete button may show: a full token and a direct conversation with messages in it.
+function deletable() {
+  const pair = openPair !== undefined ? pairs.get(openPair) : undefined;
+  return canPost && pair && pair.count > 0 ? pair : undefined;
+}
+
+// The keys of the held pairs that DELETE /api/conversation with key's two names deletes too: the server matches names
+// with SQLite's NOCASE, which folds only A-Z, so Bob and bob, which the page lists apart, are one conversation to it.
+function deletedWith(key) {
+  const fold = (names) => JSON.stringify(names.map((n) => n.replace(/[A-Z]/g, (c) => c.toLowerCase())).sort());
+  const folded = fold(pairs.get(key).names);
+  return [...pairs].filter(([, p]) => p.count > 0 && fold(p.names) === folded).map(([k]) => k);
+}
+
+// Shows the Delete button in the open pair's header bar while it is deletable and not asking, and keeps the confirmation's
+// count to the messages the page holds for the pair; dismisses the confirmation once the pair is not deletable.
+function showDelete() {
+  const pair = deletable();
+  if (!pair) closeDelete(false);
+  deleteButton.hidden = !pair || !deleteConfirm.hidden;
+  if (pair && !deleteConfirm.hidden) {
+    // Every pair the server deletes with this one is named and counted, so the confirmation covers all it removes.
+    const held = deletedWith(openPair).map((k) => pairs.get(k));
+    const count = held.reduce((sum, p) => sum + p.count, 0);
+    const between = held.map((p) => p.names[0] + " and " + p.names[1]).join(", and between ");
+    deleteText.textContent = "Delete the " + plural(count, "message") + " between " + between + "? This cannot be undone.";
+  }
+}
+
+// Asks in the header bar before deleting the open pair; nothing is sent until its Delete is pressed.
+function openDelete() {
+  if (!deletable()) return;
+  deleteNote.textContent = "";
+  deleteConfirm.hidden = false;
+  deleteYes.disabled = deleting === tokenGeneration;
+  showDelete();
+  document.getElementById("delete-no").focus();
+}
+
+// Dismisses the delete confirmation, giving the focus back to the Delete button when the reader dismissed it.
+function closeDelete(refocus) {
+  if (deleteConfirm.hidden) return;
+  deleteConfirm.hidden = true;
+  deleteButton.hidden = !deletable();
+  if (refocus && !deleteButton.hidden) deleteButton.focus();
+}
+
+// Deletes the open pair's messages with DELETE /api/conversation, then reads the account's messages again from the
+// start, since GET /api/messages pages by offset and the rows before heldMessages are now fewer. The confirm button stays
+// disabled while the request is in flight. A 200 closes the pair if it is still open and forgets what this tab had seen
+// of it; with no answer the messages may already be deleted, so they are read again too and the pair stays open with a
+// note, its rows emptied until the read shows what is left. Any other answer keeps the pair open with its reason. An
+// answer that comes after the token was forgotten is dropped; one that comes after another conversation opened changes
+// only the messages the page holds.
+async function deletePair() {
+  const token = sessionStorage.getItem(KEY);
+  if (!token) return ask();
+  const tokenGen = tokenGeneration;
+  const pair = deletable();
+  if (!pair || deleteConfirm.hidden || deleting === tokenGen) return;
+  const key = openPair;
+  const gone = deletedWith(key);
+  const [a, b] = pair.names;
+  deleting = tokenGen;
+  deleteYes.disabled = true;
+  const ac = new AbortController();
+  const deadline = setTimeout(() => ac.abort(), TIMEOUT_MS);
+  let answer;
+  try {
+    const res = await fetch("/api/conversation?" + new URLSearchParams({ a, b }), {
+      method: "DELETE",
+      headers: { Authorization: "Bearer " + token },
+      cache: "no-store",
+      credentials: "omit",
+      referrerPolicy: "no-referrer",
+      signal: ac.signal,
+    });
+    answer = res.status === 400 ? { status: 400, reason: await reasonOf(res) } : { status: res.status };
+  } catch {
+    answer = { error: "No answer from the server, so the messages may already be deleted. Reading them again." };
+  } finally {
+    clearTimeout(deadline);
+  }
+  if (tokenGen !== tokenGeneration) return;
+  deleting = undefined;
+  deleteYes.disabled = false;
+  if (answer.status === 401) return ask("The server refused that token. Enter another.");
+  const same = openPair === key;
+  if (answer.status === 200 || answer.error) {
+    if (same && answer.status === 200) {
+      closeLog();
+      markOpen();
+      // The log the focus was in is gone, so it goes to the search box, at the top of the page.
+      searchText.focus();
+    } else if (openPair !== undefined) {
+      // The open pair's rows are read again with the rest, so they are emptied rather than shown twice.
+      closeDelete(false);
+      postRows.replaceChildren();
+      lastEntry = undefined;
+      chatRows = [];
+      chatTimes = [];
+      logMentions = [];
+      if (same) deleteNote.textContent = answer.error;
+    }
+    // Once deleted, the pairs start with nothing seen if they come back; with no answer they may still be there, as seen.
+    if (answer.status === 200) {
+      for (const k of gone) {
+        seen.delete("pair " + k);
+        shownTotals.delete("pair " + k);
+      }
+    }
+    heldMessages = 0;
+    messages = [];
+    // The re-read brings back every pair that still has messages. A pair started from "New message" that has none yet
+    // is kept, so one open now stays open with its compose box.
+    pairs = new Map([...pairs].filter(([k, p]) => k !== key && p.count === 0).map(([k, p]) => [k, { ...p, newest: 0 }]));
+    if (openPair !== undefined && pairs.has(openPair)) logNote.textContent = "No messages yet.";
+    showPairs();
+    showPicker();
+    showDelete();
+    if (same && answer.error) document.getElementById("close-log").focus();
+    cancel();
+    poll(generation);
+    return;
+  }
+  if (!same) return;
+  closeDelete(false);
+  deleteButton.focus();
+  if (answer.status === 400) {
+    deleteNote.textContent = answer.reason || "The server refused this (400).";
+  } else if (answer.status === 403) {
+    deleteNote.textContent = "This token cannot delete conversations (403).";
+  } else if (answer.status === 503) {
+    deleteNote.textContent = "The server is busy (503). Try again in a moment.";
+  } else {
+    deleteNote.textContent = "The server answered " + answer.status + ".";
+  }
 }
 
 // Fetches the page of path at offset. items picks the page's list out of the answer, or undefined if there is none.
@@ -1863,7 +2029,10 @@ function appendMessages(page) {
     if (shown.length > 0) logNote.textContent = "";
     appendEntries(shown);
   }
-  if (page.length > 0) showPairs();
+  if (page.length > 0) {
+    showPairs();
+    showDelete();
+  }
 }
 
 function when(iso) {
@@ -1963,6 +2132,13 @@ export const DASHBOARD_HTML = `<!doctype html>
 <h2 id="log-title"></h2>
 <p id="log-members" class="note" hidden></p>
 </div>
+<p id="delete-note" class="note" role="status"></p>
+<div id="delete-confirm" role="group" aria-labelledby="delete-text" hidden>
+<span id="delete-text"></span>
+<button id="delete-yes" type="button">Delete</button>
+<button id="delete-no" type="button">Cancel</button>
+</div>
+<button id="delete-pair" type="button" hidden>Delete</button>
 <button id="close-log" type="button">Close</button>
 </div>
 <p id="log-note" class="note"></p>
