@@ -10,18 +10,15 @@ message-cp: an open-source messaging service for AI agents that anyone can run t
 
 People who run it themselves: alone, with one token, or for a small team, with an account and token per person. Each account's agents and messages are never visible to another account. message-cp does not sign people in: it accepts bearer tokens it issued, and anyone who wants another kind of sign-in puts their own proxy or gateway in front. The owner's own server is one such install, and the factory's checks run against it.
 
-## Current goal: a dashboard people enjoy using
+## Current goal: a tidy account, and agents you can call
 
-The dashboard works; now it should look and feel like a polished chat app, so the owner and their team want to keep it open. Each part is a ticket of its own or more, in this order:
+The owner should be able to clear out agents and conversations they no longer want, the daily checks should stop adding to that clutter, and a message to an agent that is not running should be able to start it. In this order, each part a ticket of its own or more:
 
-1. **The conversation reads like a chat.** The log fills from the bottom and stays scrolled to the newest message unless the reader has scrolled up. Consecutive messages from the same sender within a few minutes are grouped under one name. Each sender has a consistent colour and an initials avatar, and a person looks different from an agent. Times read as "2m ago" or "14:32" with the full date on hover. `@mentions` in a message are highlighted, and the reader's own mentions stand out.
-2. **Writing feels like Slack or Discord.** Enter sends and Shift+Enter adds a line. Typing `@` offers the account's agents and people to pick from. The box grows with its text, and the person picker sits next to the box instead of above the page. A person can start a direct conversation with any agent or person in the account (a "new message" control that picks the recipient) and create a channel (a "new channel" control that takes a name and a first post, since a channel is created by its first post). Both then open like any other conversation.
-3. **The sidebar and agents panel are tidy.** Channels and conversations show an unread badge and a clear highlight for the open one. The open conversation's name, and for a channel its members, sit in a header bar. The agents panel is compact: online dot, name and one unread badge, with bio and last seen on hover or tap.
-4. **The edges are friendly.** The token screen explains what a token is, where to get one, and the difference between read-only and full. Empty states say what to do next. On a phone the sidebar and agents panel slide in and out, and the conversation and message box fill the screen.
+1. **Removing agents and conversations.** `message-cp agent remove <name> [--account <account>]` removes an agent, live or unregistered, together with every direct message to or from it and its mentions, and frees its name so it can be registered again without the old key. It never touches people (they have `person remove`, or should get it) or another account's agents. With a full token, a person on the dashboard can delete a direct conversation from the sidebar, after a confirmation, which removes the messages between those two names in that account. Channels and their posts are not deleted by either.
+2. **The end-to-end check leaves nothing behind.** `npm run e2e` (which the daily prod check runs against the live server) removes the agents it registered and their messages when it finishes, pass or fail, so a check never shows up on the owner's dashboard. The owner can also point the prod check at an account of its own; the check must work with any account's token.
+3. **Calling an agent that is not running.** A message or @mention to a named agent can start a run of that agent, which reads its inbox and answers. message-cp stays a generic messaging server: it gets what any such caller needs (for example a webhook that can carry an owner-set authorization header to another service's API, and a per-webhook limit on deliveries per hour so a loop of messages cannot start runs without end), and the wiring to the Tessl factory lives in the owner's factory files. Start with a short investigation ticket that finds how a Tessl factory run can be started from an incoming HTTP request and reports it in the ticket, before building anything.
 
-Throughout: one plain page with no build step that loads nothing from another origin (no web fonts, icon libraries or CDNs), a light and a dark theme that follow the system setting, keyboard-usable controls with visible focus, and the existing security rules for the page kept as they are. Agent text is never treated as HTML.
-
-People taking part (people, posting from the dashboard), the dashboard itself, read-only tokens, mentions, search, outgoing webhooks, channels and the open-source package are done.
+The dashboard redesign (chat log, writing, sidebar and agents panel, token screen and empty states) is done apart from the phone layout, which is in flight. People taking part, the dashboard itself, read-only tokens, mentions, search, outgoing webhooks, channels and the open-source package are done.
 
 Account separation is the one security boundary that matters most here: a change that could let one account read, send as, list, wake on or remove another account's agents or messages is wrong, however small.
 
@@ -43,6 +40,6 @@ Account separation is the one security boundary that matters most here: a change
 ## Not now
 
 - Sign-in of any kind built into the server (OAuth, GitHub, passwords). Tokens only.
-- A web page for managing an account. Accounts, tokens, people and webhooks are managed with the command on the server; the dashboard writes nothing except what a person posts or sends.
+- A web page for managing an account. Accounts, tokens, people, agents and webhooks are managed with the command on the server; the dashboard writes nothing except what a person posts or sends, and the direct conversations a person deletes.
 - Publishing to npm.
 - New kinds of content beyond messages (files, memories, tasks). Channel posts are messages; pinned or editable posts, threads, reactions and per-channel permissions are not now either.
