@@ -295,12 +295,13 @@ export const purgeAgent = (db: Db, account: string, name: string): Purged =>
     // Before anything is deleted, so a person's messages, and any sent under the name they now have, are never touched.
     if (live?.person === 1) throw new PurgeError(`The name '${live.name}' belongs to a person, not an agent.`);
     const removed = db
-      .prepare("SELECT id, removed_name FROM agents WHERE account_id = ? AND removed_at IS NOT NULL AND removed_name = ? COLLATE NOCASE ORDER BY id")
+      .prepare("SELECT id, removed_name FROM agents WHERE account_id = ? AND person = 0 AND removed_at IS NOT NULL AND removed_name = ? COLLATE NOCASE ORDER BY id")
       .all(acct.id, name) as { id: number; removed_name: string }[];
     const ids = [...(live ? [live.id] : []), ...removed.map((r) => r.id)];
     if (ids.length === 0) throw new PurgeError(`No agent named '${name}' in account '${acct.name}'.`);
-    // The same rows as `ids`, as a subquery, so no statement needs one bound variable per registration.
-    const rows = `SELECT id FROM agents WHERE account_id = ? AND (id = ? OR (removed_at IS NOT NULL AND removed_name = ? COLLATE NOCASE))`;
+    // The same rows as `ids`, as a subquery, so no statement needs one bound variable per registration. A person
+    // removed with `person remove` is not one of them.
+    const rows = `SELECT id FROM agents WHERE account_id = ? AND (id = ? OR (person = 0 AND removed_at IS NOT NULL AND removed_name = ? COLLATE NOCASE))`;
     const rowArgs = [acct.id, live?.id ?? null, name];
     const messages = db
       .prepare(

@@ -10,6 +10,7 @@ import { addAccount, listAccounts } from "../src/accounts.js";
 import {
   PersonError,
   ToolError,
+  purgeAgent,
   addPerson,
   getAgent,
   identityOf,
@@ -315,6 +316,9 @@ describe("removePerson", () => {
     expect(() => removePerson(db, "nobody", "colin")).toThrow("No account named 'nobody'.");
     expect(() => removePerson(db, "nobody", "colin")).toThrow(PersonError);
     expect(snapshot()).toEqual(before);
+    // `agent remove` does not take a removed person for an agent.
+    expect(() => purgeAgent(db, "owner", "dana")).toThrow("No agent named 'dana' in account 'owner'.");
+    expect(snapshot()).toEqual(before);
   });
 
   it("leaves another account's person and agents of the same names, their messages and mentions untouched", async () => {
@@ -458,7 +462,9 @@ describe("message-cp person", () => {
   it("fails person remove with exit 1 and a reason for an agent, an unknown name or an unknown account", () => {
     addPerson(db, "owner", "colin");
     registerAgent(db, OWNER_ACCOUNT, "alice", "x");
-    const before = agentsRows();
+    sendAsPerson(db, OWNER_ACCOUNT, "colin", "alice", "hello");
+    const snapshot = () => ["agents", "messages", "mentions"].map((t) => db.prepare(`SELECT * FROM ${t}`).all());
+    const before = snapshot();
     for (const [args, message] of [
       [["person", "remove", "alice"], "The name 'alice' belongs to an agent, not a person."],
       [["person", "remove", "nobody"], "No person named 'nobody' in account 'owner'."],
@@ -470,7 +476,7 @@ describe("message-cp person", () => {
       expect(res.stdout).toBe("");
       expect(res.stderr).toContain(message);
     }
-    expect(agentsRows()).toEqual(before);
+    expect(snapshot()).toEqual(before);
   }, 60_000);
 
   it("prints its usage and exits 2 for anything else", () => {
