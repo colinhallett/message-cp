@@ -228,6 +228,8 @@ const view = document.getElementById("view");
 const chat = document.getElementById("chat");
 const sidebarButton = document.getElementById("show-sidebar");
 const agentsButton = document.getElementById("show-agents");
+const sidebarPanel = document.getElementById("sidebar");
+const agentsPanel = document.getElementById("agents");
 const rows = document.getElementById("rows");
 const channelRows = document.getElementById("channel-rows");
 const log = document.getElementById("log");
@@ -579,15 +581,19 @@ document.addEventListener("keydown", (event) => {
   panel("");
   button.focus();
 });
-// A tap on the part of the conversation an open panel leaves uncovered closes the panel, and does nothing else. A click
-// made from the keyboard (detail 0), as on a focused Close or Send button, does what it always does.
+// A tap on the part of the conversation an open panel leaves uncovered closes the panel, and does nothing else. Focus left
+// inside the panel goes back to its button, so it is not left on a control that is now hidden. A click made from the
+// keyboard (detail 0), as on a focused Close or Send button, does what it always does.
 chat.addEventListener(
   "click",
   (event) => {
     if (!covering() || event.detail === 0) return;
     event.preventDefault();
     event.stopPropagation();
+    const sidebarOpen = view.className === "show-sidebar";
+    const focused = (sidebarOpen ? sidebarPanel : agentsPanel).contains(document.activeElement);
     panel("");
+    if (focused) (sidebarOpen ? sidebarButton : agentsButton).focus();
   },
   true,
 );
