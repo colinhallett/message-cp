@@ -65,6 +65,8 @@ describe("GET /", () => {
     expect(html).toContain("/api/search");
     expect(html).toContain("/api/webhook-deliveries");
     expect(html).toMatch(/<form id="search"[^>]*>\s*<input id="search-text"[^>]*maxlength="400" required/);
+    expect(html).toMatch(/<button id="show-sidebar"[^>]*aria-expanded="false" aria-controls="sidebar"/);
+    expect(html).toMatch(/<button id="show-agents"[^>]*aria-expanded="false" aria-controls="agents"/);
     // The query is not part of the path.
     expect((await fetch(`${base()}/?x=1`)).status).toBe(200);
   });
@@ -134,7 +136,7 @@ describe("the page's polling", () => {
     runInNewContext(script, {
       AbortController,
       URLSearchParams,
-      document: { getElementById: (id: string) => (elements[id] ??= el()), createElement: el },
+      document: { getElementById: (id: string) => (elements[id] ??= el()), createElement: el, addEventListener() {} },
       sessionStorage: { getItem: (k: string) => store.get(k) ?? null, setItem: (k: string, v: string) => store.set(k, v), removeItem: (k: string) => store.delete(k) },
       setTimeout: (fn: () => void, ms: number) => (timers.set(++nextTimer, { fn, ms }), nextTimer),
       clearTimeout: (id: number) => timers.delete(id),
@@ -199,6 +201,7 @@ describe("the page's channels and messages", () => {
     setAttribute(name: string, value: string): void;
     removeAttribute(name: string): void;
     focus(): void;
+    contains(node: unknown): boolean;
   }
   // Elements start hidden, as the page's form, view and log do.
   const el = (): Stub => ({
@@ -238,6 +241,9 @@ describe("the page's channels and messages", () => {
       delete this.attributes[name];
     },
     focus() {},
+    contains(node) {
+      return node === this || this.children.some((c) => c.contains(node));
+    },
   });
   // A sidebar item's label and its unread badge as shown ("" when hidden), and the button that opens it.
   const item = (row: Stub) => row.children[0].children.map((c) => (c.className === "badge" && c.hidden ? "" : c.textContent));
@@ -269,10 +275,19 @@ describe("the page's channels and messages", () => {
     const urls: string[] = [];
     const polls: (() => void)[] = [];
     const store = new Map([["message-cp-token", token]]);
+    // The document's own listeners, such as the one for Escape.
+    const documentOn: Record<string, (event: unknown) => void> = {};
+    // The page's document; a test sets its activeElement to say where focus is.
+    const doc: { activeElement: Stub | null } & Record<string, unknown> = {
+      activeElement: null,
+      getElementById: (id: string) => (elements[id] ??= el()),
+      createElement: el,
+      addEventListener: (type: string, fn: (event: unknown) => void) => void (documentOn[type] = fn),
+    };
     runInNewContext(script, {
       AbortController,
       URLSearchParams,
-      document: { getElementById: (id: string) => (elements[id] ??= el()), createElement: el },
+      document: doc,
       sessionStorage: { getItem: (k: string) => store.get(k) ?? null, setItem: (k: string, v: string) => store.set(k, v), removeItem: (k: string) => store.delete(k) },
       setTimeout: (fn: () => void, ms: number) => (ms === 5000 && polls.push(fn), 0),
       clearTimeout: () => {},
@@ -293,7 +308,7 @@ describe("the page's channels and messages", () => {
     const poll = () => polls.splice(0).pop()!();
     // Whether a poll is scheduled, so none is in flight.
     const scheduled = () => polls.length > 0;
-    return { elements, urls, store, until, poll, scheduled };
+    return { elements, urls, store, documentOn, doc, until, poll, scheduled };
   }
 
   it("lists the channels with a read-only token and shows a chosen channel's posts oldest first", async () => {
@@ -344,6 +359,115 @@ describe("the page's channels and messages", () => {
     registerAgent(db, OWNER_ACCOUNT, "alice", "x");
     post(db, OWNER_ACCOUNT, { ...identityOf(db, OWNER_ACCOUNT, "alice")!, name: "alice" }, "build", "hello");
   };
+
+  describe("the narrow-screen panels", () => {
+    // The view's class, which slides a panel in, and each toggle's aria-expanded.
+    const state = (page: Awaited<ReturnType<typeof load>>) => [
+      page.elements["view"].className,
+      page.elements["show-sidebar"].attributes["aria-expanded"],
+      page.elements["show-agents"].attributes["aria-expanded"],
+    ];
+    const key = (page: Awaited<ReturnType<typeof load>>, key: string, defaultPrevented = false) => {
+      let prevented = 0;
+      page.documentOn.keydown({ key, defaultPrevented, preventDefault: () => prevented++ });
+      return prevented;
+    };
+    // detail is 1 for a tap or a mouse click and 0 for a click made from the keyboard.
+    const tap = (page: Awaited<ReturnType<typeof load>>, detail = 1) => {
+      let stopped = 0;
+      page.elements["chat"].on.click({ detail, preventDefault() {}, stopPropagation: () => stopped++ });
+      return stopped;
+    };
+
+    it("opens one panel at a time, and closes it on its button, Escape or a tap on the conversation", async () => {
+      seed();
+      const page = await load(viewer);
+      await page.until(() => page.elements["channel-rows"].children.length === 1);
+      const sidebar = page.elements["show-sidebar"];
+      const agents = page.elements["show-agents"];
+      sidebar.on.click();
+      expect(state(page)).toEqual(["show-sidebar", "true", "false"]);
+      sidebar.on.click();
+      expect(state(page)).toEqual(["", "false", "false"]);
+      // The other button swaps the panels.
+      sidebar.on.click();
+      agents.on.click();
+      expect(state(page)).toEqual(["show-agents", "false", "true"]);
+      expect(key(page, "Escape")).toBe(1);
+      expect(state(page)).toEqual(["", "false", "false"]);
+      // With no panel open Escape and a tap are left alone.
+      expect(key(page, "Escape")).toBe(0);
+      expect(tap(page)).toBe(0);
+      sidebar.on.click();
+      expect(key(page, "Enter")).toBe(0);
+      expect(state(page)).toEqual(["show-sidebar", "true", "false"]);
+      // An Escape that a form or the mention list already took leaves the panel open.
+      expect(key(page, "Escape", true)).toBe(0);
+      expect(state(page)).toEqual(["show-sidebar", "true", "false"]);
+      // Enter or Space on a focused button in the conversation still presses it.
+      expect(tap(page, 0)).toBe(0);
+      expect(state(page)).toEqual(["show-sidebar", "true", "false"]);
+      expect(tap(page)).toBe(1);
+      expect(state(page)).toEqual(["", "false", "false"]);
+      // Above 720px the toggles are hidden (no offsetParent), so a panel class left from a narrow screen covers nothing.
+      sidebar.on.click();
+      Object.assign(sidebar, { offsetParent: null });
+      expect(key(page, "Escape")).toBe(0);
+      expect(tap(page)).toBe(0);
+      expect(state(page)).toEqual(["show-sidebar", "true", "false"]);
+    });
+
+    it("puts focus back on the panel's button when a tap closes the panel with focus inside it", async () => {
+      seed();
+      const page = await load(viewer);
+      await page.until(() => page.elements["channel-rows"].children.length === 1);
+      const focused: string[] = [];
+      for (const id of ["show-sidebar", "show-agents"]) page.elements[id].focus = () => void focused.push(id);
+      // Focus on a channel row inside the open sidebar goes back to ☰.
+      page.elements["show-sidebar"].on.click();
+      page.doc.activeElement = page.elements["channel-rows"].children[0].children[0];
+      page.elements["sidebar"].children = [page.elements["channel-rows"]];
+      expect(tap(page)).toBe(1);
+      expect(focused).toEqual(["show-sidebar"]);
+      // Focus inside the open agents panel goes back to Agents.
+      page.elements["show-agents"].on.click();
+      page.doc.activeElement = page.elements["agents"];
+      expect(tap(page)).toBe(1);
+      expect(focused).toEqual(["show-sidebar", "show-agents"]);
+      // Focus outside the panel, such as in the compose box, stays where it is.
+      page.elements["show-sidebar"].on.click();
+      page.doc.activeElement = page.elements["compose-text"];
+      expect(tap(page)).toBe(1);
+      expect(focused).toEqual(["show-sidebar", "show-agents"]);
+      expect(state(page)).toEqual(["", "false", "false"]);
+    });
+
+    it("closes when a conversation, the deliveries or a search opens, and on ask()", async () => {
+      seed();
+      registerAgent(db, OWNER_ACCOUNT, "bob", "x");
+      sendMessage(db, OWNER_ACCOUNT, "alice", "bob", "hi");
+      const page = await load(viewer);
+      await page.until(() => page.elements["channel-rows"].children.length === 1);
+      await page.until(() => page.elements["pair-rows"].children.length === 1);
+      page.elements["show-sidebar"].on.click();
+      open(page.elements["channel-rows"].children[0]);
+      expect(state(page)).toEqual(["", "false", "false"]);
+      page.elements["show-sidebar"].on.click();
+      open(page.elements["pair-rows"].children[0]);
+      expect(state(page)).toEqual(["", "false", "false"]);
+      page.elements["show-sidebar"].on.click();
+      await page.until(() => page.elements["delivery-entry"].children.length === 1);
+      open(page.elements["delivery-entry"].children[0]);
+      expect(state(page)).toEqual(["", "false", "false"]);
+      page.elements["show-agents"].on.click();
+      page.elements["search-text"].value = "hello";
+      page.elements["search"].on.submit({ preventDefault() {} });
+      expect(state(page)).toEqual(["", "false", "false"]);
+      page.elements["show-agents"].on.click();
+      page.elements["forget"].on.click();
+      expect(state(page)).toEqual(["", "false", "false"]);
+    });
+  });
 
   it("clears the channels and the open log when the server refuses the token", async () => {
     seed();
@@ -1625,7 +1749,7 @@ describe("the page's search", () => {
     runInNewContext(script, {
       AbortController,
       URLSearchParams,
-      document: { getElementById: (id: string) => (elements[id] ??= el()), createElement: el },
+      document: { getElementById: (id: string) => (elements[id] ??= el()), createElement: el, addEventListener() {} },
       sessionStorage: { getItem: (k: string) => store.get(k) ?? null, setItem: (k: string, v: string) => store.set(k, v), removeItem: (k: string) => store.delete(k) },
       setTimeout: (fn: () => void, ms: number) => (ms === 5000 ? polls.push(fn) : deadlines.push(fn), 0),
       clearTimeout: () => {},
@@ -1859,7 +1983,7 @@ describe("the page's webhook deliveries", () => {
     runInNewContext(script, {
       AbortController,
       URLSearchParams,
-      document: { getElementById: (id: string) => (elements[id] ??= el()), createElement: el },
+      document: { getElementById: (id: string) => (elements[id] ??= el()), createElement: el, addEventListener() {} },
       sessionStorage: { getItem: (k: string) => store.get(k) ?? null, setItem: (k: string, v: string) => store.set(k, v), removeItem: (k: string) => store.delete(k) },
       setTimeout: (fn: () => void, ms: number) => (ms === 5000 ? polls.push(fn) : deadlines.push(fn), 0),
       clearTimeout: () => {},
@@ -2170,7 +2294,7 @@ describe("the page's posting", () => {
     runInNewContext(script, {
       AbortController,
       URLSearchParams,
-      document: { getElementById: (id: string) => (elements[id] ??= make()), createElement: make },
+      document: { getElementById: (id: string) => (elements[id] ??= make()), createElement: make, addEventListener() {} },
       sessionStorage: { getItem: (k: string) => store.get(k) ?? null, setItem: (k: string, v: string) => store.set(k, v), removeItem: (k: string) => store.delete(k) },
       setTimeout: (fn: () => void, ms: number) => (ms === 5000 && polls.push(fn), 0),
       clearTimeout: () => {},
