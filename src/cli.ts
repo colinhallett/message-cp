@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { DEFAULT_HTTP_HOST, DEFAULT_HTTP_PORT, startHttp } from "./http.js";
-import { PersonError, addPerson, listPeople } from "./agents.js";
+import { PersonError, PurgeError, addPerson, listPeople, purgeAgent } from "./agents.js";
 import { AccountError, addAccount, addToken, listAccounts, revokeToken } from "./accounts.js";
 import { OWNER_ACCOUNT, openDb } from "./db.js";
 import { hasUnread, unreadSummary } from "./messages.js";
@@ -189,9 +189,36 @@ if (command === "serve") {
     process.exit(1);
   }
   db.close();
+} else if (command === "agent") {
+  // Run on the server, like `person`. It prints only names and counts, never a message body or a key.
+  const usage = () => {
+    console.error("usage: message-cp agent remove <name> [--account <name>]");
+    process.exit(2);
+  };
+  const [action, name, ...args] = rest;
+  if (action !== "remove" || !name || name.startsWith("--")) usage();
+  const opts = new Map<string, string>();
+  for (let i = 0; i < args.length; i += 2) {
+    const option = args[i]!;
+    const value = args[i + 1];
+    if (option !== "--account" || opts.has(option) || !value || value.startsWith("--")) usage();
+    opts.set(option, value!);
+  }
+  const db = openDb();
+  try {
+    const p = purgeAgent(db, opts.get("--account") ?? "owner", name!);
+    console.error(
+      `message-cp: removed agent '${p.name}' of account '${p.account}', with ${p.messages} direct message(s) and ${p.mentions} mention(s). The name is free.`,
+    );
+  } catch (err) {
+    if (!(err instanceof PurgeError)) throw err;
+    console.error(`message-cp: ${err.message}`);
+    process.exit(1);
+  }
+  db.close();
 } else if (command === undefined) {
   await import("./index.js");
 } else {
-  console.error(`message-cp: unknown command '${command}'. Commands: serve, wait, account, token, webhook, person`);
+  console.error(`message-cp: unknown command '${command}'. Commands: serve, wait, account, token, webhook, person, agent`);
   process.exit(2);
 }
