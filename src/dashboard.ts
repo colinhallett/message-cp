@@ -360,6 +360,19 @@ let channelsSent = new Set();
 // A channel name as the server takes one: a copy of NAME_PATTERN in src/agents.ts, to be kept in step with it.
 const CHANNEL_NAME = /^[A-Za-z0-9_-]{1,32}$/;
 const NO_PEOPLE_TO_POST = "No people to post as. Add one with: message-cp person add <name>";
+// What an empty panel says: what makes something appear there, and, for channels and direct messages, one sentence
+// more naming "New channel" or "New message" that goes only with a full token, as those buttons do.
+const NO_AGENTS =
+  'No agents yet: one appears here once it registers with the register tool, using message-cp as an MCP server (the README section "Add it to an MCP client" says how). ' +
+  "Add a person on the server with: node dist/cli.js person add <name> --account <account>";
+const NO_CHANNELS = "No channels yet: a channel is created by its first post, which an agent makes with the post tool.";
+const NO_CHANNELS_FULL = ' You can also start one from "New channel" above.';
+const NO_MESSAGES = "No direct messages yet: they appear here when an agent sends one with the send_message tool.";
+const NO_MESSAGES_FULL = ' You can also start one from "New message" above.';
+const NO_DELIVERIES =
+  "No webhook deliveries yet: add a webhook on the server with node dist/cli.js webhook add, and its deliveries show here once it fires.";
+// The note showChannels put in an empty channel list, or undefined, so showNewButton can make it follow canPost.
+let noChannels;
 // The tokenGeneration a "New channel" post is in flight for, or undefined, as sending is for the compose box.
 let creating;
 // How many times the "New channel" form has closed, so a create that answers after its form was closed opens nothing.
@@ -419,6 +432,7 @@ function ask(message) {
   rows.replaceChildren();
   openAgents = new Set();
   channelRows.replaceChildren();
+  noChannels = undefined;
   heldMessages = 0;
   messages = [];
   pairs = new Map();
@@ -734,6 +748,18 @@ function showNewButton() {
     closeNew(false);
     closeChannelForm(false);
   }
+  // The empty notes that name these buttons follow them at once rather than on the next poll.
+  if (noChannels) noChannels.textContent = channelsEmpty();
+  if (messagesNote.textContent.startsWith(NO_MESSAGES)) messagesNote.textContent = messagesEmpty();
+}
+
+// What an empty channel list and an empty direct messages list say, naming "New channel" or "New message" only when
+// that button shows.
+function channelsEmpty() {
+  return NO_CHANNELS + (canPost ? NO_CHANNELS_FULL : "");
+}
+function messagesEmpty() {
+  return NO_MESSAGES + (canPost ? NO_MESSAGES_FULL : "");
 }
 
 function openNew() {
@@ -1283,7 +1309,7 @@ async function readMessages(token, signal, gen) {
     if (!page.items) return page;
     appendMessages(page.items);
     if (page.items.length < PAGE) {
-      messagesNote.textContent = heldMessages === 0 ? "No direct messages yet." : "";
+      messagesNote.textContent = heldMessages === 0 ? messagesEmpty() : "";
       return { ok: true };
     }
   }
@@ -1315,7 +1341,7 @@ async function readDeliveries(token, signal, gen) {
     deliveryCount.textContent = String(shown.length);
     logNote.textContent =
       shown.length === 0
-        ? "No webhook deliveries yet."
+        ? NO_DELIVERIES
         : shown.length === PAGE
           ? "Only the newest " + PAGE + " deliveries are shown."
           : "";
@@ -1494,7 +1520,7 @@ function show(agents) {
     li.append(button, details);
     return li;
   });
-  if (items.length === 0) items.push(part("li", "note", "No agents registered in this account."));
+  if (items.length === 0) items.push(part("li", "note", NO_AGENTS));
   rows.replaceChildren(...items);
   people = agents.filter((a) => a.person === true).map((a) => String(a.name));
   mentionable = agents.map((a) => ({ name: String(a.name), person: a.person === true }));
@@ -1561,7 +1587,8 @@ function showChannels(channels) {
     }
     return li;
   });
-  if (items.length === 0) items.push(part("li", "note", "No channels in this account."));
+  noChannels = items.length === 0 ? part("li", "note", channelsEmpty()) : undefined;
+  if (noChannels) items.push(noChannels);
   channelRows.replaceChildren(...items);
   channelNames = channels.map((c) => String(c.name).toLowerCase());
 }

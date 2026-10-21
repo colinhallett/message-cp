@@ -29,6 +29,17 @@ afterEach(async () => {
   db.close();
 });
 
+// What the page's empty panels say, and the sentence a full token adds to the channel list and the direct messages.
+const NO_AGENTS =
+  'No agents yet: one appears here once it registers with the register tool, using message-cp as an MCP server (the README section "Add it to an MCP client" says how). ' +
+  "Add a person on the server with: node dist/cli.js person add <name> --account <account>";
+const NO_CHANNELS = "No channels yet: a channel is created by its first post, which an agent makes with the post tool.";
+const NEW_CHANNEL = ' You can also start one from "New channel" above.';
+const NO_MESSAGES = "No direct messages yet: they appear here when an agent sends one with the send_message tool.";
+const NEW_MESSAGE = ' You can also start one from "New message" above.';
+const NO_DELIVERIES =
+  "No webhook deliveries yet: add a webhook on the server with node dist/cli.js webhook add, and its deliveries show here once it fires.";
+
 const base = () => `http://127.0.0.1:${http.port}`;
 const auth = (token: string): Record<string, string> => ({ Authorization: `Bearer ${token}` });
 
@@ -512,7 +523,7 @@ describe("the page's channels and messages", () => {
       const page = await load(viewer);
       const rows = page.elements["rows"];
       await page.until(() => rows.children.length === 1);
-      expect(rows.children[0].textContent).toBe("No agents registered in this account.");
+      expect(rows.children[0].textContent).toBe(NO_AGENTS);
     });
   });
 
@@ -795,7 +806,7 @@ describe("the page's channels and messages", () => {
       db.prepare("DELETE FROM channels").run();
       page.poll();
       await page.until(() => page.elements["log-note"].textContent === "There is no channel by this name now.");
-      expect(channels.children.map((row) => row.textContent)).toEqual(["No channels in this account."]);
+      expect(channels.children.map((row) => row.textContent)).toEqual([NO_CHANNELS]);
       expect(members(page)).toEqual(["Members: bob", "Members: bob"]);
     });
 
@@ -1955,7 +1966,7 @@ describe("the page's webhook deliveries", () => {
     for (const name of ["alice", "bob"]) registerAgent(db, OWNER_ACCOUNT, name, "x");
     const page = await load(viewer);
     await page.openDeliveries();
-    await page.until(() => page.elements["log-note"].textContent === "No webhook deliveries yet.");
+    await page.until(() => page.elements["log-note"].textContent === NO_DELIVERIES);
     expect(page.elements["post-rows"].children).toHaveLength(0);
     expect(item(page)).toEqual(["Webhook deliveries", "0"]);
 
@@ -2051,7 +2062,7 @@ describe("the page's webhook deliveries", () => {
     page.elements["token"].value = otherViewer;
     page.elements["login"].on.submit({ preventDefault() {} } as never);
     await page.openDeliveries();
-    await page.until(() => page.elements["log-note"].textContent === "No webhook deliveries yet.");
+    await page.until(() => page.elements["log-note"].textContent === NO_DELIVERIES);
     expect(page.elements["post-rows"].children).toHaveLength(0);
     expect(item(page)).toEqual(["Webhook deliveries", "0"]);
   });
@@ -2330,6 +2341,57 @@ describe("the page's posting", () => {
     expect(page.posts()[0].url).toBe("/api/send");
     const inbox = db.prepare("SELECT sender, body FROM messages WHERE recipient_id = ? ORDER BY id DESC LIMIT 1").get(identityOf(db, OWNER_ACCOUNT, "bob")!.id);
     expect(inbox).toEqual({ sender: "colin", body: "on it" });
+  });
+
+  describe("empty panels", () => {
+    const texts = (page: Awaited<ReturnType<typeof load>>) => [
+      page.elements["rows"].children.map((row) => row.textContent),
+      page.elements["channel-rows"].children.map((row) => row.textContent),
+      page.elements["messages-note"].textContent,
+    ];
+
+    it("say what fills them, naming New channel and New message only with a full token", async () => {
+      const readOnly = await load(viewer);
+      await readOnly.until(() => readOnly.elements["messages-note"].textContent !== "");
+      expect(texts(readOnly)).toEqual([[NO_AGENTS], [NO_CHANNELS], NO_MESSAGES]);
+      expect(readOnly.elements["new-channel"].hidden).toBe(true);
+
+      const full = await load(OWNER_TOKEN);
+      await full.until(() => full.elements["messages-note"].textContent !== "" && !full.elements["new-channel"].hidden);
+      expect(texts(full)).toEqual([[NO_AGENTS], [NO_CHANNELS + NEW_CHANNEL], NO_MESSAGES + NEW_MESSAGE]);
+    });
+
+    it("name neither button with an answer to GET /api/token it cannot read, or before it answers", async () => {
+      const unreadable = await load(OWNER_TOKEN, (url) => (url === "/api/token" ? { status: 503 } : undefined));
+      await unreadable.until(() => unreadable.elements["messages-note"].textContent !== "");
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(texts(unreadable)).toEqual([[NO_AGENTS], [NO_CHANNELS], NO_MESSAGES]);
+
+      // Once the held answer says the token is full, the notes name the buttons without waiting for a poll.
+      let release!: () => void;
+      const hold = new Promise<void>((resolve) => (release = resolve));
+      const page = await load(OWNER_TOKEN, (url) => (url === "/api/token" ? { hold } : undefined));
+      await page.until(() => page.elements["messages-note"].textContent !== "");
+      expect(texts(page)).toEqual([[NO_AGENTS], [NO_CHANNELS], NO_MESSAGES]);
+      release();
+      await page.until(() => !page.elements["new-channel"].hidden);
+      expect(texts(page)).toEqual([[NO_AGENTS], [NO_CHANNELS + NEW_CHANNEL], NO_MESSAGES + NEW_MESSAGE]);
+
+      // A read-only token after it starts with notes that name neither button.
+      page.elements["forget"].on.click();
+      expect(texts(page)).toEqual([[], [], ""]);
+      page.elements["token"].value = viewer;
+      page.elements["login"].on.submit({ preventDefault() {} } as never);
+      await page.until(() => page.elements["messages-note"].textContent !== "");
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(texts(page)).toEqual([[NO_AGENTS], [NO_CHANNELS], NO_MESSAGES]);
+    });
+
+    it("are fixed texts that name no account, agent, token or server address", () => {
+      for (const text of [NO_AGENTS, NO_CHANNELS, NEW_CHANNEL, NO_MESSAGES, NEW_MESSAGE, NO_DELIVERIES]) {
+        expect(text).not.toMatch(/owner|127\.0\.0\.1|https?:|token/);
+      }
+    });
   });
 
   describe("starting a direct conversation with New message", () => {
