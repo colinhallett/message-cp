@@ -1,6 +1,7 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import Database from "better-sqlite3";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -181,17 +182,53 @@ describe("waiting keeps a session", () => {
   });
 
   it("counts a session as used when a hold for its agent ends, so the gap before the next one cannot drop it", async () => {
-    // With a 1000ms timeout the sweep runs every 500ms from start. The hold runs between passes, from 600ms to 900ms,
-    // so no pass sees it held: only the end of the hold can keep the session through the pass at 1500ms.
+    // With a 1000ms timeout the sweep runs every 500ms from start. Times are taken from when registration completed:
+    // pass `k` is the first more than 50ms after it, and the hold runs between it and the next one, so no pass sees it
+    // held. Pass `k + 2` is the first whose cutoff is past the registration: only the end of the hold can keep the
+    // session through it.
     await http.close();
     const start = Date.now();
     http = await startHttp(db, { token: TOKEN, port: 0, idleTimeoutMs: 1000, waitHoldMs: 300 });
     await registered("ann");
+    const k = Math.floor((Date.now() + 50 - start) / 500) + 1;
     const until = (ms: number) => new Promise((r) => setTimeout(r, start + ms - Date.now()));
-    await until(600);
+    await until(500 * k + 100);
     expect((await wait("ann")).status).toBe(204);
-    await until(1750);
+    expect(Date.now() - start).toBeLessThan(500 * (k + 1));
+    await until(500 * (k + 2) + 250);
     expect(http.sessionCount()).toBe(1);
+  });
+
+  it("waits out a busy database once at most in a sweep pass, however many waiting sessions it reaches", async () => {
+    await http.close();
+    http = await startHttp(db, { token: TOKEN, port: 0, idleTimeoutMs: 200, waitHoldMs: 5000 });
+    const names = ["a0", "a1", "a2", "a3", "a4", "a5", "a6", "a7"];
+    for (const name of names) await registered(name);
+    const holds = names.map((name) => wait(name));
+    await new Promise((r) => setTimeout(r, 300));
+    db.pragma("busy_timeout = 200");
+    const other = new Database(db.name);
+    other.exec("BEGIN IMMEDIATE");
+    // The longest the event loop is blocked while the lock is held: one busy timeout is 200ms, one per session 1600ms.
+    let longest = 0;
+    try {
+      let last = Date.now();
+      const end = last + 1200;
+      while (Date.now() < end) {
+        await new Promise((r) => setTimeout(r, 5));
+        longest = Math.max(longest, Date.now() - last);
+        last = Date.now();
+      }
+    } finally {
+      other.exec("ROLLBACK");
+      other.close();
+    }
+    expect(longest).toBeLessThan(800);
+    expect(http.sessionCount()).toBe(8);
+    for (const c of open) await c.close().catch(() => {});
+    open = [];
+    await http.close();
+    await Promise.allSettled(holds);
   });
 
   it("keeps a restored session whose agent waits", async () => {
