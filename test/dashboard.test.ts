@@ -627,7 +627,7 @@ describe("the page's channels and messages", () => {
       expect(members(page)).toEqual(["No members yet", "No members yet"]);
     });
 
-    it("follows agents joining and leaving the open channel on the next poll, and keeps them when it goes", async () => {
+    it("follows agents joining and leaving the open channel on the next poll, and keeps the last ones shown when the channel is no longer listed", async () => {
       for (const name of ["alice", "bob"]) registerAgent(db, OWNER_ACCOUNT, name, "x");
       joinChannel(db, OWNER_ACCOUNT, member("alice"), "build");
       const page = await load(viewer);

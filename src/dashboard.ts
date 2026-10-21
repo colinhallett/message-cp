@@ -131,7 +131,8 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 #choose { margin: auto; color: var(--muted); padding: var(--s4); text-align: center; }
 #log:not([hidden]) ~ #choose, #results:not([hidden]) ~ #choose { display: none; }
 #log, #results { flex: 1; min-height: 0; display: flex; flex-direction: column; }
-/* The open conversation's header bar sits above the log, outside #post-rows, so it stays put while the log scrolls. */
+/* The header bar of the open conversation and of the search results sits outside the rows, so it stays put while they
+   scroll. */
 .log-head { display: flex; align-items: center; gap: var(--s2); padding: var(--s2) var(--s4); background: var(--panel); border-bottom: 1px solid var(--border); }
 .log-head h2 { flex: 1; margin: 0; font-size: 1rem; letter-spacing: normal; text-transform: none; color: var(--text); overflow-wrap: anywhere; }
 .log-head button { flex: none; }
