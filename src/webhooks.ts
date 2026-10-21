@@ -7,7 +7,8 @@ import { MAX_INBOX_LIMIT } from "./messages.js";
 // Messages and posts a webhook is for are queued in `webhook_deliveries` when they are stored, and `serve` sends them
 // with `sendPending`: each body signed with the webhook's secret, a timeout and a few attempts. The stdio server and
 // `message-cp wait` send nothing. A webhook's secret is shown once, when it is added, and stored as is so that
-// deliveries can sign with it.
+// deliveries can sign with it. A webhook may also carry one header the owner sets, such as `Authorization`, sent on each
+// of its deliveries; its value is stored as is too, and never printed, logged or returned.
 
 export class WebhookError extends Error {}
 
@@ -22,6 +23,8 @@ export interface Webhook {
   /** The channel or agent name, as given. */
   name: string;
   includeText: boolean;
+  /** The name of the header its deliveries carry, or null for none; its value is never given out. */
+  headerName: string | null;
 }
 
 export interface NewWebhook extends Webhook {
@@ -67,38 +70,67 @@ export function webhookOn(on: string): { event: WebhookEvent; name: string } {
   return { event: prefix === "#" ? "channel" : (prefix.slice(0, -1) as WebhookEvent), name: name! };
 }
 
+/** Header names message-cp sets on a delivery itself or that `fetch` controls, in lower case. */
+const RESERVED_HEADERS = ["content-type", "x-message-cp-signature", "content-length", "host", "transfer-encoding", "connection"];
+
+/**
+ * Parses the one header line `--header-stdin` reads, `<Name>: <value>`: the name an HTTP token that message-cp does not
+ * set itself, the value trimmed of spaces and tabs, not empty, with no control character and nothing past U+00FF.
+ * Errors never repeat the value.
+ */
+export function webhookHeader(line: string): { name: string; value: string } {
+  const colon = line.indexOf(":");
+  if (colon === -1) throw new WebhookError("Invalid header: give one line '<Name>: <value>'.");
+  const name = line.slice(0, colon);
+  const value = line.slice(colon + 1).replace(/^[ \t]+|[ \t]+$/g, "");
+  if (!/^[A-Za-z0-9!#$%&'*+\-.^_`|~]+$/.test(name)) {
+    throw new WebhookError("Invalid header name: use letters, digits and !#$%&'*+-.^_`|~ only, before the ':'.");
+  }
+  if (RESERVED_HEADERS.includes(name.toLowerCase())) {
+    throw new WebhookError(`Invalid header: message-cp sets ${name} itself; choose another header.`);
+  }
+  if (value === "") throw new WebhookError("Invalid header: its value is empty.");
+  // Tab included: inside a value it is a control character like CR and LF.
+  if (/[\x00-\x1f\x7f]/.test(value)) throw new WebhookError("Invalid header: its value contains a control character.");
+  // `fetch` refuses a header value with a character past U+00FF, so every delivery would fail.
+  if (/[^\x00-\xff]/.test(value)) throw new WebhookError("Invalid header: its value has a character past U+00FF, which HTTP cannot send.");
+  return { name, value };
+}
+
 /** How `--on` names a webhook's event, for printing. */
 export const formatOn = (w: Pick<Webhook, "event" | "name">) => (w.event === "channel" ? `#${w.name}` : `${w.event}:${w.name}`);
 
-/** Adds a webhook to the account named `account`, with a new secret. */
-export const addWebhook = (db: Db, account: string, url: string, on: string, includeText: boolean): NewWebhook =>
+/** Adds a webhook to the account named `account`, with a new secret, and with the header line `header` if given. */
+export const addWebhook = (db: Db, account: string, url: string, on: string, includeText: boolean, header?: string): NewWebhook =>
   db.transaction((): NewWebhook => {
     const href = webhookUrl(url);
     const { event, name } = webhookOn(on);
+    const extra = header === undefined ? undefined : webhookHeader(header);
     const row = db.prepare("SELECT id, name FROM accounts WHERE name = ?").get(account) as { id: AccountId; name: string } | undefined;
     if (!row) throw new WebhookError(`No account named '${account}'.`);
     const secret = randomBytes(32).toString("hex");
     const { id } = db
       .prepare(
-        "INSERT INTO webhooks (account_id, url, event, name, include_text, secret, created_at) VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id",
+        `INSERT INTO webhooks (account_id, url, event, name, include_text, secret, header_name, header_value, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
       )
-      .get(row.id, href, event, name, includeText ? 1 : 0, secret, Date.now()) as { id: number };
-    return { id, account: row.name, url: href, event, name, includeText, secret };
+      .get(row.id, href, event, name, includeText ? 1 : 0, secret, extra?.name ?? null, extra?.value ?? null, Date.now()) as { id: number };
+    return { id, account: row.name, url: href, event, name, includeText, headerName: extra?.name ?? null, secret };
   }).immediate();
 
-/** The webhooks of the account named `account`, or of every account without it; never their secrets. */
+/** The webhooks of the account named `account`, or of every account without it; never their secrets or header values. */
 export function listWebhooks(db: Db, account?: string): Webhook[] {
   if (account !== undefined && !db.prepare("SELECT 1 FROM accounts WHERE name = ?").get(account)) {
     throw new WebhookError(`No account named '${account}'.`);
   }
   const rows = db
     .prepare(
-      `SELECT webhooks.id, accounts.name AS account, url, event, webhooks.name, include_text
+      `SELECT webhooks.id, accounts.name AS account, url, event, webhooks.name, include_text, header_name
        FROM webhooks JOIN accounts ON accounts.id = webhooks.account_id
        WHERE ? IS NULL OR accounts.name = ? ORDER BY webhooks.id`,
     )
-    .all(account ?? null, account ?? null) as (Omit<Webhook, "includeText"> & { include_text: number })[];
-  return rows.map(({ include_text, ...w }) => ({ ...w, includeText: include_text === 1 }));
+    .all(account ?? null, account ?? null) as (Omit<Webhook, "includeText" | "headerName"> & { include_text: number; header_name: string | null })[];
+  return rows.map(({ include_text, header_name, ...w }) => ({ ...w, includeText: include_text === 1, headerName: header_name }));
 }
 
 /** Deletes the webhook `id`. Returns the account it belonged to. */
@@ -229,22 +261,30 @@ export function sendOptions(options: Omit<SendOptions, "signal">): Required<Omit
 
 /**
  * One pass over the queue: claims up to `batch` pending deliveries, oldest first, and POSTs each one's body to its own
- * webhook's URL, signed with its secret in `X-Message-CP-Signature`. A 2xx answer delivers it; anything else, a
+ * webhook's URL, signed with its secret in `X-Message-CP-Signature`, with the webhook's own header if it has one. A 2xx answer delivers it; anything else, a
  * network error or the timeout is a failed attempt, retried on a later pass. Redirects are not followed.
  * An attempt is counted when the row is claimed, before the request, so two senders on one file never send the same
  * attempt. The claim also records until when that request may still be in flight (twice the claiming sender's own
  * `timeoutMs`, leaving room to record the answer), and no sender, whatever its own timeout, takes the row before then.
- * Nothing about a delivery is logged: its body, secret and URL are all private.
+ * Nothing about a delivery is logged: its body, secret, URL and header value are all private.
  */
 export async function sendPending(db: Db, options: SendOptions = {}): Promise<{ delivered: number; failed: number }> {
   const { timeoutMs, maxAttempts, batch } = sendOptions(options);
   const rows = db
     .prepare(
-      `SELECT d.id, d.attempts, w.url, w.secret FROM webhook_deliveries d JOIN webhooks w ON w.id = d.webhook_id
+      `SELECT d.id, d.attempts, w.url, w.secret, w.header_name, w.header_value
+       FROM webhook_deliveries d JOIN webhooks w ON w.id = d.webhook_id
        WHERE d.delivered_at IS NULL AND d.attempts < ? AND (d.claimed_until IS NULL OR d.claimed_until <= ?)
        ORDER BY d.delivered_at, d.id LIMIT ?`,
     )
-    .all(maxAttempts, Date.now(), batch) as { id: number; attempts: number; url: string; secret: string }[];
+    .all(maxAttempts, Date.now(), batch) as {
+    id: number;
+    attempts: number;
+    url: string;
+    secret: string;
+    header_name: string | null;
+    header_value: string | null;
+  }[];
   const claim = db.prepare(
     "UPDATE webhook_deliveries SET attempts = attempts + 1, claimed_until = ? WHERE id = ? AND attempts = ? AND delivered_at IS NULL",
   );
@@ -270,6 +310,7 @@ export async function sendPending(db: Db, options: SendOptions = {}): Promise<{ 
       const res = await fetch(href, {
         method: "POST",
         headers: {
+          ...(row.header_name !== null ? { [row.header_name]: row.header_value! } : {}),
           "Content-Type": "application/json",
           "X-Message-CP-Signature": `sha256=${createHmac("sha256", row.secret).update(text).digest("hex")}`,
         },

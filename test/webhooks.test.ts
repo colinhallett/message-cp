@@ -20,6 +20,7 @@ import {
   listWebhooks,
   removeWebhook,
   sendPending,
+  webhookHeader,
   webhookOn,
   webhookUrl,
   type NewWebhook,
@@ -86,6 +87,42 @@ describe("webhookOn", () => {
   });
 });
 
+const HEADER_VALUE = "Bearer s3cr3t-value";
+/** Header lines `add` refuses, each with the value it must not repeat. */
+const REFUSED_HEADERS = [
+  `Authorization ${HEADER_VALUE}`,
+  `Bad Name: ${HEADER_VALUE}`,
+  `Auth(x): ${HEADER_VALUE}`,
+  `: ${HEADER_VALUE}`,
+  "Authorization:   \t ",
+  `Authorization: ${HEADER_VALUE}\rX-Injected: 1`,
+  `Authorization: ${HEADER_VALUE}\u0000`,
+  `Authorization: ${HEADER_VALUE}\tx`,
+  `Authorization: ${HEADER_VALUE}\u007f`,
+  `Authorization: ${HEADER_VALUE}日本`,
+  ...["Content-Type", "x-message-cp-signature", "CONTENT-LENGTH", "Host", "transfer-encoding", "Connection"].map((n) => `${n}: ${HEADER_VALUE}`),
+];
+
+describe("webhookHeader", () => {
+  it("takes a token name and a trimmed value", () => {
+    expect(webhookHeader(`Authorization: ${HEADER_VALUE}`)).toEqual({ name: "Authorization", value: HEADER_VALUE });
+    expect(webhookHeader("X-Api-Key:a:b ")).toEqual({ name: "X-Api-Key", value: "a:b" });
+    expect(webhookHeader("x!#$%&'*+-.^_`|~9:\t v \t")).toEqual({ name: "x!#$%&'*+-.^_`|~9", value: "v" });
+    expect(webhookHeader("X-Name: café").value).toBe("café");
+  });
+
+  it("refuses each bad line without repeating the value", () => {
+    for (const line of REFUSED_HEADERS) {
+      expect(() => webhookHeader(line), JSON.stringify(line)).toThrow(WebhookError);
+      try {
+        webhookHeader(line);
+      } catch (err) {
+        expect((err as Error).message).not.toContain("s3cr3t");
+      }
+    }
+  });
+});
+
 describe("addWebhook, listWebhooks and removeWebhook", () => {
   it("keeps each account's webhooks apart", () => {
     const mine = addWebhook(db, "owner", "https://example.com/a", "#general", true);
@@ -114,7 +151,20 @@ describe("addWebhook, listWebhooks and removeWebhook", () => {
       name: "bob",
       include_text: 1,
       secret: w.secret,
+      header_name: null,
+      header_value: null,
     });
+    expect(w.headerName).toBeNull();
+  });
+
+  it("stores a header as given and lists only its name", () => {
+    const w = addWebhook(db, "owner", "https://example.com/", "agent:bob", true, `Authorization: ${HEADER_VALUE}`);
+    expect(w.headerName).toBe("Authorization");
+    expect(db.prepare("SELECT header_name, header_value FROM webhooks").get()).toEqual({ header_name: "Authorization", header_value: HEADER_VALUE });
+    expect(listWebhooks(db)).toEqual([expect.objectContaining({ id: w.id, headerName: "Authorization" })]);
+    expect(JSON.stringify(listWebhooks(db))).not.toContain(HEADER_VALUE);
+    expect(() => addWebhook(db, "owner", "https://example.com/", "agent:bob", true, "Host: evil")).toThrow(WebhookError);
+    expect(listWebhooks(db)).toHaveLength(1);
   });
 
   it("refuses an unknown account, a bad URL or a bad --on and stores nothing", () => {
@@ -132,6 +182,19 @@ describe("addWebhook, listWebhooks and removeWebhook", () => {
     raw.close();
     db = openDb(dbFile);
     expect(addWebhook(db, "owner", "https://example.com/", "#x", true).id).toBe(1);
+  });
+
+  it("gives an existing webhooks table the header columns on open, its webhooks without a header", () => {
+    const old = addWebhook(db, "owner", "https://example.com/", "#x", true);
+    db.close();
+    const raw = new Database(dbFile);
+    raw.exec("ALTER TABLE webhooks DROP COLUMN header_name");
+    raw.exec("ALTER TABLE webhooks DROP COLUMN header_value");
+    raw.close();
+    db = openDb(dbFile);
+    expect(listWebhooks(db)).toEqual([expect.objectContaining({ id: old.id, headerName: null })]);
+    addWebhook(db, "owner", "https://example.com/", "#x", true, `Authorization: ${HEADER_VALUE}`);
+    expect(listWebhooks(db).map((w) => w.headerName)).toEqual([null, "Authorization"]);
   });
 });
 
@@ -375,6 +438,45 @@ describe("sendPending", () => {
     expect(r.got).toHaveLength(1);
   });
 
+  it("sends a webhook's header with its value beside its own, and no extra header for one without", async () => {
+    const withHeader = await receiver();
+    const without = await receiver();
+    member(OWNER_ACCOUNT, "alice");
+    member(OWNER_ACCOUNT, "bob");
+    const hook = addWebhook(db, "owner", withHeader.url, "agent:bob", true, `Authorization: ${HEADER_VALUE}`);
+    addWebhook(db, "owner", without.url, "agent:bob", true);
+    sendMessage(db, OWNER_ACCOUNT, "alice", "bob", "hello bob");
+    expect(await sendPending(db)).toEqual({ delivered: 2, failed: 0 });
+    const [got] = withHeader.got;
+    expect(got!.headers.authorization).toBe(HEADER_VALUE);
+    expect(got!.headers["content-type"]).toBe("application/json");
+    expect(got!.headers["x-message-cp-signature"]).toBe(signature(hook.secret, got!.body));
+    expect(got!.body).toBe(JSON.stringify(deliveryBody(db, 1)));
+    expect(got!.body).not.toContain(HEADER_VALUE);
+    const plain = without.got[0]!;
+    expect(plain.headers.authorization).toBeUndefined();
+    const names = (g: Got) => Object.keys(g.headers).sort();
+    expect(names(got!)).toEqual([...names(plain), "authorization"].sort());
+  });
+
+  it("never sends one account's webhook header with another account's deliveries", async () => {
+    const mine = await receiver();
+    const theirs = await receiver();
+    member(OWNER_ACCOUNT, "alice");
+    member(OWNER_ACCOUNT, "bob");
+    member(friend, "alice");
+    member(friend, "bob");
+    addWebhook(db, "owner", mine.url, "agent:bob", true, `Authorization: ${HEADER_VALUE}`);
+    addWebhook(db, "friend", theirs.url, "agent:bob", true);
+    sendMessage(db, OWNER_ACCOUNT, "alice", "bob", "owner dm");
+    sendMessage(db, friend, "alice", "bob", "friend dm");
+    expect(await sendPending(db)).toEqual({ delivered: 2, failed: 0 });
+    expect(mine.got.map((g) => g.headers.authorization)).toEqual([HEADER_VALUE]);
+    expect(theirs.got).toHaveLength(1);
+    expect(JSON.stringify(theirs.got)).not.toContain(HEADER_VALUE);
+    expect(theirs.got[0]!.headers.authorization).toBeUndefined();
+  });
+
   it("leaves the text out for a webhook added with --no-text", async () => {
     const r = await receiver();
     const alice = member(OWNER_ACCOUNT, "alice");
@@ -556,11 +658,42 @@ describe("sendPending", () => {
 
 describe("message-cp webhook", () => {
   const root = resolve(import.meta.dirname, "..");
-  const cli = (...args: string[]) =>
+  const cli = (...args: string[]) => cliWith(undefined, ...args);
+  const cliWith = (input: string | undefined, ...args: string[]) =>
     spawnSync(join(root, "node_modules/.bin/tsx"), [join(root, "src/cli.ts"), ...args], {
       env: { ...process.env, MESSAGE_CP_DB: dbFile },
       encoding: "utf8",
+      input,
     });
+  const ADD = ["webhook", "add", "--url", "https://example.com/hook", "--on", "agent:bob"];
+
+  it("adds a webhook with the header read from stdin, and lists its name but never its value", () => {
+    const added = cliWith(`Authorization: ${HEADER_VALUE}\n`, ...ADD, "--header-stdin");
+    expect(added.status).toBe(0);
+    expect(added.stdout).toMatch(/^[0-9a-f]{64}\n$/);
+    expect(added.stdout + added.stderr).not.toContain(HEADER_VALUE);
+    expect(cliWith(`X-Api-Key: ${HEADER_VALUE}\r\n`, ...ADD, "--header-stdin", "--account", "friend", "--no-text").status).toBe(0);
+    expect(cli(...ADD).status).toBe(0);
+    const list = cli("webhook", "list");
+    expect(list.stdout.trim().split("\n")).toEqual([
+      "1\towner\thttps://example.com/hook\tagent:bob\ttext\theader: Authorization",
+      "2\tfriend\thttps://example.com/hook\tagent:bob\tno text\theader: X-Api-Key",
+      "3\towner\thttps://example.com/hook\tagent:bob\ttext",
+    ]);
+    expect(list.stdout + list.stderr).not.toContain(HEADER_VALUE);
+    expect(db.prepare("SELECT header_value FROM webhooks WHERE id = 2").get()).toEqual({ header_value: HEADER_VALUE });
+  }, 60_000);
+
+  it("refuses each bad header line, empty stdin or more than one line with exit 1, without echoing the value", () => {
+    for (const input of [...REFUSED_HEADERS.map((l) => `${l}\n`), "", "\n", `Authorization: ${HEADER_VALUE}\nX-Other: s3cr3t\n`]) {
+      const res = cliWith(input, ...ADD, "--header-stdin");
+      expect(res.status, JSON.stringify(input)).toBe(1);
+      expect(res.stdout).toBe("");
+      expect(res.stderr).toContain("message-cp: ");
+      expect(res.stderr).not.toContain("s3cr3t");
+    }
+    expect(cli("webhook", "list").stdout).toBe("");
+  }, 120_000);
 
   it("adds, lists and removes webhooks of two accounts separately", () => {
     const owner = cli("webhook", "add", "--on", "#general", "--url", "https://example.com/hook");
@@ -620,6 +753,8 @@ describe("message-cp webhook", () => {
       ["webhook", "add", "--url", "https://example.com/", "--on", "#x", "--secret", "s"],
       ["webhook", "add", "--url", "https://example.com/", "--url", "https://example.com/", "--on", "#x"],
       ["webhook", "add", "--url", "https://example.com/", "--on", "#x", "--no-text", "--no-text"],
+      ["webhook", "add", "--url", "https://example.com/", "--on", "#x", "--header-stdin", "--header-stdin"],
+      ["webhook", "list", "--header-stdin"],
       ["webhook", "add", "--url", "https://example.com/", "--on"],
       ["webhook", "add", "--url", "--on", "#x"],
       ["webhook", "add", "--url", "", "--on", "#x"],
