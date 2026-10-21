@@ -234,6 +234,9 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
   };
 
   // Dropping a session in close() keeps its row, so the restart it is part of can restore it; the sweep forgets it.
+  // Ended rows are kept for a second idle timeout, which covers every server's live copy only while the servers sharing
+  // the database use the same timeout (`serve` always uses the default). Should one be swept early and recorded again,
+  // it can still only restore the registration that recorded it, and not once that is removed.
   const sweep = setInterval(
     () => {
       const cutoff = Date.now() - idleTimeoutMs;

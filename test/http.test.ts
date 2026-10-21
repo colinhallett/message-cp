@@ -319,6 +319,21 @@ describe("restart", () => {
     expect(await status(sid)).toBe(404);
   });
 
+  it("never lets a session recorded again after DELETE act as an agent that has since unregistered", async () => {
+    // As if a server with a longer idle timeout recorded the session again after the ended row was swept.
+    const sid = await registered("ann");
+    const row = db.prepare("SELECT * FROM http_sessions").get();
+    const auth = { Authorization: `Bearer ${TOKEN}`, "mcp-session-id": sid, "mcp-protocol-version": "2025-03-26" };
+    expect((await fetch(url(), { method: "DELETE", headers: auth })).status).toBe(200);
+    await call(await connect(), "unregister", { name: "ann", key: "ann-key" });
+    await call(await connect(), "register", { name: "ann", bio: "new", key: "ann-key" });
+    db.prepare("DELETE FROM http_sessions").run();
+    db.prepare("INSERT INTO http_sessions (hash, account_id, agent_id, registered_at, instance, last_used) VALUES (?, ?, ?, ?, ?, ?)")
+      .run(...Object.values(row as object).slice(0, 5), Date.now());
+    await restart();
+    expect(await status(sid)).toBe(404);
+  });
+
   it("keeps a DELETE on one server final for another server sharing the database", async () => {
     const sid = await registered("ann");
     const other = await startHttp(db, { token: TOKEN, port: 0 });
