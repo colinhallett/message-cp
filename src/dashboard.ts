@@ -9,7 +9,8 @@ import { MAX_BODY_LENGTH } from "./messages.js";
 // middle in place of the open conversation. The sidebar's "Webhook deliveries" entry shows the newest deliveries in the
 // middle the same way, refreshed with each poll. It asks GET /api/token once whether the token is read-only. With a full
 // token it lets a person choose which of the account's people they are, post in the open channel with POST /api/post and
-// reply in an open direct conversation of theirs with POST /api/send; that is all it ever writes. With a read-only token
+// reply in an open direct conversation of theirs, or start one with anyone in the account from "New message", with
+// POST /api/send; that is all it ever writes. With a read-only token
 // it only reads. It puts agent- and person-supplied text on the page with textContent, never as HTML.
 
 const STYLE = `
@@ -113,6 +114,15 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .option:hover { background: var(--hover); }
 .option.current { background: var(--active); box-shadow: inset 3px 0 0 var(--accent); }
 .option .name { font-weight: 600; overflow-wrap: anywhere; }
+/* The "New message" button sits beside the "Direct messages" heading, and its form under it. */
+.section-head { display: flex; align-items: center; gap: var(--s2); margin: var(--s4) var(--s3) var(--s2); }
+.section-head h2 { flex: 1; margin: 0; }
+#new-message { font-size: 0.8rem; padding: 0 var(--s2); }
+#new-form { display: flex; flex-direction: column; gap: var(--s1); margin: 0 var(--s3) var(--s2); padding: var(--s2); background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); }
+#new-form select { padding: var(--s1); background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); }
+#new-fields { display: flex; flex-direction: column; gap: var(--s1); }
+#new-note { margin: 0; }
+.actions { display: flex; gap: var(--s2); margin-top: var(--s1); }
 #sidebar { grid-area: side; overflow-y: auto; background: var(--panel); border-right: 1px solid var(--border); }
 #agents { grid-area: agents; overflow-y: auto; background: var(--panel); border-left: 1px solid var(--border); }
 #chat { grid-area: chat; min-width: 0; display: flex; flex-direction: column; }
@@ -218,6 +228,13 @@ const composeText = document.getElementById("compose-text");
 const composeNote = document.getElementById("compose-note");
 const composeSend = document.getElementById("compose-send");
 const mentionList = document.getElementById("mentions");
+const newButton = document.getElementById("new-message");
+const newForm = document.getElementById("new-form");
+const newNote = document.getElementById("new-note");
+const newFields = document.getElementById("new-fields");
+const newFrom = document.getElementById("new-from");
+const newTo = document.getElementById("new-to");
+const newOpen = document.getElementById("new-open");
 let timer;
 let generation = 0;
 let controller;
@@ -226,7 +243,8 @@ let openChannel;
 let held = 0;
 // How many of the account's direct messages the page holds, the messages themselves, oldest first, and the pairs of
 // agents that have messaged each other, by pairKey, each with its names, its count of messages and the index in
-// messages of its newest.
+// messages of its newest. A pair started from "New message" is among them with a count of 0 until its first message;
+// ask() drops it with the rest.
 let heldMessages = 0;
 let messages = [];
 let pairs = new Map();
@@ -289,6 +307,10 @@ let offered = [];
 let highlighted = 0;
 let typedFrom = 0;
 let typedTo = 0;
+// The lists the "New message" form's From and To selects were last built from, so a poll rebuilds a select only when
+// its list changes and never closes it under the reader.
+let fromKey = "";
+let toKey = "";
 
 function say(text, isError) {
   statusLine.textContent = text;
@@ -320,6 +342,12 @@ function ask(message) {
   composeNote.textContent = "";
   composeSend.disabled = false;
   mentionable = [];
+  // The "New message" form goes with canPost, and its selects with the names, so the next token never sees them.
+  showNewButton();
+  fromKey = "";
+  toKey = "";
+  newFrom.replaceChildren();
+  newTo.replaceChildren();
   // Clear every panel, so one token's agents, channels, pairs and messages never show under the next token.
   rows.replaceChildren();
   channelRows.replaceChildren();
@@ -358,6 +386,18 @@ searchForm.addEventListener("submit", (event) => {
   if (searchText.value) search(searchText.value);
 });
 document.getElementById("close-results").addEventListener("click", () => closeResults());
+newButton.addEventListener("click", () => (newForm.hidden ? openNew() : closeNew(true)));
+document.getElementById("new-cancel").addEventListener("click", () => closeNew(true));
+newForm.addEventListener("keydown", (event) => {
+  if (event.key !== "Escape") return;
+  event.preventDefault();
+  closeNew(true);
+});
+newFrom.addEventListener("change", () => fillNew());
+newForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  startPair(newFrom.value, newTo.value);
+});
 asSelect.addEventListener("change", () => {
   // Only a name GET /api/agents gave for this token is ever sent as "as".
   person = people && people.includes(asSelect.value) ? asSelect.value : undefined;
@@ -445,6 +485,8 @@ function closeLog() {
   asBox.hidden = true;
   asNote.textContent = "";
   writer.hidden = true;
+  // Opening another conversation, or none, closes the "New message" form.
+  closeNew(false);
 }
 
 // Opens a channel's log and polls again at once; the poll in flight is dropped, so a slow answer for the channel
@@ -475,6 +517,8 @@ function openPairLog(key) {
   view.className = "";
   postRows.replaceChildren(...messages.filter((m) => pairKey(m) === key).map(messageEntry));
   postRows.scrollTop = postRows.scrollHeight;
+  // Only a pair started from "New message" can have none.
+  logNote.textContent = pair.count === 0 ? "No messages yet." : "";
   markOpen();
   showPicker();
   cancel();
@@ -587,6 +631,95 @@ async function checkToken() {
   if (refused) return ask("The server refused that token. Enter another.");
   canPost = full;
   showPicker();
+  showNewButton();
+}
+
+// Shows the "New message" button only with a full token, and closes its form without one.
+function showNewButton() {
+  newButton.hidden = !canPost;
+  if (!canPost) closeNew(false);
+}
+
+function openNew() {
+  if (!canPost) return;
+  newForm.hidden = false;
+  newButton.setAttribute("aria-expanded", "true");
+  fillNew();
+  // The From select starts at the person chosen in "Post as", if there is one.
+  if (person !== undefined && people && people.includes(person)) {
+    newFrom.value = person;
+    fillNew();
+  }
+  if (!newFields.hidden) (person !== undefined ? newTo : newFrom).focus();
+}
+
+// Closes the "New message" form, giving the focus back to its button when the reader closed it.
+function closeNew(refocus) {
+  if (newForm.hidden) return;
+  newForm.hidden = true;
+  newButton.setAttribute("aria-expanded", "false");
+  if (refocus) newButton.focus();
+}
+
+// Builds the "New message" form's selects from the last GET /api/agents: From lists the account's people, and To its
+// agents and people, each person marked as one, without "all" or the From name, compared without case. Each select
+// keeps its choice while that name is still listed, and is rebuilt only when its list changes.
+function fillNew() {
+  const known = people ?? [];
+  const none = people !== undefined && known.length === 0;
+  newNote.textContent = none ? "No people to send as. Add one with: message-cp person add <name>" : "";
+  newFields.hidden = none;
+  newOpen.hidden = none;
+  const fromNow = JSON.stringify(known);
+  if (fromNow !== fromKey) {
+    fromKey = fromNow;
+    const chosen = newFrom.value;
+    newFrom.replaceChildren(...known.map((name) => {
+      const option = document.createElement("option");
+      option.value = name;
+      option.textContent = name;
+      return option;
+    }));
+    if (known.includes(chosen)) newFrom.value = chosen;
+    else if (known.length > 0) newFrom.value = known[0];
+  }
+  const from = known.includes(newFrom.value) ? newFrom.value.toLowerCase() : undefined;
+  const to = mentionable.filter((n) => {
+    const lower = n.name.toLowerCase();
+    return lower !== "all" && lower !== from;
+  });
+  const toNow = JSON.stringify([from, to]);
+  if (toNow !== toKey) {
+    toKey = toNow;
+    const chosen = newTo.value;
+    newTo.replaceChildren(...to.map((n) => {
+      const option = document.createElement("option");
+      option.value = n.name;
+      option.textContent = n.person ? n.name + " (person)" : n.name;
+      return option;
+    }));
+    if (to.some((n) => n.name === chosen)) newTo.value = chosen;
+    else if (to.length > 0) newTo.value = to[0].name;
+  }
+  newOpen.disabled = to.length === 0;
+}
+
+// Opens the pair of from and to as a conversation, as choosing it in the sidebar does, with from chosen as the person
+// the page posts as. A pair with no messages yet is added to the sidebar with a count of 0, first, under the key
+// pairKey gives its messages, so the first one lands in it. Only a person of the account is ever chosen, and only a
+// name the form offers is ever opened with them.
+function startPair(from, to) {
+  if (!canPost || !people || !people.includes(from)) return;
+  const offeredTo = mentionable.some((n) => n.name === to);
+  if (!offeredTo || to.toLowerCase() === "all" || to.toLowerCase() === from.toLowerCase()) return;
+  person = from;
+  asSelect.value = from;
+  const names = [from, to].sort();
+  const key = JSON.stringify(names);
+  if (!pairs.has(key)) pairs.set(key, { names, count: 0, newest: messages.length });
+  showPairs();
+  openPairLog(key);
+  if (!compose.hidden) composeText.focus();
 }
 
 // Shows the person picker beside the compose box, with a full token and an open channel or pair, from the people
@@ -1072,6 +1205,7 @@ function show(agents) {
   people = agents.filter((a) => a.person === true).map((a) => String(a.name));
   mentionable = agents.map((a) => ({ name: String(a.name), person: a.person === true }));
   showPicker();
+  fillNew();
   // An open list follows the answer, so it never offers a name that has gone.
   if (offered.length > 0) offer();
 }
@@ -1310,7 +1444,11 @@ function appendMessages(page) {
     pairs.set(key, pair);
     messages.push(m);
   }
-  if (openPair !== undefined) appendEntries(page.filter((m) => pairKey(m) === openPair).map(messageEntry));
+  if (openPair !== undefined) {
+    const shown = page.filter((m) => pairKey(m) === openPair).map(messageEntry);
+    if (shown.length > 0) logNote.textContent = "";
+    appendEntries(shown);
+  }
   if (page.length > 0) showPairs();
 }
 
@@ -1355,7 +1493,23 @@ export const DASHBOARD_HTML = `<!doctype html>
 <nav id="sidebar" aria-label="Channels and conversations">
 <h2>Channels</h2>
 <ul id="channel-rows"></ul>
+<div class="section-head">
 <h2>Direct messages</h2>
+<button id="new-message" type="button" aria-expanded="false" aria-controls="new-form" hidden>New message</button>
+</div>
+<form id="new-form" aria-label="New message" hidden>
+<p id="new-note" class="note"></p>
+<div id="new-fields">
+<label for="new-from">From</label>
+<select id="new-from"></select>
+<label for="new-to">To</label>
+<select id="new-to"></select>
+</div>
+<div class="actions">
+<button id="new-open" type="submit">Open</button>
+<button id="new-cancel" type="button">Cancel</button>
+</div>
+</form>
 <p id="messages-note" class="note"></p>
 <ul id="pair-rows"></ul>
 <h2>Webhooks</h2>
