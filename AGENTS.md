@@ -27,6 +27,8 @@ npm test
 
 `better-sqlite3` ships prebuilt binaries under `node_modules/better-sqlite3/prebuilds/` for Linux (glibc and musl), macOS and Windows on x64 and arm64, so skipping its install script loses nothing. Plain `npm ci` compiles it and fails where there is no `make` or C++ compiler. If plain `npm ci` has already failed that way, use the commands above instead: do not install a compiler, shim `better-sqlite3` over `node:sqlite`, run the tests in a container, or skip them. The [README quick start](README.md#quick-start) gives the same install for people.
 
+- Before a factory run starts, the environment changes `tessl.json` and may change the agent config files `.mcp.json`, `.codex/config.toml` and `.cursor/mcp.json`, and it adds skill folders under `.agents/`, `.claude/skills/`, `.codex/skills/`, `.cursor/skills/`, `.github/skills/` and `.tessl/plugins/`; run `git status` before your first change to see them. These are not your changes: never commit them. Stage your own files by name (`git add src/... test/... README.md`), never with `git commit -a`, `git commit -am`, `git add -A` or `git add .`. Run `git diff --cached --stat` before each commit and check that none of the environment's files is listed. If one was committed, undo it in a new commit: `git checkout origin/main -- <file>` for a file that is on `origin/main`, `git rm -r --cached <path>` for one that is not.
+
 ### Running the server by hand
 
 Start it with `node dist/cli.js serve --port <port> > /tmp/serve.log 2>&1 & echo $! > /tmp/serve.pid` and stop it with `kill "$(cat /tmp/serve.pid)"`. Never use `pkill -f` or `pgrep -f` with a pattern from your own command line, because it matches and kills your own shell (exit 144). Keep the stop command in a tool call of its own.
