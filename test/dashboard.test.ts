@@ -2154,6 +2154,304 @@ describe("the page's posting", () => {
     });
   });
 
+  describe("creating a channel with New channel", () => {
+    const ready = async (page: Awaited<ReturnType<typeof load>>) => {
+      await page.until(
+        () => page.picker().length > 0 && page.elements["channel-rows"].children.length > 0 && !page.elements["new-channel"].hidden,
+      );
+    };
+    // Opens the form, fills it and submits it, returning how many times the submit's default was prevented.
+    const create = (page: Awaited<ReturnType<typeof load>>, from: string, name: string, body: string) => {
+      if (page.elements["channel-form"].hidden) page.elements["new-channel"].on.click();
+      page.elements["channel-from"].value = from;
+      page.elements["channel-name"].value = name;
+      page.elements["channel-body"].value = body;
+      let prevented = 0;
+      page.elements["channel-form"].on.submit({ preventDefault: () => prevented++ });
+      return prevented;
+    };
+
+    it("sits a hidden button and form beside the Channels heading, submitted by script under the same strict CSP", async () => {
+      const res = await fetch(`${base()}/`);
+      const html = await res.text();
+      expect(html).toMatch(
+        /<div class="section-head">\s*<h2>Channels<\/h2>\s*<button id="new-channel" type="button" aria-expanded="false" aria-controls="channel-form" hidden>New channel<\/button>\s*<\/div>\s*<form id="channel-form" aria-label="New channel" hidden>[\s\S]*?<\/form>\s*<ul id="channel-rows">/,
+      );
+      const form = /<form id="channel-form"[\s\S]*?<\/form>/.exec(html)![0];
+      expect(form).toMatch(/<select id="channel-from">/);
+      expect(form).toMatch(/<input id="channel-name"[^>]*maxlength="32"/);
+      expect(form).toMatch(/<textarea id="channel-body"/);
+      expect(html).not.toMatch(/ style=|\.style\s*[.=[]/);
+      const csp = res.headers.get("content-security-policy") ?? "";
+      expect(csp).toContain("default-src 'none'");
+      expect(csp).toContain("form-action 'none'");
+      expect(csp).not.toContain("unsafe-inline");
+    });
+
+    it("shows the button and form only with a full token, not with a read-only token or an answer it cannot read", async () => {
+      seed();
+      for (const [token, answer] of [
+        [viewer, () => undefined],
+        [OWNER_TOKEN, (url: string) => (url === "/api/token" ? { status: 200, body: "not json" } : undefined)],
+        [OWNER_TOKEN, (url: string) => (url === "/api/token" ? { status: 503 } : undefined)],
+      ] as const) {
+        const page = await load(token, answer);
+        await page.until(() => page.elements["channel-rows"].children.length === 1 && page.elements["pair-rows"].children.length === 1);
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        expect(page.elements["new-channel"].hidden).toBe(true);
+        // Even a click and a submit by hand open and send nothing.
+        page.elements["new-channel"].on.click();
+        expect(page.elements["channel-form"].hidden).toBe(true);
+        page.elements["channel-from"].value = "colin";
+        page.elements["channel-name"].value = "fresh";
+        page.elements["channel-body"].value = "should not go";
+        page.elements["channel-form"].on.submit({ preventDefault() {} });
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        expect(page.posts()).toEqual([]);
+        expect(page.elements["log"].hidden).toBe(true);
+      }
+      const page = await load(OWNER_TOKEN);
+      await ready(page);
+      page.elements["new-channel"].on.click();
+      expect(page.elements["channel-form"].hidden).toBe(false);
+      expect(page.elements["new-channel"].attributes["aria-expanded"]).toBe("true");
+      expect(page.elements["channel-from"].children.filter((o) => o.value !== "").map((o) => o.textContent)).toEqual(["colin"]);
+    });
+
+    it("starts From at the Post as person, and names message-cp person add when there are no people", async () => {
+      seed();
+      const page = await load(OWNER_TOKEN);
+      await ready(page);
+      page.choose("colin");
+      page.elements["new-channel"].on.click();
+      expect(page.elements["channel-from"].value).toBe("colin");
+      const empty = await load(OWNER_TOKEN, (url) => (url.startsWith("/api/agents") ? { status: 200, body: "[]" } : undefined));
+      await empty.until(() => empty.elements["channel-rows"].children.length === 1 && !empty.elements["new-channel"].hidden);
+      empty.elements["new-channel"].on.click();
+      expect(empty.elements["channel-note"].textContent).toContain("message-cp person add");
+      expect(empty.elements["channel-fields"].hidden).toBe(true);
+      expect(empty.elements["channel-create"].hidden).toBe(true);
+    });
+
+    it("sends nothing and says why for a bad name, an existing name in another case, a non-person and a blank post", async () => {
+      seed();
+      const page = await load(OWNER_TOKEN);
+      await ready(page);
+      const note = () => page.elements["channel-note"].textContent;
+      for (const [from, name, body, says] of [
+        ["colin", "has space", "hi", "1 to 32"],
+        ["colin", "", "hi", "1 to 32"],
+        ["colin", "x".repeat(33), "hi", "1 to 32"],
+        ["colin", "BUILD", "hi", "already exists"],
+        ["bob", "fresh", "hi", "From"],
+        ["", "fresh", "hi", "From"],
+        ["colin", "fresh", " \n\t", "first post"],
+        ["colin", "fresh", "😀".repeat(MAX_BODY_LENGTH + 1), String(MAX_BODY_LENGTH)],
+      ]) {
+        expect(create(page, from, name, body)).toBe(1);
+        expect(note()).toContain(says);
+        // The text stays, so the reader can correct it.
+        expect(page.elements["channel-name"].value).toBe(name);
+        expect(page.elements["channel-body"].value).toBe(body);
+        expect(page.elements["channel-form"].hidden).toBe(false);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(page.posts()).toEqual([]);
+      expect(db.prepare("SELECT COUNT(*) AS n FROM channels").get()).toEqual({ n: 1 });
+    });
+
+    it("posts { as, channel, body } to /api/post once, then opens the channel with the compose box for that person", async () => {
+      seed();
+      addPerson(db, "owner", "dana");
+      let release!: () => void;
+      const hold = new Promise<void>((resolve) => (release = resolve));
+      const page = await load(OWNER_TOKEN, (url, method) => (url === "/api/post" && method === "POST" ? { hold } : undefined));
+      await ready(page);
+      page.choose("colin");
+      expect(create(page, "dana", "fresh", "first <b>post</b>")).toBe(1);
+      expect(page.elements["channel-create"].disabled).toBe(true);
+      // A second submit while the first is in flight sends nothing.
+      page.elements["channel-form"].on.submit({ preventDefault() {} });
+      expect(page.posts()).toHaveLength(1);
+      release();
+      await page.until(() => page.elements["log"].hidden === false);
+      const sent = page.posts();
+      expect(sent).toHaveLength(1);
+      expect(sent[0].url).toBe("/api/post");
+      expect(sent[0].headers).toEqual({ Authorization: `Bearer ${OWNER_TOKEN}`, "Content-Type": "application/json" });
+      expect(JSON.parse(sent[0].body!)).toEqual({ as: "dana", channel: "fresh", body: "first <b>post</b>" });
+      expect(page.elements["channel-form"].hidden).toBe(true);
+      expect(page.elements["channel-create"].disabled).toBe(false);
+      expect(page.elements["channel-name"].value).toBe("");
+      expect(page.elements["channel-body"].value).toBe("");
+      expect(page.elements["log-title"].textContent).toBe("fresh");
+      expect(page.elements["as"].value).toBe("dana");
+      expect(page.elements["compose"].hidden).toBe(false);
+      expect(page.elements["compose-label"].textContent).toBe("Post in #fresh as dana");
+      // The poll openLog starts lists the channel, marks it open and shows the first post.
+      await page.until(() => page.elements["post-rows"].children.length === 1 && page.elements["channel-rows"].children.length === 2);
+      expect(entries(page.elements["post-rows"])).toEqual([["dana", "first <b>post</b>"]]);
+      const row = page.elements["channel-rows"].children.find((r) => label(r) === "fresh")!;
+      expect(row.children[0].className).toBe("item current");
+      expect(db.prepare("SELECT sender, body FROM channel_posts ORDER BY id DESC LIMIT 1").get()).toEqual({ sender: "dana", body: "first <b>post</b>" });
+      // The same name in another case is now refused, so nothing more is posted.
+      create(page, "dana", "FRESH", "again");
+      expect(page.elements["channel-note"].textContent).toContain("already exists");
+      expect(page.posts()).toHaveLength(1);
+      for (const stub of page.made) expect(stub.html).toEqual([]);
+    });
+
+    it("keeps the text and shows the server's reason on a 400, a note for other refusals and no answer, and asks again on a 401", async () => {
+      seed();
+      let answer: { status?: number; body?: string; lose?: boolean } = { status: 400, body: JSON.stringify({ error: { message: "Channel names are reserved" } }) };
+      const page = await load(OWNER_TOKEN, (url, method) => (url === "/api/post" && method === "POST" ? answer : undefined));
+      await ready(page);
+      const note = () => page.elements["channel-note"].textContent;
+      create(page, "colin", "fresh", "first");
+      await page.until(() => note() === "Channel names are reserved");
+      for (const [status, says] of [
+        [403, "(403)"],
+        [404, "colin is no longer a person"],
+        [413, "(413)"],
+        [503, "(503)"],
+      ] as const) {
+        answer = { status };
+        create(page, "colin", "fresh", "first");
+        await page.until(() => note().includes(says));
+      }
+      answer = { lose: true };
+      create(page, "colin", "fresh", "first");
+      await page.until(() => note().includes("check the channel list"));
+      expect(page.elements["channel-name"].value).toBe("fresh");
+      expect(page.elements["channel-body"].value).toBe("first");
+      expect(page.elements["channel-form"].hidden).toBe(false);
+      expect(page.elements["log"].hidden).toBe(true);
+      answer = { status: 401 };
+      // The lost post was stored, so the poll it started lists fresh: use another name.
+      await page.until(() => page.elements["channel-rows"].children.length === 2);
+      create(page, "colin", "other", "first");
+      await page.until(() => !page.elements["login"].hidden);
+      expect(page.elements["channel-form"].hidden).toBe(true);
+      expect(page.elements["channel-name"].value).toBe("");
+      expect(page.elements["channel-body"].value).toBe("");
+    });
+
+    it("drops an answer that arrives after the token was forgotten", async () => {
+      seed();
+      let release!: () => void;
+      const hold = new Promise<void>((resolve) => (release = resolve));
+      const page = await load(OWNER_TOKEN, (url, method) => (url === "/api/post" && method === "POST" ? { hold } : undefined));
+      await ready(page);
+      create(page, "colin", "fresh", "first");
+      page.elements["forget"].on.click();
+      release();
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(page.elements["log"].hidden).toBe(true);
+      expect(page.elements["channel-note"].textContent).toBe("");
+      expect(page.elements["channel-create"].disabled).toBe(false);
+    });
+
+    it("opens the channel under the name the server stored, when one was made elsewhere since the list was read", async () => {
+      seed();
+      const page = await load(OWNER_TOKEN);
+      await ready(page);
+      // Another dashboard creates Fresh after this page read the channel list, so the page cannot refuse it.
+      post(db, OWNER_ACCOUNT, { ...identityOf(db, OWNER_ACCOUNT, "bob")!, name: "bob" }, "Fresh", "first elsewhere");
+      create(page, "colin", "fresh", "mine");
+      await page.until(() => page.elements["log"].hidden === false);
+      expect(page.elements["log-title"].textContent).toBe("Fresh");
+      expect(page.elements["compose-label"].textContent).toBe("Post in #Fresh as colin");
+    });
+
+    it("opens nothing for a create that answers after its form was closed", async () => {
+      seed();
+      let release!: () => void;
+      const hold = new Promise<void>((resolve) => (release = resolve));
+      const page = await load(OWNER_TOKEN, (url, method) => (url === "/api/post" && method === "POST" ? { hold } : undefined));
+      await ready(page);
+      create(page, "colin", "fresh", "first");
+      page.elements["channel-cancel"].on.click();
+      release();
+      await page.until(() => page.elements["channel-create"].disabled === false);
+      expect(page.elements["log"].hidden).toBe(true);
+      expect(page.elements["channel-form"].hidden).toBe(true);
+      expect(page.elements["as"].value).not.toBe("colin");
+      // The post was stored, so the name is refused from now on.
+      create(page, "colin", "fresh", "again");
+      expect(page.elements["channel-note"].textContent).toContain("already exists");
+      expect(page.posts()).toHaveLength(1);
+    });
+
+    it("refuses the name after no answer, even once a channel list that leaves it out is read, so a retry adds no second first post", async () => {
+      seed();
+      const page = await load(OWNER_TOKEN, (url, method) => (url === "/api/post" && method === "POST" ? { lose: true } : undefined));
+      await ready(page);
+      create(page, "colin", "fresh", "first");
+      await page.until(() => page.elements["channel-note"].textContent.includes("check the channel list"));
+      create(page, "colin", "FRESH", "first");
+      expect(page.elements["channel-note"].textContent).toContain("already exists");
+      // A channel list read before the lost post was stored leaves fresh out, and the name is still refused.
+      await page.until(() => page.elements["channel-rows"].children.length === 2);
+      for (const table of ["channel_reads", "channel_posts"]) {
+        db.prepare(`DELETE FROM ${table} WHERE channel_id = (SELECT id FROM channels WHERE name = 'fresh')`).run();
+      }
+      db.prepare("DELETE FROM channels WHERE name = 'fresh'").run();
+      // Opening a channel starts a fresh poll, whatever poll or timer is left from before.
+      open(page.elements["channel-rows"], "build");
+      await page.until(() => page.elements["channel-rows"].children.length === 1);
+      create(page, "colin", "fresh", "first");
+      expect(page.elements["channel-note"].textContent).toContain("already exists");
+      expect(page.posts()).toHaveLength(1);
+    });
+
+    it("closes on Escape, Cancel, another conversation and ask(), and only one of New message and New channel is open", async () => {
+      seed();
+      const page = await load(OWNER_TOKEN);
+      await ready(page);
+      const form = page.elements["channel-form"];
+      page.elements["new-channel"].on.click();
+      let prevented = 0;
+      form.on.keydown({ key: "Escape", preventDefault: () => prevented++ });
+      expect(form.hidden).toBe(true);
+      expect(prevented).toBe(1);
+      page.elements["new-channel"].on.click();
+      page.elements["new-channel"].on.keydown({ key: "Escape", preventDefault() {} });
+      expect(form.hidden).toBe(true);
+      page.elements["new-channel"].on.click();
+      page.elements["channel-cancel"].on.click();
+      expect(form.hidden).toBe(true);
+      page.elements["new-channel"].on.click();
+      open(page.elements["channel-rows"], "build");
+      expect(form.hidden).toBe(true);
+      // Opening one form closes the other.
+      page.elements["new-channel"].on.click();
+      page.elements["new-message"].on.click();
+      expect(form.hidden).toBe(true);
+      expect(page.elements["new-form"].hidden).toBe(false);
+      page.elements["new-channel"].on.click();
+      expect(form.hidden).toBe(false);
+      expect(page.elements["new-form"].hidden).toBe(true);
+      // ask() closes the form and clears its select, note and text.
+      page.elements["channel-name"].value = "typed";
+      page.elements["channel-body"].value = "typed text";
+      create(page, "colin", "bad name", "x");
+      expect(page.elements["channel-note"].textContent).not.toBe("");
+      page.elements["forget"].on.click();
+      expect(form.hidden).toBe(true);
+      expect(page.elements["new-channel"].hidden).toBe(true);
+      expect(page.elements["channel-from"].children).toEqual([]);
+      expect(page.elements["channel-note"].textContent).toBe("");
+      expect(page.elements["channel-name"].value).toBe("");
+      expect(page.elements["channel-body"].value).toBe("");
+      // The next token, read-only, gets no button.
+      page.elements["token"].value = viewer;
+      page.elements["login"].on.submit({ preventDefault() {} });
+      await page.until(() => page.elements["channel-rows"].children.length === 1);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(page.elements["new-channel"].hidden).toBe(true);
+    });
+  });
+
   describe("writing like a chat app", () => {
     // A keydown on the compose box, counting the preventDefault calls it gets.
     const key = (page: Awaited<ReturnType<typeof load>>, text: string, init: { shiftKey?: boolean; isComposing?: boolean; keyCode?: number } = {}) => {

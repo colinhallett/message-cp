@@ -10,8 +10,8 @@ import { MAX_BODY_LENGTH } from "./messages.js";
 // middle the same way, refreshed with each poll. It asks GET /api/token once whether the token is read-only. With a full
 // token it lets a person choose which of the account's people they are, post in the open channel with POST /api/post and
 // reply in an open direct conversation of theirs, or start one with anyone in the account from "New message", with
-// POST /api/send; that is all it ever writes. With a read-only token
-// it only reads. It puts agent- and person-supplied text on the page with textContent, never as HTML.
+// POST /api/send, or create a channel from "New channel" by its first post, with POST /api/post; that is all it ever
+// writes. With a read-only token it only reads. It puts agent- and person-supplied text on the page with textContent, never as HTML.
 
 const STYLE = `
 :root {
@@ -114,14 +114,16 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .option:hover { background: var(--hover); }
 .option.current { background: var(--active); box-shadow: inset 3px 0 0 var(--accent); }
 .option .name { font-weight: 600; overflow-wrap: anywhere; }
-/* The "New message" button sits beside the "Direct messages" heading, and its form under it. */
+/* The "New channel" and "New message" buttons sit beside the "Channels" and "Direct messages" headings, and their forms
+   under them. */
 .section-head { display: flex; align-items: center; gap: var(--s2); margin: var(--s4) var(--s3) var(--s2); }
 .section-head h2 { flex: 1; margin: 0; }
-#new-message { font-size: 0.8rem; padding: 0 var(--s2); }
-#new-form { display: flex; flex-direction: column; gap: var(--s1); margin: 0 var(--s3) var(--s2); padding: var(--s2); background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); }
-#new-form select { padding: var(--s1); background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); }
-#new-fields { display: flex; flex-direction: column; gap: var(--s1); }
-#new-note { margin: 0; }
+#new-message, #new-channel { font-size: 0.8rem; padding: 0 var(--s2); }
+#new-form, #channel-form { display: flex; flex-direction: column; gap: var(--s1); margin: 0 var(--s3) var(--s2); padding: var(--s2); background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); }
+#new-form select, #channel-form select, #channel-form input, #channel-form textarea { padding: var(--s1); background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); }
+#channel-form textarea { resize: vertical; }
+#new-fields, #channel-fields { display: flex; flex-direction: column; gap: var(--s1); }
+#new-note, #channel-note { margin: 0; }
 .actions { display: flex; gap: var(--s2); margin-top: var(--s1); }
 #sidebar { grid-area: side; overflow-y: auto; background: var(--panel); border-right: 1px solid var(--border); }
 #agents { grid-area: agents; overflow-y: auto; background: var(--panel); border-left: 1px solid var(--border); }
@@ -235,6 +237,14 @@ const newFields = document.getElementById("new-fields");
 const newFrom = document.getElementById("new-from");
 const newTo = document.getElementById("new-to");
 const newOpen = document.getElementById("new-open");
+const channelButton = document.getElementById("new-channel");
+const channelForm = document.getElementById("channel-form");
+const channelNote = document.getElementById("channel-note");
+const channelFields = document.getElementById("channel-fields");
+const channelFrom = document.getElementById("channel-from");
+const channelName = document.getElementById("channel-name");
+const channelBody = document.getElementById("channel-body");
+const channelCreate = document.getElementById("channel-create");
 let timer;
 let generation = 0;
 let controller;
@@ -312,6 +322,23 @@ let typedTo = 0;
 // its list changes and never closes it under the reader.
 let fromKey = "";
 let toKey = "";
+// The list the "New channel" form's From select was last built from, as fromKey is for "New message".
+let channelFromKey = "";
+// The names of the channels the sidebar last listed, in lower case, or undefined until GET /api/channels has answered
+// for this token. Channel names are unique without case, so "New channel" refuses one of these rather than posting in it.
+let channelNames;
+// The names, in lower case, that "New channel" has sent a post for under this token and that got a 200 or no answer, so
+// may be stored. A channel list read before the post was stored leaves these out, so they are kept apart from
+// channelNames, which each list replaces, and are refused too until ask() clears them. This guards only this page while
+// it holds the token: POST /api/post creates a channel or adds to it, so the server cannot refuse an existing name.
+let channelsSent = new Set();
+// A channel name as the server takes one: a copy of NAME_PATTERN in src/agents.ts, to be kept in step with it.
+const CHANNEL_NAME = /^[A-Za-z0-9_-]{1,32}$/;
+const NO_PEOPLE_TO_POST = "No people to post as. Add one with: message-cp person add <name>";
+// The tokenGeneration a "New channel" post is in flight for, or undefined, as sending is for the compose box.
+let creating;
+// How many times the "New channel" form has closed, so a create that answers after its form was closed opens nothing.
+let channelClosings = 0;
 
 function say(text, isError) {
   statusLine.textContent = text;
@@ -352,6 +379,17 @@ function ask(message) {
   newNote.textContent = "";
   newFields.hidden = false;
   newOpen.hidden = false;
+  // So do the "New channel" form, its select, its note and its text, and the channel names it compared against.
+  channelFromKey = "";
+  channelNames = undefined;
+  channelsSent = new Set();
+  channelFrom.replaceChildren();
+  channelName.value = "";
+  channelBody.value = "";
+  channelNote.textContent = "";
+  channelFields.hidden = false;
+  channelCreate.hidden = false;
+  channelCreate.disabled = false;
   // Clear every panel, so one token's agents, channels, pairs and messages never show under the next token.
   rows.replaceChildren();
   channelRows.replaceChildren();
@@ -401,6 +439,19 @@ for (const node of [newForm, newButton]) {
     closeNew(true);
   });
 }
+channelButton.addEventListener("click", () => (channelForm.hidden ? openChannelForm() : closeChannelForm(true)));
+document.getElementById("channel-cancel").addEventListener("click", () => closeChannelForm(true));
+for (const node of [channelForm, channelButton]) {
+  node.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape" || channelForm.hidden) return;
+    event.preventDefault();
+    closeChannelForm(true);
+  });
+}
+channelForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  createChannel();
+});
 newFrom.addEventListener("change", () => fillNew());
 newForm.addEventListener("submit", (event) => {
   event.preventDefault();
@@ -493,8 +544,9 @@ function closeLog() {
   asBox.hidden = true;
   asNote.textContent = "";
   writer.hidden = true;
-  // Opening another conversation, or none, closes the "New message" form.
+  // Opening another conversation, or none, closes the "New message" and "New channel" forms.
   closeNew(false);
+  closeChannelForm(false);
 }
 
 // Opens a channel's log and polls again at once; the poll in flight is dropped, so a slow answer for the channel
@@ -642,14 +694,20 @@ async function checkToken() {
   showNewButton();
 }
 
-// Shows the "New message" button only with a full token, and closes its form without one.
+// Shows the "New message" and "New channel" buttons only with a full token, and closes their forms without one.
 function showNewButton() {
   newButton.hidden = !canPost;
-  if (!canPost) closeNew(false);
+  channelButton.hidden = !canPost;
+  if (!canPost) {
+    closeNew(false);
+    closeChannelForm(false);
+  }
 }
 
 function openNew() {
   if (!canPost) return;
+  // Only one of "New message" and "New channel" is open at a time.
+  closeChannelForm(false);
   newForm.hidden = false;
   newButton.setAttribute("aria-expanded", "true");
   fillNew();
@@ -711,6 +769,147 @@ function fillNew() {
   newOpen.disabled = to.length === 0;
 }
 
+function openChannelForm() {
+  if (!canPost) return;
+  closeNew(false);
+  channelForm.hidden = false;
+  channelButton.setAttribute("aria-expanded", "true");
+  fillChannel();
+  // From starts at the person chosen in "Post as", if there is one, as in "New message".
+  if (person !== undefined && people && people.includes(person)) channelFrom.value = person;
+  if (!channelFields.hidden) (channelFrom.value !== "" ? channelName : channelFrom).focus();
+}
+
+// Closes the "New channel" form, keeping what was typed in it, and gives the focus back to its button when the reader
+// closed it.
+function closeChannelForm(refocus) {
+  if (channelForm.hidden) return;
+  channelForm.hidden = true;
+  channelClosings++;
+  channelButton.setAttribute("aria-expanded", "false");
+  if (refocus) channelButton.focus();
+}
+
+// Builds the "New channel" form's From select from the account's people, as fillNew builds "New message"'s, or names
+// message-cp person add when there are none. A note left by a submit stays until the next submit.
+function fillChannel() {
+  const known = people ?? [];
+  const none = people !== undefined && known.length === 0;
+  if (none) channelNote.textContent = NO_PEOPLE_TO_POST;
+  else if (channelNote.textContent === NO_PEOPLE_TO_POST) channelNote.textContent = "";
+  channelFields.hidden = none;
+  channelCreate.hidden = none;
+  const fromNow = JSON.stringify(known);
+  if (fromNow !== channelFromKey) {
+    channelFromKey = fromNow;
+    const chosen = channelFrom.value;
+    channelFrom.replaceChildren(choose("Choose a person"), ...known.map((name) => {
+      const option = document.createElement("option");
+      option.value = name;
+      option.textContent = name;
+      return option;
+    }));
+    channelFrom.value = known.includes(chosen) ? chosen : "";
+  }
+}
+
+// Why the "New channel" form cannot create a channel from what it holds, or undefined if it can.
+function channelProblem(from, name, body) {
+  if (!CHANNEL_NAME.test(name)) return "A channel name is 1 to 32 letters, digits, - or _.";
+  if (channelNames === undefined) return "The channel list has not loaded yet. Try again in a moment.";
+  if (channelNames.includes(name.toLowerCase()) || channelsSent.has(name.toLowerCase())) return "#" + name + " already exists. Open it from the channel list to post in it.";
+  if (!people || !people.includes(from)) return "Choose who you are under From.";
+  if (body.trim() === "") return "Write a first post.";
+  // The server counts characters as code points, as send() does.
+  if ([...body].length > ${MAX_BODY_LENGTH}) return "The first post is longer than ${MAX_BODY_LENGTH} characters.";
+  return undefined;
+}
+
+// Creates a channel by posting its first post with POST /api/post as the chosen person, then opens it as choosing it
+// in the sidebar does, under the name the server stored it as, with that person chosen in "Post as". Nothing is sent
+// unless channelProblem finds nothing, and Create stays disabled while the request is in flight. A 200 that comes after
+// the form was closed opens nothing. Any other answer keeps the text and says why in the form's note; with no answer the
+// post may have been stored, so the name is refused until the token is forgotten (channelsSent). An answer that comes
+// after the token was forgotten is dropped.
+async function createChannel() {
+  const token = sessionStorage.getItem(KEY);
+  if (!token) return ask();
+  const tokenGen = tokenGeneration;
+  if (!canPost || channelForm.hidden || creating === tokenGen) return;
+  const from = channelFrom.value;
+  const name = channelName.value;
+  const body = channelBody.value;
+  const problem = channelProblem(from, name, body);
+  if (problem !== undefined) {
+    channelNote.textContent = problem;
+    return;
+  }
+  creating = tokenGen;
+  const closings = channelClosings;
+  channelCreate.disabled = true;
+  channelNote.textContent = "Creating…";
+  const ac = new AbortController();
+  const deadline = setTimeout(() => ac.abort(), TIMEOUT_MS);
+  let answer;
+  try {
+    const res = await fetch("/api/post", {
+      method: "POST",
+      headers: { Authorization: "Bearer " + token, "Content-Type": "application/json" },
+      body: JSON.stringify({ as: from, channel: name, body }),
+      cache: "no-store",
+      credentials: "omit",
+      referrerPolicy: "no-referrer",
+      signal: ac.signal,
+    });
+    answer = res.status === 400 ? { status: 400, reason: await reasonOf(res) } : { status: res.status };
+    if (res.status === 200) answer.channel = await storedName(res, name);
+  } catch {
+    answer = { error: "No answer from the server, so the channel may have been created: check the channel list, or use another name." };
+  } finally {
+    clearTimeout(deadline);
+  }
+  if (tokenGen !== tokenGeneration) return;
+  creating = undefined;
+  channelCreate.disabled = false;
+  if (answer.status === 401) return ask("The server refused that token. Enter another.");
+  if (answer.status === 200) {
+    // The name is now taken, and text typed while the request was in flight stays.
+    channelsSent.add(name.toLowerCase());
+    if (channelName.value === name) channelName.value = "";
+    if (channelBody.value === body) channelBody.value = "";
+    // The reader closed the form, or opened something else, while it was in flight: the poll lists the channel.
+    if (closings !== channelClosings) return;
+    // openLog's showPicker sets the "Post as" select to the person, and its poll reads the first post.
+    person = from;
+    channelNote.textContent = "";
+    closeChannelForm(false);
+    openLog(answer.channel);
+    if (!compose.hidden) composeText.focus();
+    return;
+  }
+  if (answer.error) {
+    channelNote.textContent = answer.error;
+    // The post may yet be stored, even after a list that leaves it out, so a retry could add a second first post.
+    channelsSent.add(name.toLowerCase());
+    // Read again at once, so the channel list shows whether it arrived.
+    cancel();
+    poll(generation);
+  } else if (answer.status === 400) {
+    channelNote.textContent = answer.reason || "The server refused this (400).";
+  } else if (answer.status === 403) {
+    channelNote.textContent = "This token cannot post (403).";
+  } else if (answer.status === 404) {
+    // POST /api/post answers 404 only for an "as" that is not a live person of the account.
+    channelNote.textContent = from + " is no longer a person in this account (404).";
+  } else if (answer.status === 413) {
+    channelNote.textContent = "This is too long for the server (413).";
+  } else if (answer.status === 503) {
+    channelNote.textContent = "The server is busy (503). Try again in a moment.";
+  } else {
+    channelNote.textContent = "The server answered " + answer.status + ".";
+  }
+}
+
 // The empty first option of a "New message" select, chosen while no listed name is, so startPair opens nothing.
 function choose(text) {
   const option = document.createElement("option");
@@ -746,7 +945,7 @@ function showPicker() {
   if (person !== undefined && !known.includes(person)) person = undefined;
   const conversation = openChannel !== undefined || openPair !== undefined;
   asBox.hidden = !canPost || !conversation || known.length === 0;
-  asNote.textContent = canPost && conversation && people !== undefined && known.length === 0 ? "No people to post as. Add one with: message-cp person add <name>" : "";
+  asNote.textContent = canPost && conversation && people !== undefined && known.length === 0 ? NO_PEOPLE_TO_POST : "";
   const key = canPost ? JSON.stringify(known) : "";
   if (key !== pickerKey) {
     pickerKey = key;
@@ -966,6 +1165,17 @@ async function fetchPage(token, signal, path, params, offset, items) {
   }
   if (!Array.isArray(page)) return { error: "The server sent an answer this page cannot read" };
   return { items: page };
+}
+
+// The channel name a 200 from POST /api/post says the post was stored under, which may differ in case from the name
+// sent, or the name sent if the answer cannot be read.
+async function storedName(res, sent) {
+  try {
+    const channel = (await res.json()).channel;
+    return typeof channel === "string" && channel.toLowerCase() === sent.toLowerCase() ? channel : sent;
+  } catch {
+    return sent;
+  }
 }
 
 // The message of an error answer, or undefined if it has none this page can read.
@@ -1221,6 +1431,7 @@ function show(agents) {
   mentionable = agents.map((a) => ({ name: String(a.name), person: a.person === true }));
   showPicker();
   fillNew();
+  fillChannel();
   // An open list follows the answer, so it never offers a name that has gone.
   if (offered.length > 0) offer();
 }
@@ -1258,6 +1469,7 @@ function showChannels(channels) {
   });
   if (items.length === 0) items.push(part("li", "note", "No channels in this account."));
   channelRows.replaceChildren(...items);
+  channelNames = channels.map((c) => String(c.name).toLowerCase());
 }
 
 // The two agents of a message, in name order, as one key, so alice to bob and bob to alice are the same pair.
@@ -1508,7 +1720,25 @@ export const DASHBOARD_HTML = `<!doctype html>
 <button id="forget" type="button">Forget token</button>
 </header>
 <nav id="sidebar" aria-label="Channels and conversations">
+<div class="section-head">
 <h2>Channels</h2>
+<button id="new-channel" type="button" aria-expanded="false" aria-controls="channel-form" hidden>New channel</button>
+</div>
+<form id="channel-form" aria-label="New channel" hidden>
+<p id="channel-note" class="note" role="status"></p>
+<div id="channel-fields">
+<label for="channel-from">From</label>
+<select id="channel-from"></select>
+<label for="channel-name">Name</label>
+<input id="channel-name" type="text" maxlength="32" autocomplete="off" spellcheck="false">
+<label for="channel-body">First post</label>
+<textarea id="channel-body" rows="3" autocomplete="off"></textarea>
+</div>
+<div class="actions">
+<button id="channel-create" type="submit">Create</button>
+<button id="channel-cancel" type="button">Cancel</button>
+</div>
+</form>
 <ul id="channel-rows"></ul>
 <div class="section-head">
 <h2>Direct messages</h2>
