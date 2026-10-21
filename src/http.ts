@@ -17,6 +17,7 @@ import type { AccountId, Db } from "./db.js";
 import {
   DEFAULT_INBOX_LIMIT,
   MAX_INBOX_LIMIT,
+  deleteConversation,
   hasUnread,
   listAccountMessages,
   listAgentsUnread,
@@ -116,12 +117,12 @@ function page(query: URLSearchParams, defaultLimit: number, maxLimit: number): {
 }
 
 /**
- * Runs a read for a GET /api/* request. A lock held past the busy timeout is transient, so it answers 503 with
+ * Runs the database work of an /api/* request. A lock held past the busy timeout is transient, so it answers 503 with
  * Retry-After rather than 500, and returns undefined; any other error is thrown.
  */
-function unlessBusy<T>(res: ServerResponse, read: () => T): T | undefined {
+function unlessBusy<T>(res: ServerResponse, work: () => T): T | undefined {
   try {
-    return read();
+    return work();
   } catch (err) {
     const code = (err as { code?: unknown } | null)?.code;
     if (typeof code !== "string" || !code.startsWith("SQLITE_BUSY")) throw err;
@@ -371,6 +372,20 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
   };
 
   /**
+   * DELETE /api/conversation?a=<name>&b=<name>: deletes the account's direct messages between a and b, either way, and
+   * answers how many. Reads no body and holds nothing open, so it takes no slot.
+   */
+  const apiConversation = (req: IncomingMessage, res: ServerResponse, account: AccountId) => {
+    if (req.method !== "DELETE") return reply(res, 405, "Method not allowed", { Allow: "DELETE" });
+    const query = new URL(req.url ?? "", "http://x").searchParams;
+    const [a, b] = [query.getAll("a"), query.getAll("b")];
+    if (a.length !== 1 || b.length !== 1 || a[0] === "" || b[0] === "") return reply(res, 400, "Give a and b once each");
+    const deleted = unlessBusy(res, () => deleteConversation(db, account, a[0], b[0]));
+    if (deleted === undefined) return;
+    sendJson(res, { deleted });
+  };
+
+  /**
    * GET /api/webhook-deliveries: one page of the deliveries for the account's webhooks, newest first, each with its
    * status under this server's `maxAttempts`. Never a webhook's URL or secret, or a message or post body.
    */
@@ -488,6 +503,7 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
     if (access.readOnly) return reply(res, 403, "This token is read-only");
     if (path === "/api/send") return apiSend(req, res, account);
     if (path === "/api/post") return apiPost(req, res, account);
+    if (path === "/api/conversation") return apiConversation(req, res, account);
     if (path === "/wait") return wait(req, res, account);
     if (path !== "/mcp") return reply(res, 404, "Not found");
     if (req.method !== "POST" && req.method !== "GET" && req.method !== "DELETE") {
