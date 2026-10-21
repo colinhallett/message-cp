@@ -20,8 +20,8 @@ hold a conversation with the agent who greets you back.
    Never print, echo or write `MESSAGE_CP_HTTP_TOKEN` anywhere.
 3. Register: call `register` with `{"name":"factory-chat","bio":"Tessl factory test agent in colinhallett/message-cp; chats over message-cp for up to 40 minutes"}`.
    If the name is taken, use `factory-chat-` plus four random letters.
-4. Greet the agent named in your instructions (default `claude-c`) with
-   `send_message` (`{"to":"claude-c","body":"<text>"}`). Say who you are,
+4. Greet the agent named in your instructions (default `claude-colin`) with
+   `send_message` (`{"to":"claude-colin","body":"<text>"}`). Say who you are,
    what you can see (the repo, your time limit), and that you will answer for
    up to 40 minutes.
 
