@@ -94,7 +94,7 @@ describe("the page's polling", () => {
     const script = /<script>([\s\S]*?)<\/script>/.exec(html)![1];
     const el = () => {
       const on: Record<string, () => void> = {};
-      return { on, hidden: false, value: "", textContent: "", className: "", addEventListener: (type: string, fn: () => void) => void (on[type] = fn), focus() {}, replaceChildren() {} };
+      return { on, hidden: false, value: "", textContent: "", className: "", addEventListener: (type: string, fn: () => void) => void (on[type] = fn), focus() {}, replaceChildren() {}, setAttribute() {} };
     };
     const elements: Record<string, ReturnType<typeof el>> = {};
     const timers = new Map<number, { fn: () => void; ms: number }>();
@@ -1870,6 +1870,288 @@ describe("the page's posting", () => {
     expect(page.posts()[0].url).toBe("/api/send");
     const inbox = db.prepare("SELECT sender, body FROM messages WHERE recipient_id = ? ORDER BY id DESC LIMIT 1").get(identityOf(db, OWNER_ACCOUNT, "bob")!.id);
     expect(inbox).toEqual({ sender: "colin", body: "on it" });
+  });
+
+  describe("starting a direct conversation with New message", () => {
+    // A select's names, without the empty first option that asks for a choice.
+    const options = (select: Stub) => select.children.filter((o) => o.value !== "").map((o) => [o.value, o.textContent]);
+    const ready = async (page: Awaited<ReturnType<typeof load>>) => {
+      await page.until(() => page.picker().length > 0 && page.elements["rows"].children.length > 0 && !page.elements["new-message"].hidden);
+    };
+    const start = (page: Awaited<ReturnType<typeof load>>, from: string, to: string) => {
+      page.elements["new-message"].on.click();
+      page.elements["new-from"].value = from;
+      page.elements["new-from"].on.change();
+      page.elements["new-to"].value = to;
+      let prevented = 0;
+      page.elements["new-form"].on.submit({ preventDefault: () => prevented++ });
+      return prevented;
+    };
+
+    it("sits a hidden button and form beside the Direct messages heading, submitted by script under the same strict CSP", async () => {
+      const res = await fetch(`${base()}/`);
+      const html = await res.text();
+      expect(html).toMatch(
+        /<h2>Direct messages<\/h2>\s*<button id="new-message" type="button"[^>]*hidden>New message<\/button>\s*<\/div>\s*<form id="new-form"[^>]*hidden>/,
+      );
+      expect(html).not.toMatch(/ style=|\.style\s*[.=[]/);
+      const csp = res.headers.get("content-security-policy") ?? "";
+      expect(csp).toContain("default-src 'none'");
+      expect(csp).toContain("form-action 'none'");
+      expect(csp).not.toContain("unsafe-inline");
+    });
+
+    it("shows the button only with a full token, not with a read-only token or an answer it cannot read", async () => {
+      seed();
+      for (const [token, answer] of [
+        [viewer, () => undefined],
+        [OWNER_TOKEN, (url: string) => (url === "/api/token" ? { status: 200, body: "not json" } : undefined)],
+        [OWNER_TOKEN, (url: string) => (url === "/api/token" ? { status: 503 } : undefined)],
+      ] as const) {
+        const page = await load(token, answer);
+        await page.until(() => page.elements["rows"].children.length === 2 && page.elements["pair-rows"].children.length === 1);
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        expect(page.elements["new-message"].hidden).toBe(true);
+        // Even a click by hand opens no form, and a submit opens and sends nothing.
+        page.elements["new-message"].on.click();
+        expect(page.elements["new-form"].hidden).toBe(true);
+        page.elements["new-from"].value = "colin";
+        page.elements["new-to"].value = "bob";
+        page.elements["new-form"].on.submit({ preventDefault() {} });
+        expect(page.elements["log"].hidden).toBe(true);
+        expect(page.elements["compose"].hidden).toBe(true);
+        page.send("should not go");
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        expect(page.posts()).toEqual([]);
+      }
+      const page = await load(OWNER_TOKEN);
+      await ready(page);
+      expect(page.elements["new-message"].hidden).toBe(false);
+      page.elements["new-message"].on.click();
+      expect(page.elements["new-form"].hidden).toBe(false);
+      expect(page.elements["new-message"].attributes["aria-expanded"]).toBe("true");
+    });
+
+    it("offers the account's people as From and its agents and people as To, minus all and the From name without case", async () => {
+      // The server reserves all and keeps names unique without case, so the answer is stubbed to hold them anyway.
+      const agent = (name: string, person: boolean) => ({ name, bio: "x", person, online: false, lastSeen: new Date().toISOString(), unreadMessages: 0, unreadPosts: 0, unreadMentions: 0 });
+      const body = JSON.stringify([agent("all", false), agent("bob", false), agent("Colin", false), agent("colin", true), agent("dana", true)]);
+      const page = await load(OWNER_TOKEN, (url) => (url.startsWith("/api/agents") ? { status: 200, body } : undefined));
+      await page.until(() => page.picker().length === 2 && page.elements["rows"].children.length === 5 && !page.elements["new-message"].hidden);
+      // With a person chosen in Post as, From starts at them.
+      page.choose("dana");
+      page.elements["new-message"].on.click();
+      expect(options(page.elements["new-from"])).toEqual([
+        ["colin", "colin"],
+        ["dana", "dana"],
+      ]);
+      expect(page.elements["new-from"].value).toBe("dana");
+      const names = (select: Stub) => options(select).map(([value]) => value).sort();
+      expect(names(page.elements["new-to"])).toEqual(["Colin", "bob", "colin"].sort());
+      expect(options(page.elements["new-to"])).toContainEqual(["colin", "colin (person)"]);
+      expect(options(page.elements["new-to"])).toContainEqual(["bob", "bob"]);
+      page.elements["new-from"].value = "colin";
+      page.elements["new-from"].on.change();
+      expect(names(page.elements["new-to"])).toEqual(["bob", "dana"]);
+      expect(options(page.elements["new-to"])).toContainEqual(["dana", "dana (person)"]);
+      // A poll with the same names leaves the selects as they are, so an open one is not closed under the reader.
+      const to = page.elements["new-to"].children;
+      await page.poll();
+      await page.until(() => page.requests.filter((r) => r.url.startsWith("/api/agents")).length === 2);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(page.elements["new-to"].children).toBe(to);
+      for (const stub of page.made) expect(stub.html).toEqual([]);
+    });
+
+    it("names message-cp person add in the form when the account has no people", async () => {
+      registerAgent(db, OWNER_ACCOUNT, "bob", "x");
+      const page = await load(OWNER_TOKEN);
+      await page.until(() => page.elements["rows"].children.length === 1 && !page.elements["new-message"].hidden);
+      page.elements["new-message"].on.click();
+      expect(page.elements["new-note"].textContent).toContain("message-cp person add");
+      expect(page.elements["new-fields"].hidden).toBe(true);
+      expect(options(page.elements["new-from"])).toEqual([]);
+    });
+
+    it("asks for a new choice, never another name, when the chosen From or To leaves the list while the form is open", async () => {
+      // The answer to GET /api/agents is stubbed, so a name can leave it between polls.
+      const agent = (name: string, person: boolean) => ({ name, bio: "x", person, online: false, lastSeen: new Date().toISOString(), unreadMessages: 0, unreadPosts: 0, unreadMentions: 0 });
+      let listed = [agent("bob", false), agent("zed", false), agent("colin", true), agent("dana", true)];
+      const page = await load(OWNER_TOKEN, (url) => (url.startsWith("/api/agents") ? { status: 200, body: JSON.stringify(listed) } : undefined));
+      await page.until(() => page.picker().length === 2 && page.elements["rows"].children.length === 4 && !page.elements["new-message"].hidden);
+      page.elements["new-message"].on.click();
+      // With no "Post as" person, both selects start at their empty first option.
+      expect(page.elements["new-from"].children[0].value).toBe("");
+      expect(page.elements["new-from"].value).toBe("");
+      expect(page.elements["new-to"].children[0].value).toBe("");
+      expect(page.elements["new-to"].value).toBe("");
+      page.elements["new-from"].value = "dana";
+      page.elements["new-from"].on.change();
+      page.elements["new-to"].value = "zed";
+      // zed leaves while the form is open: To asks again rather than taking bob, and Open opens nothing.
+      listed = listed.filter((a) => a.name !== "zed");
+      await page.poll();
+      await page.until(() => page.elements["rows"].children.length === 3);
+      expect(options(page.elements["new-to"]).map(([value]) => value).sort()).toEqual(["bob", "colin"]);
+      expect(page.elements["new-to"].value).toBe("");
+      expect(page.elements["new-from"].value).toBe("dana");
+      page.elements["new-form"].on.submit({ preventDefault() {} });
+      expect(page.elements["log"].hidden).toBe(true);
+      expect(page.elements["new-form"].hidden).toBe(false);
+      expect(page.elements["pair-rows"].children).toEqual([]);
+      // dana leaves: From asks again rather than taking colin, so even a To still listed opens nothing.
+      listed = listed.filter((a) => a.name !== "dana");
+      await page.poll();
+      await page.until(() => page.picker().length === 1);
+      expect(page.elements["new-from"].value).toBe("");
+      page.elements["new-to"].value = "bob";
+      page.elements["new-form"].on.submit({ preventDefault() {} });
+      expect(page.elements["log"].hidden).toBe(true);
+      page.send("should not go");
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(page.posts()).toEqual([]);
+    });
+
+    it("keeps an empty pair first whatever messages arrive in other pairs", async () => {
+      registerAgent(db, OWNER_ACCOUNT, "bob", "x");
+      registerAgent(db, OWNER_ACCOUNT, "zed", "x");
+      addPerson(db, "owner", "colin");
+      sendMessage(db, OWNER_ACCOUNT, "bob", "zed", "one");
+      const page = await load(OWNER_TOKEN);
+      await ready(page);
+      await page.until(() => page.elements["pair-rows"].children.length === 1);
+      start(page, "colin", "zed");
+      expect(page.elements["pair-rows"].children.map(label)).toEqual(["colin ↔ zed", "bob ↔ zed"]);
+      sendMessage(db, OWNER_ACCOUNT, "bob", "zed", "two");
+      sendMessage(db, OWNER_ACCOUNT, "zed", "bob", "three");
+      await page.poll();
+      await page.until(() => page.elements["pair-rows"].children[1]?.children[0].children[1].textContent === "3");
+      expect(page.elements["pair-rows"].children.map(label)).toEqual(["colin ↔ zed", "bob ↔ zed"]);
+      // Once it has a message, it takes its place by recency like the rest.
+      page.send("hello zed");
+      await page.until(() => page.elements["post-rows"].children.length === 1);
+      expect(page.elements["pair-rows"].children.map(label)).toEqual(["colin ↔ zed", "bob ↔ zed"]);
+      sendMessage(db, OWNER_ACCOUNT, "bob", "zed", "four");
+      await page.poll();
+      await page.until(() => page.elements["pair-rows"].children[0]?.children[0].children[1].textContent === "4");
+      expect(page.elements["pair-rows"].children.map(label)).toEqual(["bob ↔ zed", "colin ↔ zed"]);
+    });
+
+    it("opens an empty pair with the compose box, sends { as, to, body } to /api/send, and keeps the pair one entry", async () => {
+      registerAgent(db, OWNER_ACCOUNT, "bob", "x");
+      registerAgent(db, OWNER_ACCOUNT, "zed", "x");
+      addPerson(db, "owner", "colin");
+      sendMessage(db, OWNER_ACCOUNT, "bob", "zed", "between agents");
+      const page = await load(OWNER_TOKEN);
+      await ready(page);
+      await page.until(() => page.elements["pair-rows"].children.length === 1);
+      expect(start(page, "colin", "zed")).toBe(1);
+      // The pair is listed first with a count of 0, marked open, and opens as one chosen in the sidebar does.
+      const pairs = page.elements["pair-rows"];
+      expect(pairs.children.map(label)).toEqual(["colin ↔ zed", "bob ↔ zed"]);
+      expect(pairs.children[0].children[0].children[1].textContent).toBe("0");
+      expect(pairs.children[0].children[0].className).toBe("item current");
+      expect(page.elements["new-form"].hidden).toBe(true);
+      expect(page.elements["log"].hidden).toBe(false);
+      expect(page.elements["log-title"].textContent).toBe("colin ↔ zed");
+      expect(page.elements["log-note"].textContent).toBe("No messages yet.");
+      expect(page.elements["post-rows"].children).toEqual([]);
+      expect(page.elements["as"].value).toBe("colin");
+      expect(page.elements["compose"].hidden).toBe(false);
+      expect(page.elements["compose-label"].textContent).toBe("Reply to zed as colin");
+      const before = unreadSummary(db, OWNER_ACCOUNT, "zed")!;
+      page.send("hello zed");
+      await page.until(() => page.elements["post-rows"].children.length === 1);
+      expect(page.posts()).toHaveLength(1);
+      expect(page.posts()[0].url).toBe("/api/send");
+      expect(JSON.parse(page.posts()[0].body!)).toEqual({ as: "colin", to: "zed", body: "hello zed" });
+      expect(entries(page.elements["post-rows"])).toEqual([["colin", "hello zed"]]);
+      expect(page.elements["log-note"].textContent).toBe("");
+      expect(unreadSummary(db, OWNER_ACCOUNT, "zed")!.count).toBe(before.count + 1);
+      // The first message lands in the same entry, not a second one.
+      expect(pairs.children.map(label)).toEqual(["colin ↔ zed", "bob ↔ zed"]);
+      expect(pairs.children[0].children[0].children[1].textContent).toBe("1");
+      for (const stub of page.made) expect(stub.html).toEqual([]);
+    });
+
+    it("opens a pair that already has messages with them, and never opens one with a name it did not offer", async () => {
+      seed();
+      addPerson(db, "owner", "dana");
+      const page = await load(OWNER_TOKEN);
+      await ready(page);
+      await page.until(() => page.elements["pair-rows"].children.length === 1);
+      start(page, "colin", "bob");
+      expect(page.elements["log-title"].textContent).toBe("bob ↔ colin");
+      expect(entries(page.elements["post-rows"])).toEqual([["bob", "hi colin"]]);
+      expect(page.elements["log-note"].textContent).toBe("");
+      expect(page.elements["pair-rows"].children.map(label)).toEqual(["bob ↔ colin"]);
+      expect(page.elements["compose-label"].textContent).toBe("Reply to bob as colin");
+      // A From that is not a person, or a To that is all, the From name or unknown, opens nothing.
+      for (const [from, to] of [
+        ["bob", "colin"],
+        ["colin", "all"],
+        ["colin", "colin"],
+        ["colin", "nobody"],
+      ]) {
+        page.elements["close-log"].on.click();
+        page.elements["new-message"].on.click();
+        page.elements["new-from"].value = from;
+        page.elements["new-to"].value = to;
+        page.elements["new-form"].on.submit({ preventDefault() {} });
+        expect(page.elements["log"].hidden).toBe(true);
+      }
+      expect(page.elements["pair-rows"].children.map(label)).toEqual(["bob ↔ colin"]);
+    });
+
+    it("closes on Escape, on Cancel, on opening another conversation, and on ask(), which drops an empty pair", async () => {
+      seed();
+      const page = await load(OWNER_TOKEN);
+      await ready(page);
+      await page.until(() => page.elements["channel-rows"].children.length === 1);
+      const form = page.elements["new-form"];
+      page.elements["new-message"].on.click();
+      let prevented = 0;
+      form.on.keydown({ key: "Escape", preventDefault: () => prevented++ });
+      expect(form.hidden).toBe(true);
+      expect(prevented).toBe(1);
+      page.elements["new-message"].on.click();
+      page.elements["new-cancel"].on.click();
+      expect(form.hidden).toBe(true);
+      page.elements["new-message"].on.click();
+      open(page.elements["channel-rows"], "build");
+      expect(form.hidden).toBe(true);
+      // An empty pair started here goes with the token.
+      registerAgent(db, OWNER_ACCOUNT, "zed", "x");
+      await page.poll();
+      await page.until(() => page.elements["rows"].children.length === 3);
+      start(page, "colin", "zed");
+      expect(page.elements["pair-rows"].children.map(label)).toEqual(["colin ↔ zed", "bob ↔ colin"]);
+      // A second empty pair, started later, is listed above the first.
+      registerAgent(db, OWNER_ACCOUNT, "yan", "x");
+      await page.poll();
+      await page.until(() => page.elements["rows"].children.length === 4);
+      start(page, "colin", "yan");
+      expect(page.elements["pair-rows"].children.map(label)).toEqual(["colin ↔ yan", "colin ↔ zed", "bob ↔ colin"]);
+      // Escape on the button closes an open form too.
+      page.elements["new-message"].on.click();
+      page.elements["new-message"].on.keydown({ key: "Escape", preventDefault() {} });
+      expect(form.hidden).toBe(true);
+      page.elements["new-message"].on.click();
+      page.elements["forget"].on.click();
+      expect(form.hidden).toBe(true);
+      expect(page.elements["new-message"].hidden).toBe(true);
+      expect(page.elements["new-from"].children).toEqual([]);
+      expect(page.elements["new-to"].children).toEqual([]);
+      expect(page.elements["pair-rows"].children).toEqual([]);
+      expect(page.elements["new-note"].textContent).toBe("");
+      // The next token sees its own pairs only, and never the empty one.
+      page.elements["token"].value = viewer;
+      page.elements["login"].on.submit({ preventDefault() {} });
+      await page.until(() => page.elements["pair-rows"].children.length === 1);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(page.elements["pair-rows"].children.map(label)).toEqual(["bob ↔ colin"]);
+      expect(page.elements["new-message"].hidden).toBe(true);
+    });
   });
 
   describe("writing like a chat app", () => {
