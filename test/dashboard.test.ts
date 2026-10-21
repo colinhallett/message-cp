@@ -163,6 +163,8 @@ describe("the page's channels and messages", () => {
     append(...children: Stub[]): void;
     replaceChildren(...children: Stub[]): void;
     addEventListener(type: string, fn: () => void): void;
+    setAttribute(name: string, value: string): void;
+    removeAttribute(name: string): void;
     focus(): void;
   }
   // Elements start hidden, as the page's form, view and log do.
@@ -195,10 +197,14 @@ describe("the page's channels and messages", () => {
     addEventListener(type, fn) {
       this.on[type] = fn;
     },
+    setAttribute() {},
+    removeAttribute() {},
     focus() {},
   });
-  // A sidebar item's label and count, and the button that opens it.
-  const item = (row: Stub) => row.children[0].children.map((c) => c.textContent);
+  // A sidebar item's label and its unread badge as shown ("" when hidden), and the button that opens it.
+  const item = (row: Stub) => row.children[0].children.map((c) => (c.className === "badge" && c.hidden ? "" : c.textContent));
+  // A sidebar item's tooltip, which holds its total.
+  const tip = (row: Stub) => row.children[0].title;
   const open = (row: Stub) => row.children[0].on.click();
   // A chat-log entry's field by class name: from, tag, time or body.
   // An element's text as a browser reads it: the stub's textContent does not join its children's, so a split body's
@@ -265,8 +271,8 @@ describe("the page's channels and messages", () => {
     const channels = page.elements["channel-rows"];
     await page.until(() => channels.children.length === 2);
     expect(channels.children.map(item)).toEqual([
-      ["build", "2"],
-      ["ops", "1"],
+      ["build", ""],
+      ["ops", ""],
     ]);
     expect(channels.children.map((row) => row.children[0].title)).toEqual([
       expect.stringMatching(/^Members: alice, bob; 2 posts, last post /),
@@ -415,9 +421,10 @@ describe("the page's channels and messages", () => {
     await page.until(() => pairs.children.length === 2);
     // The newest pair first; alice to bob and bob to alice are one pair.
     expect(pairs.children.map(item)).toEqual([
-      ["bob ↔ carol", "1"],
-      ["alice ↔ bob", "2"],
+      ["bob ↔ carol", ""],
+      ["alice ↔ bob", ""],
     ]);
+    expect(pairs.children.map(tip)).toEqual(["1 message", "2 messages"]);
     expect(page.urls).toContain("/api/messages?limit=200&offset=0");
     for (const url of page.urls) expect(url).not.toContain(viewer);
 
@@ -514,7 +521,7 @@ describe("the page's channels and messages", () => {
     for (let i = 0; i < 201; i++) sendMessage(db, OWNER_ACCOUNT, "alice", "bob", `message ${i}`);
     const page = await load(viewer);
     const pairs = page.elements["pair-rows"];
-    await page.until(() => pairs.children.length === 1 && item(pairs.children[0])[1] === "201");
+    await page.until(() => pairs.children.length === 1 && tip(pairs.children[0]) === "201 messages");
     expect(page.urls).toContain("/api/messages?limit=200&offset=200");
     open(pairs.children[0]);
     const log = page.elements["post-rows"];
@@ -588,6 +595,204 @@ describe("the page's channels and messages", () => {
     expect(page.elements["post-rows"].children).toHaveLength(0);
     expect(page.store.size).toBe(0);
   });
+
+  describe("unread badges", () => {
+    // Each sidebar entry's badge, by label.
+    const badges = (rows: Stub) => Object.fromEntries(rows.children.map(item));
+    const setup = () => {
+      for (const name of ["alice", "bob", "carol"]) registerAgent(db, OWNER_ACCOUNT, name, "x");
+      const alice = { ...identityOf(db, OWNER_ACCOUNT, "alice")!, name: "alice" };
+      post(db, OWNER_ACCOUNT, alice, "build", "one");
+      post(db, OWNER_ACCOUNT, alice, "ops", "one");
+      sendMessage(db, OWNER_ACCOUNT, "alice", "bob", "one");
+      sendMessage(db, OWNER_ACCOUNT, "alice", "carol", "one");
+      return alice;
+    };
+    // Runs a poll and waits for it to finish, so the sidebar shows what it read.
+    const pollOnce = async (page: Awaited<ReturnType<typeof load>>) => {
+      page.poll();
+      await page.until(page.scheduled);
+    };
+
+    it("shows none on a first load, then counts what arrives in a closed conversation", async () => {
+      const alice = setup();
+      const page = await load(viewer);
+      const channels = page.elements["channel-rows"];
+      const pairs = page.elements["pair-rows"];
+      await page.until(() => page.scheduled() && pairs.children.length === 2);
+      expect(badges(channels)).toEqual({ build: "", ops: "" });
+      expect(badges(pairs)).toEqual({ "alice ↔ carol": "", "alice ↔ bob": "" });
+
+      post(db, OWNER_ACCOUNT, alice, "ops", "two");
+      sendMessage(db, OWNER_ACCOUNT, "bob", "alice", "two");
+      await pollOnce(page);
+      expect(badges(channels)).toEqual({ build: "", ops: "1" });
+      expect(badges(pairs)).toEqual({ "alice ↔ bob": "1", "alice ↔ carol": "" });
+      post(db, OWNER_ACCOUNT, alice, "ops", "three");
+      sendMessage(db, OWNER_ACCOUNT, "alice", "bob", "three");
+      await pollOnce(page);
+      expect(badges(channels)).toEqual({ build: "", ops: "2" });
+      expect(badges(pairs)).toEqual({ "alice ↔ bob": "2", "alice ↔ carol": "" });
+      // The totals stay in the tooltips.
+      expect(tip(channels.children[1])).toMatch(/; 3 posts, /);
+      expect(tip(pairs.children[0])).toBe("3 messages");
+
+      // Opening a conversation clears its badge, and what arrives while it is open shows none.
+      open(channels.children[1]);
+      expect(badges(channels)).toEqual({ build: "", ops: "" });
+      await page.until(() => page.elements["post-rows"].children.length === 3);
+      await page.until(page.scheduled);
+      post(db, OWNER_ACCOUNT, alice, "ops", "four");
+      await pollOnce(page);
+      expect(badges(channels)).toEqual({ build: "", ops: "" });
+
+      open(pairs.children[0]);
+      expect(badges(pairs)).toEqual({ "alice ↔ bob": "", "alice ↔ carol": "" });
+      await page.until(page.scheduled);
+      sendMessage(db, OWNER_ACCOUNT, "bob", "alice", "four");
+      await pollOnce(page);
+      expect(badges(pairs)).toEqual({ "alice ↔ bob": "", "alice ↔ carol": "" });
+      // The channel left behind counts again from what it had when it was left.
+      post(db, OWNER_ACCOUNT, alice, "ops", "five");
+      await pollOnce(page);
+      expect(badges(channels)).toEqual({ build: "", ops: "1" });
+      // Nothing the page did marked anything read for an agent.
+      expect(unreadSummary(db, OWNER_ACCOUNT, "bob")!.count).toBe(2);
+    });
+
+    it("counts every post of a channel and every message of a pair that first appear after the first poll", async () => {
+      const alice = setup();
+      const page = await load(viewer);
+      const channels = page.elements["channel-rows"];
+      const pairs = page.elements["pair-rows"];
+      await page.until(() => page.scheduled() && pairs.children.length === 2);
+      post(db, OWNER_ACCOUNT, alice, "new", "one");
+      post(db, OWNER_ACCOUNT, alice, "new", "two");
+      sendMessage(db, OWNER_ACCOUNT, "bob", "carol", "one");
+      await pollOnce(page);
+      expect(badges(channels)).toEqual({ build: "", new: "2", ops: "" });
+      expect(badges(pairs)["bob ↔ carol"]).toBe("1");
+    });
+
+    it("shows none until a poll has read every message", async () => {
+      const alice = setup();
+      let busy = true;
+      const page = await load(viewer, (url) => (busy && url.startsWith("/api/messages") ? 503 : undefined));
+      const channels = page.elements["channel-rows"];
+      await page.until(() => page.scheduled() && channels.children.length === 2);
+      post(db, OWNER_ACCOUNT, alice, "ops", "two");
+      await pollOnce(page);
+      expect(badges(channels)).toEqual({ build: "", ops: "" });
+      busy = false;
+      post(db, OWNER_ACCOUNT, alice, "ops", "three");
+      await pollOnce(page);
+      // That poll was the first to read every message, so what it read counts as seen.
+      expect(badges(channels)).toEqual({ build: "", ops: "" });
+      post(db, OWNER_ACCOUNT, alice, "ops", "four");
+      await pollOnce(page);
+      expect(badges(channels)).toEqual({ build: "", ops: "1" });
+    });
+
+    it("keeps a post the open log showed as seen when the first poll that reads every message sets the baseline", async () => {
+      const alice = setup();
+      let busy = true;
+      let late = false;
+      const page = await load(viewer, (url) => {
+        if (busy && url.startsWith("/api/messages")) return 503;
+        // A post that lands after GET /api/channels answered and before the open log is read.
+        if (late && url.startsWith("/api/channel-posts")) {
+          late = false;
+          post(db, OWNER_ACCOUNT, alice, "ops", "late");
+        }
+        return undefined;
+      });
+      const channels = page.elements["channel-rows"];
+      await page.until(() => page.scheduled() && channels.children.length === 2);
+      open(channels.children[1]);
+      await page.until(() => page.elements["post-rows"].children.length === 1);
+      await page.until(page.scheduled);
+      busy = false;
+      late = true;
+      await pollOnce(page);
+      expect(page.elements["post-rows"].children).toHaveLength(2);
+      open(channels.children[0]);
+      await page.until(page.scheduled);
+      await pollOnce(page);
+      expect(badges(channels)).toEqual({ build: "", ops: "" });
+    });
+
+    it("shows none on a pair started from New message", async () => {
+      setup();
+      addPerson(db, "owner", "colin");
+      const page = await load(OWNER_TOKEN);
+      const pairs = page.elements["pair-rows"];
+      await page.until(() => page.scheduled() && pairs.children.length === 2 && !page.elements["new-message"].hidden);
+      page.elements["new-message"].on.click();
+      page.elements["new-from"].value = "colin";
+      (page.elements["new-from"].on as Record<string, () => void>).change();
+      page.elements["new-to"].value = "bob";
+      (page.elements["new-form"].on as Record<string, (event: unknown) => void>).submit({ preventDefault() {} });
+      expect(item(pairs.children[0])).toEqual(["bob ↔ colin", ""]);
+      expect(tip(pairs.children[0])).toBe("0 messages");
+      // Left for another conversation, it still has nothing unread.
+      open(pairs.children[1]);
+      await page.until(page.scheduled);
+      await pollOnce(page);
+      expect(item(pairs.children[0])).toEqual(["bob ↔ colin", ""]);
+    });
+
+    it("marks the open entry with item current and aria-current, and no other", async () => {
+      setup();
+      const page = await load(viewer);
+      const channels = page.elements["channel-rows"];
+      const pairs = page.elements["pair-rows"];
+      await page.until(() => page.scheduled() && pairs.children.length === 2);
+      const marks = () =>
+        [...channels.children, ...pairs.children].map((row) => {
+          const button = row.children[0] as Stub & { ariaCurrent?: string | null };
+          return [item(row)[0], button.className, button.ariaCurrent ?? null];
+        });
+      open(channels.children[1]);
+      expect(marks()).toEqual([
+        ["build", "item", null],
+        ["ops", "item current", "true"],
+        ["alice ↔ carol", "item", null],
+        ["alice ↔ bob", "item", null],
+      ]);
+      open(pairs.children[1]);
+      expect(marks()).toEqual([
+        ["build", "item", null],
+        ["ops", "item", null],
+        ["alice ↔ carol", "item", null],
+        ["alice ↔ bob", "item current", "true"],
+      ]);
+      // A poll that redraws the sidebar keeps the mark.
+      await page.until(page.scheduled);
+      await pollOnce(page);
+      expect(marks().filter((m) => m[2] === "true").map((m) => m[0])).toEqual(["alice ↔ bob"]);
+    });
+
+    it("forgets what was seen with the token, so the next token shows no badges", async () => {
+      const alice = setup();
+      const page = await load(viewer);
+      const channels = page.elements["channel-rows"];
+      const pairs = page.elements["pair-rows"];
+      await page.until(() => page.scheduled() && pairs.children.length === 2);
+      post(db, OWNER_ACCOUNT, alice, "ops", "two");
+      sendMessage(db, OWNER_ACCOUNT, "bob", "alice", "two");
+      await pollOnce(page);
+      expect(badges(channels).ops).toBe("1");
+
+      page.elements["forget"].on.click();
+      expect(channels.children).toHaveLength(0);
+      page.elements["token"].value = addToken(db, "owner", true).token;
+      page.elements["login"].on.submit({ preventDefault() {} } as never);
+      await page.until(() => page.scheduled() && pairs.children.length === 2);
+      expect(badges(channels)).toEqual({ build: "", ops: "" });
+      expect(badges(pairs)).toEqual({ "alice ↔ bob": "", "alice ↔ carol": "" });
+    });
+  });
+
   describe("the log as a chat", () => {
     const MIN = 60 * 1000;
     // Sets when the messages and posts were sent, oldest first, as ms before now.
@@ -2025,7 +2230,7 @@ describe("the page's posting", () => {
       sendMessage(db, OWNER_ACCOUNT, "bob", "zed", "two");
       sendMessage(db, OWNER_ACCOUNT, "zed", "bob", "three");
       await page.poll();
-      await page.until(() => page.elements["pair-rows"].children[1]?.children[0].children[1].textContent === "3");
+      await page.until(() => page.elements["pair-rows"].children[1]?.children[0].title === "3 messages");
       expect(page.elements["pair-rows"].children.map(label)).toEqual(["colin ↔ zed", "bob ↔ zed"]);
       // Once it has a message, it takes its place by recency like the rest.
       page.send("hello zed");
@@ -2033,7 +2238,7 @@ describe("the page's posting", () => {
       expect(page.elements["pair-rows"].children.map(label)).toEqual(["colin ↔ zed", "bob ↔ zed"]);
       sendMessage(db, OWNER_ACCOUNT, "bob", "zed", "four");
       await page.poll();
-      await page.until(() => page.elements["pair-rows"].children[0]?.children[0].children[1].textContent === "4");
+      await page.until(() => page.elements["pair-rows"].children[0]?.children[0].title === "4 messages");
       expect(page.elements["pair-rows"].children.map(label)).toEqual(["bob ↔ zed", "colin ↔ zed"]);
     });
 
@@ -2046,10 +2251,11 @@ describe("the page's posting", () => {
       await ready(page);
       await page.until(() => page.elements["pair-rows"].children.length === 1);
       expect(start(page, "colin", "zed")).toBe(1);
-      // The pair is listed first with a count of 0, marked open, and opens as one chosen in the sidebar does.
+      // The pair is listed first with a count of 0 and no badge, marked open, and opens as one chosen in the sidebar does.
       const pairs = page.elements["pair-rows"];
       expect(pairs.children.map(label)).toEqual(["colin ↔ zed", "bob ↔ zed"]);
-      expect(pairs.children[0].children[0].children[1].textContent).toBe("0");
+      expect(pairs.children[0].children[0].title).toBe("0 messages");
+      expect(pairs.children[0].children[0].children[1].hidden).toBe(true);
       expect(pairs.children[0].children[0].className).toBe("item current");
       expect(page.elements["new-form"].hidden).toBe(true);
       expect(page.elements["log"].hidden).toBe(false);
@@ -2070,7 +2276,9 @@ describe("the page's posting", () => {
       expect(unreadSummary(db, OWNER_ACCOUNT, "zed")!.count).toBe(before.count + 1);
       // The first message lands in the same entry, not a second one.
       expect(pairs.children.map(label)).toEqual(["colin ↔ zed", "bob ↔ zed"]);
-      expect(pairs.children[0].children[0].children[1].textContent).toBe("1");
+      expect(pairs.children[0].children[0].title).toBe("1 message");
+      // What the reader sent in the open pair counts as seen.
+      expect(pairs.children[0].children[0].children[1].hidden).toBe(true);
       for (const stub of page.made) expect(stub.html).toEqual([]);
     });
 
