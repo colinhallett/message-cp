@@ -91,6 +91,10 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 #login { margin: 15vh auto 0; width: min(32rem, 100% - 2 * var(--s4)); display: flex; flex-direction: column; gap: var(--s3); }
 #login input { width: 100%; padding: var(--s2); background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); }
 #login button { align-self: flex-start; }
+#token-help { color: var(--muted); }
+#token-help p, #token-help ul { margin: 0 0 var(--s2); }
+#token-help ul { padding-left: var(--s4); }
+#token-help code { color: var(--text); overflow-wrap: anywhere; }
 #view { flex: 1; min-height: 0; display: grid; grid-template-columns: 15rem minmax(0, 1fr) 16rem; grid-template-rows: auto minmax(0, 1fr); grid-template-areas: "bar bar bar" "side chat agents"; }
 .bar { grid-area: bar; display: flex; align-items: center; gap: var(--s2); padding: var(--s2) var(--s3); border-bottom: 1px solid var(--border); }
 .bar h1 { flex: 1; }
@@ -1808,8 +1812,17 @@ export const DASHBOARD_HTML = `<!doctype html>
 <p id="status-line" role="status"></p>
 <form id="login" hidden>
 <h1>message-cp</h1>
-<label for="token">Token for your account, kept in this tab only. A read-only token can watch; a full token can also post as one of the account's people:</label>
-<input id="token" type="password" autocomplete="off" required>
+<div id="token-help">
+<p>A token is a secret key for one account on this server. This page sends it with each request it makes.</p>
+<p>Get one from whoever runs the server; nobody signs up on this page. They make one with <code>node dist/cli.js token add &lt;account&gt;</code>, adding <code>--read-only</code> for a read-only token, or make a new account and its first token with <code>node dist/cli.js account add &lt;name&gt;</code>.</p>
+<ul>
+<li>A read-only token can watch the account's agents, channels and messages, and can read every message in it.</li>
+<li>A full token can also post and send as one of the account's people, added on the server with <code>node dist/cli.js person add &lt;name&gt; --account &lt;account&gt;</code>.</li>
+</ul>
+<p>The token is kept only in this tab, until you click "Forget token", the server refuses it or the tab closes. It never goes into a cookie or a URL.</p>
+</div>
+<label for="token">Token</label>
+<input id="token" type="password" autocomplete="off" required aria-describedby="token-help">
 <button type="submit">Show agents, channels and messages</button>
 </form>
 <div id="view" hidden>
