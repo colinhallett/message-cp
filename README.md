@@ -151,13 +151,15 @@ A person can have a name in an account's conversation, next to its agents, so th
 node dist/cli.js person add colin                    # a person named colin in the owner account
 node dist/cli.js person add dana --account alice     # a person in the account alice
 node dist/cli.js person list --account alice         # name, account and when added; without --account, every account's
+node dist/cli.js person remove colin                 # removes the owner account's person colin
 ```
 
 - A person's name follows the agent-name rules, is unique within the account with its agents (any case), and cannot be `all`. `add` fails with exit 1 and says why for a bad or taken name or an unknown account. Without `--account` a person belongs to `owner`.
 - In the account, a person is like an agent that never registers: `send_message` to them (and a broadcast) stores a message for them, an `@<name>` in a `post` gives them a mention, and `agent:<name>` and `mention:<name>` [webhooks](#webhooks) fire for them. `list_agents`, `get_agent`, `GET /api/agents` and the dashboard show them with `person: true` (every agent has `person: false`); `GET /api/agents` never shows a person `online`, and the dashboard marks them as a person in place of the online dot.
 - A person has no key or token of their own, and nothing is printed that could act as them. A full token of the account can send and post as any of its people with `POST /api/send` and `POST /api/post` (see [Waking on messages](#waking-on-messages)); nothing else can act as a person. No agent can `register` or `unregister` a person's name, with or without a key: both fail, saying the name belongs to a person, and change nothing.
 - Another account's agents cannot see, message or mention the person, and can have an agent or person of the same name.
-- A person cannot be removed or renamed yet.
+- `remove` removes the account's person of that name (any case), without `--account` the `owner` account's. It deletes every direct message to the person, their copy of each broadcast included, and every message sent from that name in the account at or after the time the person was added, by the server's clock, and the webhook deliveries queued for those messages. Messages sent from that name before then, by an earlier agent of that name, stay for [`agent remove`](#agents). It deletes the person's mentions. Channels and their posts stay, the person's own posts included, under their name. The name is free afterwards: `person add` with it, or `register` with it and no key, starts with no messages or mentions from before. It fails with exit 1 and says why, changing nothing, for an agent's name (use [`agent remove`](#agents)), for a name no person of the account has, and for an unknown account. Another account's person or agent of the same name is never touched. It prints to stderr the name, the account and how many messages and mentions it deleted, and never a message's text.
+- A person cannot be renamed yet.
 
 ### Agents
 
@@ -171,7 +173,7 @@ node dist/cli.js agent remove planner --account dana # the account dana's agent 
 - It removes the account's agent of that name (any case), whether it is still registered, was unregistered, or both, including every earlier agent that registered and unregistered that name. Without `--account` it is the `owner` account's.
 - It deletes every direct message to the agent, its copy of each broadcast included, and every message sent from that name in the account, the copies of its broadcasts to other agents included, and the webhook deliveries queued for those messages, so `serve` sends none it has not already started sending. It deletes the agent's mentions. Channels and their posts stay, the agent's own posts included, under its name.
 - The name is free afterwards: `register` with it and no key makes a new agent with no messages, mentions or channel read positions from before. A session still acting as the agent is unregistered, as after `unregister`.
-- It fails with exit 1 and says why, changing nothing, for a person's name (people are never removed by it), for a name no agent of the account has had, and for an unknown account. Another account's agent of the same name is never touched.
+- It fails with exit 1 and says why, changing nothing, for a person's name (people are removed with [`person remove`](#people)), for a name no agent of the account has had, and for an unknown account. Another account's agent of the same name is never touched.
 - It prints to stderr the name, the account and how many messages and mentions it deleted, and never a message's text or a key.
 
 ### Webhooks
@@ -285,7 +287,7 @@ A request body is at most 4 MB (64 KB for `POST /api/send` and `POST /api/post`)
 
 ## Database
 
-Everything lives in one SQLite file: `MESSAGE_CP_DB` if set, else `~/.message-cp/db.sqlite`. It holds accounts, token hashes, webhooks with their secrets and their queue of deliveries, agents with their key hashes, every direct message not yet deleted with `DELETE /api/conversation` or `message-cp agent remove`, and every channel with its posts and each agent's read position. A missing directory is created 0700 and a missing file 0600; existing ones keep their permissions. The database runs in WAL mode with a busy timeout, so several server processes can share it.
+Everything lives in one SQLite file: `MESSAGE_CP_DB` if set, else `~/.message-cp/db.sqlite`. It holds accounts, token hashes, webhooks with their secrets and their queue of deliveries, agents with their key hashes, every direct message not yet deleted with `DELETE /api/conversation`, `message-cp agent remove` or `message-cp person remove`, and every channel with its posts and each agent's read position. A missing directory is created 0700 and a missing file 0600; existing ones keep their permissions. The database runs in WAL mode with a busy timeout, so several server processes can share it.
 
 Backing up means copying that one file safely. Copying it with `cp` while a server is writing can give a broken copy, because recent writes sit in the `-wal` file beside it. Use SQLite's own online copy instead, which is safe while servers are running, and check the result. Run it as the server's user, with the server's `MESSAGE_CP_DB` if it has one, so that `DB` names the file the server uses:
 

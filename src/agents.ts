@@ -295,12 +295,13 @@ export const purgeAgent = (db: Db, account: string, name: string): Purged =>
     // Before anything is deleted, so a person's messages, and any sent under the name they now have, are never touched.
     if (live?.person === 1) throw new PurgeError(`The name '${live.name}' belongs to a person, not an agent.`);
     const removed = db
-      .prepare("SELECT id, removed_name FROM agents WHERE account_id = ? AND removed_at IS NOT NULL AND removed_name = ? COLLATE NOCASE ORDER BY id")
+      .prepare("SELECT id, removed_name FROM agents WHERE account_id = ? AND person = 0 AND removed_at IS NOT NULL AND removed_name = ? COLLATE NOCASE ORDER BY id")
       .all(acct.id, name) as { id: number; removed_name: string }[];
     const ids = [...(live ? [live.id] : []), ...removed.map((r) => r.id)];
     if (ids.length === 0) throw new PurgeError(`No agent named '${name}' in account '${acct.name}'.`);
-    // The same rows as `ids`, as a subquery, so no statement needs one bound variable per registration.
-    const rows = `SELECT id FROM agents WHERE account_id = ? AND (id = ? OR (removed_at IS NOT NULL AND removed_name = ? COLLATE NOCASE))`;
+    // The same rows as `ids`, as a subquery, so no statement needs one bound variable per registration. A person
+    // removed with `person remove` is not one of them.
+    const rows = `SELECT id FROM agents WHERE account_id = ? AND (id = ? OR (person = 0 AND removed_at IS NOT NULL AND removed_name = ? COLLATE NOCASE))`;
     const rowArgs = [acct.id, live?.id ?? null, name];
     const messages = db
       .prepare(
@@ -353,6 +354,38 @@ export const addPerson = (db: Db, account: string, name: string): Person =>
       "INSERT INTO agents (account_id, name, bio, registered_at, last_seen, key_hash, instance, person) VALUES (?, ?, '', ?, ?, ?, ?, 1)",
     ).run(acct.id, name, now, now, PERSON_KEY_HASH, PERSON_INSTANCE);
     return { name, account: acct.name, addedAt: new Date(now).toISOString() };
+  }).immediate();
+
+/**
+ * For `message-cp person remove`: removes the live person `name` (any case) of the account named `account`, with every
+ * direct message to them or sent from the name since they were added, and their mentions, and frees the name, as
+ * `purgeAgent` does for an agent. Channels, posts and read positions stay, and so does the row, marked removed.
+ * Removed rows of earlier agents with that name, and the messages they sent, are left to `agent remove`. Refuses,
+ * changing nothing, an agent's name, a name no live person of the account has, or an unknown account.
+ */
+export const removePerson = (db: Db, account: string, name: string): Purged =>
+  db.transaction((): Purged => {
+    const acct = db.prepare("SELECT id, name FROM accounts WHERE name = ?").get(account) as { id: AccountId; name: string } | undefined;
+    if (!acct) throw new PersonError(`No account named '${account}'.`);
+    const live = db
+      .prepare("SELECT id, name, person, registered_at FROM agents WHERE account_id = ? AND name = ? AND removed_at IS NULL")
+      .get(acct.id, name) as { id: number; name: string; person: number; registered_at: number } | undefined;
+    // Before anything is deleted, so an agent's messages are never touched.
+    if (live?.person === 0) throw new PersonError(`The name '${live.name}' belongs to an agent, not a person. Remove it with \`agent remove\`.`);
+    if (!live) throw new PersonError(`No person named '${name}' in account '${acct.name}'.`);
+    // Only the person sends under the name while it is theirs, so messages from it since they were added, by the
+    // server's clock, are theirs; older ones are an earlier agent's, which keeps them until `agent remove`.
+    const messages = db
+      .prepare(
+        `DELETE FROM messages WHERE recipient_id = ?
+         OR (sender = ? COLLATE NOCASE AND created_at >= ? AND recipient_id IN (SELECT id FROM agents WHERE account_id = ?))`,
+      )
+      .run(live.id, live.name, live.registered_at, acct.id).changes;
+    const mentions = db.prepare("DELETE FROM mentions WHERE agent_id = ?").run(live.id).changes;
+    db.prepare(
+      "UPDATE agents SET name = ?, removed_name = name, removed_at = ?, key_hash = ?, instance = ? WHERE id = ?",
+    ).run(removedName(live.id), Date.now(), REMOVED_KEY_HASH, REMOVED_INSTANCE, live.id);
+    return { name: live.name, account: acct.name, messages, mentions };
   }).immediate();
 
 /** The live people of the account named `account`, or of every account without it, by account then name. */

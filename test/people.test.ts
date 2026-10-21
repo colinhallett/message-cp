@@ -10,6 +10,7 @@ import { addAccount, listAccounts } from "../src/accounts.js";
 import {
   PersonError,
   ToolError,
+  purgeAgent,
   addPerson,
   getAgent,
   identityOf,
@@ -18,10 +19,12 @@ import {
   nameOfIdentity,
   registerAgent,
   registerFromEnv,
+  removePerson,
 } from "../src/agents.js";
 import { OWNER_ACCOUNT, openDb, type AccountId, type Db } from "../src/db.js";
 import { startHttp } from "../src/http.js";
-import { listAgentsUnread, readInbox, sendMessage } from "../src/messages.js";
+import { listAgentsUnread, readInbox, sendAsPerson, sendMessage } from "../src/messages.js";
+import { postAsPerson } from "../src/channels.js";
 import { Session, createServer } from "../src/server.js";
 import { addWebhook, deliveryBody } from "../src/webhooks.js";
 
@@ -225,6 +228,137 @@ function getAgentId(name: string, account: AccountId): number {
   return (db.prepare("SELECT id FROM agents WHERE account_id = ? AND name = ?").get(account, name) as { id: number }).id;
 }
 
+const bodies = (account: AccountId) =>
+  db
+    .prepare("SELECT m.body FROM messages m JOIN agents a ON a.id = m.recipient_id WHERE a.account_id = ? ORDER BY m.id")
+    .all(account)
+    .map((r) => (r as { body: string }).body);
+const mentionsOf = (account: AccountId) =>
+  db.prepare("SELECT m.agent_id FROM mentions m JOIN agents a ON a.id = m.agent_id WHERE a.account_id = ? ORDER BY m.post_id").all(account);
+
+/**
+ * The person colin and the agents alice and bob in `account`: a message each way between alice and colin, a broadcast
+ * from each of them, a mention of colin and of alice, and a post by colin.
+ */
+async function personConversation(account: AccountId = OWNER_ACCOUNT, tag = "") {
+  const accountName = account === OWNER_ACCOUNT ? "owner" : "friend";
+  addPerson(db, accountName, "colin");
+  const alice = await agent("alice", account);
+  const bob = await agent("bob", account);
+  await call(alice.client, "join_channel", { channel: "general" });
+  await call(alice.client, "send_message", { to: "colin", body: `${tag}to colin` });
+  sendAsPerson(db, account, "colin", "alice", `${tag}from colin`);
+  sendAsPerson(db, account, "colin", "all", `${tag}colin to all`);
+  await call(alice.client, "send_message", { to: "all", body: `${tag}alice to all` });
+  await call(bob.client, "post", { channel: "general", body: `${tag}@colin look` });
+  await call(bob.client, "post", { channel: "general", body: `${tag}@alice look` });
+  postAsPerson(db, account, "colin", "general", `${tag}colin posts`);
+  return { alice, bob };
+}
+
+describe("removePerson", () => {
+  it("removes a person, the messages to and from them and their mentions, and keeps the row, channels and posts", async () => {
+    addWebhook(db, "owner", "https://example.com/", "agent:colin", true);
+    addWebhook(db, "owner", "https://example.com/", "agent:bob", true);
+    const { alice } = await personConversation();
+    const queued = (db.prepare("SELECT COUNT(*) AS n FROM webhook_deliveries WHERE message_id IS NOT NULL").get() as { n: number }).n;
+    const posts = db.prepare("SELECT * FROM channel_posts ORDER BY id").all();
+    const reads = db.prepare("SELECT * FROM channel_reads ORDER BY agent_id").all();
+    const channels = db.prepare("SELECT * FROM channels").all();
+    const id = getAgentId("colin", OWNER_ACCOUNT);
+
+    expect(removePerson(db, "owner", "COLIN")).toEqual({ name: "colin", account: "owner", messages: 5, mentions: 1 });
+    expect(bodies(OWNER_ACCOUNT)).toEqual(["alice to all"]);
+    expect(mentionsOf(OWNER_ACCOUNT)).toHaveLength(1);
+    expect(db.prepare("SELECT name, removed_name, removed_at IS NOT NULL AS removed FROM agents WHERE id = ?").get(id)).toEqual({
+      name: `removed:${id}`,
+      removed_name: "colin",
+      removed: 1,
+    });
+    expect(listPeople(db)).toEqual([]);
+    expect(getAgent(db, OWNER_ACCOUNT, "colin")).toBeUndefined();
+    // Only the deliveries of the messages that are left are still queued.
+    const left = new Set(db.prepare("SELECT id FROM messages").all().map((r) => (r as { id: number }).id));
+    const deliveries = db.prepare("SELECT message_id FROM webhook_deliveries WHERE message_id IS NOT NULL").all() as { message_id: number }[];
+    expect(deliveries.length).toBeGreaterThan(0);
+    expect(deliveries.length).toBeLessThan(queued);
+    expect(deliveries.every((d) => left.has(d.message_id))).toBe(true);
+    // Channels, posts (colin's own included) and read positions stay.
+    expect(db.prepare("SELECT * FROM channel_posts ORDER BY id").all()).toEqual(posts);
+    expect(db.prepare("SELECT * FROM channel_reads ORDER BY agent_id").all()).toEqual(reads);
+    expect(db.prepare("SELECT * FROM channels").all()).toEqual(channels);
+    expect((await call(alice.client, "read_inbox", { unread_only: false })).json.map((m: { body: string }) => m.body)).toEqual(["@alice look"]);
+  });
+
+  it("frees the name for a new person, or for an agent, with nothing from before", async () => {
+    await personConversation();
+    removePerson(db, "owner", "colin");
+    addPerson(db, "owner", "colin");
+    expect(readInbox(db, OWNER_ACCOUNT, "colin", false)).toEqual([]);
+    removePerson(db, "owner", "colin");
+    const again = await agent("colin");
+    expect((await call(again.client, "read_inbox", { unread_only: false })).json).toEqual([]);
+    expect(getAgent(db, OWNER_ACCOUNT, "colin")).toMatchObject({ person: false });
+  });
+
+  it("refuses an agent, an unknown name, a removed person and an unknown account, and changes nothing", async () => {
+    await personConversation();
+    addPerson(db, "owner", "dana");
+    removePerson(db, "owner", "dana");
+    addPerson(db, "friend", "erin");
+    const snapshot = () => ["agents", "messages", "mentions", "channel_posts", "channel_reads", "webhook_deliveries"].map((t) => db.prepare(`SELECT * FROM ${t}`).all());
+    const before = snapshot();
+    expect(() => removePerson(db, "owner", "Alice")).toThrow("The name 'alice' belongs to an agent, not a person. Remove it with `agent remove`.");
+    expect(() => removePerson(db, "owner", "nobody")).toThrow("No person named 'nobody' in account 'owner'.");
+    expect(() => removePerson(db, "owner", "dana")).toThrow("No person named 'dana' in account 'owner'.");
+    // Another account's person is not one of this account's.
+    expect(() => removePerson(db, "owner", "erin")).toThrow("No person named 'erin' in account 'owner'.");
+    expect(() => removePerson(db, "nobody", "colin")).toThrow("No account named 'nobody'.");
+    expect(() => removePerson(db, "nobody", "colin")).toThrow(PersonError);
+    expect(snapshot()).toEqual(before);
+    // `agent remove` does not take a removed person for an agent.
+    expect(() => purgeAgent(db, "owner", "dana")).toThrow("No agent named 'dana' in account 'owner'.");
+    expect(snapshot()).toEqual(before);
+  });
+
+  it("leaves the messages of an earlier agent of the same name to `agent remove`", async () => {
+    const old = await agent("colin");
+    await agent("dave");
+    await call(old.client, "send_message", { to: "dave", body: "old colin to dave" });
+    await call(old.client, "send_message", { to: "all", body: "old colin to all" });
+    expect((await call(old.client, "unregister")).isError).toBe(false);
+    // Sent before the person was added, even on a fast clock.
+    db.prepare("UPDATE messages SET created_at = created_at - 1000").run();
+    await personConversation();
+
+    // The person's: to them, from them, their broadcast's three copies and their copy of alice's.
+    expect(removePerson(db, "owner", "colin")).toMatchObject({ messages: 6, mentions: 1 });
+    expect(bodies(OWNER_ACCOUNT)).toEqual(["old colin to dave", "old colin to all", "alice to all", "alice to all"]);
+    expect(purgeAgent(db, "owner", "colin")).toMatchObject({ messages: 2 });
+    expect(bodies(OWNER_ACCOUNT)).toEqual(["alice to all", "alice to all"]);
+  });
+
+  it("leaves another account's person and agents of the same names, their messages and mentions untouched", async () => {
+    await personConversation(OWNER_ACCOUNT, "owner ");
+    await personConversation(friend, "friend ");
+    const friendState = () =>
+      [
+        db.prepare("SELECT m.* FROM messages m JOIN agents a ON a.id = m.recipient_id WHERE a.account_id = ? ORDER BY m.id").all(friend),
+        mentionsOf(friend),
+        db.prepare("SELECT * FROM agents WHERE account_id = ? ORDER BY id").all(friend),
+      ];
+    const before = friendState();
+    expect(before[0]).toHaveLength(6);
+    expect(removePerson(db, "owner", "colin")).toMatchObject({ messages: 5, mentions: 1 });
+    expect(friendState()).toEqual(before);
+    expect(listPeople(db, "friend").map((p) => p.name)).toEqual(["colin"]);
+
+    // And the other way round.
+    expect(removePerson(db, "friend", "colin")).toMatchObject({ account: "friend", messages: 5, mentions: 1 });
+    expect(bodies(OWNER_ACCOUNT)).toEqual(["owner alice to all"]);
+  });
+});
+
 describe("GET /api/agents", () => {
   it("marks a person with person true and never online, and shows another account no person", async () => {
     const token = "owner-token";
@@ -325,11 +459,48 @@ describe("message-cp person", () => {
     expect(listPeople(db)).toEqual([]);
   }, 60_000);
 
+  it("removes the owner's person by default, or --account's, saying what it removed and printing no body", async () => {
+    await personConversation(OWNER_ACCOUNT, "secret-owner ");
+    await personConversation(friend, "secret-friend ");
+    const res = cli("person", "remove", "Colin");
+    expect(res.status).toBe(0);
+    expect(res.stdout).toBe("");
+    expect(res.stderr).toBe("message-cp: removed person 'colin' of account 'owner', with 5 direct message(s) and 1 mention(s). The name is free.\n");
+    expect(bodies(OWNER_ACCOUNT)).toEqual(["secret-owner alice to all"]);
+    expect(bodies(friend)).toHaveLength(6);
+
+    const other = cli("person", "remove", "colin", "--account", "friend");
+    expect(other.status).toBe(0);
+    expect(other.stderr).toContain("removed person 'colin' of account 'friend', with 5 direct message(s) and 1 mention(s)");
+    expect(bodies(friend)).toEqual(["secret-friend alice to all"]);
+    for (const out of [res, other]) expect(out.stderr).not.toContain("secret");
+  }, 60_000);
+
+  it("fails person remove with exit 1 and a reason for an agent, an unknown name or an unknown account", () => {
+    addPerson(db, "owner", "colin");
+    registerAgent(db, OWNER_ACCOUNT, "alice", "x");
+    sendAsPerson(db, OWNER_ACCOUNT, "colin", "alice", "hello");
+    const snapshot = () => ["agents", "messages", "mentions"].map((t) => db.prepare(`SELECT * FROM ${t}`).all());
+    const before = snapshot();
+    for (const [args, message] of [
+      [["person", "remove", "alice"], "The name 'alice' belongs to an agent, not a person."],
+      [["person", "remove", "nobody"], "No person named 'nobody' in account 'owner'."],
+      [["person", "remove", "colin", "--account", "friend"], "No person named 'colin' in account 'friend'."],
+      [["person", "remove", "colin", "--account", "nobody"], "No account named 'nobody'."],
+    ] as const) {
+      const res = cli(...args);
+      expect(res.status).toBe(1);
+      expect(res.stdout).toBe("");
+      expect(res.stderr).toContain(message);
+    }
+    expect(snapshot()).toEqual(before);
+  }, 60_000);
+
   it("prints its usage and exits 2 for anything else", () => {
-    for (const args of [["person"], ["person", "add"], ["person", "add", "--account", "owner"], ["person", "add", "c", "--bio", "x"], ["person", "list", "--account"], ["person", "remove", "c"]]) {
+    for (const args of [["person"], ["person", "add"], ["person", "add", "--account", "owner"], ["person", "add", "c", "--bio", "x"], ["person", "list", "--account"], ["person", "remove"], ["person", "remove", "--account", "owner"], ["person", "remove", "c", "--key", "x"], ["person", "rename", "c"]]) {
       const res = cli(...args);
       expect(res.status).toBe(2);
-      expect(res.stderr).toContain("usage: message-cp person add <name>");
+      expect(res.stderr).toContain("usage: message-cp person add <name> [--account <name>] | message-cp person remove <name> [--account <name>]");
     }
     expect(cli("nope").stderr).toContain("Commands: serve, wait, account, token, webhook, person");
   }, 120_000);

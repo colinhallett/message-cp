@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { DEFAULT_HTTP_HOST, DEFAULT_HTTP_PORT, startHttp } from "./http.js";
-import { PersonError, PurgeError, addPerson, listPeople, purgeAgent } from "./agents.js";
+import { PersonError, PurgeError, addPerson, listPeople, purgeAgent, removePerson } from "./agents.js";
 import { AccountError, addAccount, addToken, listAccounts, revokeToken } from "./accounts.js";
 import { OWNER_ACCOUNT, openDb } from "./db.js";
 import { hasUnread, unreadSummary } from "./messages.js";
@@ -162,12 +162,15 @@ if (command === "serve") {
 } else if (command === "person") {
   // Run on the server, like `webhook`. A person has no key or token, so nothing secret is printed.
   const usage = () => {
-    console.error("usage: message-cp person add <name> [--account <name>] | message-cp person list [--account <name>]");
+    console.error(
+      "usage: message-cp person add <name> [--account <name>] | message-cp person remove <name> [--account <name>] | message-cp person list [--account <name>]",
+    );
     process.exit(2);
   };
   const [action, ...args] = rest;
-  const name = action === "add" ? args.shift() : undefined;
-  if ((action !== "add" && action !== "list") || (action === "add" && (!name || name.startsWith("--")))) usage();
+  const named = action === "add" || action === "remove";
+  const name = named ? args.shift() : undefined;
+  if ((!named && action !== "list") || (named && (!name || name.startsWith("--")))) usage();
   const opts = new Map<string, string>();
   for (let i = 0; i < args.length; i += 2) {
     const option = args[i]!;
@@ -180,6 +183,11 @@ if (command === "serve") {
     if (action === "add") {
       const p = addPerson(db, opts.get("--account") ?? "owner", name!);
       console.error(`message-cp: person '${p.name}' in account '${p.account}'. Agents there can message and @mention them.`);
+    } else if (action === "remove") {
+      const p = removePerson(db, opts.get("--account") ?? "owner", name!);
+      console.error(
+        `message-cp: removed person '${p.name}' of account '${p.account}', with ${p.messages} direct message(s) and ${p.mentions} mention(s). The name is free.`,
+      );
     } else {
       for (const p of listPeople(db, opts.get("--account"))) console.log(`${p.name}\t${p.account}\tadded ${p.addedAt}`);
     }
