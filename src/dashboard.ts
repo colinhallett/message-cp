@@ -170,9 +170,11 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .c7 { --who: var(--who7); }
 .delivery.failed .tag { color: var(--error); background: var(--error-bg); }
 .item { display: flex; align-items: center; gap: var(--s2); text-align: left; background: none; border: 0; border-radius: var(--radius); padding: var(--s1) var(--s2); margin: 1px var(--s2); width: calc(100% - 2 * var(--s2)); }
-.item.current { background: var(--active); font-weight: 600; }
+.item.current { background: var(--active); font-weight: 600; box-shadow: inset 3px 0 0 var(--accent); }
 .item .label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .count { font-size: 0.75rem; color: var(--muted); }
+/* A sidebar entry's unread badge: a filled pill in the accent colour, with the page's background as its text. */
+.badge { min-width: 1.25rem; padding: 0 var(--s1); border-radius: 999px; background: var(--accent); color: var(--bg); font-size: 0.7rem; font-weight: 600; line-height: 1.25rem; text-align: center; }
 .agent { display: grid; grid-template-columns: auto minmax(0, 1fr); column-gap: var(--s2); padding: var(--s2) var(--s3); }
 .agent > :not(.dot) { grid-column: 2; overflow-wrap: anywhere; }
 .kind { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--accent); }
@@ -263,6 +265,14 @@ let madePairs = 0;
 let openPair;
 // Whether the webhook deliveries are open in the log. At most one of openChannel, openPair and openDeliveries is set.
 let openDeliveries = false;
+// What this tab has seen of each channel and pair, by sidebar key: its count of posts or messages when the tab last
+// had it open, or when the first poll for this token read it. An entry's total less this is its unread badge. It lives
+// only here, is never sent or stored, and marks nothing read for any agent; ask() forgets it.
+let seen = new Map();
+// Each entry's total as the sidebar last showed it, by sidebar key, so markOpen can count an entry seen in place.
+let shownTotals = new Map();
+// Whether the first poll for this token has read the channels and every message. Until it has, no badge shows.
+let seenAll = false;
 // The count on the sidebar's webhooks entry, once the entry is made: how many deliveries the view read when last open.
 let deliveryCount;
 // The search's own counter and request, separate from generation and controller, so a newer search, leaving the
@@ -398,6 +408,9 @@ function ask(message) {
   pairs = new Map();
   madePairs = 0;
   pairRows.replaceChildren();
+  seen = new Map();
+  shownTotals = new Map();
+  seenAll = false;
   messagesNote.textContent = "";
   if (deliveryCount) deliveryCount.textContent = "";
   closeLog();
@@ -919,7 +932,7 @@ function choose(text) {
 }
 
 // Opens the pair of from and to as a conversation, as choosing it in the sidebar does, with from chosen as the person
-// the page posts as. A pair with no messages yet is added to the sidebar with a count of 0, first, under the key
+// the page posts as. A pair with no messages yet is added to the sidebar first, with no badge, under the key
 // pairKey gives its messages, so the first one lands in it. Only a person of the account is ever chosen, and only a
 // name the form offers is ever opened with them.
 function startPair(from, to) {
@@ -1330,6 +1343,12 @@ async function poll(gen) {
       const refused = values.find((v) => v.status === 401);
       const failed = [messages, posts].find((r) => r.status === "rejected");
       if (failed && !refused) throw failed.reason;
+      // Everything the first poll for this token read counts as seen, so loading the page shows no badges.
+      if (!seenAll && !refused && messages.status === "fulfilled" && messages.value.ok && gen === generation) {
+        for (const c of result.channels) seen.set("channel " + String(c.name), c.posts);
+        for (const [key, pair] of pairs) seen.set("pair " + key, pair.count);
+        seenAll = true;
+      }
       result = refused ?? values.find((v) => !v.ok) ?? posts.value;
     }
   } catch {
@@ -1444,24 +1463,43 @@ function openKey() {
   return undefined;
 }
 
-// A sidebar entry: a button with a label and a count that opens a conversation. Its value is its key, which markOpen
-// compares with openKey().
-function sidebarItem(key, label, labelClass, count, open) {
+// A sidebar entry: a button with a label and, after it, a count or an unread badge (end), that opens a conversation.
+// Its value is its key, which markOpen compares with openKey().
+function sidebarItem(key, label, labelClass, end, open) {
   const button = document.createElement("button");
   button.type = "button";
   button.value = key;
   button.className = key === openKey() ? "item current" : "item";
-  button.append(part("span", labelClass ? "label " + labelClass : "label", label), part("span", "count", String(count)));
+  if (key === openKey()) button.ariaCurrent = "true";
+  button.append(part("span", labelClass ? "label " + labelClass : "label", label), end);
   button.addEventListener("click", open);
   const li = document.createElement("li");
   li.append(button);
   return li;
 }
 
+// How many of an entry's total posts or messages this tab has not seen. The open entry has seen them all, and one that
+// first appears after the first poll has seen none.
+function unread(key, total) {
+  shownTotals.set(key, total);
+  if (key === openKey()) seen.set(key, total);
+  if (!seenAll) return 0;
+  if (!seen.has(key)) seen.set(key, 0);
+  return total - seen.get(key);
+}
+
+// An entry's unread badge, hidden when there is nothing unread.
+function badge(count) {
+  const node = part("span", "badge", String(count));
+  node.hidden = !(count > 0);
+  return node;
+}
+
 function showChannels(channels) {
   const items = channels.map((c) => {
     const name = String(c.name);
-    const li = sidebarItem("channel " + name, name, "channel-name", c.posts, () => openLog(name));
+    const key = "channel " + name;
+    const li = sidebarItem(key, name, "channel-name", badge(unread(key, c.posts)), () => openLog(name));
     const members = Array.isArray(c.members) ? c.members.map(String).join(", ") : "";
     const last = c.lastPostAt == null ? "no posts" : "last post " + ago(c.lastPostAt);
     li.children[0].title = "Members: " + (members || "–") + "; " + c.posts + " posts, " + last;
@@ -1484,18 +1522,29 @@ function pairKey(m) {
 // message first. A started pair takes its place among the rest once its first message comes.
 function showPairs() {
   const empty = (pair) => (pair.count === 0 ? pair.made ?? 0 : 0);
-  const items = [...pairs].sort((a, b) => empty(b[1]) - empty(a[1]) || b[1].newest - a[1].newest).map(([key, pair]) =>
-    sidebarItem("pair " + key, pair.names.join(" ↔ "), "", pair.count, () => openPairLog(key)),
-  );
+  const items = [...pairs].sort((a, b) => empty(b[1]) - empty(a[1]) || b[1].newest - a[1].newest).map(([key, pair]) => {
+    const li = sidebarItem("pair " + key, pair.names.join(" ↔ "), "", badge(unread("pair " + key, pair.count)), () =>
+      openPairLog(key),
+    );
+    li.children[0].title = pair.count === 1 ? "1 message" : pair.count + " messages";
+    return li;
+  });
   pairRows.replaceChildren(...items);
 }
 
 // Marks the open channel, pair or webhook deliveries in the sidebar, in place, so the button just chosen keeps the focus.
+// The open entry's posts or messages all count as seen, so its badge goes.
 function markOpen() {
   const key = openKey();
+  if (shownTotals.has(key)) seen.set(key, shownTotals.get(key));
   for (const li of [...channelRows.children, ...pairRows.children, ...deliveryEntry.children]) {
     const button = li.children[0];
-    if (button) button.className = button.value === key ? "item current" : "item";
+    if (!button) continue;
+    const current = button.value === key;
+    button.className = current ? "item current" : "item";
+    button.ariaCurrent = current ? "true" : null;
+    const end = button.children[1];
+    if (current && end.className === "badge") end.hidden = true;
   }
 }
 
@@ -1625,7 +1674,7 @@ function resultEntry(r) {
 // never replaces the button and takes its focus; its count is blank until the view is first opened.
 function showDeliveryEntry() {
   if (deliveryCount) return;
-  deliveryEntry.append(sidebarItem("deliveries", "Webhook deliveries", "", "", openDeliveryLog));
+  deliveryEntry.append(sidebarItem("deliveries", "Webhook deliveries", "", part("span", "count", ""), openDeliveryLog));
   deliveryCount = deliveryEntry.children[0].children[0].children[1];
 }
 
@@ -1660,6 +1709,9 @@ function deliveryRow(d) {
 
 function appendLog(posts) {
   held += posts.length;
+  // What the open log shows counts as seen, even a post that came after GET /api/channels answered.
+  const key = "channel " + openChannel;
+  seen.set(key, Math.max(seen.get(key) ?? 0, held));
   appendEntries(posts.map((p) => chatEntry(p.from, "", p.sentAt, p.body)));
 }
 
