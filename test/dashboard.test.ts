@@ -378,7 +378,9 @@ describe("the page's channels and messages", () => {
       ["colin", "kind", "person", "a person, not an agent"],
     ]);
     expect(rows.children.map((row) => field(details(row), "seen")?.split(" ")[0])).toEqual(["last", "added"]);
-    expect(rows.children.map((row) => agentButton(row).title.split(" · ")[1].split(" ")[0])).toEqual(["last", "added"]);
+    expect(agentButton(rows.children[0]).title).toMatch(/^x · last seen /);
+    // A person added without a bio has no empty part at the start of its tooltip.
+    expect(agentButton(rows.children[1]).title).toMatch(/^added \d+s ago · unread: 0 messages, 0 posts, 0 mentions$/);
   });
 
   describe("the compact agents panel", () => {

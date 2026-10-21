@@ -1467,7 +1467,8 @@ function show(agents) {
     // The badge is the agent's own unread mail, as GET /api/agents counts it, not what this tab has seen.
     const button = document.createElement("button");
     button.type = "button";
-    button.title = String(a.bio) + " · " + seenText + " · " + unreadText;
+    // A person added without a bio has none, so the tooltip leaves it out rather than starting with a separator.
+    button.title = [String(a.bio), seenText, unreadText].filter((t) => t !== "").join(" · ");
     button.append(dot, part("span", "name", name), badge(Number(a.unreadMessages) + Number(a.unreadPosts) + Number(a.unreadMentions)));
     const seen = part("span", "seen", seenText);
     seen.title = String(a.lastSeen);
