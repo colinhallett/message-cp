@@ -155,6 +155,9 @@ describe("the page's channels and messages", () => {
     textContent: string;
     className: string;
     title: string;
+    // Set by the script on the buttons it builds.
+    type?: string;
+    attributes: Record<string, string>;
     children: Stub[];
     top: number;
     scrollTop: number;
@@ -176,6 +179,7 @@ describe("the page's channels and messages", () => {
     className: "",
     title: "",
     children: [],
+    attributes: {},
     // A box 100px high whose rows are 20px each, scrolled as a browser does: never past the last row.
     top: 0,
     get scrollHeight() {
@@ -197,8 +201,12 @@ describe("the page's channels and messages", () => {
     addEventListener(type, fn) {
       this.on[type] = fn;
     },
-    setAttribute() {},
-    removeAttribute() {},
+    setAttribute(name, value) {
+      this.attributes[name] = value;
+    },
+    removeAttribute(name) {
+      delete this.attributes[name];
+    },
     focus() {},
   });
   // A sidebar item's label and its unread badge as shown ("" when hidden), and the button that opens it.
@@ -355,18 +363,138 @@ describe("the page's channels and messages", () => {
     expect(page.urls).toContain("/api/channels?limit=200&offset=200");
     expect(page.urls).toContain("/api/channel-posts?channel=c000&limit=200&offset=200");
   });
+  // An agents panel row's button, its mark, name and badge ("" when hidden), and its details part.
+  const agentButton = (row: Stub) => row.children[0];
+  const agentLine = (row: Stub) => agentButton(row).children.map((c) => (c.className === "badge" && c.hidden ? "" : c.textContent));
+  const details = (row: Stub) => row.children[1];
+
   it("marks a person in the agents panel as a person, in place of the online dot", async () => {
     registerAgent(db, OWNER_ACCOUNT, "alice", "x");
     addPerson(db, "owner", "colin");
     const page = await load(viewer);
     const rows = page.elements["rows"];
     await page.until(() => rows.children.length === 2);
-    const marks = rows.children.map((row) => [field(row, "name"), row.children[0].className, row.children[0].textContent, row.children[0].title]);
+    const marks = rows.children.map((row) => {
+      const [mark, name] = agentButton(row).children;
+      return [name.textContent, mark.className, mark.textContent, mark.title];
+    });
     expect(marks).toEqual([
       ["alice", "dot online", "online", "online"],
       ["colin", "kind", "person", "a person, not an agent"],
     ]);
-    expect(rows.children.map((row) => field(row, "seen")?.split(" ")[0])).toEqual(["last", "added"]);
+    expect(rows.children.map((row) => field(details(row), "seen")?.split(" ")[0])).toEqual(["last", "added"]);
+    expect(agentButton(rows.children[0]).title).toMatch(/^x · last seen /);
+    // A person added without a bio has no empty part at the start of its tooltip.
+    expect(agentButton(rows.children[1]).title).toMatch(/^added \d+s ago · unread: 0 messages, 0 posts, 0 mentions$/);
+  });
+
+  describe("the compact agents panel", () => {
+    const setup = () => {
+      registerAgent(db, OWNER_ACCOUNT, "alice", "writes the docs");
+      registerAgent(db, OWNER_ACCOUNT, "bob", "builds the site");
+      const alice = { ...identityOf(db, OWNER_ACCOUNT, "alice")!, name: "alice" };
+      joinChannel(db, OWNER_ACCOUNT, alice, "build");
+      sendMessage(db, OWNER_ACCOUNT, "alice", "bob", "one");
+      post(db, OWNER_ACCOUNT, alice, "build", "@bob look");
+      post(db, OWNER_ACCOUNT, alice, "build", "@bob again");
+    };
+
+    it("shows each row's mark, name and one badge of its summed unread counts, hidden at 0", async () => {
+      setup();
+      const page = await load(viewer);
+      const rows = page.elements["rows"];
+      await page.until(() => rows.children.length === 2);
+      expect(rows.children.map(agentLine)).toEqual([
+        ["online", "alice", ""],
+        ["online", "bob", "3"],
+      ]);
+      expect(rows.children.map((row) => agentButton(row).children.map((c) => c.className))).toEqual([
+        ["dot online", "name", "badge"],
+        ["dot online", "name", "badge"],
+      ]);
+      expect(agentButton(rows.children[0]).children[2].hidden).toBe(true);
+    });
+
+    it("puts the bio, last seen and unread totals in the row's tooltip, not in a visible line", async () => {
+      setup();
+      const page = await load(viewer);
+      const rows = page.elements["rows"];
+      await page.until(() => rows.children.length === 2);
+      expect(agentButton(rows.children[1]).title).toMatch(/^builds the site · last seen \d+s ago · unread: 1 message, 0 posts, 2 mentions$/);
+      expect(agentButton(rows.children[0]).title).toMatch(/^writes the docs · last seen \d+s ago · unread: 0 messages, 0 posts, 0 mentions$/);
+      // Each total is counted in its own singular or plural.
+      const bob = { ...identityOf(db, OWNER_ACCOUNT, "bob")!, name: "bob" };
+      joinChannel(db, OWNER_ACCOUNT, { ...identityOf(db, OWNER_ACCOUNT, "alice")!, name: "alice" }, "ops");
+      post(db, OWNER_ACCOUNT, bob, "ops", "one");
+      post(db, OWNER_ACCOUNT, bob, "build", "two");
+      sendMessage(db, OWNER_ACCOUNT, "bob", "alice", "hi");
+      await page.until(page.scheduled);
+      page.poll();
+      await page.until(() => page.scheduled() && agentButton(rows.children[0]).title.includes("1 message, 2 posts"));
+      expect(agentButton(rows.children[0]).title).toMatch(/· unread: 1 message, 2 posts, 0 mentions$/);
+      expect(agentLine(rows.children[0])).toEqual(["online", "alice", "3"]);
+      for (const row of rows.children) expect(details(row).hidden).toBe(true);
+      const visible = rows.children.map((row) => agentButton(row).children.map((c) => c.textContent).join(" "));
+      for (const line of visible) expect(line).not.toMatch(/builds|writes|seen|unread/);
+    });
+
+    it("shows and hides the details with the row's button, keeps them open across polls, and marks nothing read", async () => {
+      setup();
+      const page = await load(viewer);
+      const rows = page.elements["rows"];
+      await page.until(() => page.scheduled() && rows.children.length === 2);
+      const bob = () => rows.children[1];
+      expect(agentButton(bob()).type).toBe("button");
+      expect(agentButton(bob()).attributes["aria-expanded"]).toBe("false");
+
+      const before = page.urls.length;
+      agentButton(bob()).on.click();
+      expect(page.urls.length).toBe(before);
+      expect(agentButton(bob()).attributes["aria-expanded"]).toBe("true");
+      expect(details(bob()).hidden).toBe(false);
+      expect(details(bob()).children.map((c) => c.className)).toEqual(["bio", "seen", "unread"]);
+      expect(field(details(bob()), "bio")).toBe("builds the site");
+      expect(field(details(bob()), "seen")).toMatch(/^last seen \d+s ago$/);
+      expect(details(bob()).children[1].title).toMatch(/^\d{4}-\d\d-\d\dT/);
+      expect(field(details(bob()), "unread")).toBe("unread: 1 message, 0 posts, 2 mentions");
+
+      const row = bob();
+      page.poll();
+      await page.until(() => page.scheduled() && bob() !== row);
+      expect(agentButton(bob()).attributes["aria-expanded"]).toBe("true");
+      expect(details(bob()).hidden).toBe(false);
+      expect(details(rows.children[0]).hidden).toBe(true);
+      // Nothing was marked read for bob.
+      expect(agentLine(bob())).toEqual(["online", "bob", "3"]);
+
+      agentButton(bob()).on.click();
+      expect(agentButton(bob()).attributes["aria-expanded"]).toBe("false");
+      expect(details(bob()).hidden).toBe(true);
+    });
+
+    it("shows a new token no open details from the old one", async () => {
+      setup();
+      const page = await load(viewer);
+      const rows = page.elements["rows"];
+      await page.until(() => rows.children.length === 2);
+      agentButton(rows.children[1]).on.click();
+      expect(details(rows.children[1]).hidden).toBe(false);
+
+      page.elements["forget"].on.click();
+      expect(rows.children).toHaveLength(0);
+      page.elements["token"].value = viewer;
+      page.elements["login"].on.submit({ preventDefault() {} } as never);
+      await page.until(() => rows.children.length === 2);
+      expect(rows.children.map((row) => details(row).hidden)).toEqual([true, true]);
+      expect(rows.children.map((row) => agentButton(row).attributes["aria-expanded"])).toEqual(["false", "false"]);
+    });
+
+    it("still says when an account has no agents", async () => {
+      const page = await load(viewer);
+      const rows = page.elements["rows"];
+      await page.until(() => rows.children.length === 1);
+      expect(rows.children[0].textContent).toBe("No agents registered in this account.");
+    });
   });
 
   it("reads only the posts past the ones the log holds on each poll, and shows the agents and channels first", async () => {
@@ -1411,6 +1539,7 @@ describe("the page's search", () => {
     append(...children: Stub[]): void;
     replaceChildren(...children: Stub[]): void;
     addEventListener(type: string, fn: (event?: unknown) => void): void;
+    setAttribute(name: string, value: string): void;
     focus(): void;
   }
   const el = (): Stub => ({
@@ -1432,6 +1561,7 @@ describe("the page's search", () => {
     addEventListener(type, fn) {
       this.on[type] = fn;
     },
+    setAttribute() {},
     focus() {},
   });
   // An element's text as a browser reads it: the stub's textContent does not join its children's, so a split body's
@@ -1641,6 +1771,7 @@ describe("the page's webhook deliveries", () => {
     append(...children: Stub[]): void;
     replaceChildren(...children: Stub[]): void;
     addEventListener(type: string, fn: () => void): void;
+    setAttribute(name: string, value: string): void;
     focus(): void;
   }
   const el = (): Stub => ({
@@ -1662,6 +1793,7 @@ describe("the page's webhook deliveries", () => {
     addEventListener(type, fn) {
       this.on[type] = fn;
     },
+    setAttribute() {},
     focus() {},
   });
   // An element's text as a browser reads it: the stub's textContent does not join its children's, so a split body's

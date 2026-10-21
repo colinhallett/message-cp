@@ -181,12 +181,13 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .count { font-size: 0.75rem; color: var(--muted); }
 /* A sidebar entry's unread badge: a filled pill in the accent colour, with the page's background as its text. */
 .badge { min-width: 1.25rem; padding: 0 var(--s1); border-radius: 999px; background: var(--accent); color: var(--bg); font-size: 0.7rem; font-weight: 600; line-height: 1.25rem; text-align: center; }
-.agent { display: grid; grid-template-columns: auto minmax(0, 1fr); column-gap: var(--s2); padding: var(--s2) var(--s3); }
-.agent > :not(.dot) { grid-column: 2; overflow-wrap: anywhere; }
+/* An agents panel row: one line of mark, name and unread badge, a button that shows and hides the details under it. */
+.agent > button { display: flex; align-items: center; gap: var(--s2); text-align: left; background: none; border: 0; border-radius: var(--radius); padding: var(--s1) var(--s2); margin: 1px var(--s2); width: calc(100% - 2 * var(--s2)); }
+.agent > button:hover { background: var(--hover); }
 .kind { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--accent); }
-.agent .name { font-weight: 600; }
-.agent .bio, .agent .seen, .agent .unread { font-size: 0.8rem; color: var(--muted); }
-.dot { width: 0.6rem; height: 0.6rem; margin-top: 0.35rem; border-radius: 50%; background: var(--offline); overflow: hidden; color: transparent; font-size: 0; }
+.agent .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+.agent .details { display: flex; flex-direction: column; padding: 0 var(--s3) var(--s2) var(--s4); font-size: 0.8rem; color: var(--muted); overflow-wrap: anywhere; }
+.dot { flex: none; width: 0.6rem; height: 0.6rem; border-radius: 50%; background: var(--offline); overflow: hidden; color: transparent; font-size: 0; }
 .dot.online { background: var(--online); }
 @media (max-width: 720px) {
   #view { grid-template-columns: minmax(0, 1fr); grid-template-areas: "bar" "chat"; }
@@ -292,6 +293,9 @@ let searchController;
 let canPost = false;
 let tokenGeneration = 0;
 let tokenController;
+// The names whose details the agents panel shows open, kept across polls; a name no longer listed is dropped, and ask()
+// forgets them all.
+let openAgents = new Set();
 // The names of the account's live people, as the last GET /api/agents gave them (undefined until it has answered),
 // the list the picker was last built from, and the person the page posts as: always one of people, or undefined.
 let people;
@@ -409,6 +413,7 @@ function ask(message) {
   channelCreate.disabled = false;
   // Clear every panel, so one token's agents, channels, pairs and messages never show under the next token.
   rows.replaceChildren();
+  openAgents = new Set();
   channelRows.replaceChildren();
   heldMessages = 0;
   messages = [];
@@ -1440,20 +1445,49 @@ function markMentions() {
   for (const [span, name] of [...logMentions, ...resultMentions]) span.className = mentionClass(name);
 }
 
+// "1 message" or "2 messages".
+function plural(count, noun) {
+  return count + " " + noun + (count === 1 ? "" : "s");
+}
+
 function show(agents) {
+  const names = new Set(agents.map((a) => String(a.name)));
+  for (const name of openAgents) if (!names.has(name)) openAgents.delete(name);
   const items = agents.map((a) => {
+    const name = String(a.name);
+    const bio = String(a.bio);
     const li = document.createElement("li");
     li.className = "agent";
-    // A person has no online state of its own, so it is marked as a person in place of the dot, above its name.
+    // A person has no online state of its own, so it is marked as a person in place of the dot, before its name.
     const dot = a.person === true
       ? part("span", "kind", "person")
       : part("span", a.online ? "dot online" : "dot", a.online ? "online" : "offline");
     dot.title = a.person === true ? "a person, not an agent" : a.online ? "online" : "offline";
     // A person's lastSeen is when they were added.
-    const seen = part("span", "seen", (a.person === true ? "added " : "last seen ") + ago(a.lastSeen));
+    const seenText = (a.person === true ? "added " : "last seen ") + ago(a.lastSeen);
+    const unreadText = "unread: " + plural(a.unreadMessages, "message") + ", " + plural(a.unreadPosts, "post") + ", " + plural(a.unreadMentions, "mention");
+    // The badge is the agent's own unread mail, as GET /api/agents counts it, not what this tab has seen.
+    const button = document.createElement("button");
+    button.type = "button";
+    // A person added without a bio has none, so the tooltip leaves it out rather than starting with a separator.
+    button.title = [bio, seenText, unreadText].filter((t) => t !== "").join(" · ");
+    button.append(dot, part("span", "name", name), badge(Number(a.unreadMessages) + Number(a.unreadPosts) + Number(a.unreadMentions)));
+    const seen = part("span", "seen", seenText);
     seen.title = String(a.lastSeen);
-    const unread = part("span", "unread", "unread messages: " + a.unreadMessages + ", posts: " + a.unreadPosts + ", mentions: " + a.unreadMentions);
-    li.append(dot, part("span", "name", String(a.name)), part("span", "bio", String(a.bio)), seen, unread);
+    const details = part("div", "details", "");
+    details.append(part("span", "bio", bio), seen, part("span", "unread", unreadText));
+    // Opening the details only shows what the answer already holds: it sends nothing and marks nothing read.
+    const toggle = (open) => {
+      details.hidden = !open;
+      button.setAttribute("aria-expanded", open ? "true" : "false");
+    };
+    toggle(openAgents.has(name));
+    button.addEventListener("click", () => {
+      if (openAgents.has(name)) openAgents.delete(name);
+      else openAgents.add(name);
+      toggle(openAgents.has(name));
+    });
+    li.append(button, details);
     return li;
   });
   if (items.length === 0) items.push(part("li", "note", "No agents registered in this account."));
