@@ -64,6 +64,8 @@ CREATE TABLE IF NOT EXISTS messages (
 );
 CREATE INDEX IF NOT EXISTS messages_inbox ON messages (recipient_id, read_at, id);
 CREATE INDEX IF NOT EXISTS messages_history ON messages (recipient_id, id);
+-- Deleting a conversation finds its messages by recipient and sender.
+CREATE INDEX IF NOT EXISTS messages_by_sender ON messages (recipient_id, sender COLLATE NOCASE);
 
 -- A channel belongs to one account and exists from its first post, or from the first agent joining it. Names follow the agent-name rules, unique per
 -- account regardless of case, keeping the first spelling. None of these names may appear in DROP_REMOVED.
@@ -137,6 +139,8 @@ CREATE TABLE IF NOT EXISTS webhook_deliveries (
 );
 CREATE INDEX IF NOT EXISTS webhook_deliveries_pending ON webhook_deliveries (delivered_at, id);
 CREATE INDEX IF NOT EXISTS webhook_deliveries_by_webhook ON webhook_deliveries (webhook_id);
+-- Deleting a message finds its queued deliveries (ON DELETE CASCADE) through this, not by scanning the table.
+CREATE INDEX IF NOT EXISTS webhook_deliveries_by_message ON webhook_deliveries (message_id);
 `;
 
 // CREATE TABLE IF NOT EXISTS leaves an existing table alone, so columns added later are added here, only when missing.
