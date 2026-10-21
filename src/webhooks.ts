@@ -71,20 +71,19 @@ export function webhookOn(on: string): { event: WebhookEvent; name: string } {
 }
 
 /**
- * Header names message-cp sets on a delivery itself, that `fetch` controls or refuses to send, or that would describe
- * the plain JSON body wrongly, in lower case.
+ * Header names message-cp sets on a delivery itself, that `fetch` controls or refuses to send, or that describe the body
+ * (which message-cp builds for each delivery), in lower case. Every `Content-*` name is refused as well.
  */
 const RESERVED_HEADERS = [
-  "content-type",
-  "content-encoding",
   "x-message-cp-signature",
-  "content-length",
   "host",
   "transfer-encoding",
   "connection",
   "keep-alive",
   "upgrade",
   "expect",
+  "digest",
+  "repr-digest",
 ];
 
 /**
@@ -100,8 +99,8 @@ export function webhookHeader(line: string): { name: string; value: string } {
   if (!/^[A-Za-z0-9!#$%&'*+\-.^_`|~]+$/.test(name)) {
     throw new WebhookError("Invalid header name: use letters, digits and !#$%&'*+-.^_`|~ only, before the ':'.");
   }
-  if (RESERVED_HEADERS.includes(name.toLowerCase())) {
-    throw new WebhookError(`Invalid header: message-cp sets ${name} itself; choose another header.`);
+  if (RESERVED_HEADERS.includes(name.toLowerCase()) || /^content-/i.test(name)) {
+    throw new WebhookError(`Invalid header: message-cp controls ${name} itself; choose another header.`);
   }
   if (value === "") throw new WebhookError("Invalid header: its value is empty.");
   // Tab included: inside a value it is a control character like CR and LF. So are U+0080-U+009F.
