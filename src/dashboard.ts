@@ -332,6 +332,8 @@ const CHANNEL_NAME = /^[A-Za-z0-9_-]{1,32}$/;
 const NO_PEOPLE_TO_POST = "No people to post as. Add one with: message-cp person add <name>";
 // The tokenGeneration a "New channel" post is in flight for, or undefined, as sending is for the compose box.
 let creating;
+// How many times the "New channel" form has closed, so a create that answers after its form was closed opens nothing.
+let channelClosings = 0;
 
 function say(text, isError) {
   statusLine.textContent = text;
@@ -777,6 +779,7 @@ function openChannelForm() {
 function closeChannelForm(refocus) {
   if (channelForm.hidden) return;
   channelForm.hidden = true;
+  channelClosings++;
   channelButton.setAttribute("aria-expanded", "false");
   if (refocus) channelButton.focus();
 }
@@ -817,10 +820,11 @@ function channelProblem(from, name, body) {
 }
 
 // Creates a channel by posting its first post with POST /api/post as the chosen person, then opens it as choosing it
-// in the sidebar does, with that person chosen in "Post as". Nothing is sent unless channelProblem finds nothing, and
-// Create stays disabled while the request is in flight. Any answer but a 200 keeps the text and says why in the form's
-// note; with no answer the post may have been stored, so it says to check the channel list first. An answer that comes
-// after the token was forgotten is dropped.
+// in the sidebar does, under the name the server stored it as, with that person chosen in "Post as". Nothing is sent
+// unless channelProblem finds nothing, and Create stays disabled while the request is in flight. A 200 that comes after
+// the form was closed opens nothing. Any other answer keeps the text and says why in the form's note; with no answer the
+// post may have been stored, so the name is refused until the channel list is read again. An answer that comes after
+// the token was forgotten is dropped.
 async function createChannel() {
   const token = sessionStorage.getItem(KEY);
   if (!token) return ask();
@@ -835,6 +839,7 @@ async function createChannel() {
     return;
   }
   creating = tokenGen;
+  const closings = channelClosings;
   channelCreate.disabled = true;
   channelNote.textContent = "Creating…";
   const ac = new AbortController();
@@ -851,6 +856,7 @@ async function createChannel() {
       signal: ac.signal,
     });
     answer = res.status === 400 ? { status: 400, reason: await reasonOf(res) } : { status: res.status };
+    if (res.status === 200) answer.channel = await storedName(res, name);
   } catch {
     answer = { error: "No answer from the server, so the channel may have been created: check the channel list before trying again." };
   } finally {
@@ -861,20 +867,24 @@ async function createChannel() {
   channelCreate.disabled = false;
   if (answer.status === 401) return ask("The server refused that token. Enter another.");
   if (answer.status === 200) {
-    // openLog's showPicker sets the "Post as" select to the person, and its poll reads the first post.
-    person = from;
     // The name is now taken, until the poll lists it, and text typed while the request was in flight stays.
     if (channelNames !== undefined) channelNames.push(name.toLowerCase());
     if (channelName.value === name) channelName.value = "";
     if (channelBody.value === body) channelBody.value = "";
+    // The reader closed the form, or opened something else, while it was in flight: the poll lists the channel.
+    if (closings !== channelClosings) return;
+    // openLog's showPicker sets the "Post as" select to the person, and its poll reads the first post.
+    person = from;
     channelNote.textContent = "";
     closeChannelForm(false);
-    openLog(name);
+    openLog(answer.channel);
     if (!compose.hidden) composeText.focus();
     return;
   }
   if (answer.error) {
     channelNote.textContent = answer.error;
+    // Refused until showChannels lists the channels again, so a retry cannot add a second first post to one stored.
+    if (channelNames !== undefined) channelNames.push(name.toLowerCase());
     // Read again at once, so the channel list shows whether it arrived.
     cancel();
     poll(generation);
@@ -1149,6 +1159,17 @@ async function fetchPage(token, signal, path, params, offset, items) {
   }
   if (!Array.isArray(page)) return { error: "The server sent an answer this page cannot read" };
   return { items: page };
+}
+
+// The channel name a 200 from POST /api/post says the post was stored under, which may differ in case from the name
+// sent, or the name sent if the answer cannot be read.
+async function storedName(res, sent) {
+  try {
+    const channel = (await res.json()).channel;
+    return typeof channel === "string" && channel.toLowerCase() === sent.toLowerCase() ? channel : sent;
+  } catch {
+    return sent;
+  }
 }
 
 // The message of an error answer, or undefined if it has none this page can read.

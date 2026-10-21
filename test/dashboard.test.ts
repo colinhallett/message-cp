@@ -2351,6 +2351,49 @@ describe("the page's posting", () => {
       expect(page.elements["channel-create"].disabled).toBe(false);
     });
 
+    it("opens the channel under the name the server stored, when one was made elsewhere since the list was read", async () => {
+      seed();
+      const page = await load(OWNER_TOKEN);
+      await ready(page);
+      // Another dashboard creates Fresh after this page read the channel list, so the page cannot refuse it.
+      post(db, OWNER_ACCOUNT, { ...identityOf(db, OWNER_ACCOUNT, "bob")!, name: "bob" }, "Fresh", "first elsewhere");
+      create(page, "colin", "fresh", "mine");
+      await page.until(() => page.elements["log"].hidden === false);
+      expect(page.elements["log-title"].textContent).toBe("Fresh");
+      expect(page.elements["compose-label"].textContent).toBe("Post in #Fresh as colin");
+    });
+
+    it("opens nothing for a create that answers after its form was closed", async () => {
+      seed();
+      let release!: () => void;
+      const hold = new Promise<void>((resolve) => (release = resolve));
+      const page = await load(OWNER_TOKEN, (url, method) => (url === "/api/post" && method === "POST" ? { hold } : undefined));
+      await ready(page);
+      create(page, "colin", "fresh", "first");
+      page.elements["channel-cancel"].on.click();
+      release();
+      await page.until(() => page.elements["channel-create"].disabled === false);
+      expect(page.elements["log"].hidden).toBe(true);
+      expect(page.elements["channel-form"].hidden).toBe(true);
+      expect(page.elements["as"].value).not.toBe("colin");
+      // The post was stored, so the name is refused from now on.
+      create(page, "colin", "fresh", "again");
+      expect(page.elements["channel-note"].textContent).toContain("already exists");
+      expect(page.posts()).toHaveLength(1);
+    });
+
+    it("refuses the name after no answer until the channel list is read again, so a retry adds no second first post", async () => {
+      seed();
+      const page = await load(OWNER_TOKEN, (url, method) => (url === "/api/post" && method === "POST" ? { lose: true } : undefined));
+      await ready(page);
+      create(page, "colin", "fresh", "first");
+      await page.until(() => page.elements["channel-note"].textContent.includes("check the channel list"));
+      create(page, "colin", "FRESH", "first");
+      expect(page.elements["channel-note"].textContent).toContain("already exists");
+      expect(page.posts()).toHaveLength(1);
+      expect(db.prepare("SELECT COUNT(*) AS n FROM channel_posts").get()).toEqual({ n: 2 });
+    });
+
     it("closes on Escape, Cancel, another conversation and ask(), and only one of New message and New channel is open", async () => {
       seed();
       const page = await load(OWNER_TOKEN);
