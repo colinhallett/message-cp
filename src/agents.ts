@@ -269,6 +269,52 @@ export const removeAgent = (db: Db, account: AccountId, name: string, key?: stri
     return { removed: row.name, keptMessages };
   }).immediate();
 
+export class PurgeError extends Error {}
+
+export interface Purged {
+  name: string;
+  account: string;
+  messages: number;
+  mentions: number;
+}
+
+/**
+ * For `message-cp agent remove`: removes the agent `name` (any case) of the account named `account`, live or only
+ * left as removed rows, with every direct message to or from it and its mentions, and frees its name as `removeAgent`
+ * does. Channels, posts and read positions stay. The rows stay too, marked removed: posts and read positions point
+ * at them. Refuses, changing nothing, a live person's name, a name no agent of the account has had, or an unknown
+ * account.
+ */
+export const purgeAgent = (db: Db, account: string, name: string): Purged =>
+  db.transaction((): Purged => {
+    const acct = db.prepare("SELECT id, name FROM accounts WHERE name = ?").get(account) as { id: AccountId; name: string } | undefined;
+    if (!acct) throw new PurgeError(`No account named '${account}'.`);
+    const live = db
+      .prepare("SELECT id, name, person FROM agents WHERE account_id = ? AND name = ? AND removed_at IS NULL")
+      .get(acct.id, name) as { id: number; name: string; person: number } | undefined;
+    // Before anything is deleted, so a person's messages, and any sent under the name they now have, are never touched.
+    if (live?.person === 1) throw new PurgeError(`The name '${live.name}' belongs to a person, not an agent.`);
+    const removed = db
+      .prepare("SELECT id, removed_name FROM agents WHERE account_id = ? AND removed_at IS NOT NULL AND removed_name = ? COLLATE NOCASE ORDER BY id")
+      .all(acct.id, name) as { id: number; removed_name: string }[];
+    const ids = [...(live ? [live.id] : []), ...removed.map((r) => r.id)];
+    if (ids.length === 0) throw new PurgeError(`No agent named '${name}' in account '${acct.name}'.`);
+    const marks = ids.map(() => "?").join(", ");
+    const messages = db
+      .prepare(
+        `DELETE FROM messages WHERE recipient_id IN (${marks})
+         OR (sender = ? COLLATE NOCASE AND recipient_id IN (SELECT id FROM agents WHERE account_id = ?))`,
+      )
+      .run(...ids, name, acct.id).changes;
+    const mentions = db.prepare(`DELETE FROM mentions WHERE agent_id IN (${marks})`).run(...ids).changes;
+    if (live) {
+      db.prepare(
+        "UPDATE agents SET name = ?, removed_name = name, removed_at = ?, key_hash = ?, instance = ? WHERE id = ?",
+      ).run(removedName(live.id), Date.now(), REMOVED_KEY_HASH, REMOVED_INSTANCE, live.id);
+    }
+    return { name: live?.name ?? removed[removed.length - 1]!.removed_name, account: acct.name, messages, mentions };
+  }).immediate();
+
 export class PersonError extends Error {}
 
 export interface Person {
