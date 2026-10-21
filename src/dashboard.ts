@@ -244,10 +244,11 @@ let held = 0;
 // How many of the account's direct messages the page holds, the messages themselves, oldest first, and the pairs of
 // agents that have messaged each other, by pairKey, each with its names, its count of messages and the index in
 // messages of its newest. A pair started from "New message" is among them with a count of 0 until its first message;
-// ask() drops it with the rest.
+// ask() drops it with the rest. madePairs numbers such pairs, so the one started last is listed first among them.
 let heldMessages = 0;
 let messages = [];
 let pairs = new Map();
+let madePairs = 0;
 // The pair whose messages are open in the log, by pairKey, or undefined.
 let openPair;
 // Whether the webhook deliveries are open in the log. At most one of openChannel, openPair and openDeliveries is set.
@@ -348,12 +349,16 @@ function ask(message) {
   toKey = "";
   newFrom.replaceChildren();
   newTo.replaceChildren();
+  newNote.textContent = "";
+  newFields.hidden = false;
+  newOpen.hidden = false;
   // Clear every panel, so one token's agents, channels, pairs and messages never show under the next token.
   rows.replaceChildren();
   channelRows.replaceChildren();
   heldMessages = 0;
   messages = [];
   pairs = new Map();
+  madePairs = 0;
   pairRows.replaceChildren();
   messagesNote.textContent = "";
   if (deliveryCount) deliveryCount.textContent = "";
@@ -388,11 +393,14 @@ searchForm.addEventListener("submit", (event) => {
 document.getElementById("close-results").addEventListener("click", () => closeResults());
 newButton.addEventListener("click", () => (newForm.hidden ? openNew() : closeNew(true)));
 document.getElementById("new-cancel").addEventListener("click", () => closeNew(true));
-newForm.addEventListener("keydown", (event) => {
-  if (event.key !== "Escape") return;
-  event.preventDefault();
-  closeNew(true);
-});
+// Escape closes the form from inside it or from its button.
+for (const node of [newForm, newButton]) {
+  node.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape" || newForm.hidden) return;
+    event.preventDefault();
+    closeNew(true);
+  });
+}
 newFrom.addEventListener("change", () => fillNew());
 newForm.addEventListener("submit", (event) => {
   event.preventDefault();
@@ -712,11 +720,11 @@ function startPair(from, to) {
   if (!canPost || !people || !people.includes(from)) return;
   const offeredTo = mentionable.some((n) => n.name === to);
   if (!offeredTo || to.toLowerCase() === "all" || to.toLowerCase() === from.toLowerCase()) return;
+  // openPairLog's showPicker sets the "Post as" select to the person.
   person = from;
-  asSelect.value = from;
   const names = [from, to].sort();
   const key = JSON.stringify(names);
-  if (!pairs.has(key)) pairs.set(key, { names, count: 0, newest: messages.length });
+  if (!pairs.has(key)) pairs.set(key, { names, count: 0, newest: messages.length, made: ++madePairs });
   showPairs();
   openPairLog(key);
   if (!compose.hidden) composeText.focus();
@@ -1253,9 +1261,9 @@ function pairKey(m) {
   return JSON.stringify(pairNames(m));
 }
 
-// Lists the pairs, the one with the newest message first.
+// Lists the pairs, the one with the newest message first, and of pairs started with none the one started last.
 function showPairs() {
-  const items = [...pairs].sort((a, b) => b[1].newest - a[1].newest).map(([key, pair]) =>
+  const items = [...pairs].sort((a, b) => b[1].newest - a[1].newest || (b[1].made ?? 0) - (a[1].made ?? 0)).map(([key, pair]) =>
     sidebarItem("pair " + key, pair.names.join(" ↔ "), "", pair.count, () => openPairLog(key)),
   );
   pairRows.replaceChildren(...items);

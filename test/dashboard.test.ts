@@ -2061,6 +2061,16 @@ describe("the page's posting", () => {
       await page.until(() => page.elements["rows"].children.length === 3);
       start(page, "colin", "zed");
       expect(page.elements["pair-rows"].children.map(label)).toEqual(["colin ↔ zed", "bob ↔ colin"]);
+      // A second empty pair, started later, is listed above the first.
+      registerAgent(db, OWNER_ACCOUNT, "yan", "x");
+      await page.poll();
+      await page.until(() => page.elements["rows"].children.length === 4);
+      start(page, "colin", "yan");
+      expect(page.elements["pair-rows"].children.map(label)).toEqual(["colin ↔ yan", "colin ↔ zed", "bob ↔ colin"]);
+      // Escape on the button closes an open form too.
+      page.elements["new-message"].on.click();
+      page.elements["new-message"].on.keydown({ key: "Escape", preventDefault() {} });
+      expect(form.hidden).toBe(true);
       page.elements["new-message"].on.click();
       page.elements["forget"].on.click();
       expect(form.hidden).toBe(true);
@@ -2068,6 +2078,7 @@ describe("the page's posting", () => {
       expect(page.elements["new-from"].children).toEqual([]);
       expect(page.elements["new-to"].children).toEqual([]);
       expect(page.elements["pair-rows"].children).toEqual([]);
+      expect(page.elements["new-note"].textContent).toBe("");
       // The next token sees its own pairs only, and never the empty one.
       page.elements["token"].value = viewer;
       page.elements["login"].on.submit({ preventDefault() {} });
