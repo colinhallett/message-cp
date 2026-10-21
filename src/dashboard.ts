@@ -579,11 +579,12 @@ document.addEventListener("keydown", (event) => {
   panel("");
   button.focus();
 });
-// A tap on the part of the conversation an open panel leaves uncovered closes the panel, and does nothing else.
+// A tap on the part of the conversation an open panel leaves uncovered closes the panel, and does nothing else. A click
+// made from the keyboard (detail 0), as on a focused Close or Send button, does what it always does.
 chat.addEventListener(
   "click",
   (event) => {
-    if (!covering()) return;
+    if (!covering() || event.detail === 0) return;
     event.preventDefault();
     event.stopPropagation();
     panel("");

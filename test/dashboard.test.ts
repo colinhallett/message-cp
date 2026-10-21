@@ -361,9 +361,10 @@ describe("the page's channels and messages", () => {
       page.documentOn.keydown({ key, defaultPrevented, preventDefault: () => prevented++ });
       return prevented;
     };
-    const tap = (page: Awaited<ReturnType<typeof load>>) => {
+    // detail is 1 for a tap or a mouse click and 0 for a click made from the keyboard.
+    const tap = (page: Awaited<ReturnType<typeof load>>, detail = 1) => {
       let stopped = 0;
-      page.elements["chat"].on.click({ preventDefault() {}, stopPropagation: () => stopped++ });
+      page.elements["chat"].on.click({ detail, preventDefault() {}, stopPropagation: () => stopped++ });
       return stopped;
     };
 
@@ -392,6 +393,9 @@ describe("the page's channels and messages", () => {
       // An Escape that a form or the mention list already took leaves the panel open.
       expect(key(page, "Escape", true)).toBe(0);
       expect(state(page)).toEqual(["show-sidebar", "true", "false"]);
+      // Enter or Space on a focused button in the conversation still presses it.
+      expect(tap(page, 0)).toBe(0);
+      expect(state(page)).toEqual(["show-sidebar", "true", "false"]);
       expect(tap(page)).toBe(1);
       expect(state(page)).toEqual(["", "false", "false"]);
       // Above 720px the toggles are hidden (no offsetParent), so a panel class left from a narrow screen covers nothing.
@@ -404,10 +408,16 @@ describe("the page's channels and messages", () => {
 
     it("closes when a conversation, the deliveries or a search opens, and on ask()", async () => {
       seed();
+      registerAgent(db, OWNER_ACCOUNT, "bob", "x");
+      sendMessage(db, OWNER_ACCOUNT, "alice", "bob", "hi");
       const page = await load(viewer);
       await page.until(() => page.elements["channel-rows"].children.length === 1);
+      await page.until(() => page.elements["pair-rows"].children.length === 1);
       page.elements["show-sidebar"].on.click();
       open(page.elements["channel-rows"].children[0]);
+      expect(state(page)).toEqual(["", "false", "false"]);
+      page.elements["show-sidebar"].on.click();
+      open(page.elements["pair-rows"].children[0]);
       expect(state(page)).toEqual(["", "false", "false"]);
       page.elements["show-sidebar"].on.click();
       await page.until(() => page.elements["delivery-entry"].children.length === 1);
