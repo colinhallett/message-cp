@@ -75,6 +75,25 @@ describe("GET /", () => {
     }
   });
 
+  it("explains on the token screen what a token is, where to get one and what each kind can do", async () => {
+    const html = await (await fetch(`${base()}/`)).text();
+    const login = /<form id="login"[^>]*>([\s\S]*?)<\/form>/.exec(html)![1];
+    const input = /<input id="token"[^>]*>/.exec(login)![0];
+    expect(input).toContain('type="password"');
+    const describedBy = /aria-describedby="([^"]+)"/.exec(input)![1];
+    expect(html).toContain(`id="${describedBy}"`);
+    const help = login.indexOf(`id="${describedBy}"`);
+    expect(help).toBeGreaterThan(login.indexOf("<h1>message-cp</h1>"));
+    expect(help).toBeLessThan(login.indexOf(input));
+    const explanation = login.slice(help, login.indexOf(input));
+    for (const words of ["token add &lt;account&gt;", "--read-only", "account add &lt;name&gt;", "person add &lt;name&gt;", "Forget token", "cookie"]) {
+      expect(explanation).toContain(words);
+    }
+    expect(explanation).toMatch(/read-only token can watch[^<]*read every message/);
+    expect(explanation).toMatch(/full token can also post and send as one of the account's people/);
+    expect(login).toMatch(/<label for="token">Token<\/label>/);
+  });
+
   it("allows the page's inline script and style by their hashes", async () => {
     const res = await fetch(`${base()}/`);
     const csp = res.headers.get("content-security-policy") ?? "";
