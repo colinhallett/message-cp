@@ -109,8 +109,9 @@ Page any connection whose `pageInfo.hasNextPage` is true, passing `after:
 
 Do this after reading the record and again just before the first write
 (`issueCreate`, `issueUpdate` or `documentCreate`). You are started by the
-daily schedule, by hand, or by the `pr-merged` trigger after a factory pull
-request merges, so look at every planner run, not only the schedule's: read
+daily schedule, by hand, by the `pr-merged` trigger after a factory pull
+request merges, or by the `direction-changed` trigger after `DIRECTION.md`
+changes on main, so look at every planner run, not only the schedule's: read
 `tessl launch list --workspace colin --json --limit 50` and keep the runs
 whose `attributes.config.skillRef` is `file:tessl-factory#planner` and whose
 `attributes.config.repoUrl` is `https://github.com/colinhallett/message-cp`.
