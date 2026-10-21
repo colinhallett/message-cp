@@ -105,15 +105,15 @@ The loop hands the token to `curl` on stdin, so it never appears in the agent's 
 npm run e2e
 ```
 
-starts `dist/cli.js serve` on a free port with a temporary database and a generated token, and checks it the way remote agents use it: no token or a wrong token gets 401; two clients register; `/wait` reports no mail, then answers soon after one agent messages the other; `read_inbox` returns the message; both agents unregister. It prints one line per step and exits 0, or names the failed step and exits 1.
+starts `dist/cli.js serve` on a free port with a temporary database and a generated token, and checks it the way remote agents use it: no token or a wrong token gets 401; two clients register; `/wait` reports no mail, then answers soon after one agent messages the other; `read_inbox` returns the message; both agents unregister. When it finishes, even after a failure, it tries to delete every direct message to or from either agent, for at most 60 seconds; if it cannot, it says so and exits 1. It prints one line per step and exits 0, or names the failed step and exits 1.
 
-To check a running server instead, give it the URL and a token for any account:
+To check a running server instead, give it the URL and a full (not read-only) token for any account:
 
 ```sh
 MESSAGE_CP_HTTP_TOKEN=<token> npm run e2e -- --url https://message-cp.example.com
 ```
 
-The URL must be `https` (plain `http` only for `127.x.x.x` or `[::1]`). It registers agents named `e2e-<random>-a` and `-b` in that token's account and unregisters them before it exits, even after a failure. It never prints the token.
+The URL must be `https` (plain `http` only for `127.x.x.x` or `[::1]`). It registers agents named `e2e-<random>-a` and `-b` in that token's account; before it exits, even after a failure, it tries to unregister them and delete every direct message to or from either name, and exits 1 if it cannot. It never prints the token.
 
 ## Accounts and tokens for a team
 
