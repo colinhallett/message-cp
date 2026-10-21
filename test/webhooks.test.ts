@@ -745,6 +745,29 @@ describe("sendPending", () => {
       expect(limited.got).toHaveLength(1);
     });
 
+    it("reads only what each webhook may send, through an index, so a held backlog is not read on each pass", async () => {
+      const plan = db
+        .prepare(
+          `EXPLAIN QUERY PLAN SELECT id, attempts FROM webhook_deliveries
+           WHERE webhook_id = ? AND delivered_at IS NULL AND attempts < ? AND (claimed_until IS NULL OR claimed_until <= ?)
+           ORDER BY id LIMIT ?`,
+        )
+        .all(1, 3, 0, 1) as { detail: string }[];
+      const detail = plan.map((p) => p.detail).join("\n");
+      expect(detail).toMatch(/USING INDEX webhook_deliveries_pending_by_webhook \(webhook_id=\? AND delivered_at=\?\)/);
+      expect(detail).not.toMatch(/TEMP B-TREE/);
+
+      const r = await receiver();
+      const hook = addWebhook(db, "owner", r.url, "agent:bob", true, undefined, 1);
+      for (let i = 0; i < 50; i++) sendMessage(db, OWNER_ACCOUNT, "alice", "bob", `m${i}`);
+      expect(await sendPending(db)).toEqual({ delivered: 1, failed: 0 });
+      expect(await sendPending(db)).toEqual({ delivered: 0, failed: 0 });
+      expect(pending()).toHaveLength(49);
+      windowPasses(hook.id);
+      expect(await sendPending(db)).toEqual({ delivered: 1, failed: 0 });
+      expect(texts(r.got)).toEqual(["m0", "m1"]);
+    });
+
     it("keeps each webhook's allowance its own, across accounts with the same --on", async () => {
       const mine = await receiver();
       const theirs = await receiver();

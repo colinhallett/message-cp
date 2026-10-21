@@ -143,6 +143,8 @@ CREATE TABLE IF NOT EXISTS webhook_deliveries (
 );
 CREATE INDEX IF NOT EXISTS webhook_deliveries_pending ON webhook_deliveries (delivered_at, id);
 CREATE INDEX IF NOT EXISTS webhook_deliveries_by_webhook ON webhook_deliveries (webhook_id);
+-- \`sendPending\` reads each webhook's oldest pending rows through this, up to what it may send, not the whole queue.
+CREATE INDEX IF NOT EXISTS webhook_deliveries_pending_by_webhook ON webhook_deliveries (webhook_id, delivered_at, id);
 -- Deleting a message finds its queued deliveries (ON DELETE CASCADE) through this, not by scanning the table.
 CREATE INDEX IF NOT EXISTS webhook_deliveries_by_message ON webhook_deliveries (message_id);
 `;

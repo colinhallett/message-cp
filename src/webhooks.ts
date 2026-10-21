@@ -332,22 +332,31 @@ export function sendOptions(options: Omit<SendOptions, "signal">): Required<Omit
 export async function sendPending(db: Db, options: SendOptions = {}): Promise<{ delivered: number; failed: number }> {
   const { timeoutMs, maxAttempts, batch } = sendOptions(options);
   const now = Date.now();
-  // `n` numbers each webhook's pending rows, oldest first; a row is left out past what is left of its webhook's allowance.
-  const rows = db
+  // Each webhook's allowance: null for no limit, all of it for a window that has ended or never started.
+  const webhooks = db
     .prepare(
-      `SELECT id, attempts, webhook_id, url, secret, header_name, header_value FROM (
-         SELECT d.id, d.attempts, d.webhook_id, w.url, w.secret, w.header_name, w.header_value,
-                CASE WHEN w.max_per_hour IS NULL THEN NULL
-                     WHEN w.window_started_at IS NULL OR w.window_started_at + ? <= ? THEN w.max_per_hour
-                     ELSE w.max_per_hour - w.window_count END AS allowance,
-                ROW_NUMBER() OVER (PARTITION BY d.webhook_id ORDER BY d.id) AS n
-         FROM webhook_deliveries d JOIN webhooks w ON w.id = d.webhook_id
-         WHERE d.delivered_at IS NULL AND d.attempts < ? AND (d.claimed_until IS NULL OR d.claimed_until <= ?)
-       )
-       WHERE allowance IS NULL OR n <= allowance
-       ORDER BY id LIMIT ?`,
+      `SELECT id, url, secret, header_name, header_value,
+              CASE WHEN max_per_hour IS NULL THEN NULL
+                   WHEN window_started_at IS NULL OR window_started_at + ? <= ? THEN max_per_hour
+                   ELSE max_per_hour - window_count END AS allowance
+       FROM webhooks`,
     )
-    .all(WEBHOOK_WINDOW_MS, now, maxAttempts, now, batch) as {
+    .all(WEBHOOK_WINDOW_MS, now) as {
+    id: number;
+    url: string;
+    secret: string;
+    header_name: string | null;
+    header_value: string | null;
+    allowance: number | null;
+  }[];
+  // A webhook's oldest claimable rows, through `webhook_deliveries_pending_by_webhook`; at most `LIMIT` are read, so a
+  // backlog held behind a limit costs nothing.
+  const pendingOf = db.prepare(
+    `SELECT id, attempts FROM webhook_deliveries
+     WHERE webhook_id = ? AND delivered_at IS NULL AND attempts < ? AND (claimed_until IS NULL OR claimed_until <= ?)
+     ORDER BY id LIMIT ?`,
+  );
+  const rows: {
     id: number;
     attempts: number;
     webhook_id: number;
@@ -355,7 +364,16 @@ export async function sendPending(db: Db, options: SendOptions = {}): Promise<{ 
     secret: string;
     header_name: string | null;
     header_value: string | null;
-  }[];
+  }[] = [];
+  for (const w of webhooks) {
+    const take = w.allowance === null ? batch : Math.min(w.allowance, batch);
+    if (take <= 0) continue;
+    for (const d of pendingOf.all(w.id, maxAttempts, now, take) as { id: number; attempts: number }[]) {
+      rows.push({ id: d.id, attempts: d.attempts, webhook_id: w.id, url: w.url, secret: w.secret, header_name: w.header_name, header_value: w.header_value });
+    }
+  }
+  rows.sort((a, b) => a.id - b.id);
+  rows.length = Math.min(rows.length, batch);
   const claim = db.prepare(
     "UPDATE webhook_deliveries SET attempts = attempts + 1, claimed_until = ? WHERE id = ? AND attempts = ? AND delivered_at IS NULL",
   );
@@ -363,7 +381,7 @@ export async function sendPending(db: Db, options: SendOptions = {}): Promise<{ 
   const use = db.prepare("UPDATE webhooks SET window_started_at = ?, window_count = ? WHERE id = ?");
   // Claims the row if its webhook has allowance left, using one request of it; true if claimed. Counted at the claim, as
   // attempts are, so a claim that sends nothing (a stored URL that no longer passes, a deleted message) uses one too.
-  // `fresh` must match the `allowance` CASE in the pick query above.
+  // `fresh` must match the `allowance` CASE in the webhooks query above.
   const claimWithin = db.transaction((row: (typeof rows)[number]): boolean => {
     const w = windowOf.get(row.webhook_id) as { max_per_hour: number | null; window_started_at: number | null; window_count: number } | undefined;
     if (!w) return false;
