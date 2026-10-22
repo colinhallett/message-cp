@@ -94,7 +94,12 @@
         },
         "event.pull_request.state": "open",
         "event.pull_request.head.repo.full_name": "colinhallett/message-cp",
-        "event.pull_request.user.login": "tessl-helper[bot]"
+        "event.pull_request.user.login": {
+          "in": [
+            "tessl-helper[bot]",
+            "tessl-app[bot]"
+          ]
+        }
       },
       "concurrency": {
         "keys": [
@@ -127,7 +132,12 @@
           ]
         },
         "event.pull_request.head.repo.full_name": "colinhallett/message-cp",
-        "event.pull_request.user.login": "tessl-helper[bot]"
+        "event.pull_request.user.login": {
+          "in": [
+            "tessl-helper[bot]",
+            "tessl-app[bot]"
+          ]
+        }
       },
       "concurrency": {
         "debounce": "90s",
@@ -179,7 +189,12 @@
         "event.pull_request.merged": true,
         "event.pull_request.base.ref": "main",
         "event.pull_request.head.repo.full_name": "colinhallett/message-cp",
-        "event.pull_request.user.login": "tessl-helper[bot]"
+        "event.pull_request.user.login": {
+          "in": [
+            "tessl-helper[bot]",
+            "tessl-app[bot]"
+          ]
+        }
       },
       "concurrency": {
         "debounce": "120s",
