@@ -662,6 +662,23 @@ describe("agent headers", () => {
     expect((await call(again, "read_inbox", {})).text).toContain("before restart");
   });
 
+  it("records the session, so its own id is restored after a restart without the headers", async () => {
+    const ann = await connectAs(named());
+    await call(ann, "read_inbox", {});
+    const sid = (ann.transport as StreamableHTTPClientTransport).sessionId!;
+    const bob = await connect();
+    await call(bob, "register", { name: "bob", bio: "y" });
+    await call(bob, "send_message", { to: "ann", body: "before restart" });
+    await restart();
+    const resumed = new Client({ name: "test", version: "0" });
+    await resumed.connect(
+      new StreamableHTTPClientTransport(url(), { sessionId: sid, requestInit: { headers: { Authorization: `Bearer ${TOKEN}` } } }),
+    );
+    open.push(resumed);
+    expect((await call(resumed, "read_inbox", {})).text).toContain("before restart");
+    expect(db.prepare("SELECT name FROM agents ORDER BY name").all()).toEqual([{ name: "ann" }, { name: "bob" }]);
+  });
+
   it("refuses a wrong key, a person's name and an invalid name or key with 403 and the register message, and creates no session", async () => {
     const owner = await connect();
     await call(owner, "register", { name: "ann", bio: "x", key: KEY });
@@ -753,7 +770,7 @@ describe("agent headers", () => {
         "mcp-session-id": sid,
         "mcp-protocol-version": "2025-03-26",
         ...named("bob", "bob-key"),
-        // Not even a malformed pair is read there.
+        // An empty key would be refused if the headers were read there.
         "X-Message-CP-Agent-Key": "",
       },
       body: JSON.stringify({ jsonrpc: "2.0", id: 9, method: "tools/call", params: { name: "read_inbox", arguments: {} } }),
