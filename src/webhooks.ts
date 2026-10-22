@@ -465,27 +465,33 @@ export async function sendPending(db: Db, options: SendOptions = {}): Promise<{ 
   );
   const windowOf = db.prepare("SELECT max_per_hour, window_started_at, window_count FROM webhooks WHERE id = ?");
   const use = db.prepare("UPDATE webhooks SET window_started_at = ?, window_count = ? WHERE id = ?");
-  // Claims the row if its webhook has allowance left, using one request of it; true if claimed. Counted at the claim, as
+  // Claims the row if its webhook has allowance left, using one request of it. Counted at the claim, as
   // attempts are, so a claim that sends nothing (a stored URL that no longer passes, a deleted message) uses one too.
-  // `fresh` must match the `allowance` CASE in the webhooks query above.
-  const claimWithin = db.transaction((row: (typeof rows)[number]): boolean => {
+  // `fresh` must match the `allowance` CASE in the webhooks query above. Returns the claim's `claimed_until`, or null.
+  const claimWithin = db.transaction((row: (typeof rows)[number]): number | null => {
     const w = windowOf.get(row.webhook_id) as { max_per_hour: number | null; window_started_at: number | null; window_count: number } | undefined;
-    if (!w) return false;
+    if (!w) return null;
     const at = Date.now();
     const fresh = w.window_started_at === null || w.window_started_at + WEBHOOK_WINDOW_MS <= at;
-    if (w.max_per_hour !== null && !fresh && w.window_count >= w.max_per_hour) return false;
-    if (claim.run(at + 2 * timeoutMs, row.id, row.attempts).changes !== 1) return false;
+    if (w.max_per_hour !== null && !fresh && w.window_count >= w.max_per_hour) return null;
+    const until = at + 2 * timeoutMs;
+    if (claim.run(until, row.id, row.attempts).changes !== 1) return null;
     if (w.max_per_hour !== null) use.run(fresh ? at : w.window_started_at, fresh ? 1 : w.window_count + 1, row.webhook_id);
-    return true;
+    return until;
   });
+  // Both match the row as this sender claimed it, not only its id: if the delivery is deleted while its request is being
+  // built or sent and a new one queued takes the same id, the new one neither takes its id nor counts as delivered.
+  const mine = "id = ? AND webhook_id = ? AND attempts = ? AND claimed_until = ?";
   // The delivery's id for a fixed body: a new one on the first request sent for it, the stored one on every retry.
-  const deliveryId = db.prepare("UPDATE webhook_deliveries SET delivery_uuid = COALESCE(delivery_uuid, ?) WHERE id = ? RETURNING delivery_uuid");
-  const done = db.prepare("UPDATE webhook_deliveries SET delivered_at = ? WHERE id = ?");
+  const deliveryId = db.prepare(`UPDATE webhook_deliveries SET delivery_uuid = COALESCE(delivery_uuid, ?) WHERE ${mine} RETURNING delivery_uuid`);
+  const done = db.prepare(`UPDATE webhook_deliveries SET delivered_at = ? WHERE ${mine}`);
   let delivered = 0;
   let failed = 0;
 
   const send = async (row: (typeof rows)[number]) => {
-    if (!claimWithin.immediate(row)) return;
+    const until = claimWithin.immediate(row);
+    if (until === null) return;
+    const claimed = [row.id, row.webhook_id, row.attempts + 1, until] as const;
     let href: string;
     try {
       href = webhookUrl(row.url);
@@ -499,7 +505,7 @@ export async function sendPending(db: Db, options: SendOptions = {}): Promise<{ 
     let text: string;
     if (row.fixed_body === null) text = JSON.stringify(body);
     else {
-      const id = deliveryId.get(randomUUID(), row.id) as { delivery_uuid: string } | undefined;
+      const id = deliveryId.get(randomUUID(), ...claimed) as { delivery_uuid: string } | undefined;
       if (!id) return;
       // `webhookBody` checked that the placeholder is there once, inside a string, and a UUID needs no escaping.
       text = row.fixed_body.replace(WEBHOOK_PLACEHOLDER, () => id.delivery_uuid);
@@ -522,12 +528,9 @@ export async function sendPending(db: Db, options: SendOptions = {}): Promise<{ 
     } catch {
       // A network error or the timeout; the answer, if any, is only read for its status.
     }
-    if (ok) {
-      done.run(Date.now(), row.id);
-      delivered++;
-    } else {
-      failed++;
-    }
+    if (!ok) failed++;
+    // Not counted when the delivery it was for is gone: there is nothing left to mark.
+    else if (done.run(Date.now(), ...claimed).changes === 1) delivered++;
   };
 
   let next = 0;

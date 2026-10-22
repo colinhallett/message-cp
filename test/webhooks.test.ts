@@ -802,6 +802,32 @@ describe("sendPending", () => {
       for (const g of r.got) expect(g.headers["x-message-cp-signature"]).toBe(signature(hook.secret, g.body));
     });
 
+    it("never gives a delivery that takes a deleted one's row id its id, or marks it delivered", async () => {
+      // While the first request is in flight, its message is deleted and a new one queued takes the same row id.
+      const r = await receiver((n) => {
+        if (n === 0) {
+          db.prepare("DELETE FROM messages").run();
+          sendMessage(db, OWNER_ACCOUNT, "alice", "bob", "two");
+        }
+        return 200;
+      });
+      add(r.url);
+      sendMessage(db, OWNER_ACCOUNT, "alice", "bob", "one");
+      expect(await sendPending(db)).toEqual({ delivered: 0, failed: 0 });
+      const replacement = () =>
+        db.prepare("SELECT id, attempts, delivered_at, delivery_uuid FROM webhook_deliveries").all() as {
+          id: number;
+          attempts: number;
+          delivered_at: number | null;
+          delivery_uuid: string | null;
+        }[];
+      expect(replacement()).toEqual([{ id: 1, attempts: 0, delivered_at: null, delivery_uuid: null }]);
+      expect(await sendPending(db)).toEqual({ delivered: 1, failed: 0 });
+      expect(r.got).toHaveLength(2);
+      expect(sent(r.got[1]!).requestId).not.toBe(sent(r.got[0]!).requestId);
+      expect(replacement()[0]).toMatchObject({ attempts: 1, delivered_at: expect.any(Number), delivery_uuid: sent(r.got[1]!).requestId.slice(4) });
+    });
+
     it("still sends the webhook's header and keeps to its limit", async () => {
       const r = await receiver();
       const hook = add(r.url, `Authorization: ${HEADER_VALUE}`, 1);
