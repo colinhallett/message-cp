@@ -3,11 +3,12 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import Database from "better-sqlite3";
 import { mkdtempSync } from "node:fs";
+import { request } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { addAccount } from "../src/accounts.js";
-import { purgeAgent } from "../src/agents.js";
+import { addPerson, purgeAgent } from "../src/agents.js";
 import { OWNER_ACCOUNT, openDb, type Db } from "../src/db.js";
 import { startHttp, type HttpServer } from "../src/http.js";
 import { sendMessage } from "../src/messages.js";
@@ -578,5 +579,229 @@ describe("restart", () => {
     await fetch(url(), { method: "DELETE", headers: { ...auth, "mcp-session-id": first.headers.get("mcp-session-id")! } });
     expect(await status(sid)).toBe(200);
     expect(http.sessionCount()).toBe(1);
+  });
+});
+
+describe("agent headers", () => {
+  const KEY = "ann-secret-key";
+  const named = (name = "ann", key = KEY) => ({ "X-Message-CP-Agent": name, "X-Message-CP-Agent-Key": key });
+
+  /** A client whose every request carries the agent headers, as one configured with them does. */
+  async function connectAs(headers: Record<string, string>, token = TOKEN): Promise<Client> {
+    const client = new Client({ name: "test", version: "0" });
+    await client.connect(
+      new StreamableHTTPClientTransport(url(), { requestInit: { headers: { Authorization: `Bearer ${token}`, ...headers } } }),
+    );
+    open.push(client);
+    return client;
+  }
+
+  async function restart(): Promise<void> {
+    for (const c of open) await c.close().catch(() => {});
+    open = [];
+    await http.close();
+    http = await startHttp(db, { token: TOKEN, port: 0 });
+  }
+
+  /** An initialize sent with `rawHeaders` exactly as given, so a header can be repeated. */
+  const rawPost = (rawHeaders: string[]) =>
+    new Promise<{ status: number; body: string }>((resolve, reject) => {
+      const req = request(
+        url(),
+        {
+          method: "POST",
+          headers: [
+            "Content-Type", "application/json",
+            "Accept", "application/json, text/event-stream",
+            "Authorization", `Bearer ${TOKEN}`,
+            ...rawHeaders,
+          ],
+        },
+        (res) => {
+          let body = "";
+          res.on("data", (chunk) => (body += chunk));
+          res.on("end", () => resolve({ status: res.statusCode!, body }));
+        },
+      );
+      req.on("error", reject);
+      req.end(JSON.stringify(init));
+    });
+
+  it("acts as the named agent from the first tool call, with no register", async () => {
+    const ann = await connectAs(named());
+    expect((await call(ann, "read_inbox", {})).isError).toBe(false);
+    const bob = await connect();
+    await call(bob, "register", { name: "bob", bio: "y" });
+    expect((await call(ann, "send_message", { to: "bob", body: "hi bob" })).isError).toBe(false);
+    expect(JSON.parse((await call(bob, "read_inbox", {})).text)).toEqual([expect.objectContaining({ from: "ann", body: "hi bob" })]);
+    expect(db.prepare("SELECT count(*) AS n FROM http_sessions").get()).toEqual({ n: 2 });
+  });
+
+  it("delivers mail sent before the agent's first header session", async () => {
+    const first = await connect();
+    await call(first, "register", { name: "Ann", bio: "keeps this", key: KEY });
+    const bob = await connect();
+    await call(bob, "register", { name: "bob", bio: "y" });
+    await call(bob, "send_message", { to: "Ann", body: "waiting for you" });
+    // Any case of the name is the same agent.
+    const ann = await connectAs(named("ann"));
+    expect((await call(ann, "read_inbox", {})).text).toContain("waiting for you");
+    expect(JSON.parse((await call(bob, "list_agents", {})).text)).toContainEqual(
+      expect.objectContaining({ name: "Ann", bio: "keeps this" }),
+    );
+  });
+
+  it("is the same agent, with the same mail, in a new session after a restart", async () => {
+    const ann = await connectAs(named());
+    await call(ann, "read_inbox", {});
+    const bob = await connect();
+    await call(bob, "register", { name: "bob", bio: "y" });
+    await call(bob, "send_message", { to: "ann", body: "before restart" });
+    await restart();
+    const again = await connectAs(named());
+    expect((await call(again, "read_inbox", {})).text).toContain("before restart");
+  });
+
+  it("records the session, so its own id is restored after a restart without the headers", async () => {
+    const ann = await connectAs(named());
+    await call(ann, "read_inbox", {});
+    const sid = (ann.transport as StreamableHTTPClientTransport).sessionId!;
+    const bob = await connect();
+    await call(bob, "register", { name: "bob", bio: "y" });
+    await call(bob, "send_message", { to: "ann", body: "before restart" });
+    await restart();
+    const resumed = new Client({ name: "test", version: "0" });
+    await resumed.connect(
+      new StreamableHTTPClientTransport(url(), { sessionId: sid, requestInit: { headers: { Authorization: `Bearer ${TOKEN}` } } }),
+    );
+    open.push(resumed);
+    expect((await call(resumed, "read_inbox", {})).text).toContain("before restart");
+    expect(db.prepare("SELECT name FROM agents ORDER BY name").all()).toEqual([{ name: "ann" }, { name: "bob" }]);
+  });
+
+  it("refuses a wrong key, a person's name and an invalid name or key with 403 and the register message, and creates no session", async () => {
+    const owner = await connect();
+    await call(owner, "register", { name: "ann", bio: "x", key: KEY });
+    addPerson(db, "owner", "colin");
+    await owner.close();
+    open = [];
+    const before = http.sessionCount();
+    const cases: [Record<string, string>, string][] = [
+      [named("ann", "wrong-key"), "Agent 'ann' is already registered and has a key. Pass its key to take it over."],
+      [named("colin", "any-key"), "The name 'colin' belongs to a person, not an agent. No agent can register or remove it."],
+      [named("not a name"), "Invalid name: use 1-32 characters from letters, digits, '-' and '_'."],
+      [named("all"), "The name 'all' is reserved."],
+      [named("ann", "k".repeat(257)), "Invalid key: use 1-256 characters."],
+    ];
+    for (const [headers, message] of cases) {
+      const res = await post({ Authorization: `Bearer ${TOKEN}`, ...headers });
+      expect(res.status).toBe(403);
+      const text = await res.text();
+      expect(JSON.parse(text).error.message).toBe(message);
+      expect(text).not.toContain(headers["X-Message-CP-Agent-Key"]);
+      expect(res.headers.get("mcp-session-id")).toBeNull();
+    }
+    expect(http.sessionCount()).toBe(before);
+  });
+
+  it("answers 503 with Retry-After when the database is too busy to register, creating no session", async () => {
+    const prepare = db.prepare.bind(db);
+    vi.spyOn(db, "prepare").mockImplementation(((sql: string) => {
+      if (sql.startsWith("SELECT name, key_hash, person FROM agents")) {
+        throw Object.assign(new Error("database is locked"), { code: "SQLITE_BUSY" });
+      }
+      return prepare(sql);
+    }) as typeof db.prepare);
+    const res = await post({ Authorization: `Bearer ${TOKEN}`, ...named() });
+    vi.restoreAllMocks();
+    expect(res.status).toBe(503);
+    expect(res.headers.get("retry-after")).toBe("1");
+    expect(http.sessionCount()).toBe(0);
+  });
+
+  it("answers 400 to one header alone or a repeated header, before the session cap", async () => {
+    await http.close();
+    http = await startHttp(db, { token: TOKEN, port: 0, maxSessions: 1 });
+    expect((await post({ Authorization: `Bearer ${TOKEN}` })).status).toBe(200);
+    // At the cap, a malformed pair is still told what is wrong with it.
+    const alone = await post({ Authorization: `Bearer ${TOKEN}`, "X-Message-CP-Agent": "ann" });
+    expect(alone.status).toBe(400);
+    // The body is left unread, so the connection is closed rather than kept for another request.
+    expect(alone.headers.get("connection")).toBe("close");
+    expect((await post({ Authorization: `Bearer ${TOKEN}`, "X-Message-CP-Agent-Key": KEY })).status).toBe(400);
+    const twice = await rawPost(["X-Message-CP-Agent", "ann", "X-Message-CP-Agent", "bob", "X-Message-CP-Agent-Key", KEY]);
+    expect(twice.status).toBe(400);
+    expect(twice.body).not.toContain(KEY);
+    const keyTwice = await rawPost(["X-Message-CP-Agent", "ann", "X-Message-CP-Agent-Key", KEY, "X-Message-CP-Agent-Key", KEY]);
+    expect(keyTwice.status).toBe(400);
+    expect(http.sessionCount()).toBe(1);
+    expect(db.prepare("SELECT count(*) AS n FROM agents").get()).toEqual({ n: 0 });
+  });
+
+  it("never touches another account's agent of the same name", async () => {
+    const other = addAccount(db, "other").token;
+    const owners = await connectAs(named());
+    await call(owners, "read_inbox", {});
+    // The same headers with another account's token make that account's own ann; the owner's keeps its key.
+    const theirs = await connectAs(named("ann", "their-key"), other);
+    expect((await call(theirs, "read_inbox", {})).isError).toBe(false);
+    const bob = await connect();
+    await call(bob, "register", { name: "bob", bio: "y" });
+    await call(bob, "send_message", { to: "ann", body: "for the owner's ann" });
+    expect((await call(theirs, "read_inbox", {})).text).not.toContain("for the owner's ann");
+    expect((await call(owners, "read_inbox", {})).text).toContain("for the owner's ann");
+    const res = await post({ Authorization: `Bearer ${TOKEN}`, ...named("ann", "their-key") });
+    expect(res.status).toBe(403);
+    const rows = db.prepare("SELECT account_id, name FROM agents ORDER BY account_id").all() as { account_id: number }[];
+    expect(rows).toHaveLength(3);
+    expect(new Set(rows.map((r) => r.account_id)).size).toBe(2);
+  });
+
+  it("ignores the headers on a request in an existing session", async () => {
+    const ann = await connectAs(named());
+    await call(ann, "read_inbox", {});
+    const bob = await connect();
+    await call(bob, "register", { name: "bob", bio: "y", key: "bob-key" });
+    await call(bob, "send_message", { to: "ann", body: "for ann" });
+    const sid = (ann.transport as StreamableHTTPClientTransport).sessionId!;
+    const res = await fetch(url(), {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json, text/event-stream",
+        Authorization: `Bearer ${TOKEN}`,
+        "mcp-session-id": sid,
+        "mcp-protocol-version": "2025-03-26",
+        ...named("bob", "bob-key"),
+        // An empty key would be refused if the headers were read there.
+        "X-Message-CP-Agent-Key": "",
+      },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 9, method: "tools/call", params: { name: "read_inbox", arguments: {} } }),
+    });
+    expect(res.status).toBe(200);
+    expect(await res.text()).toContain("for ann");
+    // register still works on a header session, and rebinds it.
+    expect((await call(ann, "register", { name: "carol", bio: "z" })).isError).toBe(false);
+    expect((await call(ann, "unregister", {})).isError).toBe(false);
+  });
+
+  it("never passes the key to console.error", async () => {
+    const errors = vi.spyOn(console, "error");
+    const ann = await connectAs(named());
+    await call(ann, "read_inbox", {});
+    await post({ Authorization: `Bearer ${TOKEN}`, ...named("ann", "wrong-key") });
+    await post({ Authorization: `Bearer ${TOKEN}`, "X-Message-CP-Agent-Key": KEY });
+    // A session that cannot be recorded logs its fixed line, and nothing about the key.
+    const prepare = db.prepare.bind(db);
+    vi.spyOn(db, "prepare").mockImplementation(((sql: string) => {
+      if (sql.startsWith("INSERT INTO http_sessions")) throw new Error("disk I/O error");
+      return prepare(sql);
+    }) as typeof db.prepare);
+    const again = await connectAs(named());
+    expect((await call(again, "read_inbox", {})).isError).toBe(false);
+    const logged = errors.mock.calls.map((args) => args.map(String).join(" "));
+    vi.restoreAllMocks();
+    expect(logged).toContain("message-cp serve: could not record a session for restarts");
+    for (const line of logged) expect(line).not.toContain(KEY);
   });
 });
