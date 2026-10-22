@@ -1522,8 +1522,10 @@ async function readLog(token, signal, gen, channel) {
 // not among them, updating its receipt in the open log. read_at is only ever set, never cleared, so a message is never
 // marked unread again. A message read while the pages were read moves the rest one place earlier, so the row after a
 // page boundary (or after a full last page) may have been skipped: a held message there is left as it was until a later
-// poll. A failed read, or one answered after a newer poll or another token, changes nothing. It marks nothing read.
+// poll. A failed read, or one answered after a newer poll or another token, changes nothing. When no held message to an
+// agent is still unread there is nothing to learn, so it asks nothing. It marks nothing read for any agent.
 async function readReceipts(token, signal, gen) {
+  if (!messages.some((m) => m.read !== true && !isPerson(String(m.to)))) return { ok: true };
   const unread = await fetchAll(token, signal, "/api/messages", list, { unread: "true" });
   if (gen !== generation) return { ok: true };
   if (!unread.items) return unread;

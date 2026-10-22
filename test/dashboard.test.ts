@@ -1873,6 +1873,53 @@ describe("the page's channels and messages", () => {
       expect(log.children.map(receipt)).toEqual(["read", "read", "read"]);
     });
 
+    it("leaves the row after a page boundary as it was when a message is read between the pages", async () => {
+      for (const name of ["alice", "bob"]) registerAgent(db, OWNER_ACCOUNT, name, "x");
+      for (let i = 0; i < 201; i++) sendMessage(db, OWNER_ACCOUNT, "alice", "bob", `message ${i}`);
+      let between = false;
+      // bob reads his oldest message after the first page of the unread read, so the last unread message moves onto
+      // the first page's offsets and the second page, read at offset 200, misses it.
+      const page = await load(viewer, (url) => {
+        if (between && url === "/api/messages?unread=true&limit=200&offset=200") {
+          between = false;
+          readInbox(db, OWNER_ACCOUNT, "bob", true, 1);
+        }
+        return undefined;
+      });
+      const pairs = page.elements["pair-rows"];
+      const log = page.elements["post-rows"];
+      await page.until(() => pairs.children.length === 1 && tip(pairs.children[0]) === "201 messages" && page.scheduled());
+      open(pairs.children[0]);
+      expect(new Set(log.children.map(receipt))).toEqual(new Set(["not read yet"]));
+      // Opening the pair polls at once; let that poll end first.
+      await page.until(() => page.scheduled());
+      between = true;
+      await page.poll();
+      await page.until(() => !between && page.scheduled());
+      // The missed message is not taken for read, and the one read, asked about before it was, is not yet shown read.
+      expect([receipt(log.children[0]), receipt(log.children[200])]).toEqual(["not read yet", "not read yet"]);
+      await page.poll();
+      await page.until(() => receipt(log.children[0]) === "read" && page.scheduled());
+      expect(log.children.slice(1).filter((row) => receipt(row) === "read")).toHaveLength(0);
+    });
+
+    it("asks nothing about receipts while no message the page holds to an agent is unread", async () => {
+      registerAgent(db, OWNER_ACCOUNT, "bob", "x");
+      addPerson(db, "owner", "colin");
+      sendMessage(db, OWNER_ACCOUNT, "bob", "colin", "to a person");
+      sendMessage(db, OWNER_ACCOUNT, "colin", "bob", "to bob");
+      readInbox(db, OWNER_ACCOUNT, "bob");
+      const page = await load(viewer);
+      await page.until(() => page.elements["pair-rows"].children.length === 1 && page.scheduled());
+      await page.poll();
+      await page.until(() => page.scheduled());
+      expect(page.urls.filter((url) => url.includes("unread="))).toEqual([]);
+      // A new message to an agent starts the asking again.
+      sendMessage(db, OWNER_ACCOUNT, "colin", "bob", "again");
+      await page.poll();
+      await page.until(() => page.urls.some((url) => url.includes("unread=true")));
+    });
+
     it("changes no receipt when the unread read fails, and asks for another token when it is refused", async () => {
       for (const name of ["alice", "bob"]) registerAgent(db, OWNER_ACCOUNT, name, "x");
       sendMessage(db, OWNER_ACCOUNT, "alice", "bob", "one");
