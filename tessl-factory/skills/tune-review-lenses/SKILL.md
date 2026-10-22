@@ -24,11 +24,22 @@ are the owner's to approve.
 
 - The project and organization ids are in your instructions. Without them,
   the project id is `linkedProject.id` from `tessl project repair --json`.
-- Review statistics for the last 30 days:
-  `tessl api "/v1/orgs/<org>/code-reviews?projectId=<project>"`. `meta.summary`
-  has rounds, verdicts, severities and dispositions (addressed, refuted,
-  declined, remaining); the one entry in `data` has this repository's id.
-- Each review round: `tessl api "/v1/orgs/<org>/code-reviews/runs?repositoryId=<id>&page%5Bsize%5D=100"`.
+- **Counts per lens, from GitHub.** Tessl's organisation-level review
+  statistics (`/v1/orgs/<org>/code-reviews` and `.../code-reviews/runs`) are
+  refused inside a factory run, which has no organisation role, so count from
+  the pull requests instead. Every inline comment the reviewer posts carries
+  hidden markers: `<!-- tessl-code-review:lenses:v1 refs=<url-encoded lens
+  refs, comma separated> -->` names the lenses behind a finding,
+  `<!-- tessl-code-review:finding:v1 id=<finding id> -->` its id, and a later
+  reply's `<!-- tessl-code-review:reconciliation:v1 id=<finding id>
+  category=<addressed|refuted|declined> -->` how it was settled. For the
+  pull requests merged or updated in your window (`gh pr list --state all
+  --search "updated:>=<date>" --json number`), read `gh api
+  repos/<owner>/<repo>/pulls/<n>/comments --paginate` and count, per lens:
+  findings raised, and how many were addressed, declined, refuted or are still
+  open. The severity is in the comment's first bold line. If an
+  organisation-level call does work for you, use it as a cross-check, not a
+  replacement.
 - Findings authors settled as refuted or declined, newest first, with the lens
   refs that raised each, its severity, path and line, and the note that settled
   it: `tessl api "/experimental/projects/<project>/code-review-settled-findings?page%5Bsize%5D=100&filter%5Bsince%5D=<ISO date>"`
@@ -101,7 +112,7 @@ your output instead and say so.
 
 ## Ending
 
-Say in your output: the window you read, the headline numbers (rounds,
-findings, addressed, declined, refuted, by lens), each finding you created with
+Say in your output: the window you read, the headline numbers (pull
+requests, findings, addressed, declined, refuted, by lens, from GitHub), each finding you created with
 its id and title, the patterns you looked at and did not write up and why, and
 anything you could not read.
