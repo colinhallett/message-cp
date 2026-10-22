@@ -2026,6 +2026,90 @@ describe("the page's channels and messages", () => {
       await page.until(() => receipt(log.children[0]) === undefined && page.scheduled());
     });
 
+    // Marks every queued webhook delivery as taken by its receiver (a 2xx); in these tests only bob has a webhook.
+    const deliver = () => db.prepare("UPDATE webhook_deliveries SET attempts = 1, delivered_at = ?").run(Date.now());
+
+    it("turns a held unread message to starting… once a webhook delivered it, and then to read, in place", async () => {
+      for (const name of ["alice", "bob", "carol"]) registerAgent(db, OWNER_ACCOUNT, name, "x");
+      // Port 1 on loopback refuses at once, so the server's own pass never delivers anything.
+      addWebhook(db, "owner", "http://127.0.0.1:1/hook", "agent:bob", true);
+      sendMessage(db, OWNER_ACCOUNT, "alice", "bob", "wakes bob");
+      sendMessage(db, OWNER_ACCOUNT, "alice", "carol", "no webhook");
+      const page = await load(viewer);
+      const pairs = page.elements["pair-rows"];
+      const log = page.elements["post-rows"];
+      await page.until(() => pairs.children.length === 2);
+      open(pairs.children.find((row) => item(row)[0] === "alice ↔ bob")!);
+      await page.until(() => page.scheduled());
+      expect(log.children.map(receipt)).toEqual(["not read yet"]);
+      const node = receiptNode(log.children[0]);
+
+      deliver();
+      await page.poll();
+      await page.until(() => receipt(log.children[0]) === "starting…" && page.scheduled());
+      expect(receiptNode(log.children[0])).toBe(node);
+      // Nothing the page did marked the message read.
+      expect(unreadSummary(db, OWNER_ACCOUNT, "bob")!.count).toBe(1);
+
+      readInbox(db, OWNER_ACCOUNT, "bob");
+      await page.poll();
+      await page.until(() => receipt(log.children[0]) === "read" && page.scheduled());
+      expect(receiptNode(log.children[0])).toBe(node);
+      // A later poll never turns it back.
+      await page.poll();
+      await page.until(() => page.scheduled());
+      expect(log.children.map(receipt)).toEqual(["read"]);
+
+      open(pairs.children.find((row) => item(row)[0] === "alice ↔ carol")!);
+      expect(log.children.map(receipt)).toEqual(["not read yet"]);
+    });
+
+    it("shows starting… at once for a message already delivered when the page loads, and none to a person", async () => {
+      registerAgent(db, OWNER_ACCOUNT, "bob", "x");
+      addPerson(db, "owner", "colin");
+      addWebhook(db, "owner", "http://127.0.0.1:1/hook", "agent:bob", true);
+      addWebhook(db, "owner", "http://127.0.0.1:1/hook", "agent:colin", true);
+      sendMessage(db, OWNER_ACCOUNT, "colin", "bob", "to bob");
+      sendMessage(db, OWNER_ACCOUNT, "bob", "colin", "to colin");
+      deliver();
+      const page = await load(viewer);
+      const pairs = page.elements["pair-rows"];
+      const log = page.elements["post-rows"];
+      await page.until(() => pairs.children.length === 1 && page.elements["rows"].children.length === 2);
+      open(pairs.children[0]);
+      expect(log.children.map((row) => [field(row, "body"), receipt(row)])).toEqual([
+        ["to bob", "starting…"],
+        ["to colin", undefined],
+      ]);
+    });
+
+    it("shows no starting… without a delivered delivery, and keeps starting… once the server stops saying it", async () => {
+      for (const name of ["alice", "bob"]) registerAgent(db, OWNER_ACCOUNT, name, "x");
+      const hook = addWebhook(db, "owner", "http://127.0.0.1:1/hook", "agent:bob", true);
+      sendMessage(db, OWNER_ACCOUNT, "alice", "bob", "pending");
+      const page = await load(viewer);
+      const pairs = page.elements["pair-rows"];
+      const log = page.elements["post-rows"];
+      await page.until(() => pairs.children.length === 1);
+      open(pairs.children[0]);
+      await page.until(() => page.scheduled());
+      await page.poll();
+      await page.until(() => page.scheduled());
+      expect(page.urls.some((url) => url.startsWith("/api/messages?unread=true"))).toBe(true);
+      expect(log.children.map(receipt)).toEqual(["not read yet"]);
+
+      deliver();
+      await page.poll();
+      await page.until(() => receipt(log.children[0]) === "starting…" && page.scheduled());
+      // Removing the webhook takes its deliveries with it, so the server answers starting: false; the receipt stays.
+      db.prepare("DELETE FROM webhooks WHERE id = ?").run(hook.id);
+      const asked = page.urls.length;
+      await page.poll();
+      await page.until(() => page.scheduled());
+      expect(page.urls.slice(asked).some((url) => url.startsWith("/api/messages?unread=true"))).toBe(true);
+      expect(log.children.map(receipt)).toEqual(["starting…"]);
+    });
+
     it("never shows a receipt on a channel post", async () => {
       registerAgent(db, OWNER_ACCOUNT, "alice", "x");
       post(db, OWNER_ACCOUNT, { ...identityOf(db, OWNER_ACCOUNT, "alice")!, name: "alice" }, "build", "hello");
