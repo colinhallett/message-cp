@@ -126,7 +126,7 @@ describe("POST /api/post", () => {
 
     const posts = await fetch(`${base()}/api/channel-posts?channel=general`, { headers: auth(ownerViewer) });
     expect(((await posts.json()) as { posts: { from: string; id: number }[] }).posts).toEqual([
-      { id: result.id, from: "colin", sentAt: result.sentAt, body: "@bob and @colin, look" },
+      { id: result.id, from: "colin", sentAt: result.sentAt, body: "@bob and @colin, look", mentions: [{ name: "bob", read: false }] },
     ]);
     expect(readChannel(db, OWNER_ACCOUNT, member(OWNER_ACCOUNT, "carol"), "general").posts.map((p) => p.from)).toEqual(["colin"]);
     expect(readInbox(db, OWNER_ACCOUNT, "bob").map((m) => m.from)).toEqual(["colin"]);
