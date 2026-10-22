@@ -163,6 +163,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .tag { grid-area: tag; font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--accent); border: 1px solid currentColor; border-radius: var(--radius); padding: 0 var(--s1); }
 .body { grid-area: body; white-space: pre-wrap; overflow-wrap: anywhere; }
 .mention { color: var(--accent); background: var(--mention-bg); border-radius: 3px; padding: 0 2px; font-weight: 600; }
+.body a { color: var(--accent); }
 .mention.me { color: var(--me); background: var(--me-bg); box-shadow: inset 0 -2px 0 currentColor; }
 .entry.chat { grid-template-columns: 2.5rem auto auto auto minmax(0, 1fr); grid-template-areas: "avatar from kind tag time" "avatar body body body body"; column-gap: 0; padding-bottom: 1px; }
 .entry.chat > :not(.avatar) { margin-left: var(--s2); }
@@ -1664,20 +1665,70 @@ function part(tag, className, text) {
   return node;
 }
 
-// An entry's text as a div.body. Text with mentions is split into spans, each mention its own span.mention, marked
-// "mention me" when it names the person the page posts as; text with none is the div's own text.
+// An http:// or https:// address in an entry's text, up to a space or a character that cannot be in one; addresses()
+// trims the punctuation after it.
+const ADDRESS = /https?:\\/\\/[^\\s<>"]+/g;
+// Punctuation at the end of an address that ends the sentence around it rather than the address.
+const TRAILING = ".,;:!?)]}'\\"";
+
+// The web addresses in a text as [start, end] pairs, each without its trailing punctuation, except that a ")" stays
+// when the address has a "(" to match it, so https://en.wikipedia.org/wiki/Foo_(bar) stays whole. A scheme with
+// nothing after it is none.
+function addresses(text) {
+  const found = [];
+  for (const match of text.matchAll(ADDRESS)) {
+    let address = match[0];
+    // How many more "(" than ")" the address has, so a ")" that closes one stays.
+    let open = address.split("(").length - address.split(")").length;
+    while (TRAILING.includes(address[address.length - 1])) {
+      if (address.endsWith(")")) {
+        if (open >= 0) break;
+        open++;
+      }
+      address = address.slice(0, -1);
+    }
+    if (/^https?:\\/\\/./.test(address)) found.push([match.index, match.index + address.length]);
+  }
+  return found;
+}
+
+// A link to an address addresses() found, its text the address, opening in a new tab that is not told where it came
+// from.
+function link(address) {
+  const a = part("a", "", address);
+  a.href = address;
+  a.target = "_blank";
+  a.rel = "noopener noreferrer";
+  return a;
+}
+
+// An entry's text as a div.body. Text with web addresses or mentions is split into spans and links: each address
+// addresses() finds is its own a, and each mention outside an address its own span.mention, marked "mention me" when
+// it names the person the page posts as. Mentions are found in the whole text, as the server finds them. Text with
+// neither is the div's own text.
 function bodyPart(text, mentions) {
   const body = part("div", "body", "");
-  let at = 0;
-  for (const match of text.matchAll(MENTION)) {
-    if (match.index > at) body.append(part("span", "", text.slice(at, match.index)));
-    const span = part("span", mentionClass(match[1]), match[0]);
-    mentions.push([span, match[1].toLowerCase()]);
-    body.append(span);
-    at = match.index + match[0].length;
+  const links = addresses(text);
+  const named = [...text.matchAll(MENTION)]
+    .map((match) => [match.index, match.index + match[0].length, match])
+    .filter(([start, end]) => !links.some(([from, to]) => start < to && end > from));
+  const pieces = [...links, ...named].sort((a, b) => a[0] - b[0]);
+  if (pieces.length === 0) {
+    body.textContent = text;
+    return body;
   }
-  if (at === 0) body.textContent = text;
-  else if (at < text.length) body.append(part("span", "", text.slice(at)));
+  let at = 0;
+  for (const [start, end, match] of pieces) {
+    if (start > at) body.append(part("span", "", text.slice(at, start)));
+    if (match === undefined) body.append(link(text.slice(start, end)));
+    else {
+      const span = part("span", mentionClass(match[1]), match[0]);
+      mentions.push([span, match[1].toLowerCase()]);
+      body.append(span);
+    }
+    at = end;
+  }
+  if (at < text.length) body.append(part("span", "", text.slice(at)));
   return body;
 }
 

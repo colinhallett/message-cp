@@ -181,6 +181,8 @@ describe("the page's polling", () => {
 describe("the page's channels and messages", () => {
   // A stub DOM element: enough for the script to build rows and for the test to read them and click buttons.
   interface Stub {
+    // The tag createElement was given, in upper case as a browser gives it; "" for an element found by id.
+    tagName: string;
     on: Record<string, () => void>;
     hidden: boolean;
     value: string;
@@ -204,7 +206,8 @@ describe("the page's channels and messages", () => {
     contains(node: unknown): boolean;
   }
   // Elements start hidden, as the page's form, view and log do.
-  const el = (): Stub => ({
+  const el = (tag = ""): Stub => ({
+    tagName: tag.toUpperCase(),
     on: {},
     hidden: true,
     value: "",
@@ -1637,6 +1640,112 @@ describe("the page's channels and messages", () => {
         ["@bob", "mention"],
         ["@colin", "mention me"],
       ]);
+    });
+
+    // A row's body as its pieces: a link as its tag, text, href, target and rel, anything else as its tag, text and classes.
+    const pieces = (row: Stub) =>
+      row.children
+        .find((c) => c.className === "body")!
+        .children.map((c) => {
+          const a = c as Stub & { href?: string; target?: string; rel?: string };
+          return c.tagName === "A" ? ["A", c.textContent, a.href, a.target, a.rel] : [c.tagName, c.textContent, c.className];
+        });
+    const link = (address: string) => ["A", address, address, "_blank", "noopener noreferrer"];
+    const plain = (text: string) => ["SPAN", text, ""];
+    // Posts each body in #build as bob, opens the channel and returns its log once every body is shown.
+    const postAll = async (token: string, ...bodies: string[]) => {
+      registerAgent(db, OWNER_ACCOUNT, "bob", "x");
+      const bob = { ...identityOf(db, OWNER_ACCOUNT, "bob")!, name: "bob" };
+      for (const body of bodies) post(db, OWNER_ACCOUNT, bob, "build", body);
+      const page = await load(token);
+      await page.until(() => page.elements["channel-rows"].children.length === 1);
+      open(page.elements["channel-rows"].children[0]);
+      const log = page.elements["post-rows"];
+      await page.until(() => log.children.length === bodies.length);
+      return { page, log };
+    };
+
+    it("makes each http:// and https:// address in an entry's text a link that opens in a new tab, and keeps the text as it was", async () => {
+      const bodies = ["see https://example.com/a.", "(https://example.com/b) and http://127.0.0.1:8787/x?y=1#z", "https://github.com/o/r/pull/85"];
+      const { log } = await postAll(viewer, ...bodies);
+      expect(entries(log).map(([, body]) => body)).toEqual(bodies);
+      expect(pieces(log.children[0])).toEqual([plain("see "), link("https://example.com/a"), plain(".")]);
+      expect(pieces(log.children[1])).toEqual([
+        plain("("),
+        link("https://example.com/b"),
+        plain(") and "),
+        link("http://127.0.0.1:8787/x?y=1#z"),
+      ]);
+      expect(pieces(log.children[2])).toEqual([link("https://github.com/o/r/pull/85")]);
+      expect(log.children.flatMap((row) => row.children.find((c) => c.className === "body")!.children).every((c) => c.children.length === 0)).toBe(true);
+    });
+
+    it("links nothing but an http:// or https:// address with something after the scheme", async () => {
+      const bodies = [
+        "javascript:alert(1)",
+        "data:text/html,<b>x</b>",
+        "ftp://example.com/f",
+        "www.example.com",
+        "a bare https:// here",
+        "https://.",
+        'javascript:alert("https://x")',
+        "mailto:bob@example.com",
+      ];
+      const { log } = await postAll(viewer, ...bodies);
+      expect(entries(log).map(([, body]) => body)).toEqual(bodies);
+      // Only the address inside the javascript: text is a link, and its href is only that address.
+      expect(log.children.map((row) => pieces(row).filter(([tag]) => tag === "A"))).toEqual([[], [], [], [], [], [], [link("https://x")], []]);
+      for (const row of log.children.slice(0, 6)) expect(row.children.find((c) => c.className === "body")!.children).toEqual([]);
+    });
+
+    it("leaves trailing punctuation out of a link, and keeps a ) that closes a ( in the address", async () => {
+      const ends = [".", ",", ";", ":", "!", "?", ")", "]", "}", "'", '"', ".)", '!"'];
+      const bodies = [...ends.map((end) => `https://example.com/a${end}`), "https://en.wikipedia.org/wiki/Foo_(bar).", "(see https://en.wikipedia.org/wiki/Foo_(bar))"];
+      const { log } = await postAll(viewer, ...bodies);
+      expect(entries(log).map(([, body]) => body)).toEqual(bodies);
+      ends.forEach((end, i) => expect(pieces(log.children[i])).toEqual([link("https://example.com/a"), plain(end)]));
+      expect(pieces(log.children[ends.length])).toEqual([link("https://en.wikipedia.org/wiki/Foo_(bar)"), plain(".")]);
+      expect(pieces(log.children[ends.length + 1])).toEqual([plain("(see "), link("https://en.wikipedia.org/wiki/Foo_(bar)"), plain(")")]);
+    });
+
+    it("keeps @name outside an address a mention, re-marked with the person, and an @ inside an address part of the link", async () => {
+      addPerson(db, "owner", "colin");
+      const body = "@colin see https://example.com/@colin, @bob";
+      const { page, log } = await postAll(OWNER_TOKEN, body);
+      await page.until(() => page.elements["as"].children.length === 2);
+      const row = log.children[0];
+      expect(entries(log)).toEqual([["bob", body]]);
+      expect(pieces(row)).toEqual([
+        ["SPAN", "@colin", "mention"],
+        plain(" see "),
+        link("https://example.com/@colin"),
+        plain(", "),
+        ["SPAN", "@bob", "mention"],
+      ]);
+      page.elements["as"].value = "colin";
+      page.elements["as"].on.change();
+      expect(log.children[0]).toBe(row);
+      expect(mentions(row)).toEqual([
+        ["@colin", "mention me"],
+        ["@bob", "mention"],
+      ]);
+    });
+
+    it("links addresses in a direct conversation and in search results too", async () => {
+      for (const name of ["alice", "bob"]) registerAgent(db, OWNER_ACCOUNT, name, "x");
+      sendMessage(db, OWNER_ACCOUNT, "alice", "bob", "deploy https://example.com/pr/1.");
+      const page = await load(viewer);
+      const pairs = page.elements["pair-rows"];
+      await page.until(() => pairs.children.length === 1);
+      open(pairs.children[0]);
+      const log = page.elements["post-rows"];
+      await page.until(() => log.children.length === 1);
+      expect(pieces(log.children[0])).toEqual([plain("deploy "), link("https://example.com/pr/1"), plain(".")]);
+      page.elements["search-text"].value = "deploy";
+      page.elements["search"].on.submit({ preventDefault() {} } as never);
+      const found = page.elements["result-rows"];
+      await page.until(() => found.children.length === 1);
+      expect(pieces(found.children[0])).toEqual([plain("deploy "), link("https://example.com/pr/1"), plain(".")]);
     });
 
     it("sits a short log at the bottom with CSS, and keeps the webhook deliveries at the top", async () => {
