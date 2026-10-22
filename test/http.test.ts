@@ -724,7 +724,10 @@ describe("agent headers", () => {
     http = await startHttp(db, { token: TOKEN, port: 0, maxSessions: 1 });
     expect((await post({ Authorization: `Bearer ${TOKEN}` })).status).toBe(200);
     // At the cap, a malformed pair is still told what is wrong with it.
-    expect((await post({ Authorization: `Bearer ${TOKEN}`, "X-Message-CP-Agent": "ann" })).status).toBe(400);
+    const alone = await post({ Authorization: `Bearer ${TOKEN}`, "X-Message-CP-Agent": "ann" });
+    expect(alone.status).toBe(400);
+    // The body is left unread, so the connection is closed rather than kept for another request.
+    expect(alone.headers.get("connection")).toBe("close");
     expect((await post({ Authorization: `Bearer ${TOKEN}`, "X-Message-CP-Agent-Key": KEY })).status).toBe(400);
     const twice = await rawPost(["X-Message-CP-Agent", "ann", "X-Message-CP-Agent", "bob", "X-Message-CP-Agent-Key", KEY]);
     expect(twice.status).toBe(400);

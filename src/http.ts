@@ -669,9 +669,13 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
       restore(id, account, identity);
     }
     // A request without a session may name the agent its new session acts as. A malformed pair is answered before the
-    // cap, so the cap limits only work that can go ahead.
+    // cap, so the cap limits only work that can go ahead, closing the connection so its unread body cannot hold it open.
     const named = id ? undefined : agentHeaders(req);
-    if (named === null) return reply(res, 400, "Send both X-Message-CP-Agent and X-Message-CP-Agent-Key once each, or neither");
+    if (named === null) {
+      return reply(res, 400, "Send both X-Message-CP-Agent and X-Message-CP-Agent-Key once each, or neither", {
+        Connection: "close",
+      });
+    }
     // A request without a session can only start one. Refuse it at the cap, closing the connection so an unread
     // body cannot hold it open; otherwise take a slot now, before the body is buffered, and give it back at the end.
     if (!id && sessions.size + initializing >= maxSessions) {
