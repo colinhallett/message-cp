@@ -17,10 +17,12 @@ const OWNER_TOKEN = "owner-token";
 let db: Db;
 let http: HttpServer;
 let viewer: string;
+let agentToken: string;
 
 beforeEach(async () => {
   db = openDb(join(mkdtempSync(join(tmpdir(), "message-cp-dashboard-")), "db.sqlite"));
   viewer = addToken(db, "owner", true).token;
+  agentToken = addToken(db, "owner", false, true).token;
   http = await startHttp(db, { token: OWNER_TOKEN, port: 0 });
 });
 
@@ -127,10 +129,11 @@ describe("GET /", () => {
     expect(help).toBeGreaterThan(login.indexOf("<h1>message-cp</h1>"));
     expect(help).toBeLessThan(login.indexOf(input));
     const explanation = login.slice(help, login.indexOf(input));
-    for (const words of ["token add &lt;account&gt;", "--read-only", "account add &lt;name&gt;", "person add &lt;name&gt;", "Forget token", "cookie"]) {
+    for (const words of ["token add &lt;account&gt;", "--read-only", "--agent-only", "account add &lt;name&gt;", "person add &lt;name&gt;", "Forget token", "cookie"]) {
       expect(explanation).toContain(words);
     }
     expect(explanation).toMatch(/read-only token can watch[^<]*read every message/);
+    expect(explanation).toMatch(/agent token is for agents: it cannot post or send as a person[^<]*what it shows a read-only token/);
     expect(explanation).toMatch(/full token can also post and send as one of the account's people/);
     expect(login).toMatch(/<label for="token">Token<\/label>/);
   });
@@ -3119,10 +3122,12 @@ describe("the page's posting", () => {
     expect(page.elements["as-box"].hidden).toBe(true);
   });
 
-  it("with a read-only token, or an answer it cannot read, shows no picker or compose box and never posts", async () => {
+  it("with a read-only or agent token, or an answer it cannot read, shows no picker or compose box and never posts", async () => {
     seed();
     for (const [token, answer] of [
       [viewer, () => undefined],
+      [agentToken, () => undefined],
+      [OWNER_TOKEN, (url: string) => (url === "/api/token" ? { status: 200, body: '{"readOnly":false}' } : undefined)],
       [OWNER_TOKEN, (url: string) => (url === "/api/token" ? { status: 200, body: "not json" } : undefined)],
       [OWNER_TOKEN, (url: string) => (url === "/api/token" ? { status: 200, body: "{}" } : undefined)],
       [OWNER_TOKEN, (url: string) => (url === "/api/token" ? { status: 503 } : undefined)],
@@ -3291,10 +3296,11 @@ describe("the page's posting", () => {
       expect(csp).not.toContain("unsafe-inline");
     });
 
-    it("shows the button only with a full token, not with a read-only token or an answer it cannot read", async () => {
+    it("shows the button only with a full token, not with a read-only or agent token or an answer it cannot read", async () => {
       seed();
       for (const [token, answer] of [
         [viewer, () => undefined],
+        [agentToken, () => undefined],
         [OWNER_TOKEN, (url: string) => (url === "/api/token" ? { status: 200, body: "not json" } : undefined)],
         [OWNER_TOKEN, (url: string) => (url === "/api/token" ? { status: 503 } : undefined)],
       ] as const) {
@@ -3581,10 +3587,11 @@ describe("the page's posting", () => {
       expect(csp).not.toContain("unsafe-inline");
     });
 
-    it("shows the button and form only with a full token, not with a read-only token or an answer it cannot read", async () => {
+    it("shows the button and form only with a full token, not with a read-only or agent token or an answer it cannot read", async () => {
       seed();
       for (const [token, answer] of [
         [viewer, () => undefined],
+        [agentToken, () => undefined],
         [OWNER_TOKEN, (url: string) => (url === "/api/token" ? { status: 200, body: "not json" } : undefined)],
         [OWNER_TOKEN, (url: string) => (url === "/api/token" ? { status: 503 } : undefined)],
       ] as const) {
@@ -4391,17 +4398,19 @@ describe("the page's posting", () => {
 
     it("shows Delete only with a full token and an open pair that has messages", async () => {
       seedPairs();
-      // A read-only token never sees it, and a click by hand sends nothing.
-      const reader = await load(viewer);
-      await ready(reader);
-      open(reader.elements["pair-rows"], "bob ↔ colin");
-      await reader.until(() => reader.elements["post-rows"].children.length === 2);
-      await new Promise((resolve) => setTimeout(resolve, 20));
-      expect(reader.elements["delete-pair"].hidden).toBe(true);
-      confirmDelete(reader);
-      expect(reader.elements["delete-confirm"].hidden).toBe(true);
-      await new Promise((resolve) => setTimeout(resolve, 20));
-      expect(deletes(reader)).toEqual([]);
+      // A read-only or agent token never sees it, and a click by hand sends nothing.
+      for (const token of [viewer, agentToken]) {
+        const reader = await load(token);
+        await ready(reader);
+        open(reader.elements["pair-rows"], "bob ↔ colin");
+        await reader.until(() => reader.elements["post-rows"].children.length === 2);
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        expect(reader.elements["delete-pair"].hidden).toBe(true);
+        confirmDelete(reader);
+        expect(reader.elements["delete-confirm"].hidden).toBe(true);
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        expect(deletes(reader)).toEqual([]);
+      }
 
       const page = await load(OWNER_TOKEN);
       await openReady(page, "bob ↔ colin");

@@ -7,11 +7,13 @@ import { MAX_BODY_LENGTH } from "./messages.js";
 // chat app: channels and the pairs of agents that have messaged each other in a sidebar, the open one as a log in the
 // middle, and the agents on the right. A search box asks GET /api/search once per search and shows the answer in the
 // middle in place of the open conversation. The sidebar's "Webhook deliveries" entry shows the newest deliveries in the
-// middle the same way, refreshed with each poll. It asks GET /api/token once whether the token is read-only. With a full
-// token it lets a person choose which of the account's people they are, post in the open channel with POST /api/post and
-// reply in an open direct conversation of theirs, or start one with anyone in the account from "New message", with
-// POST /api/send, or create a channel from "New channel" by its first post, with POST /api/post, and delete an open
-// direct conversation, after confirming, with DELETE /api/conversation; that is all it ever writes. With a read-only token it only reads. It puts agent- and person-supplied text on the page with textContent, never as HTML.
+// middle the same way, refreshed with each poll. It asks GET /api/token once whether the token is read-only or
+// agent-only. With a full token it lets a person choose which of the account's people they are, post in the open channel
+// with POST /api/post and reply in an open direct conversation of theirs, or start one with anyone in the account from
+// "New message", with POST /api/send, or create a channel from "New channel" by its first post, with POST /api/post, and
+// delete an open direct conversation, after confirming, with DELETE /api/conversation; that is all it ever writes. With a
+// read-only or agent token it only reads. It puts agent- and person-supplied text on the page with textContent, never
+// as HTML.
 
 const STYLE = `
 :root {
@@ -321,7 +323,7 @@ let deliveryCount;
 let searchGeneration = 0;
 let searchController;
 // Whether GET /api/token said this token is a full one, which alone shows the person picker and the compose box; the
-// server's 403 is still what keeps a read-only token from posting. tokenGeneration drops an answer to GET /api/token,
+// server's 403 is still what keeps a read-only or agent token from posting. tokenGeneration drops an answer to GET /api/token,
 // or to a send, that comes after the token was forgotten.
 let canPost = false;
 let tokenGeneration = 0;
@@ -809,8 +811,9 @@ function start() {
   poll(generation);
 }
 
-// Asks GET /api/token once whether this token is read-only. Only an answer of readOnly false shows the picker; a
-// read-only token, a failure or an answer this page cannot read leaves the page read-only.
+// Asks GET /api/token once whether this token is read-only or agent-only. Only an answer of readOnly and agentOnly
+// both false shows the picker; a read-only or agent token, a failure or an answer this page cannot read leaves the page
+// read-only.
 async function checkToken() {
   const token = sessionStorage.getItem(KEY);
   if (!token) return;
@@ -829,7 +832,10 @@ async function checkToken() {
       signal: ac.signal,
     });
     refused = res.status === 401;
-    if (res.ok) full = (await res.json()).readOnly === false;
+    if (res.ok) {
+      const answer = await res.json();
+      full = answer.readOnly === false && answer.agentOnly === false;
+    }
   } catch {
     full = false;
   } finally {
@@ -2252,9 +2258,10 @@ export const DASHBOARD_HTML = `<!doctype html>
 <h1>message-cp</h1>
 <div id="token-help">
 <p>A token is a secret key for one account on this server. This page sends it with each request it makes.</p>
-<p>Get one from whoever runs the server; nobody signs up on this page. They make one with <code>node dist/cli.js token add &lt;account&gt;</code>, adding <code>--read-only</code> for a read-only token, or make a new account and its first token with <code>node dist/cli.js account add &lt;name&gt;</code>.</p>
+<p>Get one from whoever runs the server; nobody signs up on this page. They make one with <code>node dist/cli.js token add &lt;account&gt;</code>, adding <code>--read-only</code> for a read-only token or <code>--agent-only</code> for an agent token, or make a new account and its first token with <code>node dist/cli.js account add &lt;name&gt;</code>.</p>
 <ul>
 <li>A read-only token can watch the account's agents, channels and messages, and can read every message in it.</li>
+<li>An agent token is for agents: it cannot post or send as a person, and this page shows it only what it shows a read-only token.</li>
 <li>A full token can also post and send as one of the account's people, added on the server with <code>node dist/cli.js person add &lt;name&gt; --account &lt;account&gt;</code>.</li>
 </ul>
 <p>The token is kept only in this tab, until you click "Forget token", the server refuses it or the tab closes. It never goes into a cookie or a URL.</p>
