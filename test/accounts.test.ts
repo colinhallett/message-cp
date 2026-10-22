@@ -240,6 +240,8 @@ describe("account and token management", () => {
     const agent = addToken(db, "friend", false, true);
     expect(agent).toMatchObject({ readOnly: false, agentOnly: true });
     expect(accountForToken(db, agent.token, OWNER_TOKEN)).toEqual({ account: listAccounts(db)[1].id, readOnly: false, agentOnly: true });
+    // A server from before agent tokens reads only read_only, as its accountForToken did, and so sees a read-only token.
+    expect(db.prepare("SELECT read_only FROM tokens WHERE id = ?").get(agent.id)).toEqual({ read_only: 1 });
     expect(() => addToken(db, "friend", true, true)).toThrow(AccountError);
     expect(accountForToken(db, "nope", OWNER_TOKEN)).toBeUndefined();
   });

@@ -47,9 +47,11 @@ const hashToken = (token: string) => createHash("sha256").update(token).digest("
 function issueToken(db: Db, account: AccountId, readOnly = false, agentOnly = false): Omit<NewToken, "account"> {
   if (readOnly && agentOnly) throw new AccountError("A token is read-only or agent-only, not both.");
   const token = randomBytes(32).toString("hex");
+  // An agent token is stored read-only too, so a server from before agent tokens that shares the database refuses it
+  // everything but the read-only endpoints instead of taking it for a full token.
   const { id } = db
     .prepare("INSERT INTO tokens (account_id, hash, created_at, read_only, agent_only) VALUES (?, ?, ?, ?, ?) RETURNING id")
-    .get(account, hashToken(token), Date.now(), readOnly ? 1 : 0, agentOnly ? 1 : 0) as { id: number };
+    .get(account, hashToken(token), Date.now(), readOnly || agentOnly ? 1 : 0, agentOnly ? 1 : 0) as { id: number };
   return { id, token, readOnly, agentOnly };
 }
 
@@ -97,7 +99,7 @@ export function listTokens(db: Db): TokenInfo[] {
   return rows.map((r) => ({
     id: r.id,
     account: r.name,
-    kind: r.read_only === 1 ? "read-only" : r.agent_only === 1 ? "agent" : "full",
+    kind: r.agent_only === 1 ? "agent" : r.read_only === 1 ? "read-only" : "full",
     createdAt: new Date(r.created_at).toISOString(),
   }));
 }
@@ -128,5 +130,6 @@ export function accountForToken(db: Db, token: string, ownerToken: string): Toke
   const row = db
     .prepare("SELECT account_id, read_only, agent_only FROM tokens WHERE hash = ? AND revoked_at IS NULL")
     .get(hash) as { account_id: number; read_only: number; agent_only: number } | undefined;
-  return row && { account: row.account_id, readOnly: row.read_only === 1, agentOnly: row.agent_only === 1 };
+  // An agent token's row also has read_only set (see `issueToken`); it is agent-only here, never both.
+  return row && { account: row.account_id, readOnly: row.read_only === 1 && row.agent_only !== 1, agentOnly: row.agent_only === 1 };
 }
