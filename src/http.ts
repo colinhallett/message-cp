@@ -4,7 +4,7 @@ import { PassThrough } from "node:stream";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { LATEST_PROTOCOL_VERSION, isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import { accountForToken, type TokenAccess } from "./accounts.js";
-import { DEFAULT_LIST_LIMIT, MAX_LIST_LIMIT, ToolError, type Identity } from "./agents.js";
+import { DEFAULT_LIST_LIMIT, MAX_LIST_LIMIT, ToolError, registerWithIdentity, type Identity } from "./agents.js";
 import {
   DEFAULT_CHANNEL_LIMIT,
   MAX_CHANNEL_LIMIT,
@@ -135,6 +135,24 @@ async function prime(transport: StreamableHTTPServerTransport): Promise<void> {
   await finished;
   socket.destroy();
   if (res.statusCode !== 200) throw new Error("could not restore a session");
+}
+
+interface AgentHeaders {
+  name: string;
+  key: string;
+}
+
+/**
+ * The agent and key a request names in X-Message-CP-Agent and X-Message-CP-Agent-Key: undefined if it sends neither,
+ * null if it sends only one or either more than once. `headersDistinct` keeps a repeated header's values apart, where
+ * `headers` would join them into one.
+ */
+function agentHeaders(req: IncomingMessage): AgentHeaders | undefined | null {
+  const name = req.headersDistinct["x-message-cp-agent"];
+  const key = req.headersDistinct["x-message-cp-agent-key"];
+  if (name === undefined && key === undefined) return undefined;
+  if (name?.length !== 1 || key?.length !== 1) return null;
+  return { name: name[0], key: key[0] };
 }
 
 /** The account the request's bearer token belongs to, checked afresh on every request so a revoked token stops at once. */
@@ -650,6 +668,14 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
       if (sessions.size + initializing >= maxSessions) return reply(res, 503, "Too many sessions", { Connection: "close" });
       restore(id, account, identity);
     }
+    // A request without a session may name the agent its new session acts as. A malformed pair is answered before the
+    // cap, so the cap limits only work that can go ahead, closing the connection so its unread body cannot hold it open.
+    const named = id ? undefined : agentHeaders(req);
+    if (named === null) {
+      return reply(res, 400, "Send both X-Message-CP-Agent and X-Message-CP-Agent-Key once each, or neither", {
+        Connection: "close",
+      });
+    }
     // A request without a session can only start one. Refuse it at the cap, closing the connection so an unread
     // body cannot hold it open; otherwise take a slot now, before the body is buffered, and give it back at the end.
     if (!id && sessions.size + initializing >= maxSessions) {
@@ -658,13 +684,19 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
     const reserved = !id && req.method === "POST";
     if (reserved) initializing++;
     try {
-      await serve(req, res, id, account);
+      await serve(req, res, id, account, named);
     } finally {
       if (reserved) initializing--;
     }
   };
 
-  const serve = async (req: IncomingMessage, res: ServerResponse, id: string | undefined, account: AccountId) => {
+  const serve = async (
+    req: IncomingMessage,
+    res: ServerResponse,
+    id: string | undefined,
+    account: AccountId,
+    named?: AgentHeaders,
+  ) => {
     let body: unknown;
     if (req.method === "POST") {
       try {
@@ -698,11 +730,27 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
     if (req.method !== "POST" || !isInitializeRequest(body)) {
       return reply(res, 400, "Send an initialize request first");
     }
+    // Registers the named agent as `register` would, in the token's account. A refusal is 403, not 401, so a client
+    // does not take it for a bad token; its message names no key.
+    let identity: Identity | undefined;
+    if (named) {
+      let registered: { identity: Identity } | undefined;
+      try {
+        registered = unlessBusy(res, () => registerWithIdentity(db, account, named.name, undefined, named.key));
+      } catch (err) {
+        if (err instanceof ToolError) return reply(res, 403, err.message);
+        throw err;
+      }
+      if (registered === undefined) return;
+      identity = registered.identity;
+    }
     const live: Live = { lastUsed: Date.now(), transport: undefined as never, account };
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: () => randomUUID(),
       onsessioninitialized: (sid) => {
         sessions.set(sid, live);
+        // Now that the session is held, binding it records it, as a `register` on it would.
+        if (identity) session.bind(identity);
       },
       onsessionclosed: endRecorded,
     });
