@@ -1525,7 +1525,7 @@ async function readLog(token, signal, gen, channel) {
 // poll. The answer leaves out messages to a person, so it only looks at the first held messages, those the page held
 // before this poll read the agents, and only at those whose recipient that answer (agents) lists as an agent: a person
 // added later never counts as one, and a message sent to a person whose name is an agent's now was deleted with that
-// person. A failed read, or one answered after a newer poll or another token, changes nothing. When none of those is
+// person, so it turns to read as any deleted message does. A failed read, or one answered after a newer poll or another token, changes nothing. When none of those is
 // still unread there is nothing to learn, so it asks nothing. It marks nothing read for any agent.
 async function readReceipts(token, signal, gen, held, agents) {
   const names = new Set(agents.filter((a) => a.person !== true).map((a) => String(a.name).toLowerCase()));
