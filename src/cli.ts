@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { readFileSync } from "node:fs";
 import { DEFAULT_HTTP_HOST, DEFAULT_HTTP_PORT, startHttp } from "./http.js";
-import { PersonError, PurgeError, addPerson, listPeople, purgeAgent, removePerson } from "./agents.js";
+import { KeyResetError, PersonError, PurgeError, addPerson, listPeople, purgeAgent, removePerson, resetAgentKey } from "./agents.js";
 import { AccountError, addAccount, addToken, listAccounts, revokeToken } from "./accounts.js";
 import { OWNER_ACCOUNT, openDb } from "./db.js";
 import { hasUnread, unreadSummary } from "./messages.js";
@@ -218,13 +218,15 @@ if (command === "serve") {
   }
   db.close();
 } else if (command === "agent") {
-  // Run on the server, like `person`. It prints only names and counts, never a message body or a key.
+  // Run on the server, like `person`. `remove` prints only names and counts, never a message body or a key. `key reset`
+  // prints the new key this once, to stdout, and only names to stderr; it never prints the old key or a hash.
   const usage = () => {
-    console.error("usage: message-cp agent remove <name> [--account <name>]");
+    console.error("usage: message-cp agent remove <name> [--account <name>] | message-cp agent key reset <name> [--account <name>]");
     process.exit(2);
   };
-  const [action, name, ...args] = rest;
-  if (action !== "remove" || !name || name.startsWith("--")) usage();
+  const reset = rest[0] === "key" && rest[1] === "reset";
+  const [action, name, ...args] = reset ? ["key reset", ...rest.slice(2)] : rest;
+  if ((action !== "remove" && !reset) || !name || name.startsWith("--")) usage();
   const opts = new Map<string, string>();
   for (let i = 0; i < args.length; i += 2) {
     const option = args[i]!;
@@ -232,14 +234,29 @@ if (command === "serve") {
     if (option !== "--account" || opts.has(option) || !value || value.startsWith("--")) usage();
     opts.set(option, value!);
   }
-  const db = openDb();
+  let db: ReturnType<typeof openDb> | undefined;
   try {
-    const p = purgeAgent(db, opts.get("--account") ?? "owner", name!);
-    console.error(
-      `message-cp: removed agent '${p.name}' of account '${p.account}', with ${p.messages} direct message(s) and ${p.mentions} mention(s). The name is free.`,
-    );
+    db = openDb();
+    if (reset) {
+      const k = resetAgentKey(db, opts.get("--account") ?? "owner", name!);
+      console.error(
+        `message-cp: new key for agent '${k.name}' of account '${k.account}'. It is shown only now; keep it. The old key no longer works.`,
+      );
+      console.log(k.key);
+    } else {
+      const p = purgeAgent(db, opts.get("--account") ?? "owner", name!);
+      console.error(
+        `message-cp: removed agent '${p.name}' of account '${p.account}', with ${p.messages} direct message(s) and ${p.mentions} mention(s). The name is free.`,
+      );
+    }
   } catch (err) {
-    if (!(err instanceof PurgeError)) throw err;
+    // A reset that could not take the write lock changed nothing: say so in one line, never with a stack trace.
+    const code = (err as { code?: unknown } | null)?.code;
+    if (reset && typeof code === "string" && code.startsWith("SQLITE_BUSY")) {
+      console.error("message-cp: the database is busy; nothing was changed. Try again.");
+      process.exit(1);
+    }
+    if (!(err instanceof PurgeError) && !(err instanceof KeyResetError)) throw err;
     console.error(`message-cp: ${err.message}`);
     process.exit(1);
   }
