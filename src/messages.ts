@@ -198,8 +198,9 @@ export function readConversation(
       .get(account, reader.id, reader.registeredAt, reader.instance) as { id: number; name: string; registered_at: number } | undefined;
     if (!me) return [];
     const self = me.name.toLowerCase() === them.name.toLowerCase();
-    // Each direction reads only the pair's messages_by_sender rows. With oneself the two directions are the same
-    // rows, so only the received one runs, and each message appears once.
+    // Each direction reads the pair's messages_by_pair rows already in page order, so the page stops after
+    // limit + offset rows. With oneself the two directions are the same rows, so only the received one runs, and
+    // each message appears once.
     const rows = db
       .prepare(
         `SELECT id, sender, ? AS recipient, body, broadcast, created_at FROM messages

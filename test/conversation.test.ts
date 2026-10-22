@@ -216,7 +216,7 @@ describe("read_conversation", () => {
     vi.restoreAllMocks();
   });
 
-  it("reads each direction through messages_by_sender, without scanning other history", () => {
+  it("reads each direction through messages_by_pair in page order, without scanning or sorting history", () => {
     registerAgent(db, OWNER_ACCOUNT, "bob", "x");
     const { identity } = registerWithIdentity(db, OWNER_ACCOUNT, "alice", "x");
     // Catch the page statement readConversation runs and the values it binds, so the plan is of the real query.
@@ -233,7 +233,9 @@ describe("read_conversation", () => {
     const plan = (db.prepare(`EXPLAIN QUERY PLAN ${page!.sql}`).all(...page!.args) as { detail: string }[])
       .map((p) => p.detail)
       .join("\n");
-    expect(plan.match(/SEARCH messages USING INDEX messages_by_sender \(recipient_id=\? AND sender=\?\)/g)).toHaveLength(2);
+    expect(plan).toMatch(/SEARCH messages USING INDEX messages_by_pair \(recipient_id=\? AND sender=\?\)/);
+    expect(plan).toMatch(/SEARCH messages USING INDEX messages_by_pair \(recipient_id=\? AND sender=\? AND created_at>\?\)/);
     expect(plan).not.toMatch(/SCAN (messages|agents)/);
+    expect(plan).not.toMatch(/TEMP B-TREE/);
   });
 });
