@@ -1,24 +1,44 @@
 ---
 name: tune-review-lenses
 description: >-
-  Weekly look at how this repository's Tessl Code Review lenses are doing:
-  read the review statistics and the findings authors declined or refuted,
-  read the pull requests behind them and the bugs that got past review, and
-  write Tessl findings that propose specific changes to the lenses in
-  review-lenses/. Writes findings only; changes no file and opens no pull
-  request. The findings-triage loop decides what happens to them.
+  Look at how this repository's Tessl Code Review lenses are doing: read the
+  findings authors addressed, declined or refuted, the pull requests behind
+  them and the bugs that got past review, and write Tessl findings that
+  propose specific changes to the lenses. If the repository still reviews with
+  the default lenses from the registry, the first finding proposes copying
+  them into the repository so they can be tuned. Writes findings only; changes
+  no file and opens no pull request. The findings-triage loop decides what
+  happens to them.
 ---
 
 # Tune the review lenses
 
-This repository reviews its pull requests with the lenses in `review-lenses/`,
-routed by `.tessl-code-review.yml`. A lens that keeps raising findings authors
-decline, or that misses a kind of bug that later needs a fix, costs review
-rounds and trust. Your job is to find such patterns in the evidence and turn
-each into a Tessl finding with a concrete proposed change to a lens. You never
-edit a lens yourself: you change no file, push nothing and open no pull request.
-The findings-triage loop reads your findings like any other, and lens changes
-are the owner's to approve.
+A repository's pull requests are reviewed by Tessl Code Review lenses. A lens
+that keeps raising findings authors decline, or that misses a kind of bug that
+later needs a fix, costs review rounds and trust. Your job is to find such
+patterns in the evidence and turn each into a Tessl finding with a concrete
+proposed change. You never edit anything yourself: you change no file, push
+nothing and open no pull request. The findings-triage loop reads your findings
+like any other, and changes to review policy are the owner's to approve.
+
+## First: does the repository have its own lenses?
+
+Look for `.tessl-code-review.yml` at the repository root on the default
+branch.
+
+- **It exists.** Its `lenses` list says which lens files review which paths.
+  The ones with a local `ref` (such as `./review-lenses/<name>/SKILL.md`) are
+  the repository's own copies: propose edits to those files, as the rest of
+  this skill says. A lens referred to from the registry cannot be edited here;
+  if the evidence says it needs changing, propose copying that one lens in
+  first.
+- **It does not exist.** The reviews use the default lenses from the
+  registry, so there is nothing in the repository to edit yet. Read the
+  evidence as below, then write the adoption finding (see "Adopting the
+  lenses") before any other. Lens edits the evidence already supports go in
+  as follow-on findings that say they apply once the adoption is done, or in
+  the adoption finding's recommendation as the first edits to make after the
+  copy.
 
 ## What you can read
 
@@ -80,6 +100,45 @@ recent (your findings carry the tag `code-review-lens`).
 Not a pattern: one-off disagreements, findings that were simply addressed, and
 anything about how the change was written rather than what the lens asked for.
 
+## Adopting the lenses
+
+Work out which lenses and version the reviews use from the `lenses:v1 refs=`
+markers on recent review comments (for example
+`tessl/code-review@0.5.0#review-scale-and-resilience`). Read those lenses so
+the recommendation can name them exactly: install the plugin into a scratch
+directory outside the repository (`mkdir /tmp/lenses && cd /tmp/lenses && git
+init -q && tessl install <workspace>/<plugin>@<version> --yes --agent
+claude-code`) and look under `.tessl/plugins/`. Its `code-review` skill's
+`references/repository-profile.md` describes the profile and its schema.
+
+The adoption finding's recommendation says, concretely:
+
+1. Copy each lens the reviews use, unchanged, from
+   `<workspace>/<plugin>@<version>` into `review-lenses/<lens name>/`
+   (`SKILL.md` and anything beside it).
+2. Add `.tessl-code-review.yml` with `schemaVersion: 1`, an `ignore` list
+   that keeps installed plugins out (`.tessl/plugins/**`, `'**/tessl__*'`,
+   `'**/tessl__*/**'`), and one entry per lens with a local `ref`. Route it as
+   the plugin's reference recommends: each agent plugin directory (one holding a
+   `.tessl-plugin/` directory; list them) to `review-plugin-content`, other
+   `**/*.md` to `review-markdown`, and everything else to each code lens, with
+   the Markdown and plugin paths excluded, so each file has one owner. Leave out
+   `requestChangesAt` and `effort` so reviews behave as now.
+3. Check it before merging: `tessl code review --profile
+   ./.tessl-code-review.yml --base <a recent commit>~1 --head <that commit>
+   --json` reports `"status": "ok"` and lists every local lens.
+4. Make the profile and `review-lenses/` the owner's: a pull request is
+   reviewed with its own copy of them, so whatever the factory or agents may
+   merge on their own (the repository's rules for owner-only files, such as
+   `CODEOWNERS` with required code owner reviews, or the factory's own list)
+   must exclude them.
+
+Title it "Adopt the default code review lenses so they can be tuned", tag it
+`["code-review-lens", "adopt-lenses"]`, and put in the analysis the evidence
+that tuning is worth it: the counts per lens and the clearest pattern you
+found. Write it once: if an open, in-progress or ignored finding tagged
+`adopt-lenses` exists, do not write another.
+
 ## Writing a finding
 
 At most three findings per run, the strongest first. Before writing one, read
@@ -87,7 +146,7 @@ the open, in-progress, resolved and ignored findings tagged `code-review-lens`:
 do not repeat one that is open, in progress or ignored, and only revisit a
 resolved one if the pattern has come back since it was resolved.
 
-Each finding proposes one change to one lens (or to the profile's routing):
+Each other finding proposes one change to one lens (or to the profile's routing):
 
 - `title`: the lens and the change, for example "review-scale-and-resilience:
   weigh paging and fan-out against the scale AGENTS.md states".

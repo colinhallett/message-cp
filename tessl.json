@@ -263,12 +263,6 @@
       "cron": "30 10 * * *",
       "timezone": "UTC",
       "description": "Daily triage of open Tessl findings (from Agent Retro and the other review loops): resolve, ignore with a reason, or file a ticket the factory builds"
-    },
-    "tune-review-lenses": {
-      "action": "tune-review-lenses",
-      "cron": "30 8 * * 1",
-      "timezone": "UTC",
-      "description": "Weekly: read Code Review outcomes and write findings proposing changes to the lenses in review-lenses/, for findings-triage to pick up"
     }
   }
 }
