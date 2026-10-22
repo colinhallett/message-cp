@@ -1914,8 +1914,11 @@ describe("the page's channels and messages", () => {
       await page.poll();
       await page.until(() => page.scheduled());
       expect(page.urls.filter((url) => url.includes("unread="))).toEqual([]);
-      // A new message to an agent starts the asking again.
+      // A new message to an agent starts the asking again, from the poll after the one that brings it in.
       sendMessage(db, OWNER_ACCOUNT, "colin", "bob", "again");
+      await page.poll();
+      await page.until(() => page.scheduled());
+      expect(page.urls.filter((url) => url.includes("unread="))).toEqual([]);
       await page.poll();
       await page.until(() => page.urls.some((url) => url.includes("unread=true")));
     });
@@ -1969,6 +1972,34 @@ describe("the page's channels and messages", () => {
       await page.poll();
       await page.until(() => field(log.children[0], "kind") === "person" && page.scheduled());
       expect(receipt(log.children[0])).toBe("not read yet");
+    });
+
+    it("never takes a message to a person added during a poll for read", async () => {
+      for (const name of ["alice", "bob"]) registerAgent(db, OWNER_ACCOUNT, name, "x");
+      sendMessage(db, OWNER_ACCOUNT, "alice", "bob", "keeps the receipts asking");
+      let during = false;
+      // erin becomes a person, and is sent a message, after this poll has read the agents and before it reads the
+      // messages, so the page still takes erin for no one in particular while ?unread=true already leaves her out.
+      const page = await load(viewer, (url) => {
+        if (during && url.startsWith("/api/channels")) {
+          during = false;
+          addPerson(db, "owner", "erin");
+          sendMessage(db, OWNER_ACCOUNT, "bob", "erin", "to a new person");
+        }
+        return undefined;
+      });
+      const pairs = page.elements["pair-rows"];
+      const log = page.elements["post-rows"];
+      await page.until(() => pairs.children.length === 1 && page.scheduled());
+      during = true;
+      await page.poll();
+      await page.until(() => !during && pairs.children.length === 2 && page.scheduled());
+      expect(page.urls.some((url) => url.startsWith("/api/messages?unread=true"))).toBe(true);
+      open(pairs.children.find((row) => item(row)[0] === "bob ↔ erin")!);
+      expect(log.children.map((row) => [field(row, "body"), receipt(row)])).toEqual([["to a new person", "not read yet"]]);
+      // The next poll lists erin as a person, so the row shows no receipt at all.
+      await page.poll();
+      await page.until(() => receipt(log.children[0]) === undefined && page.scheduled());
     });
 
     it("never shows a receipt on a channel post", async () => {

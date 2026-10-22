@@ -1522,11 +1522,15 @@ async function readLog(token, signal, gen, channel) {
 // not among them, updating its receipt in the open log. read_at is only ever set, never cleared, so a message is never
 // marked unread again. A message read while the pages were read moves the rest one place earlier, so the row after a
 // page boundary (or after a full last page) may have been skipped: a held message there is left as it was until a later
-// poll. The answer leaves out messages to a person, so one of those is never marked read here. A failed read, or one
-// answered after a newer poll or another token, changes nothing. When no held message to an agent is still unread
-// there is nothing to learn, so it asks nothing. It marks nothing read for any agent.
-async function readReceipts(token, signal, gen) {
-  if (!messages.some((m) => m.read !== true && !isPerson(String(m.to)))) return { ok: true };
+// poll. The answer leaves out messages to a person, so it only looks at the first held messages, those the page held
+// before this poll read the agents, and only at those whose recipient that answer (agents) lists as an agent: a person
+// added later never counts as one, and a message sent to a person whose name is an agent's now was deleted with that
+// person. A failed read, or one answered after a newer poll or another token, changes nothing. When none of those is
+// still unread there is nothing to learn, so it asks nothing. It marks nothing read for any agent.
+async function readReceipts(token, signal, gen, held, agents) {
+  const names = new Set(agents.filter((a) => a.person !== true).map((a) => String(a.name).toLowerCase()));
+  const candidates = messages.slice(0, held).filter((m) => m.read !== true && names.has(String(m.to).toLowerCase()));
+  if (candidates.length === 0) return { ok: true };
   const unread = await fetchAll(token, signal, "/api/messages", list, { unread: "true" });
   if (gen !== generation) return { ok: true };
   if (!unread.items) return unread;
@@ -1534,9 +1538,8 @@ async function readReceipts(token, signal, gen) {
   const ids = new Set(items.map((m) => m.id));
   const unsure = [];
   for (let i = PAGE; i <= items.length; i += PAGE) unsure.push([items[i - 1].id, i < items.length ? items[i].id : Infinity]);
-  for (const m of messages) {
-    if (m.read === true || isPerson(String(m.to)) || ids.has(m.id)) continue;
-    if (unsure.some(([after, before]) => m.id > after && m.id < before)) continue;
+  for (const m of candidates) {
+    if (ids.has(m.id) || unsure.some(([after, before]) => m.id > after && m.id < before)) continue;
     m.read = true;
   }
   for (const row of chatRows) if (row.receipt) row.receipt.textContent = receiptText(row.message);
@@ -1607,6 +1610,7 @@ async function poll(gen) {
   const deadline = setTimeout(() => ac.abort(), TIMEOUT_MS);
   const channel = openChannel;
   const deliveries = openDeliveries;
+  const held = messages.length;
   let result;
   try {
     result = await fetchView(token, ac.signal);
@@ -1643,7 +1647,7 @@ async function poll(gen) {
       // Once the messages are read, whether each one the page holds has been read since; never before, so every held
       // message is among those it asks about.
       if (!refused && messages.status === "fulfilled" && messages.value.ok && gen === generation) {
-        values.push(await readReceipts(token, ac.signal, gen));
+        values.push(await readReceipts(token, ac.signal, gen, held, result.agents));
       }
       result = values.find((v) => v.status === 401) ?? values.find((v) => !v.ok) ?? posts.value;
     }
