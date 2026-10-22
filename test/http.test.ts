@@ -203,8 +203,12 @@ describe("waiting keeps a session", () => {
     await http.close();
     http = await startHttp(db, { token: TOKEN, port: 0, idleTimeoutMs: 200, waitHoldMs: 5000 });
     const names = ["a0", "a1", "a2", "a3", "a4", "a5", "a6", "a7"];
-    for (const name of names) await registered(name);
-    const holds = names.map((name) => wait(name));
+    // Each hold starts as soon as its agent registers, so no session sits idle while the later ones register.
+    const holds: Promise<Response>[] = [];
+    for (const name of names) {
+      await registered(name);
+      holds.push(wait(name));
+    }
     await new Promise((r) => setTimeout(r, 300));
     db.pragma("busy_timeout = 200");
     const other = new Database(db.name);
