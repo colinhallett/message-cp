@@ -359,7 +359,8 @@ export interface AccountMessage {
 export interface ListedMessage extends AccountMessage {
   /**
    * Whether the message is to an agent, not to a person, its recipient has not read it, and at least one of its webhook
-   * deliveries has been delivered: a webhook has started a run for it.
+   * deliveries has been delivered: its receiver answered 2xx, which says it accepted the delivery, not that a run
+   * started.
    */
   starting: boolean;
 }
@@ -372,7 +373,7 @@ type ListedRow = Row & { recipient: string; person: number; delivered: number };
  * per recipient, so it appears once per recipient. A message to a removed agent shows the name it had. With `unreadOnly`,
  * only the messages to an agent, not to a person, whose recipient has not read them: a person has no `read_inbox`, so
  * every message to one would stay among them for good. `starting` is read from the message's own webhook deliveries,
- * found through `webhook_deliveries_by_message`. Reads only, so nothing is marked read and no delivery is touched.
+ * found through `webhook_deliveries_delivered_by_message`. Reads only, so nothing is marked read and no delivery is touched.
  */
 export function listAccountMessages(
   db: Db,

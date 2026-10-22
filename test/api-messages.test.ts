@@ -415,7 +415,9 @@ describe("GET /api/messages", () => {
       for (const plan of plans) {
         expect(plan).not.toMatch(/SCAN (m|d|messages|webhook_deliveries)\b/);
         expect(plan).toMatch(/SEARCH m USING (COVERING )?INDEX messages_(history|inbox) \(recipient_id=\?/);
-        expect(plan).toMatch(/SEARCH d USING INDEX webhook_deliveries_by_message \(message_id=\?\)/);
+        expect(plan).toMatch(
+          /SEARCH d USING COVERING INDEX webhook_deliveries_delivered_by_message \(message_id=\? AND delivered_at>\?\)/,
+        );
       }
       expect(plans[1]).toMatch(/messages_inbox \(recipient_id=\? AND read_at=\?\)/);
     });
