@@ -336,18 +336,24 @@ describe("GET /api/token", () => {
   const token = (t: string | null, method = "GET") => fetch(`${base()}/api/token`, { method, headers: auth(t) });
 
   it("says whether the token is read-only, and nothing else, for every kind of token", async () => {
-    for (const [t, readOnly] of [
-      [OWNER_TOKEN, false],
-      [friendToken, false],
-      [ownerViewer, true],
-      [friendViewer, true],
+    const friendAgent = addToken(db, "friend", false, true).token;
+    const ownerAgent = addToken(db, "owner", false, true).token;
+    for (const [t, readOnly, agentOnly] of [
+      [OWNER_TOKEN, false, false],
+      [friendToken, false, false],
+      [ownerViewer, true, false],
+      [friendViewer, true, false],
+      [ownerAgent, false, true],
+      [friendAgent, false, true],
     ] as const) {
       const res = await token(t);
       expect(res.status).toBe(200);
       expect(res.headers.get("content-type")).toBe("application/json");
       const text = await res.text();
-      expect(JSON.parse(text)).toEqual({ readOnly });
-      for (const secret of [OWNER_TOKEN, friendToken, ownerViewer, friendViewer, friend, "owner", "friend"]) expect(text).not.toContain(secret);
+      expect(JSON.parse(text)).toEqual({ readOnly, agentOnly });
+      for (const secret of [OWNER_TOKEN, friendToken, ownerViewer, friendViewer, ownerAgent, friendAgent, friend, "owner", "friend"]) {
+        expect(text).not.toContain(secret);
+      }
     }
   });
 
@@ -405,7 +411,72 @@ describe("message-cp token add", () => {
     ]) {
       const res = cli(...args);
       expect(res.status).toBe(2);
-      expect(res.stderr).toContain("[--read-only]");
+      expect(res.stderr).toContain("[--read-only | --agent-only]");
     }
+  }, 30_000);
+
+  it("prints an agent token with --agent-only, which reaches /mcp but not POST /api/send", async () => {
+    const agent = cli("token", "add", "friend", "--agent-only");
+    expect(agent.status).toBe(0);
+    expect(agent.stderr).toContain("agent token");
+    expect(agent.stderr).not.toContain(agent.stdout.trim());
+    const token = agent.stdout.trim();
+    expect(token).toMatch(/^[0-9a-f]{64}$/);
+    expect(await initialize(token)).toHaveProperty("status", 200);
+    expect((await agents(token)).status).toBe(200);
+    const send = await fetch(`${base()}/api/send`, { method: "POST", headers: auth(token), body: "{}" });
+    expect(send.status).toBe(403);
+  }, 30_000);
+
+  it("refuses --agent-only with --read-only or anywhere but after token add <account>, and makes nothing", () => {
+    const tokens = () => db.prepare("SELECT COUNT(*) FROM tokens").pluck().get();
+    const before = tokens();
+    for (const args of [
+      ["token", "add", "friend", "--read-only", "--agent-only"],
+      ["token", "add", "friend", "--agent-only", "--read-only"],
+      ["token", "add", "--agent-only"],
+      ["token", "add", "--agent-only", "friend"],
+      ["token", "add", "friend", "--agent-only", "extra"],
+      ["account", "add", "x", "--agent-only"],
+      ["token", "list", "--agent-only"],
+      ["token", "revoke", "1", "--agent-only"],
+    ]) {
+      const res = cli(...args);
+      expect(res.status, args.join(" ")).toBe(2);
+      expect(res.stdout).toBe("");
+      expect(res.stderr).toContain("[--read-only | --agent-only]");
+    }
+    expect(tokens()).toBe(before);
+    expect(listAccounts(db).map((a) => a.name)).toEqual(["owner", "friend"]);
+  }, 30_000);
+});
+
+describe("message-cp token list", () => {
+  const root = resolve(import.meta.dirname, "..");
+  const cli = (...args: string[]) =>
+    spawnSync(join(root, "node_modules/.bin/tsx"), [join(root, "src/cli.ts"), ...args], {
+      env: { ...process.env, MESSAGE_CP_DB: dbFile },
+      encoding: "utf8",
+    });
+
+  it("prints one line per working token with its id, account, kind and creation time, and never a token or hash", () => {
+    const agent = addToken(db, "owner", false, true);
+    const gone = addToken(db, "friend");
+    revokeToken(db, gone.id);
+    const res = cli("token", "list");
+    expect(res.status).toBe(0);
+    const ids = (db.prepare("SELECT id FROM tokens WHERE revoked_at IS NULL ORDER BY id").pluck().all() as number[]);
+    const lines = res.stdout.trimEnd().split("\n");
+    expect(lines.map((l) => l.replace(/created \S+$/, "created"))).toEqual([
+      `${ids[0]}\tfriend\tfull\tcreated`,
+      `${ids[1]}\tfriend\tread-only\tcreated`,
+      `${ids[2]}\towner\tread-only\tcreated`,
+      `${agent.id}\towner\tagent\tcreated`,
+    ]);
+    for (const l of lines) expect(l).toMatch(/\tcreated \d{4}-\d\d-\d\dT[\d:.]+Z$/);
+    const out = res.stdout + res.stderr;
+    for (const secret of [friendToken, friendViewer, ownerViewer, agent.token, gone.token, OWNER_TOKEN]) expect(out).not.toContain(secret);
+    expect(out).not.toMatch(/[0-9a-f]{64}/);
+    expect(cli("token", "list", "extra").status).toBe(2);
   }, 30_000);
 });

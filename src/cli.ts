@@ -2,7 +2,7 @@
 import { readFileSync } from "node:fs";
 import { DEFAULT_HTTP_HOST, DEFAULT_HTTP_PORT, startHttp } from "./http.js";
 import { KeyResetError, PersonError, PurgeError, addPerson, listPeople, purgeAgent, removePerson, resetAgentKey } from "./agents.js";
-import { AccountError, addAccount, addToken, listAccounts, revokeToken } from "./accounts.js";
+import { AccountError, addAccount, addToken, listAccounts, listTokens, revokeToken, type NewToken } from "./accounts.js";
 import { OWNER_ACCOUNT, openDb } from "./db.js";
 import { hasUnread, unreadSummary } from "./messages.js";
 import { setting } from "./settings.js";
@@ -77,20 +77,23 @@ if (command === "serve") {
   }
 } else if (command === "account" || command === "token") {
   // Run on the server, against the database serve uses. A new token is printed this once, to stdout, and only its
-  // hash is stored; everything else goes to stderr.
+  // hash is stored; everything else goes to stderr, except `list`, which never prints a token or a hash.
   const usage = () => {
     console.error(
-      "usage: message-cp account add <name> | message-cp account list | message-cp token add <account> [--read-only] | message-cp token revoke <token id>",
+      "usage: message-cp account add <name> | message-cp account list | message-cp token add <account> [--read-only | --agent-only] | message-cp token list | message-cp token revoke <token id>",
     );
     process.exit(2);
   };
   const [action, arg, extra, ...more] = rest;
-  // Only `token add <account>` takes a flag: --read-only, for a token that can only read.
-  const readOnly = command === "token" && action === "add" && extra === "--read-only";
-  if ((extra !== undefined && !readOnly) || more.length > 0) usage();
+  // Only `token add <account>` takes a flag: --read-only, for a token that can only read, or --agent-only, for one that
+  // cannot act as a person.
+  const tokenAdd = command === "token" && action === "add";
+  const readOnly = tokenAdd && extra === "--read-only";
+  const agentOnly = tokenAdd && extra === "--agent-only";
+  if ((extra !== undefined && !readOnly && !agentOnly) || more.length > 0) usage();
   const db = openDb();
-  const printToken = (t: { id: number; account: string; token: string; readOnly: boolean }) => {
-    const kind = t.readOnly ? "read-only token" : "token";
+  const printToken = (t: NewToken) => {
+    const kind = t.readOnly ? "read-only token" : t.agentOnly ? "agent token" : "token";
     console.error(`message-cp: ${kind} ${t.id} for account '${t.account}'. It is shown only now; keep it.`);
     console.log(t.token);
   };
@@ -100,8 +103,11 @@ if (command === "serve") {
       for (const a of listAccounts(db)) {
         console.log(`${a.name}\tcreated ${a.createdAt}\ttokens: ${a.tokenIds.length ? a.tokenIds.join(", ") : "none"}`);
       }
-    } else if (command === "token" && action === "add" && arg && !arg.startsWith("--")) printToken(addToken(db, arg, readOnly));
-    else if (command === "token" && action === "revoke" && arg) {
+    } else if (command === "token" && action === "add" && arg && !arg.startsWith("--")) {
+      printToken(addToken(db, arg, readOnly, agentOnly));
+    } else if (command === "token" && action === "list" && arg === undefined) {
+      for (const t of listTokens(db)) console.log(`${t.id}\t${t.account}\t${t.kind}\tcreated ${t.createdAt}`);
+    } else if (command === "token" && action === "revoke" && arg) {
       const id = Number(arg);
       if (!/^[0-9]+$/.test(arg) || !Number.isSafeInteger(id)) usage();
       console.error(`message-cp: revoked token ${id} of account '${revokeToken(db, id)}'.`);

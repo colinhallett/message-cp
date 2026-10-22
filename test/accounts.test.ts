@@ -4,7 +4,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { AccountError, accountForToken, addAccount, addToken, listAccounts, revokeToken } from "../src/accounts.js";
+import { AccountError, accountForToken, addAccount, addToken, listAccounts, listTokens, revokeToken } from "../src/accounts.js";
 import { OWNER_ACCOUNT, openDb, type Db } from "../src/db.js";
 import { startHttp, type HttpServer } from "../src/http.js";
 
@@ -232,11 +232,33 @@ describe("account and token management", () => {
   });
 
   it("resolves MESSAGE_CP_HTTP_TOKEN to the owner's account and an account's token to that account", () => {
-    expect(accountForToken(db, OWNER_TOKEN, OWNER_TOKEN)).toEqual({ account: OWNER_ACCOUNT, readOnly: false });
-    expect(accountForToken(db, friendToken, OWNER_TOKEN)).toEqual({ account: listAccounts(db)[1].id, readOnly: false });
+    expect(accountForToken(db, OWNER_TOKEN, OWNER_TOKEN)).toEqual({ account: OWNER_ACCOUNT, readOnly: false, agentOnly: false });
+    expect(accountForToken(db, friendToken, OWNER_TOKEN)).toEqual({ account: listAccounts(db)[1].id, readOnly: false, agentOnly: false });
     const viewer = addToken(db, "friend", true);
-    expect(viewer.readOnly).toBe(true);
-    expect(accountForToken(db, viewer.token, OWNER_TOKEN)).toEqual({ account: listAccounts(db)[1].id, readOnly: true });
+    expect(viewer).toMatchObject({ readOnly: true, agentOnly: false });
+    expect(accountForToken(db, viewer.token, OWNER_TOKEN)).toEqual({ account: listAccounts(db)[1].id, readOnly: true, agentOnly: false });
+    const agent = addToken(db, "friend", false, true);
+    expect(agent).toMatchObject({ readOnly: false, agentOnly: true });
+    expect(accountForToken(db, agent.token, OWNER_TOKEN)).toEqual({ account: listAccounts(db)[1].id, readOnly: false, agentOnly: true });
+    expect(() => addToken(db, "friend", true, true)).toThrow(AccountError);
     expect(accountForToken(db, "nope", OWNER_TOKEN)).toBeUndefined();
+  });
+
+  it("lists every working token with its id, account, kind and creation time, and never a token or hash", () => {
+    const viewer = addToken(db, "friend", true);
+    const agent = addToken(db, "owner", false, true);
+    const gone = addToken(db, "owner");
+    revokeToken(db, gone.id);
+    const first = listAccounts(db)[1].tokenIds[0];
+    const listed = listTokens(db);
+    expect(listed).toEqual([
+      { id: first, account: "friend", kind: "full", createdAt: expect.any(String) },
+      { id: viewer.id, account: "friend", kind: "read-only", createdAt: expect.any(String) },
+      { id: agent.id, account: "owner", kind: "agent", createdAt: expect.any(String) },
+    ]);
+    for (const t of listed) expect(new Date(t.createdAt).toISOString()).toBe(t.createdAt);
+    const text = JSON.stringify(listed);
+    for (const secret of [friendToken, viewer.token, agent.token, gone.token]) expect(text).not.toContain(secret);
+    expect(text).not.toMatch(/[0-9a-f]{64}/);
   });
 });

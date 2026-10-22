@@ -50,7 +50,8 @@ CREATE TABLE IF NOT EXISTS tokens (
   hash TEXT NOT NULL UNIQUE,
   created_at INTEGER NOT NULL,
   revoked_at INTEGER,
-  read_only INTEGER NOT NULL DEFAULT 0
+  read_only INTEGER NOT NULL DEFAULT 0,
+  agent_only INTEGER NOT NULL DEFAULT 0
 );
 ${agentsTable("agents")}
 
@@ -298,6 +299,8 @@ function migrate(db: Db, path: string): void {
   addColumn(db, "joined", "INTEGER NOT NULL DEFAULT 0", "channel_reads");
   // 1 for a token that can only read (`token add --read-only`); tokens made before it existed keep full access.
   addColumn(db, "read_only", "INTEGER NOT NULL DEFAULT 0", "tokens");
+  // 1 for a token that cannot act as a person (`token add --agent-only`); tokens made before it existed keep their access.
+  addColumn(db, "agent_only", "INTEGER NOT NULL DEFAULT 0", "tokens");
   // Until when the request of the sender that last claimed the delivery may be in flight; no sender takes it before then.
   addColumn(db, "claimed_until", "INTEGER", "webhook_deliveries");
   // The one header a webhook's deliveries carry (`webhook add --header-stdin`); both null for a webhook without one.

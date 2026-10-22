@@ -19,24 +19,38 @@ export interface NewToken {
   account: string;
   token: string;
   readOnly: boolean;
+  agentOnly: boolean;
 }
 
-/** Who a bearer token acts as: its account, and whether it may only read. */
+/**
+ * Who a bearer token acts as: its account, whether it may only read, and whether it may do what an agent does but not
+ * act as a person (POST /api/send and /api/post). Never both.
+ */
 export interface TokenAccess {
   account: AccountId;
   readOnly: boolean;
+  agentOnly: boolean;
+}
+
+/** A token that still works, as `token list` shows it: never the token or its hash. */
+export interface TokenInfo {
+  id: number;
+  account: string;
+  kind: "full" | "read-only" | "agent";
+  createdAt: string;
 }
 
 const NAME_PATTERN = /^[A-Za-z0-9_-]{1,32}$/;
 
 const hashToken = (token: string) => createHash("sha256").update(token).digest("hex");
 
-function issueToken(db: Db, account: AccountId, readOnly = false): { id: number; token: string; readOnly: boolean } {
+function issueToken(db: Db, account: AccountId, readOnly = false, agentOnly = false): Omit<NewToken, "account"> {
+  if (readOnly && agentOnly) throw new AccountError("A token is read-only or agent-only, not both.");
   const token = randomBytes(32).toString("hex");
   const { id } = db
-    .prepare("INSERT INTO tokens (account_id, hash, created_at, read_only) VALUES (?, ?, ?, ?) RETURNING id")
-    .get(account, hashToken(token), Date.now(), readOnly ? 1 : 0) as { id: number };
-  return { id, token, readOnly };
+    .prepare("INSERT INTO tokens (account_id, hash, created_at, read_only, agent_only) VALUES (?, ?, ?, ?, ?) RETURNING id")
+    .get(account, hashToken(token), Date.now(), readOnly ? 1 : 0, agentOnly ? 1 : 0) as { id: number };
+  return { id, token, readOnly, agentOnly };
 }
 
 /** Creates the account `name` (unique in any case) with its first token. */
@@ -61,13 +75,32 @@ export function listAccounts(db: Db): Account[] {
   }));
 }
 
-/** Another token for the account named `account`; with `readOnly`, one that can only read. */
-export const addToken = (db: Db, account: string, readOnly = false): NewToken =>
+/**
+ * Another token for the account named `account`; with `readOnly`, one that can only read; with `agentOnly`, one that
+ * cannot act as a person.
+ */
+export const addToken = (db: Db, account: string, readOnly = false, agentOnly = false): NewToken =>
   db.transaction((): NewToken => {
     const row = db.prepare("SELECT id, name FROM accounts WHERE name = ?").get(account) as { id: number; name: string } | undefined;
     if (!row) throw new AccountError(`No account named '${account}'.`);
-    return { ...issueToken(db, row.id, readOnly), account: row.name };
+    return { ...issueToken(db, row.id, readOnly, agentOnly), account: row.name };
   }).immediate();
+
+/** Every token that still works, oldest first, with its account and kind. */
+export function listTokens(db: Db): TokenInfo[] {
+  const rows = db
+    .prepare(
+      `SELECT tokens.id, accounts.name, tokens.read_only, tokens.agent_only, tokens.created_at
+       FROM tokens JOIN accounts ON accounts.id = tokens.account_id WHERE tokens.revoked_at IS NULL ORDER BY tokens.id`,
+    )
+    .all() as { id: number; name: string; read_only: number; agent_only: number; created_at: number }[];
+  return rows.map((r) => ({
+    id: r.id,
+    account: r.name,
+    kind: r.read_only === 1 ? "read-only" : r.agent_only === 1 ? "agent" : "full",
+    createdAt: new Date(r.created_at).toISOString(),
+  }));
+}
 
 /** Stops the token `id` working for every request from now on. Returns the account it belonged to. */
 export function revokeToken(db: Db, id: number): string {
@@ -82,15 +115,18 @@ export function revokeToken(db: Db, id: number): string {
 }
 
 /**
- * The account a bearer token belongs to: the owner's for `ownerToken` (MESSAGE_CP_HTTP_TOKEN, never read-only), else
- * the account of a token created with `message-cp`, as long as it has not been revoked. Undefined for anything else.
+ * The account a bearer token belongs to: the owner's for `ownerToken` (MESSAGE_CP_HTTP_TOKEN, never read-only or
+ * agent-only), else the account of a token created with `message-cp`, as long as it has not been revoked. Undefined for
+ * anything else.
  */
 export function accountForToken(db: Db, token: string, ownerToken: string): TokenAccess | undefined {
   const hash = hashToken(token);
   // Constant-time against the owner's token, as before accounts; created tokens are found by their hash.
-  if (timingSafeEqual(Buffer.from(hash), Buffer.from(hashToken(ownerToken)))) return { account: OWNER_ACCOUNT, readOnly: false };
-  const row = db.prepare("SELECT account_id, read_only FROM tokens WHERE hash = ? AND revoked_at IS NULL").get(hash) as
-    | { account_id: number; read_only: number }
-    | undefined;
-  return row && { account: row.account_id, readOnly: row.read_only === 1 };
+  if (timingSafeEqual(Buffer.from(hash), Buffer.from(hashToken(ownerToken)))) {
+    return { account: OWNER_ACCOUNT, readOnly: false, agentOnly: false };
+  }
+  const row = db
+    .prepare("SELECT account_id, read_only, agent_only FROM tokens WHERE hash = ? AND revoked_at IS NULL")
+    .get(hash) as { account_id: number; read_only: number; agent_only: number } | undefined;
+  return row && { account: row.account_id, readOnly: row.read_only === 1, agentOnly: row.agent_only === 1 };
 }

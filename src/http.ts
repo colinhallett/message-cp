@@ -424,12 +424,12 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
   };
 
   /**
-   * GET /api/token: whether the request's token is read-only, so the dashboard offers posting only to a full token. It
-   * gives nothing else about the token: no token, hash, id or account.
+   * GET /api/token: whether the request's token is read-only and whether it is agent-only, so the dashboard offers
+   * posting only to a full token. It gives nothing else about the token: no token, hash, id or account.
    */
-  const apiToken = (req: IncomingMessage, res: ServerResponse, readOnly: boolean) => {
+  const apiToken = (req: IncomingMessage, res: ServerResponse, access: TokenAccess) => {
     if (req.method !== "GET") return reply(res, 405, "Method not allowed", { Allow: "GET" });
-    sendJson(res, { readOnly });
+    sendJson(res, { readOnly: access.readOnly, agentOnly: access.agentOnly });
   };
 
   /**
@@ -639,7 +639,7 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
       return reply(res, 401, "Unauthorized", { "WWW-Authenticate": "Bearer" });
     }
     const { account } = access;
-    if (path === "/api/token") return apiToken(req, res, access.readOnly);
+    if (path === "/api/token") return apiToken(req, res, access);
     if (path === "/api/agents") return apiAgents(req, res, account);
     if (path === "/api/channels") return apiChannels(req, res, account);
     if (path === "/api/channel-posts") return apiChannelPosts(req, res, account);
@@ -648,6 +648,10 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
     if (path === "/api/webhook-deliveries") return apiWebhookDeliveries(req, res, account);
     // A read-only token reaches the read-only endpoints above and nothing else: /mcp can write, and so can any path added later.
     if (access.readOnly) return reply(res, 403, "This token is read-only");
+    // An agent token does everything a full one does but act as a person; refused before a slot is taken or a body read.
+    if (access.agentOnly && (path === "/api/send" || path === "/api/post")) {
+      return reply(res, 403, "This token cannot act as a person");
+    }
     if (path === "/api/send") return apiSend(req, res, account);
     if (path === "/api/post") return apiPost(req, res, account);
     if (path === "/api/conversation") return apiConversation(req, res, account);
