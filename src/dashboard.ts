@@ -165,16 +165,17 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .mention { color: var(--accent); background: var(--mention-bg); border-radius: 3px; padding: 0 2px; font-weight: 600; }
 .body a { color: var(--accent); }
 .mention.me { color: var(--me); background: var(--me-bg); box-shadow: inset 0 -2px 0 currentColor; }
-.entry.chat { grid-template-columns: 2.5rem auto auto auto minmax(0, 1fr); grid-template-areas: "avatar from kind tag time" "avatar body body body body"; column-gap: 0; padding-bottom: 1px; }
+.entry.chat { grid-template-columns: 2.5rem auto auto auto auto minmax(0, 1fr); grid-template-areas: "avatar from kind tag time receipt" "avatar body body body body body"; column-gap: 0; padding-bottom: 1px; }
 .entry.chat > :not(.avatar) { margin-left: var(--s2); }
 .entry.chat > .from { color: var(--who); }
 .entry.chat > .kind { grid-area: kind; }
 .avatar { grid-area: avatar; align-self: start; display: flex; align-items: center; justify-content: center; width: 2rem; height: 2rem; margin-top: 0.15rem; border-radius: 0.4rem; background: var(--who); color: var(--bg); font-size: 0.75rem; font-weight: 700; }
 .avatar.person { border-radius: 50%; }
-.entry.cont { grid-template-areas: "time body body body body"; padding-top: 1px; }
+.entry.cont { grid-template-columns: 2.5rem minmax(0, 1fr) auto; grid-template-areas: "time body receipt"; padding-top: 1px; }
 .entry.cont > .avatar, .entry.cont > .from, .entry.cont > .kind, .entry.cont > .tag { display: none; }
 .entry.chat.cont > .time { margin-left: 0; font-size: 0.65rem; line-height: 1.2; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: center; align-self: center; visibility: hidden; }
 .entry.cont:hover > .time { visibility: visible; }
+.receipt { grid-area: receipt; font-size: 0.75rem; color: var(--muted); white-space: nowrap; }
 .c0 { --who: var(--who0); }
 .c1 { --who: var(--who1); }
 .c2 { --who: var(--who2); }
@@ -336,7 +337,8 @@ const MIN_ROWS = 2;
 const MAX_ROWS = 10;
 // The open log's last entry, as chatEntry made it: its sender in lower case, its time in ms (NaN if it could not be
 // read) and its tag, or undefined in an empty log. An entry continues its group only from this one.
-// chatRows holds each of the open log's rows as chatEntry made them, so a change in who is a person re-marks them.
+// chatRows holds each of the open log's rows as chatEntry made them, so a change in who is a person re-marks them and
+// a poll that finds a message read updates its receipt in place.
 // chatTimes holds [time element, sentAt, due] for each row whose time can still change, so each poll can keep "2m ago"
 // current: due is the earliest ms its text can change at (see nextChange). A time that shows a date is not held.
 let lastEntry;
@@ -1463,11 +1465,11 @@ async function reasonOf(res) {
   }
 }
 
-// Fetches every page of path, PAGE at a time.
-async function fetchAll(token, signal, path, items) {
+// Fetches every page of path with params, PAGE at a time.
+async function fetchAll(token, signal, path, items, params = {}) {
   const all = [];
   for (let offset = 0; ; offset += PAGE) {
-    const page = await fetchPage(token, signal, path, {}, offset, items);
+    const page = await fetchPage(token, signal, path, params, offset, items);
     if (!page.items) return page;
     all.push(...page.items);
     if (page.items.length < PAGE) return { items: all };
@@ -1514,6 +1516,27 @@ async function readLog(token, signal, gen, channel) {
       return { ok: true };
     }
   }
+}
+
+// Reads every page of the account's unread direct messages, and marks each message the page holds as read once it is
+// not among them, updating its receipt in the open log. read_at is only ever set, never cleared, so a message is never
+// marked unread again. A message read while the pages were read moves the rest one place earlier, so the row after a
+// page boundary (or after a full last page) may have been skipped: a held message there is left as it was until a later
+// poll. A failed read, or one answered after a newer poll or another token, changes nothing. It marks nothing read.
+async function readReceipts(token, signal, gen) {
+  const unread = await fetchAll(token, signal, "/api/messages", list, { unread: "true" });
+  if (gen !== generation) return { ok: true };
+  if (!unread.items) return unread;
+  const items = unread.items;
+  const ids = new Set(items.map((m) => m.id));
+  const unsure = [];
+  for (let i = PAGE; i <= items.length; i += PAGE) unsure.push([items[i - 1].id, i < items.length ? items[i].id : Infinity]);
+  for (const m of messages) {
+    if (m.read === true || ids.has(m.id) || unsure.some(([after, before]) => m.id > after && m.id < before)) continue;
+    m.read = true;
+  }
+  for (const row of chatRows) if (row.receipt) row.receipt.textContent = receiptText(row.message);
+  return { ok: true };
 }
 
 // Reads the account's direct messages past the ones the page holds and appends each page as it comes, as readLog does
@@ -1613,7 +1636,12 @@ async function poll(gen) {
         for (const [key, pair] of pairs) atLeast("pair " + key, pair.count);
         seenAll = true;
       }
-      result = refused ?? values.find((v) => !v.ok) ?? posts.value;
+      // Once the messages are read, whether each one the page holds has been read since; never before, so every held
+      // message is among those it asks about.
+      if (!refused && messages.status === "fulfilled" && messages.value.ok && gen === generation) {
+        values.push(await readReceipts(token, ac.signal, gen));
+      }
+      result = values.find((v) => v.status === 401) ?? values.find((v) => !v.ok) ?? posts.value;
     }
   } catch {
     result = { error: ac.signal.aborted ? "The server did not answer in time" : "Cannot reach the server" };
@@ -1939,8 +1967,9 @@ function isPerson(name) {
 // An entry of the open log. One from the sender of the entry before it, sent less than GROUP_MS after it, continues
 // that entry's group: it shows no avatar, name or tag of its own. A tagged entry (a broadcast) never continues a group
 // or is continued, so its tag always shows. The first entry of a group has an initials avatar in the sender's colour,
-// round for a person GET /api/agents gave and rounded-square for anyone else, and a person is labelled as one.
-function chatEntry(from, tag, sentAt, body) {
+// round for a person GET /api/agents gave and rounded-square for anyone else, and a person is labelled as one. A direct
+// message, given as message, has a receipt after its time unless its recipient is a person, who has no read_inbox.
+function chatEntry(from, tag, sentAt, body, message) {
   const name = String(from);
   const at = Date.parse(sentAt);
   const gap = lastEntry === undefined ? NaN : at - lastEntry.at;
@@ -1953,18 +1982,30 @@ function chatEntry(from, tag, sentAt, body) {
   const due = nextChange(at);
   if (due !== undefined) chatTimes.push([time, sentAt, due]);
   const row = { li, name, tag, person: isPerson(name), time, body: bodyPart(String(body), logMentions) };
+  if (message) {
+    row.message = message;
+    row.toPerson = isPerson(String(message.to));
+    row.receipt = part("span", "receipt", receiptText(message));
+  }
   chatRows.push(row);
   li.append(...chatParts(row));
   return li;
 }
 
-// A chat row's children: its avatar and name, a person's label, its tag, its time and its text.
+// A chat row's children: its avatar and name, a person's label, its tag, its time, its receipt and its text.
 function chatParts(row) {
   const parts = [part("span", row.person ? "avatar person" : "avatar", initials(row.name)), part("span", "from", row.name)];
   if (row.person) parts.push(part("span", "kind", "person"));
   if (row.tag) parts.push(part("span", "tag", row.tag));
-  parts.push(row.time, row.body);
+  parts.push(row.time);
+  if (row.receipt && !row.toPerson) parts.push(row.receipt);
+  parts.push(row.body);
   return parts;
+}
+
+// What a direct message's receipt says: whether its recipient has read it with read_inbox.
+function receiptText(m) {
+  return m.read === true ? "read" : "not read yet";
 }
 
 // The earliest ms chatTime of a time in ms can change at: now for one it shows as relative, a minute before it for one
@@ -1981,7 +2022,8 @@ function nextChange(at) {
   return at >= today.getTime() ? midnight.getTime() : undefined;
 }
 
-// Once a poll, after show: re-marks the open log's rows when who is a person has changed since they were marked, and
+// Once a poll, after show: re-marks the open log's rows when who is a person has changed since they were marked (a
+// row's sender, and whether a message's recipient is one and so shows no receipt), and
 // rewrites the times that may have changed since they were written, dropping those that never will again.
 function refreshChat() {
   const marked = JSON.stringify((people ?? []).map((p) => p.toLowerCase()).sort());
@@ -1989,8 +2031,10 @@ function refreshChat() {
     markedPeople = marked;
     for (const row of chatRows) {
       const person = isPerson(row.name);
-      if (person === row.person) continue;
+      const toPerson = row.message ? isPerson(String(row.message.to)) : undefined;
+      if (person === row.person && toPerson === row.toPerson) continue;
       row.person = person;
+      row.toPerson = toPerson;
       row.li.replaceChildren(...chatParts(row));
     }
   }
@@ -2008,7 +2052,7 @@ function refreshChat() {
 }
 
 function messageEntry(m) {
-  return chatEntry(m.from, m.broadcast ? "broadcast" : "", m.sentAt, m.body);
+  return chatEntry(m.from, m.broadcast ? "broadcast" : "", m.sentAt, m.body, m);
 }
 
 // A search result: a message shows its sender and recipient and whether it was a broadcast, a post its sender and channel.
