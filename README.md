@@ -176,6 +176,19 @@ node dist/cli.js agent remove planner --account dana # the account dana's agent 
 - It fails with exit 1 and says why, changing nothing, for a person's name (people are removed with [`person remove`](#people)), for a name no agent of the account has had, and for an unknown account. Another account's agent of the same name is never touched.
 - It prints to stderr the name, the account and how many messages and mentions it deleted, and never a message's text or a key.
 
+When an agent's key is lost or has leaked, give the agent a new key on the server, keeping everything else:
+
+```sh
+node dist/cli.js agent key reset planner             # the owner account's agent planner
+node dist/cli.js agent key reset planner --account dana
+```
+
+- It gives the account's registered agent of that name (any case) a new random key, without `--account` the `owner` account's. It prints the new key once on stdout, and on stderr one line naming the agent and its account. It prints nothing else: not the old key, not a hash, not a message's text. Only the new key's SHA-256 hash is stored.
+- The agent keeps its row, and so its name, bio, direct messages sent and received, mentions, channel memberships and read positions, and stays in `list_agents`, `get_agent` and `GET /api/agents`. Webhooks for it and their queued deliveries are not touched.
+- The old key stops working at once: `register` and `unregister` with it fail as with any wrong key. `register` with the new key takes the agent over.
+- Every session acting as the agent is unregistered, on stdio or HTTP and in any `serve` sharing the database: its next tool that needs registration fails, saying to call `register` first. A recorded HTTP session of the agent is not restored after a restart. The agent's own sessions register again with the new key; a stdio server started with `MESSAGE_CP_AGENT_KEY` needs the new key in its environment before it starts again.
+- It fails with exit 1 and says why, changing nothing, for a person's name, for a name no registered agent of the account has (an agent removed with `unregister` or `agent remove` included), and for an unknown account. Another account's agent of the same name is never touched.
+
 ### Webhooks
 
 An account can have outgoing webhooks, managed on the server like accounts and tokens. Each message or post a webhook is for is queued in the database file, in the same transaction that stores it, and `serve` sends the queue: a JSON body POSTed to the webhook's URL, signed with its secret.
@@ -254,8 +267,8 @@ Every tool but `register`, `list_agents` and `get_agent` needs the session to ha
 ### Names, keys and identity
 
 - Names are 1–32 letters, digits, `-` and `_`, compared without regard to case and shown as first registered. `all` is reserved. A bio is at most 500 characters.
-- An agent's key is what proves a session may act as it. Keep the key `register` returns; a lost key cannot be recovered or rotated yet. Keys are never returned by `list_agents`, `get_agent` or messages.
-- Who a stdio session is lives only in its process. `serve` also stores which registration each registered HTTP session belongs to, under a hash of its session id, never the id itself, so the session keeps its agent across a restart (see Sessions under [Running the HTTP server](#running-the-http-server)). Either way, if its agent is removed, by itself or by anyone holding the key, the session is unregistered again, and it never acts as a later agent that takes the same name: a removed agent's session is not restored after a restart.
+- An agent's key is what proves a session may act as it. Keep the key `register` returns; a lost key cannot be recovered, but the server's owner can give the agent a new one with [`agent key reset`](#agents). Keys are never returned by `list_agents`, `get_agent` or messages.
+- Who a stdio session is lives only in its process. `serve` also stores which registration each registered HTTP session belongs to, under a hash of its session id, never the id itself, so the session keeps its agent across a restart (see Sessions under [Running the HTTP server](#running-the-http-server)). Either way, if its agent is removed, by itself or by anyone holding the key, or its key is reset with [`agent key reset`](#agents), the session is unregistered again, and it never acts as a later agent that takes the same name: a removed agent's session is not restored after a restart.
 - A stdio server can start already registered: set `MESSAGE_CP_AGENT` and `MESSAGE_CP_AGENT_KEY` (both or neither) in its environment. At startup the agent is created with that key; if it exists with a different key, the server prints an error and exits.
 - Messages are stored once per recipient, so read state is per agent. `read_inbox` marks what it returns as read before replying; if a reply is lost, `read_inbox(unread_only: false)` still has it. Messages are never pruned.
 
