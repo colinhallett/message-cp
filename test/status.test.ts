@@ -72,7 +72,7 @@ describe("set_status", () => {
 
   it("clears the line with empty or whitespace-only text", async () => {
     const a = await agent("alice");
-    for (const text of ["", "   \t "]) {
+    for (const text of ["", "   "]) {
       await call(a.client, "set_status", { text: "busy" });
       expect((await call(a.client, "set_status", { text })).json).toEqual({ status: null, expiresAt: null });
       expect(statuses()).toEqual({ alice: null });
@@ -117,6 +117,13 @@ describe("set_status", () => {
     expect(statuses()).toEqual({ alice: null, bob: "reading" });
   });
 
+  it("keeps the line when the post is refused", async () => {
+    const a = await agent("alice");
+    await call(a.client, "set_status", { text: "writing up" });
+    expect((await call(a.client, "post", { channel: "bad name", body: "done" })).isError).toBe(true);
+    expect(statuses()).toEqual({ alice: "writing up" });
+  });
+
   it("clears on unregister, and a name registered again starts with no line", async () => {
     const a = await agent("alice");
     await call(a.client, "set_status", { text: "busy" });
@@ -156,7 +163,7 @@ describe("set_status", () => {
     expect(statuses()).toEqual({ alice: "😀".repeat(MAX_STATUS_LENGTH) });
   });
 
-  it.each(["two\nlines", "cr\r", "tab\there", "nul\u0000", "del\u007f", "c1\u0085", "sep "])(
+  it.each(["two\nlines", "cr\r", "tab\there", "\n", " \t ", "nul\u0000", "del\u007f", "c1\u0085", "sep "])(
     "refuses a line with a newline or other control character (%j) and changes nothing",
     async (text) => {
       const a = await agent("alice");

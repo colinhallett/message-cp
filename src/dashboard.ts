@@ -1792,7 +1792,8 @@ function show(agents) {
   const items = agents.map((a) => {
     const name = String(a.name);
     const bio = String(a.bio);
-    // The agent's status line while GET /api/agents gives one; null once it has cleared or expired, so the next poll drops it.
+    // The agent's status line while GET /api/agents gives one; null once it has cleared or expired, so the next poll
+    // that succeeds drops it.
     const status = typeof a.status === "string" ? a.status : "";
     const li = document.createElement("li");
     li.className = "agent";

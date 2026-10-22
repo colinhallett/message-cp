@@ -237,17 +237,18 @@ const NOT_ONE_LINE = /[\p{Cc}\p{Zl}\p{Zp}]/u;
 
 /**
  * Sets the status line of the caller's own registration, `own`, replacing any earlier one, or clears it when `text` is
- * empty or only whitespace. Throws, changing nothing, for a line that is too long or not one line, or NOT_REGISTERED
+ * empty or only spaces. Throws, changing nothing, for a line that is too long or not one line, or NOT_REGISTERED
  * once that registration was removed. A person's row never matches.
  */
 export const setStatus = (db: Db, account: AccountId, own: Identity, text: string, now = Date.now()): StatusResult => {
+  // Before the blank check, so a lone newline or tab is refused rather than taken as clearing the line.
+  if (NOT_ONE_LINE.test(text)) throw new ToolError("Status must be one line, with no newline or other control character.");
   const clear = text.trim().length === 0;
   if (!clear) {
-    // Count characters (code points), as validateBody does; a code point is at most 2 code units.
+    // Count characters (code points), as validateBody does.
     let n = 0;
     for (const _ of text) if (++n > MAX_STATUS_LENGTH) break;
     if (n > MAX_STATUS_LENGTH) throw new ToolError(`Status is too long: at most ${MAX_STATUS_LENGTH} characters.`);
-    if (NOT_ONE_LINE.test(text)) throw new ToolError("Status must be one line, with no newline or other control character.");
   }
   return db
     .transaction((): StatusResult => {

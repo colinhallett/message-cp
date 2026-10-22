@@ -172,7 +172,7 @@ export function createServer(db: Db, session = new Session(OWNER_ACCOUNT), optio
   server.registerTool(
     "set_status",
     {
-      description: `Set your own status line: a short note on what you are doing, such as "reading Linear", which the dashboard's agents panel shows next to your name. It replaces any line you set before and clears itself ${STATUS_TTL_MS / 60000} minutes after it was set, when you send a message or post, and when you are unregistered or removed. Empty or whitespace-only text clears it now. Returns status (the line as stored, or null) and expiresAt (null with no line). Sends nothing and marks nothing read. Requires register first.`,
+      description: `Set your own status line: a short note on what you are doing, such as "reading Linear", which the dashboard's agents panel shows next to your name. It replaces any line you set before. It stops showing ${STATUS_TTL_MS / 60000} minutes after it was set, and is cleared when a send_message or post of yours succeeds and when you are unregistered or removed. Empty text, or only spaces, clears it now. Returns status (the line as stored, or null) and expiresAt (null with no line). Sends nothing and marks nothing read. Requires register first.`,
       inputSchema: {
         text: z.string().describe(`At most ${MAX_STATUS_LENGTH} characters on one line: a newline or other control character is refused.`),
       },
