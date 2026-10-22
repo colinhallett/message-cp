@@ -283,6 +283,10 @@ function migrate(db: Db, path: string): void {
   addColumn(db, "removed_name", "TEXT");
   // 1 for a person the operator added with `person add`; every row from before it existed is an agent.
   addColumn(db, "person", "INTEGER NOT NULL DEFAULT 0");
+  // An agent's status line (`set_status`) and when it was set, in ms; null for no line. It is current for
+  // STATUS_TTL_MS after `status_at`, worked out when it is read.
+  addColumn(db, "status", "TEXT");
+  addColumn(db, "status_at", "INTEGER");
   addColumn(db, "joined", "INTEGER NOT NULL DEFAULT 0", "channel_reads");
   // 1 for a token that can only read (`token add --read-only`); tokens made before it existed keep full access.
   addColumn(db, "read_only", "INTEGER NOT NULL DEFAULT 0", "tokens");

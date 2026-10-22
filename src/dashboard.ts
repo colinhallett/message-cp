@@ -196,6 +196,9 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .agent > button:hover { background: var(--hover); }
 .kind { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--accent); }
 .agent .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+/* An agent's status line after its name: muted, cut short like the name, and given up first when the row is narrow. */
+.agent > button .status { flex: 0 1 auto; min-width: 0; max-width: 50%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 0.8rem; color: var(--muted); }
+.agent .details .status { font-style: italic; }
 .agent .details { display: flex; flex-direction: column; padding: 0 var(--s3) var(--s2) var(--s4); font-size: 0.8rem; color: var(--muted); overflow-wrap: anywhere; }
 .dot { flex: none; width: 0.6rem; height: 0.6rem; border-radius: 50%; background: var(--offline); overflow: hidden; color: transparent; font-size: 0; }
 .dot.online { background: var(--online); }
@@ -1789,6 +1792,8 @@ function show(agents) {
   const items = agents.map((a) => {
     const name = String(a.name);
     const bio = String(a.bio);
+    // The agent's status line while GET /api/agents gives one; null once it has cleared or expired, so the next poll drops it.
+    const status = typeof a.status === "string" ? a.status : "";
     const li = document.createElement("li");
     li.className = "agent";
     // A person has no online state of its own, so it is marked as a person in place of the dot, before its name.
@@ -1803,11 +1808,14 @@ function show(agents) {
     const button = document.createElement("button");
     button.type = "button";
     // A person added without a bio has none, so the tooltip leaves it out rather than starting with a separator.
-    button.title = [bio, seenText, unreadText].filter((t) => t !== "").join(" · ");
-    button.append(dot, part("span", "name", name), badge(Number(a.unreadMessages) + Number(a.unreadPosts) + Number(a.unreadMentions)));
+    button.title = [status, bio, seenText, unreadText].filter((t) => t !== "").join(" · ");
+    button.append(dot, part("span", "name", name));
+    if (status !== "") button.append(part("span", "status", status));
+    button.append(badge(Number(a.unreadMessages) + Number(a.unreadPosts) + Number(a.unreadMentions)));
     const seen = part("span", "seen", seenText);
     seen.title = String(a.lastSeen);
     const details = part("div", "details", "");
+    if (status !== "") details.append(part("span", "status", status));
     details.append(part("span", "bio", bio), seen, part("span", "unread", unreadText));
     // Opening the details only shows what the answer already holds: it sends nothing and marks nothing read.
     const toggle = (open) => {

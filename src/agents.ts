@@ -221,6 +221,47 @@ export function touchAgent(db: Db, account: AccountId, name: string): void {
   db.prepare("UPDATE agents SET last_seen = ? WHERE account_id = ? AND name = ? AND removed_at IS NULL").run(Date.now(), account, name);
 }
 
+/** How long a status line stays current after `set_status` set it. */
+export const STATUS_TTL_MS = 5 * 60 * 1000;
+export const MAX_STATUS_LENGTH = 100;
+
+export interface StatusResult {
+  /** The line as stored, or null when the call cleared it. */
+  status: string | null;
+  /** When the line stops being current, or null when there is none. */
+  expiresAt: string | null;
+}
+
+// A newline, any other control character, or a line or paragraph separator: the line has to stay one line.
+const NOT_ONE_LINE = /[\p{Cc}\p{Zl}\p{Zp}]/u;
+
+/**
+ * Sets the status line of the caller's own registration, `own`, replacing any earlier one, or clears it when `text` is
+ * empty or only whitespace. Throws, changing nothing, for a line that is too long or not one line, or NOT_REGISTERED
+ * once that registration was removed. A person's row never matches.
+ */
+export const setStatus = (db: Db, account: AccountId, own: Identity, text: string, now = Date.now()): StatusResult => {
+  const clear = text.trim().length === 0;
+  if (!clear) {
+    // Count characters (code points), as validateBody does; a code point is at most 2 code units.
+    let n = 0;
+    for (const _ of text) if (++n > MAX_STATUS_LENGTH) break;
+    if (n > MAX_STATUS_LENGTH) throw new ToolError(`Status is too long: at most ${MAX_STATUS_LENGTH} characters.`);
+    if (NOT_ONE_LINE.test(text)) throw new ToolError("Status must be one line, with no newline or other control character.");
+  }
+  return db
+    .transaction((): StatusResult => {
+      const changed = db
+        .prepare(
+          "UPDATE agents SET status = ?, status_at = ? WHERE account_id = ? AND id = ? AND registered_at = ? AND instance IS ? AND removed_at IS NULL AND person = 0",
+        )
+        .run(clear ? null : text, clear ? null : now, account, own.id, own.registeredAt, own.instance).changes;
+      if (changed === 0) throw new ToolError(NOT_REGISTERED);
+      return clear ? { status: null, expiresAt: null } : { status: text, expiresAt: new Date(now + STATUS_TTL_MS).toISOString() };
+    })
+    .immediate();
+};
+
 export interface Unregistered {
   removed: string;
   keptMessages: number;
@@ -263,7 +304,7 @@ export const removeAgent = (db: Db, account: AccountId, name: string, key?: stri
       if (!sameHash(hashKey(key), row.key_hash)) throw new ToolError(`Wrong key for agent '${row.name}'.`);
     }
     db.prepare(
-      "UPDATE agents SET name = ?, removed_name = name, removed_at = ?, key_hash = ?, instance = ? WHERE id = ?",
+      "UPDATE agents SET name = ?, removed_name = name, removed_at = ?, key_hash = ?, instance = ?, status = NULL, status_at = NULL WHERE id = ?",
     ).run(removedName(row.id), Date.now(), REMOVED_KEY_HASH, REMOVED_INSTANCE, row.id);
     const keptMessages = (db.prepare("SELECT COUNT(*) AS n FROM messages WHERE recipient_id = ?").get(row.id) as { n: number }).n;
     return { removed: row.name, keptMessages };
@@ -312,7 +353,7 @@ export const purgeAgent = (db: Db, account: string, name: string): Purged =>
     const mentions = db.prepare(`DELETE FROM mentions WHERE agent_id IN (${rows})`).run(...rowArgs).changes;
     if (live) {
       db.prepare(
-        "UPDATE agents SET name = ?, removed_name = name, removed_at = ?, key_hash = ?, instance = ? WHERE id = ?",
+        "UPDATE agents SET name = ?, removed_name = name, removed_at = ?, key_hash = ?, instance = ?, status = NULL, status_at = NULL WHERE id = ?",
       ).run(removedName(live.id), Date.now(), REMOVED_KEY_HASH, REMOVED_INSTANCE, live.id);
     }
     return { name: live?.name ?? removed[removed.length - 1]!.removed_name, account: acct.name, messages, mentions };
@@ -383,7 +424,7 @@ export const removePerson = (db: Db, account: string, name: string): Purged =>
       .run(live.id, live.name, live.registered_at, acct.id).changes;
     const mentions = db.prepare("DELETE FROM mentions WHERE agent_id = ?").run(live.id).changes;
     db.prepare(
-      "UPDATE agents SET name = ?, removed_name = name, removed_at = ?, key_hash = ?, instance = ? WHERE id = ?",
+      "UPDATE agents SET name = ?, removed_name = name, removed_at = ?, key_hash = ?, instance = ?, status = NULL, status_at = NULL WHERE id = ?",
     ).run(removedName(live.id), Date.now(), REMOVED_KEY_HASH, REMOVED_INSTANCE, live.id);
     return { name: live.name, account: acct.name, messages, mentions };
   }).immediate();

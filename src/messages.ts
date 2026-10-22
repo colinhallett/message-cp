@@ -1,4 +1,4 @@
-import { NAME_PATTERN, ToolError, getAgent, personOf, type Identity } from "./agents.js";
+import { NAME_PATTERN, STATUS_TTL_MS, ToolError, getAgent, personOf, type Identity } from "./agents.js";
 import type { Member } from "./channels.js";
 import type { AccountId, Db } from "./db.js";
 
@@ -94,6 +94,10 @@ export function sendMessage(db: Db, account: AccountId, from: string, to: string
         const id = insert.run(r.id, from, body, broadcast ? 1 : 0, now).lastInsertRowid;
         queue.run(id, now, account, r.name);
       }
+      // Sending clears the sender's status line. A person has none, so a send as one changes nothing here.
+      db.prepare(
+        "UPDATE agents SET status = NULL, status_at = NULL WHERE account_id = ? AND name = ? AND removed_at IS NULL AND person = 0 AND status IS NOT NULL",
+      ).run(account, from);
       return { delivered: recipients.length, recipients: recipients.map((r) => r.name) };
     })
     .immediate();
@@ -296,6 +300,7 @@ interface AgentUnreadRow {
   bio: string;
   last_seen: number;
   person: number;
+  status: string | null;
   messages: number;
   posts: number;
   mentions: number;
@@ -307,6 +312,8 @@ export interface AgentUnread {
   lastSeen: string;
   /** True for a person added with `message-cp person add`, as `list_agents` gives it. */
   person: boolean;
+  /** The agent's status line while it is current (set less than STATUS_TTL_MS ago), else null; always null for a person. */
+  status: string | null;
   unreadMessages: number;
   unreadPosts: number;
   unreadMentions: number;
@@ -314,13 +321,14 @@ export interface AgentUnread {
 
 /**
  * One page of the account's live agents in name order, as `list_agents` pages them, each with its unread message, post
- * and mention totals counted as `unreadSummary` counts them. One query for the page, totals only: no senders or
- * channels.
+ * and mention totals counted as `unreadSummary` counts them, and its status line while it is current at `now`. One
+ * query for the page, totals only: no senders or channels.
  */
-export function listAgentsUnread(db: Db, account: AccountId, limit: number, offset: number): AgentUnread[] {
+export function listAgentsUnread(db: Db, account: AccountId, limit: number, offset: number, now = Date.now()): AgentUnread[] {
   const rows = db
     .prepare(
       `SELECT a.name, a.bio, a.last_seen, a.person,
+         CASE WHEN a.person = 0 AND a.status_at > ? THEN a.status END AS status,
          (SELECT COUNT(*) FROM messages m WHERE m.recipient_id = a.id AND m.read_at IS NULL) AS messages,
          (SELECT COUNT(*) FROM channel_reads r
             JOIN channels c ON c.id = r.channel_id AND c.account_id = a.account_id
@@ -332,12 +340,13 @@ export function listAgentsUnread(db: Db, account: AccountId, limit: number, offs
           WHERE x.agent_id = a.id AND x.read_at IS NULL) AS mentions
        FROM agents a WHERE a.account_id = ? AND a.removed_at IS NULL ORDER BY a.name LIMIT ? OFFSET ?`,
     )
-    .all(account, limit, offset) as AgentUnreadRow[];
+    .all(now - STATUS_TTL_MS, account, limit, offset) as AgentUnreadRow[];
   return rows.map((r) => ({
     name: r.name,
     bio: r.bio,
     lastSeen: new Date(r.last_seen).toISOString(),
     person: r.person === 1,
+    status: r.status,
     unreadMessages: r.messages,
     unreadPosts: r.posts,
     unreadMentions: r.mentions,
