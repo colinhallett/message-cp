@@ -146,7 +146,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 #delete-text { flex: 1 1 12rem; }
 /* The name and, for a channel, its members stack; a long members line is cut with an ellipsis, the full list in its title. */
 .log-name { flex: 1; min-width: 0; }
-#log-members { margin: 0; font-size: 0.8rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#log-members, #log-status { margin: 0; font-size: 0.8rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .channel::before, .item .channel-name::before { content: "# "; color: var(--muted); }
 #post-rows, #result-rows { flex: 1; overflow-y: auto; padding: var(--s2) 0 var(--s4); }
 /* A short log sits at the bottom, above the compose box, by an auto margin: justifying the content to the end would
@@ -245,6 +245,7 @@ const channelRows = document.getElementById("channel-rows");
 const log = document.getElementById("log");
 const logTitle = document.getElementById("log-title");
 const logMembers = document.getElementById("log-members");
+const logStatus = document.getElementById("log-status");
 const logNote = document.getElementById("log-note");
 const postRows = document.getElementById("post-rows");
 const pairRows = document.getElementById("pair-rows");
@@ -361,6 +362,9 @@ let resultMentions = [];
 // The account's live agents and people as the last GET /api/agents gave them, each with its name and whether it is a
 // person, which the compose box offers after an "@"; ask() clears them.
 let mentionable = [];
+// The status line of each agent that had one in the last GET /api/agents, by name, which the header bar of an open direct
+// conversation shows; ask() clears them.
+let statuses = new Map();
 // An "@" being typed: the text before the caret ends in one, at the start or after a character that cannot be in a
 // name (MENTION's boundary), with the name characters typed after it.
 const TYPING = /(?<![A-Za-z0-9_-])@([A-Za-z0-9_-]{0,32})$/;
@@ -439,6 +443,7 @@ function ask(message) {
   composeNote.textContent = "";
   composeSend.disabled = false;
   mentionable = [];
+  statuses = new Map();
   // The "New message" form goes with canPost, and its selects with the names, so the next token never sees them.
   showNewButton();
   fromKey = "";
@@ -658,6 +663,7 @@ function closeLog() {
   logMembers.textContent = "";
   logMembers.title = "";
   logMembers.hidden = true;
+  showPairStatus();
   logNote.textContent = "";
   log.hidden = true;
   closeOffered();
@@ -709,8 +715,22 @@ function openPairLog(key) {
   markOpen();
   showPicker();
   showDelete();
+  showPairStatus();
   cancel();
   poll(generation);
+}
+
+// The status lines of the open direct conversation's agents, as the last GET /api/agents gave them, in the header bar
+// under its names; hidden and empty when no pair is open or neither side has one. A person never has one.
+function showPairStatus() {
+  // The names come from the key (pairKey's sorted names), not from pairs, which a delete with no answer leaves without
+  // the open pair until its messages are read again. An agent's conversation with itself names it twice, but gives its
+  // line once.
+  const names = new Set(openPair !== undefined ? JSON.parse(openPair) : []);
+  const text = [...names].filter((n) => statuses.has(n)).map((n) => n + ": " + statuses.get(n)).join(" · ");
+  logStatus.textContent = text;
+  logStatus.title = text;
+  logStatus.hidden = text === "";
 }
 
 // Opens the account's webhook deliveries in the log and polls again at once, as openLog does for a channel.
@@ -1874,6 +1894,8 @@ function show(agents) {
   rows.replaceChildren(...items);
   people = agents.filter((a) => a.person === true).map((a) => String(a.name));
   mentionable = agents.map((a) => ({ name: String(a.name), person: a.person === true }));
+  statuses = new Map(agents.filter((a) => typeof a.status === "string").map((a) => [String(a.name), a.status]));
+  showPairStatus();
   showPicker();
   fillNew();
   fillChannel();
@@ -2301,6 +2323,7 @@ export const DASHBOARD_HTML = `<!doctype html>
 <div class="log-name">
 <h2 id="log-title"></h2>
 <p id="log-members" class="note" hidden></p>
+<p id="log-status" class="note" hidden></p>
 </div>
 <p id="delete-note" class="note" role="status"></p>
 <div id="delete-confirm" role="group" aria-labelledby="delete-text" hidden>

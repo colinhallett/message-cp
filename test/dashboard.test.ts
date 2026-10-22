@@ -6,7 +6,7 @@ import { runInNewContext } from "node:vm";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { addAccount, addToken, listAccounts, revokeToken } from "../src/accounts.js";
 import { OWNER_ACCOUNT, openDb, type Db } from "../src/db.js";
-import { addPerson, identityOf, registerAgent, setStatus } from "../src/agents.js";
+import { addPerson, identityOf, registerAgent, removeAgent, setStatus } from "../src/agents.js";
 import { joinChannel, leaveChannel, post } from "../src/channels.js";
 import { MAX_BODY_LENGTH, readInbox, sendMessage, unreadSummary } from "../src/messages.js";
 import { startHttp, type HttpServer } from "../src/http.js";
@@ -1040,6 +1040,136 @@ describe("the page's channels and messages", () => {
       expect(members(page)).toBeUndefined();
       expect(page.elements["log-members"].textContent).toBe("");
       expect(page.elements["log-members"].title).toBe("");
+    });
+  });
+
+  describe("the header bar's status lines", () => {
+    // The open pair's status line in the header bar, with its tooltip, or undefined while it is hidden.
+    const statusLine = (page: { elements: Record<string, Stub> }) => {
+      const line = page.elements["log-status"];
+      return line.hidden ? undefined : [line.textContent, line.title];
+    };
+    const setLine = (name: string, text: string) => setStatus(db, OWNER_ACCOUNT, identityOf(db, OWNER_ACCOUNT, name)!, text);
+    const pollOnce = async (page: Awaited<ReturnType<typeof load>>) => {
+      await page.poll();
+      await page.until(page.scheduled);
+    };
+
+    it("shows an open pair's agent's line at once, follows each poll, and drops it on the poll after it clears", async () => {
+      for (const name of ["alice", "bob"]) registerAgent(db, OWNER_ACCOUNT, name, "x");
+      sendMessage(db, OWNER_ACCOUNT, "alice", "bob", "hi");
+      setLine("bob", "reading Linear");
+      const page = await load(viewer);
+      const pairs = page.elements["pair-rows"];
+      await page.until(() => page.scheduled() && pairs.children.length === 1);
+      expect(statusLine(page)).toBeUndefined();
+
+      // Opening the pair shows the last answer's line before the next poll comes back.
+      open(pairs.children[0]);
+      expect(statusLine(page)).toEqual(["bob: reading Linear", "bob: reading Linear"]);
+      await page.until(page.scheduled);
+
+      // A line set while the pair is open appears on the next poll, joined with the other side's.
+      setLine("alice", "writing tests");
+      await pollOnce(page);
+      expect(statusLine(page)).toEqual(["alice: writing tests · bob: reading Linear", "alice: writing tests · bob: reading Linear"]);
+
+      setLine("bob", "");
+      await pollOnce(page);
+      expect(statusLine(page)).toEqual(["alice: writing tests", "alice: writing tests"]);
+      setLine("alice", "");
+      await pollOnce(page);
+      expect(statusLine(page)).toBeUndefined();
+      expect(page.elements["log-status"].textContent).toBe("");
+      expect(page.elements["log-status"].title).toBe("");
+    });
+
+    it("gives an agent's conversation with itself one line", async () => {
+      registerAgent(db, OWNER_ACCOUNT, "alice", "x");
+      sendMessage(db, OWNER_ACCOUNT, "alice", "alice", "note to self");
+      setLine("alice", "reading Linear");
+      const page = await load(viewer);
+      const pairs = page.elements["pair-rows"];
+      await page.until(() => page.scheduled() && pairs.children.length === 1);
+      open(pairs.children[0]);
+      expect(statusLine(page)).toEqual(["alice: reading Linear", "alice: reading Linear"]);
+    });
+
+    it("keeps the line through a failed poll", async () => {
+      for (const name of ["alice", "bob"]) registerAgent(db, OWNER_ACCOUNT, name, "x");
+      sendMessage(db, OWNER_ACCOUNT, "alice", "bob", "hi");
+      setLine("bob", "reading Linear");
+      let busy = false;
+      const page = await load(viewer, (url) => (busy && url.includes("/api/agents") ? 503 : undefined));
+      const pairs = page.elements["pair-rows"];
+      await page.until(() => page.scheduled() && pairs.children.length === 1);
+      open(pairs.children[0]);
+      await page.until(page.scheduled);
+
+      busy = true;
+      setLine("bob", "");
+      await pollOnce(page);
+      expect(page.elements["status-line"].textContent).toBe("The server is busy (503). Retrying…");
+      expect(statusLine(page)?.[0]).toBe("bob: reading Linear");
+    });
+
+    it("gives a person in the pair no line, and a name no longer listed none", async () => {
+      registerAgent(db, OWNER_ACCOUNT, "bob", "x");
+      addPerson(db, "owner", "colin");
+      sendMessage(db, OWNER_ACCOUNT, "colin", "bob", "hi");
+      setLine("bob", "reading Linear");
+      const page = await load(viewer);
+      const pairs = page.elements["pair-rows"];
+      await page.until(() => page.scheduled() && pairs.children.length === 1);
+      open(pairs.children[0]);
+      expect(page.elements["log-title"].textContent).toBe("bob ↔ colin");
+      expect(statusLine(page)?.[0]).toBe("bob: reading Linear");
+      await page.until(page.scheduled);
+
+      // bob goes from GET /api/agents, so his line goes with him.
+      removeAgent(db, OWNER_ACCOUNT, "bob", undefined, identityOf(db, OWNER_ACCOUNT, "bob")!);
+      await pollOnce(page);
+      expect(statusLine(page)).toBeUndefined();
+    });
+
+    it("clears the line when a channel or the webhook deliveries open, the log closes or the token goes, and leaves a channel's members line as it was", async () => {
+      for (const name of ["alice", "bob"]) registerAgent(db, OWNER_ACCOUNT, name, "x");
+      joinChannel(db, OWNER_ACCOUNT, { ...identityOf(db, OWNER_ACCOUNT, "alice")!, name: "alice" }, "build");
+      sendMessage(db, OWNER_ACCOUNT, "alice", "bob", "hi");
+      setLine("alice", "reading Linear");
+      const page = await load(viewer);
+      const pairs = page.elements["pair-rows"];
+      const channels = page.elements["channel-rows"];
+      await page.until(() => page.scheduled() && pairs.children.length === 1 && channels.children.length === 1);
+      const reopen = () => {
+        open(pairs.children[0]);
+        expect(statusLine(page)?.[0]).toBe("alice: reading Linear");
+      };
+
+      reopen();
+      open(channels.children[0]);
+      expect(statusLine(page)).toBeUndefined();
+      await page.until(() => !page.elements["log-members"].hidden && page.scheduled());
+      expect(page.elements["log-members"].textContent).toBe("Members: alice");
+      // A poll with the channel open brings no status line, though alice still has one.
+      await pollOnce(page);
+      expect(statusLine(page)).toBeUndefined();
+      expect(page.elements["log-members"].textContent).toBe("Members: alice");
+
+      reopen();
+      open(page.elements["delivery-entry"].children[0]);
+      expect(statusLine(page)).toBeUndefined();
+
+      reopen();
+      page.elements["close-log"].on.click();
+      expect(statusLine(page)).toBeUndefined();
+      expect(page.elements["log-status"].textContent).toBe("");
+
+      reopen();
+      page.elements["forget"].on.click();
+      expect(statusLine(page)).toBeUndefined();
+      expect(page.elements["log-status"].textContent).toBe("");
+      expect(page.elements["log-status"].title).toBe("");
     });
   });
 
@@ -2945,7 +3075,7 @@ describe("the page's posting", () => {
     const posts = () => requests.filter((r) => r.method !== "GET");
     // The names the person picker offers, without its first "Choose who you are" entry.
     const picker = () => elements["as"].children.slice(1).map((o) => o.value);
-    return { elements, made, requests, store, documentOn, until, choose, send, posts, picker, poll: timers.poll, prevented: () => prevented };
+    return { elements, made, requests, store, documentOn, until, choose, send, posts, picker, poll: timers.poll, scheduled: timers.scheduled, prevented: () => prevented };
   }
 
   const seed = () => {
@@ -4482,6 +4612,22 @@ describe("the page's posting", () => {
       expect(stored()).toEqual([{ f: "bob", t: "dana" }]);
       expect(page.elements["post-rows"].children).toEqual([]);
       expect(page.elements["delete-pair"].hidden).toBe(true);
+    });
+
+    it("with no answer, keeps the open conversation's status line through the polls that read it again", async () => {
+      seedPairs();
+      setStatus(db, OWNER_ACCOUNT, identityOf(db, OWNER_ACCOUNT, "bob")!, "reading Linear");
+      const page = await load(OWNER_TOKEN, (url, method) => (method === "DELETE" ? { lose: true } : undefined));
+      await openReady(page, "bob ↔ colin");
+      expect(page.elements["log-status"].textContent).toBe("bob: reading Linear");
+      confirmDelete(page);
+      // The messages were deleted, so the read brings none back for the open pair, and it stays out of the sidebar.
+      await page.until(() => page.elements["pair-rows"].children.length === 1 && page.scheduled());
+      await page.poll();
+      await page.until(page.scheduled);
+      expect(page.elements["log-title"].textContent).toBe("bob ↔ colin");
+      expect(page.elements["log-status"].hidden).toBe(false);
+      expect(page.elements["log-status"].textContent).toBe("bob: reading Linear");
     });
   });
 
