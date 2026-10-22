@@ -41,7 +41,7 @@ HEAD`; every claim about the code is checked against it.
 ## 2. Work out how this factory takes work
 
 Find the loop that turns a ticket into a pull request, and exactly what
-starts it, from the factory's own configuration:
+starts it. Do this from the factory's own configuration, in this order:
 
 1. **The triggers in `tessl.json`.** Find the triggers whose action implements
    a ticket (its skill is an implement skill, or its name or instructions say
@@ -54,9 +54,16 @@ starts it, from the factory's own configuration:
    estimate choosing between actions), note that too. Also note any trigger
    that would fire again on later edits, so you know to make the ticket
    complete before it first matches.
-2. **If `tessl.json` has no such trigger,** the factory takes no tickets: you
-   can only resolve, ignore or hand findings to a person. Say so in your
-   output.
+2. **If `tessl.json` has no such trigger,** ask Tessl:
+   `tessl api /experimental/projects/<id>/factory/ticket-to-pr`. Its
+   `issueSource.type` names the issue source (`linear` or `github`) and its
+   `loops` show the triggers the standard setup uses. For a standard setup,
+   `POST /experimental/projects/<id>/factory/implement/issues` (Linear) or
+   `.../implement/github-issues` (GitHub) creates a ticket the factory will
+   pick up; read their descriptions in `https://api.tessl.io/openapi.json`
+   before using them.
+3. **If neither finds a way in,** the factory takes no tickets: you can only
+   resolve, ignore or hand findings to a person. Say so in your output.
 
 Then find how you can reach that tracker from this run: for Linear, the
 environment (for example `LINEAR_API_URL` / `LINEAR_TOKEN`, or a Linear MCP
