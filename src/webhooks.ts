@@ -1,4 +1,4 @@
-import { createHmac, randomBytes } from "node:crypto";
+import { createHmac, randomBytes, randomUUID } from "node:crypto";
 import { NAME_PATTERN } from "./agents.js";
 import type { AccountId, Db } from "./db.js";
 import { MAX_INBOX_LIMIT } from "./messages.js";
@@ -10,6 +10,8 @@ import { MAX_INBOX_LIMIT } from "./messages.js";
 // deliveries can sign with it. A webhook may also carry one header the owner sets, such as `Authorization`, sent on each
 // of its deliveries; its value is stored as is too, and never printed, logged or returned. And it may carry a limit on
 // how many delivery requests it gets per window of 60 minutes; deliveries past it wait in the queue for a later window.
+// And it may carry a fixed JSON body the owner sets, sent in place of the event body, signed the same way, with its one
+// `{{delivery}}` replaced by an id of that delivery that every retry repeats; the body is never printed or logged.
 
 export class WebhookError extends Error {}
 
@@ -28,6 +30,8 @@ export interface Webhook {
   headerName: string | null;
   /** The most delivery requests it gets per window (`WEBHOOK_WINDOW_MS`), or null for no limit. */
   maxPerHour: number | null;
+  /** Whether it sends a fixed body (`--body`) in place of the event body; the body itself is never given out. */
+  fixedBody: boolean;
 }
 
 export interface NewWebhook extends Webhook {
@@ -126,12 +130,63 @@ export function webhookMaxPerHour(raw: string): number {
   return Number(raw);
 }
 
+/** What a fixed body's placeholder is replaced with: the delivery's id, the same on every attempt of it. */
+export const WEBHOOK_PLACEHOLDER = "{{delivery}}";
+/** The longest `--body`, in UTF-8 bytes. */
+export const WEBHOOK_MAX_BODY_BYTES = 4096;
+
+/** How many times `text` contains the placeholder. */
+const placeholders = (text: string) => text.split(WEBHOOK_PLACEHOLDER).length - 1;
+
+/**
+ * Checks `--body`: a JSON object of at most `WEBHOOK_MAX_BODY_BYTES`, with `WEBHOOK_PLACEHOLDER` written as is exactly
+ * once in the text, inside a string value that parsing keeps (not in a key, and not dropped by a later duplicate key),
+ * and nowhere else in any parsed string or key, `\u` escapes included. Returns it unchanged, so a delivery sends the
+ * owner's own bytes with only the placeholder replaced. Errors never repeat the body.
+ */
+export function webhookBody(raw: string): string {
+  if (Buffer.byteLength(raw, "utf8") > WEBHOOK_MAX_BODY_BYTES) {
+    throw new WebhookError(`Invalid --body: it is over ${WEBHOOK_MAX_BODY_BYTES} bytes.`);
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new WebhookError("Invalid --body: it is not JSON.");
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    throw new WebhookError("Invalid --body: give a JSON object.");
+  }
+  const misplaced = new WebhookError(`Invalid --body: put ${WEBHOOK_PLACEHOLDER} exactly once, inside a JSON string value.`);
+  if (placeholders(raw) !== 1) throw misplaced;
+  // Parsed again with the literal placeholder swapped for a value found nowhere else, as a delivery swaps it, so the
+  // count is of what a receiver parses: one sentinel in a string value, and no placeholder left in any string or key.
+  const sentinel = randomUUID();
+  let sentinels = 0;
+  let others = 0;
+  const walk = (v: unknown) => {
+    if (typeof v === "string") {
+      sentinels += v.split(sentinel).length - 1;
+      others += placeholders(v);
+    } else if (Array.isArray(v)) v.forEach(walk);
+    else if (typeof v === "object" && v !== null) {
+      for (const [k, x] of Object.entries(v)) {
+        others += placeholders(k) + k.split(sentinel).length - 1;
+        walk(x);
+      }
+    }
+  };
+  walk(JSON.parse(raw.replace(WEBHOOK_PLACEHOLDER, () => sentinel)));
+  if (sentinels !== 1 || others !== 0) throw misplaced;
+  return raw;
+}
+
 /** How `--on` names a webhook's event, for printing. */
 export const formatOn = (w: Pick<Webhook, "event" | "name">) => (w.event === "channel" ? `#${w.name}` : `${w.event}:${w.name}`);
 
 /**
- * Adds a webhook to the account named `account`, with a new secret, with the header line `header` if given, and limited
- * to `maxPerHour` delivery requests per window if given.
+ * Adds a webhook to the account named `account`, with a new secret, with the header line `header` if given, limited
+ * to `maxPerHour` delivery requests per window if given, and sending the fixed body `body` if given.
  */
 export const addWebhook = (
   db: Db,
@@ -141,6 +196,7 @@ export const addWebhook = (
   includeText: boolean,
   header?: string,
   maxPerHour?: number,
+  body?: string,
 ): NewWebhook =>
   db.transaction((): NewWebhook => {
     const href = webhookUrl(url);
@@ -149,41 +205,58 @@ export const addWebhook = (
     if (maxPerHour !== undefined && !isMaxPerHour(maxPerHour)) {
       throw new WebhookError(`Invalid --max-per-hour: give a whole number from 1 to ${WEBHOOK_MAX_PER_HOUR}.`);
     }
+    // A fixed body never carries the text, so --no-text with it would mean nothing.
+    if (body !== undefined && !includeText) throw new WebhookError("--body and --no-text cannot go together: a fixed body never carries the text.");
+    const fixed = body === undefined ? null : webhookBody(body);
     const row = db.prepare("SELECT id, name FROM accounts WHERE name = ?").get(account) as { id: AccountId; name: string } | undefined;
     if (!row) throw new WebhookError(`No account named '${account}'.`);
     const secret = randomBytes(32).toString("hex");
     const { id } = db
       .prepare(
-        `INSERT INTO webhooks (account_id, url, event, name, include_text, secret, header_name, header_value, max_per_hour, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+        `INSERT INTO webhooks (account_id, url, event, name, include_text, secret, header_name, header_value, max_per_hour, fixed_body, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
       )
-      .get(row.id, href, event, name, includeText ? 1 : 0, secret, extra?.name ?? null, extra?.value ?? null, maxPerHour ?? null, Date.now()) as {
+      .get(row.id, href, event, name, includeText ? 1 : 0, secret, extra?.name ?? null, extra?.value ?? null, maxPerHour ?? null, fixed, Date.now()) as {
       id: number;
     };
-    return { id, account: row.name, url: href, event, name, includeText, headerName: extra?.name ?? null, maxPerHour: maxPerHour ?? null, secret };
+    return {
+      id,
+      account: row.name,
+      url: href,
+      event,
+      name,
+      includeText,
+      headerName: extra?.name ?? null,
+      maxPerHour: maxPerHour ?? null,
+      fixedBody: fixed !== null,
+      secret,
+    };
   }).immediate();
 
-/** The webhooks of the account named `account`, or of every account without it; never their secrets or header values. */
+/** The webhooks of the account named `account`, or of every account without it; never their secrets, header values or bodies. */
 export function listWebhooks(db: Db, account?: string): Webhook[] {
   if (account !== undefined && !db.prepare("SELECT 1 FROM accounts WHERE name = ?").get(account)) {
     throw new WebhookError(`No account named '${account}'.`);
   }
   const rows = db
     .prepare(
-      `SELECT webhooks.id, accounts.name AS account, url, event, webhooks.name, include_text, header_name, max_per_hour
+      `SELECT webhooks.id, accounts.name AS account, url, event, webhooks.name, include_text, header_name, max_per_hour,
+              fixed_body IS NOT NULL AS fixed
        FROM webhooks JOIN accounts ON accounts.id = webhooks.account_id
        WHERE ? IS NULL OR accounts.name = ? ORDER BY webhooks.id`,
     )
-    .all(account ?? null, account ?? null) as (Omit<Webhook, "includeText" | "headerName" | "maxPerHour"> & {
+    .all(account ?? null, account ?? null) as (Omit<Webhook, "includeText" | "headerName" | "maxPerHour" | "fixedBody"> & {
     include_text: number;
     header_name: string | null;
     max_per_hour: number | null;
+    fixed: number;
   })[];
-  return rows.map(({ include_text, header_name, max_per_hour, ...w }) => ({
+  return rows.map(({ include_text, header_name, max_per_hour, fixed, ...w }) => ({
     ...w,
     includeText: include_text === 1,
     headerName: header_name,
     maxPerHour: max_per_hour,
+    fixedBody: fixed === 1,
   }));
 }
 
@@ -317,7 +390,9 @@ export function sendOptions(options: Omit<SendOptions, "signal">): Required<Omit
 
 /**
  * One pass over the queue: claims up to `batch` pending deliveries, oldest first, and POSTs each one's body to its own
- * webhook's URL, signed with its secret in `X-Message-CP-Signature`, with the webhook's own header if it has one. A 2xx answer delivers it; anything else, a
+ * webhook's URL, signed with its secret in `X-Message-CP-Signature`, with the webhook's own header if it has one. A
+ * webhook with a fixed body sends that in place of the event body, its placeholder replaced by the row's
+ * `delivery_uuid`, set on the first attempt that sends it and read back on each retry. A 2xx answer delivers it; anything else, a
  * network error or the timeout is a failed attempt, retried on a later pass. Redirects are not followed.
  * An attempt is counted when the row is claimed, before the request, so two senders on one file never send the same
  * attempt. The claim also records until when that request may still be in flight (twice the claiming sender's own
@@ -335,7 +410,7 @@ export async function sendPending(db: Db, options: SendOptions = {}): Promise<{ 
   // Each webhook's allowance: null for no limit, all of it for a window that has ended or never started.
   const webhooks = db
     .prepare(
-      `SELECT id, url, secret, header_name, header_value,
+      `SELECT id, url, secret, header_name, header_value, fixed_body,
               CASE WHEN max_per_hour IS NULL THEN NULL
                    WHEN window_started_at IS NULL OR window_started_at + ? <= ? THEN max_per_hour
                    ELSE max_per_hour - window_count END AS allowance
@@ -347,6 +422,7 @@ export async function sendPending(db: Db, options: SendOptions = {}): Promise<{ 
     secret: string;
     header_name: string | null;
     header_value: string | null;
+    fixed_body: string | null;
     allowance: number | null;
   }[];
   // A webhook's oldest claimable rows, through `webhook_deliveries_pending_by_webhook`; at most `LIMIT` are read, so a
@@ -364,12 +440,22 @@ export async function sendPending(db: Db, options: SendOptions = {}): Promise<{ 
     secret: string;
     header_name: string | null;
     header_value: string | null;
+    fixed_body: string | null;
   }[] = [];
   for (const w of webhooks) {
     const take = w.allowance === null ? batch : Math.min(w.allowance, batch);
     if (take <= 0) continue;
     for (const d of pendingOf.all(w.id, maxAttempts, now, take) as { id: number; attempts: number }[]) {
-      rows.push({ id: d.id, attempts: d.attempts, webhook_id: w.id, url: w.url, secret: w.secret, header_name: w.header_name, header_value: w.header_value });
+      rows.push({
+        id: d.id,
+        attempts: d.attempts,
+        webhook_id: w.id,
+        url: w.url,
+        secret: w.secret,
+        header_name: w.header_name,
+        header_value: w.header_value,
+        fixed_body: w.fixed_body,
+      });
     }
   }
   rows.sort((a, b) => a.id - b.id);
@@ -379,25 +465,33 @@ export async function sendPending(db: Db, options: SendOptions = {}): Promise<{ 
   );
   const windowOf = db.prepare("SELECT max_per_hour, window_started_at, window_count FROM webhooks WHERE id = ?");
   const use = db.prepare("UPDATE webhooks SET window_started_at = ?, window_count = ? WHERE id = ?");
-  // Claims the row if its webhook has allowance left, using one request of it; true if claimed. Counted at the claim, as
+  // Claims the row if its webhook has allowance left, using one request of it. Counted at the claim, as
   // attempts are, so a claim that sends nothing (a stored URL that no longer passes, a deleted message) uses one too.
-  // `fresh` must match the `allowance` CASE in the webhooks query above.
-  const claimWithin = db.transaction((row: (typeof rows)[number]): boolean => {
+  // `fresh` must match the `allowance` CASE in the webhooks query above. Returns the claim's `claimed_until`, or null.
+  const claimWithin = db.transaction((row: (typeof rows)[number]): number | null => {
     const w = windowOf.get(row.webhook_id) as { max_per_hour: number | null; window_started_at: number | null; window_count: number } | undefined;
-    if (!w) return false;
+    if (!w) return null;
     const at = Date.now();
     const fresh = w.window_started_at === null || w.window_started_at + WEBHOOK_WINDOW_MS <= at;
-    if (w.max_per_hour !== null && !fresh && w.window_count >= w.max_per_hour) return false;
-    if (claim.run(at + 2 * timeoutMs, row.id, row.attempts).changes !== 1) return false;
+    if (w.max_per_hour !== null && !fresh && w.window_count >= w.max_per_hour) return null;
+    const until = at + 2 * timeoutMs;
+    if (claim.run(until, row.id, row.attempts).changes !== 1) return null;
     if (w.max_per_hour !== null) use.run(fresh ? at : w.window_started_at, fresh ? 1 : w.window_count + 1, row.webhook_id);
-    return true;
+    return until;
   });
-  const done = db.prepare("UPDATE webhook_deliveries SET delivered_at = ? WHERE id = ?");
+  // Both match the row as this sender claimed it, not only its id: if the delivery is deleted while its request is being
+  // built or sent and a new one queued takes the same id, the new one neither takes its id nor counts as delivered.
+  const mine = "id = ? AND webhook_id = ? AND attempts = ? AND claimed_until = ?";
+  // The delivery's id for a fixed body: a new one on the first request sent for it, the stored one on every retry.
+  const deliveryId = db.prepare(`UPDATE webhook_deliveries SET delivery_uuid = COALESCE(delivery_uuid, ?) WHERE ${mine} RETURNING delivery_uuid`);
+  const done = db.prepare(`UPDATE webhook_deliveries SET delivered_at = ? WHERE ${mine}`);
   let delivered = 0;
   let failed = 0;
 
   const send = async (row: (typeof rows)[number]) => {
-    if (!claimWithin.immediate(row)) return;
+    const until = claimWithin.immediate(row);
+    if (until === null) return;
+    const claimed = [row.id, row.webhook_id, row.attempts + 1, until] as const;
     let href: string;
     try {
       href = webhookUrl(row.url);
@@ -408,7 +502,14 @@ export async function sendPending(db: Db, options: SendOptions = {}): Promise<{ 
     }
     const body = deliveryBody(db, row.id);
     if (!body) return;
-    const text = JSON.stringify(body);
+    let text: string;
+    if (row.fixed_body === null) text = JSON.stringify(body);
+    else {
+      const id = deliveryId.get(randomUUID(), ...claimed) as { delivery_uuid: string } | undefined;
+      if (!id) return;
+      // `webhookBody` checked that the placeholder is there once, inside a string, and a UUID needs no escaping.
+      text = row.fixed_body.replace(WEBHOOK_PLACEHOLDER, () => id.delivery_uuid);
+    }
     let ok = false;
     try {
       const res = await fetch(href, {
@@ -427,12 +528,9 @@ export async function sendPending(db: Db, options: SendOptions = {}): Promise<{ 
     } catch {
       // A network error or the timeout; the answer, if any, is only read for its status.
     }
-    if (ok) {
-      done.run(Date.now(), row.id);
-      delivered++;
-    } else {
-      failed++;
-    }
+    if (!ok) failed++;
+    // Not counted when the delivery it was for is gone: there is nothing left to mark.
+    else if (done.run(Date.now(), ...claimed).changes === 1) delivered++;
   };
 
   let next = 0;

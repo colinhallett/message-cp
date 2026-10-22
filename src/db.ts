@@ -115,7 +115,8 @@ CREATE INDEX IF NOT EXISTS mentions_unread ON mentions (agent_id, read_at, post_
 -- So is the value of the one header a webhook may carry (\`header_name\`, \`header_value\`, added in \`migrate\`), since
 -- deliveries send it. \`max_per_hour\` (also added in \`migrate\`, null for none) caps its delivery requests in a fixed
 -- window: \`window_started_at\` is when the first request after the last window ended was claimed, and \`window_count\`
--- how many requests have been claimed since; the window lasts 60 minutes.
+-- how many requests have been claimed since; the window lasts 60 minutes. \`fixed_body\` (also added in \`migrate\`) is the
+-- JSON body the owner set with \`webhook add --body\`, sent in place of the event body, or null to send the event body.
 CREATE TABLE IF NOT EXISTS webhooks (
   id INTEGER PRIMARY KEY,
   account_id INTEGER NOT NULL REFERENCES accounts(id),
@@ -131,6 +132,8 @@ CREATE INDEX IF NOT EXISTS webhooks_by_name ON webhooks (account_id, event, name
 -- What a webhook is owed: one row per webhook per message or post it is for, queued in the transaction that stores the
 -- message or post. Only ids are kept, so the body is built when it is sent. \`serve\` sends them: \`attempts\` is counted
 -- and \`claimed_until\` set when a sender claims a row, before its request, and \`delivered_at\` set on a 2xx answer.
+-- \`delivery_uuid\` (added in \`migrate\`) is what a fixed body's placeholder stands for: a random UUID set on the first
+-- request sent for a webhook with one and kept for every retry, so it does not repeat even when a row's id is reused.
 CREATE TABLE IF NOT EXISTS webhook_deliveries (
   id INTEGER PRIMARY KEY,
   webhook_id INTEGER NOT NULL REFERENCES webhooks(id) ON DELETE CASCADE,
@@ -290,6 +293,9 @@ function migrate(db: Db, path: string): void {
   addColumn(db, "max_per_hour", "INTEGER", "webhooks");
   addColumn(db, "window_started_at", "INTEGER", "webhooks");
   addColumn(db, "window_count", "INTEGER NOT NULL DEFAULT 0", "webhooks");
+  // The JSON body a webhook sends in place of the event body (`webhook add --body`); null, so the event body, for one without.
+  addColumn(db, "fixed_body", "TEXT", "webhooks");
+  addColumn(db, "delivery_uuid", "TEXT", "webhook_deliveries");
   // Set once a DELETE ends an HTTP session, so no server restores it or records it again.
   addColumn(db, "ended", "INTEGER NOT NULL DEFAULT 0", "http_sessions");
   db.exec(DROP_REMOVED);

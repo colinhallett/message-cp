@@ -115,15 +115,15 @@ if (command === "serve") {
 } else if (command === "webhook") {
   // Run on the server, like `account` and `token`. A new webhook's secret is printed this once, to stdout; everything
   // else goes to stderr, except `list`, which never prints a secret. `--header-stdin` reads the header line from stdin,
-  // so its value is never in an argument list, and the value is never printed.
+  // so its value is never in an argument list, and the value is never printed. Nor is a `--body`.
   const usage = () => {
     console.error(
-      "usage: message-cp webhook add --url <url> --on <#channel | mention:<agent> | agent:<agent>> [--account <name>] [--no-text] [--header-stdin] [--max-per-hour <n>] | message-cp webhook list [--account <name>] | message-cp webhook remove <webhook id>",
+      "usage: message-cp webhook add --url <url> --on <#channel | mention:<agent> | agent:<agent>> [--account <name>] [--no-text] [--header-stdin] [--max-per-hour <n>] [--body <json>] | message-cp webhook list [--account <name>] | message-cp webhook remove <webhook id>",
     );
     process.exit(2);
   };
   const [action, ...args] = rest;
-  const valued = action === "add" ? ["--url", "--on", "--account", "--max-per-hour"] : action === "list" ? ["--account"] : [];
+  const valued = action === "add" ? ["--url", "--on", "--account", "--max-per-hour", "--body"] : action === "list" ? ["--account"] : [];
   const opts = new Map<string, string>();
   let noText = false;
   let headerStdin = false;
@@ -157,14 +157,15 @@ if (command === "serve") {
         header = lines.find((l) => l !== "") ?? "";
         if (header === "") throw new WebhookError("--header-stdin read nothing: give one line '<Name>: <value>' on stdin.");
       }
-      const w = addWebhook(db, account, opts.get("--url")!, opts.get("--on")!, !noText, header, maxPerHour);
+      const w = addWebhook(db, account, opts.get("--url")!, opts.get("--on")!, !noText, header, maxPerHour, opts.get("--body"));
       console.error(`message-cp: webhook ${w.id} for account '${w.account}'. Its secret is shown only now; keep it.`);
       console.log(w.secret);
     } else if (action === "list") {
       for (const w of listWebhooks(db, opts.get("--account"))) {
         const header = w.headerName === null ? "" : `\theader: ${w.headerName}`;
         const max = w.maxPerHour === null ? "" : `\tmax: ${w.maxPerHour}/hour`;
-        console.log(`${w.id}\t${w.account}\t${w.url}\t${formatOn(w)}\t${w.includeText ? "text" : "no text"}${header}${max}`);
+        const body = w.fixedBody ? "\tbody: fixed" : "";
+        console.log(`${w.id}\t${w.account}\t${w.url}\t${formatOn(w)}\t${w.includeText ? "text" : "no text"}${header}${max}${body}`);
       }
     } else if (action === "remove" && args.length === 1) {
       const arg = args[0]!;
