@@ -364,6 +364,35 @@ export const purgeAgent = (db: Db, account: string, name: string): Purged =>
     return { name: live?.name ?? removed[removed.length - 1]!.removed_name, account: acct.name, messages, mentions };
   }).immediate();
 
+export class KeyResetError extends Error {}
+
+export interface KeyReset {
+  name: string;
+  account: string;
+  key: string;
+}
+
+/**
+ * For `message-cp agent key reset`: gives the live agent `name` (any case) of the account named `account` a new random
+ * key, returned this once; only its hash is stored. The row stays, so its id, bio, messages, mentions, channels and
+ * webhooks stay too. A new `instance` ends every session registered as the agent, as `nameOfIdentity` no longer matches
+ * their identity; `registered_at` is kept. Refuses, changing nothing, a person's name, a name with no live agent in the
+ * account, or an unknown account.
+ */
+export const resetAgentKey = (db: Db, account: string, name: string): KeyReset =>
+  db.transaction((): KeyReset => {
+    const acct = db.prepare("SELECT id, name FROM accounts WHERE name = ?").get(account) as { id: AccountId; name: string } | undefined;
+    if (!acct) throw new KeyResetError(`No account named '${account}'.`);
+    const live = db
+      .prepare("SELECT id, name, person FROM agents WHERE account_id = ? AND name = ? AND removed_at IS NULL")
+      .get(acct.id, name) as { id: number; name: string; person: number } | undefined;
+    if (live?.person === 1) throw new KeyResetError(`The name '${live.name}' belongs to a person, not an agent.`);
+    if (!live) throw new KeyResetError(`No agent named '${name}' in account '${acct.name}'.`);
+    const key = randomBytes(32).toString("hex");
+    db.prepare("UPDATE agents SET key_hash = ?, instance = ? WHERE id = ?").run(hashKey(key), randomBytes(16).toString("hex"), live.id);
+    return { name: live.name, account: acct.name, key };
+  }).immediate();
+
 export class PersonError extends Error {}
 
 export interface Person {
