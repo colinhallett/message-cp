@@ -1,4 +1,5 @@
 import { NAME_PATTERN, ToolError, getAgent, personOf, type Identity } from "./agents.js";
+import type { Member } from "./channels.js";
 import type { AccountId, Db } from "./db.js";
 
 export interface Message {
@@ -166,6 +167,65 @@ export function readInbox(
       );
     })
     .immediate();
+}
+
+/** A direct message between the caller and one other agent or person, as `read_conversation` returns it. */
+export interface ConversationMessage extends Message {
+  to: string;
+}
+
+/**
+ * One page of the direct messages between `reader` and the live agent or person `other` (any case), both directions,
+ * newest first. Received means addressed to the reader's own row, so a removed agent's mail never shows. `sender` is
+ * only a name, so sent means sent under the reader's name since its row was registered: a removed agent that once had
+ * the name sent the rest. Reads only: nothing is marked read. Throws send_message's error for an unknown or removed
+ * `other`; returns nothing if the reader's registration is no longer live.
+ */
+export function readConversation(
+  db: Db,
+  account: AccountId,
+  reader: Member,
+  other: string,
+  limit = DEFAULT_INBOX_LIMIT,
+  offset = 0,
+): ConversationMessage[] {
+  // One read transaction, so both directions and the rows they name are read at the same moment.
+  return db.transaction((): ConversationMessage[] => {
+    const them = getAgent(db, account, other);
+    if (!them) throw new ToolError(`No agent named '${other}'.`);
+    const me = db
+      .prepare("SELECT id, name, registered_at FROM agents WHERE account_id = ? AND id = ? AND registered_at = ? AND instance IS ? AND removed_at IS NULL")
+      .get(account, reader.id, reader.registeredAt, reader.instance) as { id: number; name: string; registered_at: number } | undefined;
+    if (!me) return [];
+    const self = me.name.toLowerCase() === them.name.toLowerCase();
+    // Each direction reads only the pair's messages_by_sender rows. With oneself the two directions are the same
+    // rows, so only the received one runs, and each message appears once.
+    const rows = db
+      .prepare(
+        `SELECT id, sender, ? AS recipient, body, broadcast, created_at FROM messages
+         WHERE recipient_id = ? AND sender = ? COLLATE NOCASE
+         ${self ? "" : `UNION ALL
+         SELECT id, sender, ?, body, broadcast, created_at FROM messages
+         WHERE recipient_id = (SELECT id FROM agents WHERE account_id = ? AND name = ? AND removed_at IS NULL)
+           AND sender = ? COLLATE NOCASE AND created_at >= ?`}
+         ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?`,
+      )
+      .all(
+        me.name,
+        me.id,
+        them.name,
+        ...(self ? [] : [them.name, account, them.name, me.name, me.registered_at]),
+        Math.min(limit, MAX_INBOX_LIMIT),
+        offset,
+      ) as (Omit<Row, "read_at"> & { recipient: string })[];
+    return rows.map((r) => ({
+      from: r.sender,
+      to: r.recipient,
+      sentAt: new Date(r.created_at).toISOString(),
+      body: r.body,
+      broadcast: r.broadcast === 1,
+    }));
+  })();
 }
 
 export interface Unread {
