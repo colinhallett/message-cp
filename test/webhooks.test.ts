@@ -227,6 +227,10 @@ describe("addWebhook, listWebhooks and removeWebhook", () => {
       '{"{{delivery}}":"x"}',
       '{"{{delivery}}":"{{delivery}}"}',
       '{"id":"\\u007b{delivery}}"}',
+      '{"id":"{{delivery}}","id":"\\u007b{delivery}}"}',
+      '{"id":"{{delivery}}","id":"fixed"}',
+      '{"a":{"b":"{{delivery}}"},"a":{"b":"fixed"}}',
+      '{"id":"{{delivery}}","\\u007b{delivery}}":1}',
       `{"id":"{{delivery}}","pad":"${"x".repeat(WEBHOOK_MAX_BODY_BYTES - 29)}"}`,
       `{"id":"{{delivery}}","pad":"${"é".repeat(WEBHOOK_MAX_BODY_BYTES / 2)}"}`,
     ];

@@ -139,9 +139,10 @@ export const WEBHOOK_MAX_BODY_BYTES = 4096;
 const placeholders = (text: string) => text.split(WEBHOOK_PLACEHOLDER).length - 1;
 
 /**
- * Checks `--body`: a JSON object of at most `WEBHOOK_MAX_BODY_BYTES`, with `WEBHOOK_PLACEHOLDER` exactly once, written as
- * is (not through `\u` escapes) inside a string value and nowhere else, in a key included. Returns it unchanged, so a
- * delivery sends the owner's own bytes with only the placeholder replaced. Errors never repeat the body.
+ * Checks `--body`: a JSON object of at most `WEBHOOK_MAX_BODY_BYTES`, with `WEBHOOK_PLACEHOLDER` written as is exactly
+ * once in the text, inside a string value that parsing keeps (not in a key, and not dropped by a later duplicate key),
+ * and nowhere else in any parsed string or key, `\u` escapes included. Returns it unchanged, so a delivery sends the
+ * owner's own bytes with only the placeholder replaced. Errors never repeat the body.
  */
 export function webhookBody(raw: string): string {
   if (Buffer.byteLength(raw, "utf8") > WEBHOOK_MAX_BODY_BYTES) {
@@ -156,24 +157,27 @@ export function webhookBody(raw: string): string {
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
     throw new WebhookError("Invalid --body: give a JSON object.");
   }
-  let inValues = 0;
-  let inKeys = 0;
+  const misplaced = new WebhookError(`Invalid --body: put ${WEBHOOK_PLACEHOLDER} exactly once, inside a JSON string value.`);
+  if (placeholders(raw) !== 1) throw misplaced;
+  // Parsed again with the literal placeholder swapped for a value found nowhere else, as a delivery swaps it, so the
+  // count is of what a receiver parses: one sentinel in a string value, and no placeholder left in any string or key.
+  const sentinel = randomUUID();
+  let sentinels = 0;
+  let others = 0;
   const walk = (v: unknown) => {
-    if (typeof v === "string") inValues += placeholders(v);
-    else if (Array.isArray(v)) v.forEach(walk);
+    if (typeof v === "string") {
+      sentinels += v.split(sentinel).length - 1;
+      others += placeholders(v);
+    } else if (Array.isArray(v)) v.forEach(walk);
     else if (typeof v === "object" && v !== null) {
       for (const [k, x] of Object.entries(v)) {
-        inKeys += placeholders(k);
+        others += placeholders(k) + k.split(sentinel).length - 1;
         walk(x);
       }
     }
   };
-  walk(parsed);
-  // Outside a string `{{` is not JSON, so a literal placeholder in the text is in a key or a string value; with only one
-  // in the text and one in all the parsed strings, both are the same one.
-  if (placeholders(raw) !== 1 || inValues !== 1 || inKeys !== 0) {
-    throw new WebhookError(`Invalid --body: put ${WEBHOOK_PLACEHOLDER} exactly once, inside a JSON string value.`);
-  }
+  walk(JSON.parse(raw.replace(WEBHOOK_PLACEHOLDER, () => sentinel)));
+  if (sentinels !== 1 || others !== 0) throw misplaced;
   return raw;
 }
 
@@ -388,7 +392,7 @@ export function sendOptions(options: Omit<SendOptions, "signal">): Required<Omit
  * One pass over the queue: claims up to `batch` pending deliveries, oldest first, and POSTs each one's body to its own
  * webhook's URL, signed with its secret in `X-Message-CP-Signature`, with the webhook's own header if it has one. A
  * webhook with a fixed body sends that in place of the event body, its placeholder replaced by the row's
- * `delivery_uuid`, set on the first attempt and read back on each retry. A 2xx answer delivers it; anything else, a
+ * `delivery_uuid`, set on the first attempt that sends it and read back on each retry. A 2xx answer delivers it; anything else, a
  * network error or the timeout is a failed attempt, retried on a later pass. Redirects are not followed.
  * An attempt is counted when the row is claimed, before the request, so two senders on one file never send the same
  * attempt. The claim also records until when that request may still be in flight (twice the claiming sender's own
@@ -474,7 +478,7 @@ export async function sendPending(db: Db, options: SendOptions = {}): Promise<{ 
     if (w.max_per_hour !== null) use.run(fresh ? at : w.window_started_at, fresh ? 1 : w.window_count + 1, row.webhook_id);
     return true;
   });
-  // The delivery's id for a fixed body: a new one on its first attempt, the stored one on every retry.
+  // The delivery's id for a fixed body: a new one on the first request sent for it, the stored one on every retry.
   const deliveryId = db.prepare("UPDATE webhook_deliveries SET delivery_uuid = COALESCE(delivery_uuid, ?) WHERE id = ? RETURNING delivery_uuid");
   const done = db.prepare("UPDATE webhook_deliveries SET delivered_at = ? WHERE id = ?");
   let delivered = 0;

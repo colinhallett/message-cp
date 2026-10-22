@@ -133,7 +133,7 @@ CREATE INDEX IF NOT EXISTS webhooks_by_name ON webhooks (account_id, event, name
 -- message or post. Only ids are kept, so the body is built when it is sent. \`serve\` sends them: \`attempts\` is counted
 -- and \`claimed_until\` set when a sender claims a row, before its request, and \`delivered_at\` set on a 2xx answer.
 -- \`delivery_uuid\` (added in \`migrate\`) is what a fixed body's placeholder stands for: a random UUID set on the first
--- attempt for a webhook with one and kept for every retry, so it does not repeat even when a row's id is reused.
+-- request sent for a webhook with one and kept for every retry, so it does not repeat even when a row's id is reused.
 CREATE TABLE IF NOT EXISTS webhook_deliveries (
   id INTEGER PRIMARY KEY,
   webhook_id INTEGER NOT NULL REFERENCES webhooks(id) ON DELETE CASCADE,
