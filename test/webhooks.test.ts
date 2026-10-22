@@ -21,8 +21,10 @@ import {
   listWebhooks,
   removeWebhook,
   sendPending,
+  WEBHOOK_MAX_BODY_BYTES,
   WEBHOOK_WINDOW_MS,
   webhookHeader,
+  webhookBody,
   webhookMaxPerHour,
   webhookOn,
   webhookUrl,
@@ -195,6 +197,47 @@ describe("addWebhook, listWebhooks and removeWebhook", () => {
     }
   });
 
+  it("stores a fixed body as given and lists only that there is one", () => {
+    const body = '{"requestId":"{{delivery}}","note":"wake"}';
+    const w = addWebhook(db, "owner", "https://example.com/", "agent:bob", true, undefined, undefined, body);
+    expect(w.fixedBody).toBe(true);
+    expect(addWebhook(db, "owner", "https://example.com/", "agent:bob", true).fixedBody).toBe(false);
+    expect(db.prepare("SELECT fixed_body FROM webhooks ORDER BY id").all()).toEqual([{ fixed_body: body }, { fixed_body: null }]);
+    expect(listWebhooks(db).map((x) => x.fixedBody)).toEqual([true, false]);
+    expect(JSON.stringify(listWebhooks(db))).not.toContain("requestId");
+  });
+
+  it("refuses a body that is not a JSON object, too long, without the placeholder once in a string value, or with --no-text", () => {
+    const ok = ['{"requestId":"{{delivery}}"}', '{"a":{"b":["x-{{delivery}}-y"]},"n":1}', ` {"id":"{{delivery}}"} `];
+    for (const body of ok) expect(webhookBody(body), body).toBe(body);
+    const padded = `{"id":"{{delivery}}","pad":"${"x".repeat(WEBHOOK_MAX_BODY_BYTES - 30)}"}`;
+    expect(Buffer.byteLength(padded)).toBe(WEBHOOK_MAX_BODY_BYTES);
+    expect(webhookBody(padded)).toBe(padded);
+    const bad = [
+      "",
+      "not json",
+      '"{{delivery}}"',
+      '["{{delivery}}"]',
+      "null",
+      "42",
+      "{}",
+      '{"id":"delivery"}',
+      '{"id":"{{delivery}}","again":"{{delivery}}"}',
+      '{"id":"{{delivery}}{{delivery}}"}',
+      '{"{{delivery}}":"x"}',
+      '{"{{delivery}}":"{{delivery}}"}',
+      '{"id":"\\u007b{delivery}}"}',
+      `{"id":"{{delivery}}","pad":"${"x".repeat(WEBHOOK_MAX_BODY_BYTES - 29)}"}`,
+      `{"id":"{{delivery}}","pad":"${"é".repeat(WEBHOOK_MAX_BODY_BYTES / 2)}"}`,
+    ];
+    for (const body of bad) {
+      expect(() => webhookBody(body), body.slice(0, 60)).toThrow(/^Invalid --body/);
+      expect(() => addWebhook(db, "owner", "https://example.com/", "agent:bob", true, undefined, undefined, body)).toThrow(WebhookError);
+    }
+    expect(() => addWebhook(db, "owner", "https://example.com/", "agent:bob", false, undefined, undefined, ok[0])).toThrow(/--no-text/);
+    expect(listWebhooks(db)).toEqual([]);
+  });
+
   it("gives an existing database the table on open", () => {
     db.close();
     const raw = new Database(dbFile);
@@ -232,6 +275,21 @@ describe("addWebhook, listWebhooks and removeWebhook", () => {
     });
     addWebhook(db, "owner", "https://example.com/", "#x", true, undefined, 3);
     expect(listWebhooks(db).map((w) => w.maxPerHour)).toEqual([null, 3]);
+  });
+
+  it("gives an existing webhooks table the fixed-body columns on open, its webhooks sending the event body", () => {
+    const old = addWebhook(db, "owner", "https://example.com/", "#x", true);
+    db.close();
+    const raw = new Database(dbFile);
+    raw.exec("ALTER TABLE webhooks DROP COLUMN fixed_body");
+    raw.exec("ALTER TABLE webhook_deliveries DROP COLUMN delivery_uuid");
+    raw.close();
+    db = openDb(dbFile);
+    expect(listWebhooks(db)).toEqual([expect.objectContaining({ id: old.id, fixedBody: false })]);
+    expect(db.prepare("SELECT fixed_body FROM webhooks").get()).toEqual({ fixed_body: null });
+    addWebhook(db, "owner", "https://example.com/", "#x", true, undefined, undefined, '{"id":"{{delivery}}"}');
+    expect(listWebhooks(db).map((w) => w.fixedBody)).toEqual([false, true]);
+    expect(db.prepare("PRAGMA table_info(webhook_deliveries)").all()).toContainEqual(expect.objectContaining({ name: "delivery_uuid" }));
   });
 });
 
@@ -679,6 +737,112 @@ describe("sendPending", () => {
     expect(await sendPending(db, { batch: 3 })).toEqual({ delivered: 2, failed: 0 });
   });
 
+  describe("with --body", () => {
+    const BODY = '{"requestId":"msg-{{delivery}}","wake":true}';
+    const UUID = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
+    const sent = (g: Got) => JSON.parse(g.body) as { requestId: string; wake: boolean };
+    const add = (url: string, header?: string, max?: number) => addWebhook(db, "owner", url, "agent:bob", true, header, max, BODY);
+
+    beforeEach(() => {
+      member(OWNER_ACCOUNT, "alice");
+      member(OWNER_ACCOUNT, "bob");
+    });
+
+    it("POSTs the fixed body with the placeholder replaced, signed over those exact bytes, and none of the message", async () => {
+      const r = await receiver();
+      const hook = add(r.url);
+      sendMessage(db, OWNER_ACCOUNT, "alice", "bob", "hello bob");
+      expect(await sendPending(db)).toEqual({ delivered: 1, failed: 0 });
+      const [got] = r.got;
+      expect(got!.body).toMatch(new RegExp(`^\\{"requestId":"msg-${UUID}","wake":true\\}$`));
+      // Every character in Tessl's requestId set (A-Z a-z 0-9 . _ : @ / -), and within its 128.
+      expect(sent(got!).requestId).toMatch(/^[A-Za-z0-9._:@/-]{1,128}$/);
+      expect(got!.body).toBe(BODY.replace("{{delivery}}", sent(got!).requestId.slice(4)));
+      expect(got!.headers["content-type"]).toBe("application/json");
+      expect(got!.headers["x-message-cp-signature"]).toBe(signature(hook.secret, got!.body));
+      for (const leak of ["hello", "alice", "bob"]) expect(got!.body).not.toContain(leak);
+      expect(row()).toMatchObject({ attempts: 1, delivered_at: expect.any(Number) });
+    });
+
+    it("sends the same id on every retry of one delivery", async () => {
+      const r = await receiver((n) => (n < 2 ? 500 : 200));
+      add(r.url);
+      sendMessage(db, OWNER_ACCOUNT, "alice", "bob", "hi");
+      expect(await sendPending(db, later)).toEqual({ delivered: 0, failed: 1 });
+      unclaim();
+      expect(await sendPending(db, later)).toEqual({ delivered: 0, failed: 1 });
+      unclaim();
+      expect(await sendPending(db, later)).toEqual({ delivered: 1, failed: 0 });
+      expect(r.got).toHaveLength(3);
+      expect(new Set(r.got.map((g) => g.body)).size).toBe(1);
+    });
+
+    it("sends a different id for each delivery, even after the rows with the highest ids are deleted and their ids reused", async () => {
+      const r = await receiver();
+      const hook = add(r.url);
+      sendMessage(db, OWNER_ACCOUNT, "alice", "bob", "one");
+      sendMessage(db, OWNER_ACCOUNT, "alice", "bob", "two");
+      expect(await sendPending(db)).toEqual({ delivered: 2, failed: 0 });
+      const ids = () => db.prepare("SELECT id FROM webhook_deliveries ORDER BY id").all();
+      expect(ids()).toEqual([{ id: 1 }, { id: 2 }]);
+      // Deleting the conversation cascades to its deliveries, so the next rows queued take ids 1 and 2 again.
+      db.prepare("DELETE FROM messages").run();
+      expect(ids()).toEqual([]);
+      sendMessage(db, OWNER_ACCOUNT, "alice", "bob", "three");
+      sendMessage(db, OWNER_ACCOUNT, "alice", "bob", "four");
+      expect(ids()).toEqual([{ id: 1 }, { id: 2 }]);
+      expect(await sendPending(db)).toEqual({ delivered: 2, failed: 0 });
+      const requestIds = r.got.map((g) => sent(g).requestId);
+      expect(requestIds).toHaveLength(4);
+      expect(new Set(requestIds).size).toBe(4);
+      for (const g of r.got) expect(g.headers["x-message-cp-signature"]).toBe(signature(hook.secret, g.body));
+    });
+
+    it("still sends the webhook's header and keeps to its limit", async () => {
+      const r = await receiver();
+      const hook = add(r.url, `Authorization: ${HEADER_VALUE}`, 1);
+      sendMessage(db, OWNER_ACCOUNT, "alice", "bob", "one");
+      sendMessage(db, OWNER_ACCOUNT, "alice", "bob", "two");
+      expect(await sendPending(db)).toEqual({ delivered: 1, failed: 0 });
+      expect(await sendPending(db)).toEqual({ delivered: 0, failed: 0 });
+      expect(r.got).toHaveLength(1);
+      expect(r.got[0]!.headers.authorization).toBe(HEADER_VALUE);
+      expect(r.got[0]!.body).not.toContain(HEADER_VALUE);
+      expect(r.got[0]!.headers["x-message-cp-signature"]).toBe(signature(hook.secret, r.got[0]!.body));
+      db.prepare("UPDATE webhooks SET window_started_at = window_started_at - ? WHERE id = ?").run(WEBHOOK_WINDOW_MS, hook.id);
+      expect(await sendPending(db)).toEqual({ delivered: 1, failed: 0 });
+      expect(sent(r.got[1]!).requestId).not.toBe(sent(r.got[0]!).requestId);
+    });
+
+    it("sends the event body for a webhook without one beside it", async () => {
+      const fixed = await receiver();
+      const plain = await receiver();
+      add(fixed.url);
+      addWebhook(db, "owner", plain.url, "agent:bob", true);
+      sendMessage(db, OWNER_ACCOUNT, "alice", "bob", "hello bob");
+      expect(await sendPending(db)).toEqual({ delivered: 2, failed: 0 });
+      expect(fixed.got[0]!.body).toMatch(/^\{"requestId":"msg-/);
+      const event = db.prepare("SELECT id FROM webhook_deliveries WHERE webhook_id = 2").get() as { id: number };
+      expect(plain.got[0]!.body).toBe(JSON.stringify(deliveryBody(db, event.id)));
+      expect(JSON.parse(plain.got[0]!.body)).toMatchObject({ event: "agent", recipient: "bob", sender: "alice", text: "hello bob" });
+    });
+
+    it("never sends one account's fixed body with another account's deliveries", async () => {
+      const mine = await receiver();
+      const theirs = await receiver();
+      member(friend, "alice");
+      member(friend, "bob");
+      add(mine.url);
+      addWebhook(db, "friend", theirs.url, "agent:bob", true);
+      sendMessage(db, OWNER_ACCOUNT, "alice", "bob", "owner dm");
+      sendMessage(db, friend, "alice", "bob", "friend dm");
+      expect(await sendPending(db)).toEqual({ delivered: 2, failed: 0 });
+      expect(mine.got).toHaveLength(1);
+      expect(theirs.got.map((g) => JSON.parse(g.body).text)).toEqual(["friend dm"]);
+      expect(theirs.got[0]!.body).not.toContain("requestId");
+    });
+  });
+
   describe("with --max-per-hour", () => {
     const pending = () => listAccountDeliveries(db, OWNER_ACCOUNT, 3, 100, 0).filter((d) => d.status === "pending");
     const texts = (got: Got[]) => got.map((g) => JSON.parse(g.body).text);
@@ -894,6 +1058,38 @@ describe("message-cp webhook", () => {
     ]);
   }, 120_000);
 
+  it("adds a webhook with --body and lists it after any header and limit, never printing the body", () => {
+    const body = '{"requestId":"{{delivery}}"}';
+    const added = cli(...ADD, "--body", body);
+    expect(added.status).toBe(0);
+    expect(added.stdout).toMatch(/^[0-9a-f]{64}\n$/);
+    expect(added.stdout + added.stderr).not.toContain("requestId");
+    expect(cliWith(`Authorization: ${HEADER_VALUE}\n`, ...ADD, "--header-stdin", "--max-per-hour", "5", "--body", body).status).toBe(0);
+    expect(cli(...ADD).status).toBe(0);
+    const list = cli("webhook", "list");
+    expect(list.stdout.trim().split("\n")).toEqual([
+      "1\towner\thttps://example.com/hook\tagent:bob\ttext\tbody: fixed",
+      "2\towner\thttps://example.com/hook\tagent:bob\ttext\theader: Authorization\tmax: 5/hour\tbody: fixed",
+      "3\towner\thttps://example.com/hook\tagent:bob\ttext",
+    ]);
+    expect(list.stdout + list.stderr).not.toContain("requestId");
+    expect(db.prepare("SELECT fixed_body FROM webhooks WHERE id = 1").get()).toEqual({ fixed_body: body });
+  }, 60_000);
+
+  it("refuses a bad --body, or --body with --no-text, with exit 1, storing nothing and never echoing the body", () => {
+    for (const body of ["not json s3cr3t", '["{{delivery}}","s3cr3t"]', '{"id":"s3cr3t"}', '{"id":"{{delivery}}","s3cr3t":"{{delivery}}"}', '{"{{delivery}}":"s3cr3t"}', `{"id":"{{delivery}}","s3cr3t":"${"x".repeat(5000)}"}`]) {
+      const res = cli(...ADD, "--body", body);
+      expect(res.status, body.slice(0, 60)).toBe(1);
+      expect(res.stdout).toBe("");
+      expect(res.stderr).toContain("message-cp: Invalid --body");
+      expect(res.stderr).not.toContain("s3cr3t");
+    }
+    const both = cli(...ADD, "--no-text", "--body", '{"id":"{{delivery}}"}');
+    expect(both.status).toBe(1);
+    expect(both.stderr).toContain("--no-text");
+    expect(cli("webhook", "list").stdout).toBe("");
+  }, 120_000);
+
   it("refuses each bad header line, empty stdin or more than one line with exit 1, without echoing the value", () => {
     for (const input of [...REFUSED_HEADERS.map((l) => `${l}\n`), "", "\n", `Authorization: ${HEADER_VALUE}\nX-Other: s3cr3t\n`]) {
       const res = cliWith(input, ...ADD, "--header-stdin");
@@ -970,6 +1166,10 @@ describe("message-cp webhook", () => {
       ["webhook", "add", "--url", "https://example.com/", "--on", "#x", "--max-per-hour", "1", "--max-per-hour", "2"],
       ["webhook", "add", "--url", "https://example.com/", "--on", "#x", "--max-per-hour", "--no-text"],
       ["webhook", "list", "--max-per-hour", "1"],
+      ["webhook", "add", "--url", "https://example.com/", "--on", "#x", "--body"],
+      ["webhook", "add", "--url", "https://example.com/", "--on", "#x", "--body", ""],
+      ["webhook", "add", "--url", "https://example.com/", "--on", "#x", "--body", '{"a":"{{delivery}}"}', "--body", '{"b":"{{delivery}}"}'],
+      ["webhook", "list", "--body", '{"a":"{{delivery}}"}'],
       ["webhook", "add", "--url", "https://example.com/", "--on"],
       ["webhook", "add", "--url", "--on", "#x"],
       ["webhook", "add", "--url", "", "--on", "#x"],
