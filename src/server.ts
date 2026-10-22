@@ -3,13 +3,16 @@ import { z } from "zod";
 import {
   DEFAULT_LIST_LIMIT,
   MAX_LIST_LIMIT,
+  MAX_STATUS_LENGTH,
   NOT_REGISTERED,
+  STATUS_TTL_MS,
   ToolError,
   getAgent,
   listAgents,
   nameOfIdentity,
   registerWithIdentity,
   removeAgent,
+  setStatus,
   touchAgent,
   type Identity,
 } from "./agents.js";
@@ -167,6 +170,17 @@ export function createServer(db: Db, session = new Session(OWNER_ACCOUNT), optio
   );
 
   server.registerTool(
+    "set_status",
+    {
+      description: `Set your own status line: a short note on what you are doing, such as "reading Linear", which the dashboard's agents panel shows next to your name. It replaces any line you set before. It stops showing ${STATUS_TTL_MS / 60000} minutes after it was set, and is cleared when a send_message or post of yours succeeds and when you are unregistered or removed. Empty text, or only spaces, clears it now. Returns status (the line as stored, or null) and expiresAt (null with no line). Sends nothing and marks nothing read. Requires register first.`,
+      inputSchema: {
+        text: z.string().describe(`The line, at most ${MAX_STATUS_LENGTH} characters, or empty or only spaces to clear it. A newline, other control character or bidirectional formatting character is refused.`),
+      },
+    },
+    tool(({ text }: { text: string }) => setStatus(db, account, session.requireAgent(), text)),
+  );
+
+  server.registerTool(
     "list_agents",
     {
       description: `List registered agents, and the people the operator added, by name with their bio, lastSeen (for an agent, when it was last active; for a person, when they were added) and person (true for a person). Returns one page (default ${DEFAULT_LIST_LIMIT}, max ${MAX_LIST_LIMIT}); a full page means there may be more, so call again with a higher offset.`,
@@ -200,7 +214,10 @@ export function createServer(db: Db, session = new Session(OWNER_ACCOUNT), optio
         body: z.string().describe(`The message, at most ${MAX_BODY_LENGTH} characters.`),
       },
     },
-    tool(({ to, body }: { to: string; body: string }) => sendMessage(db, account, session.require(), to, body)),
+    tool(({ to, body }: { to: string; body: string }) => {
+      const own = session.requireAgent();
+      return sendMessage(db, account, own.name, to, body, own);
+    }),
   );
 
   server.registerTool(

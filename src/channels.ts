@@ -133,6 +133,8 @@ export function post(db: Db, account: AccountId, member: Member, channel: string
   return db
     .transaction((): PostResult => {
       checkLive(db, account, member);
+      // Posting clears the poster's status line; checkLive has just found its row live.
+      db.prepare("UPDATE agents SET status = NULL, status_at = NULL WHERE id = ? AND status IS NOT NULL").run(member.id);
       return append(db, account, member, channel, body);
     })
     .immediate();

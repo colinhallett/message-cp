@@ -30,6 +30,8 @@ CREATE TABLE IF NOT EXISTS ${table} (
   removed_at INTEGER,
   removed_name TEXT,
   person INTEGER NOT NULL DEFAULT 0,
+  status TEXT,
+  status_at INTEGER,
   UNIQUE (account_id, name)
 );`;
 
@@ -265,10 +267,11 @@ function addAccounts(db: Db, path: string): void {
       if (hasColumn(db, "account_id")) return;
       copyBeforeAccounts(path);
       db.exec(agentsTable("agents_by_account"));
-      // `person` is left to its default: no person can exist before accounts did.
+      // `person` is left to its default: no person can exist before accounts did. `migrate` has already added the
+      // status columns to the old table, so they come across too.
       db.prepare(
-        `INSERT INTO agents_by_account (id, account_id, name, bio, registered_at, last_seen, key_hash, instance, removed_at, removed_name)
-         SELECT id, ?, name, bio, registered_at, last_seen, key_hash, instance, removed_at, removed_name FROM agents`,
+        `INSERT INTO agents_by_account (id, account_id, name, bio, registered_at, last_seen, key_hash, instance, removed_at, removed_name, status, status_at)
+         SELECT id, ?, name, bio, registered_at, last_seen, key_hash, instance, removed_at, removed_name, status, status_at FROM agents`,
       ).run(OWNER_ACCOUNT);
       db.exec("DROP TABLE agents");
       db.exec("ALTER TABLE agents_by_account RENAME TO agents");
@@ -288,6 +291,10 @@ function migrate(db: Db, path: string): void {
   addColumn(db, "removed_name", "TEXT");
   // 1 for a person the operator added with `person add`; every row from before it existed is an agent.
   addColumn(db, "person", "INTEGER NOT NULL DEFAULT 0");
+  // An agent's status line (`set_status`) and when it was set, in ms; null for no line. It is current for
+  // STATUS_TTL_MS after `status_at`, worked out when it is read.
+  addColumn(db, "status", "TEXT");
+  addColumn(db, "status_at", "INTEGER");
   addColumn(db, "joined", "INTEGER NOT NULL DEFAULT 0", "channel_reads");
   // 1 for a token that can only read (`token add --read-only`); tokens made before it existed keep full access.
   addColumn(db, "read_only", "INTEGER NOT NULL DEFAULT 0", "tokens");

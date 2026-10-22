@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { addAccount, addToken, listAccounts, revokeToken } from "../src/accounts.js";
-import { identityOf, registerAgent, removeAgent } from "../src/agents.js";
+import { STATUS_TTL_MS, addPerson, identityOf, registerAgent, removeAgent, setStatus } from "../src/agents.js";
 import { joinChannel, leaveChannel, post, readChannel, type Member } from "../src/channels.js";
 import { OWNER_ACCOUNT, openDb, type AccountId, type Db } from "../src/db.js";
 import { startHttp, type HttpServer } from "../src/http.js";
@@ -115,7 +115,7 @@ describe("GET /api/agents", () => {
       expect(list.map((a) => a.name)).toEqual(["alice", "bob"]);
       expect(list[0]).toMatchObject({ name: "alice", bio: "receiver", unreadMessages: 2, unreadPosts: 1, online: true });
       expect(list[1]).toMatchObject({ name: "bob", unreadMessages: 0, unreadPosts: 0 });
-      expect(Object.keys(list[0]).sort()).toEqual(["bio", "lastSeen", "name", "online", "person", "unreadMentions", "unreadMessages", "unreadPosts"]);
+      expect(Object.keys(list[0]).sort()).toEqual(["bio", "lastSeen", "name", "online", "person", "status", "unreadMentions", "unreadMessages", "unreadPosts"]);
     }
     // Reading the list marks nothing read.
     expect((await json(ownerViewer))[0].unreadMessages).toBe(2);
@@ -137,7 +137,7 @@ describe("GET /api/agents", () => {
     try {
       for (const token of [OWNER_TOKEN, ownerViewer]) {
         const list = await json(token);
-        expect(list).toEqual([{ name: "alice", bio: "owner's", lastSeen: new Date(0).toISOString(), person: false, unreadMessages: 0, unreadPosts: 0, unreadMentions: 0, online: false }]);
+        expect(list).toEqual([{ name: "alice", bio: "owner's", lastSeen: new Date(0).toISOString(), person: false, status: null, unreadMessages: 0, unreadPosts: 0, unreadMentions: 0, online: false }]);
       }
       for (const token of [friendToken, friendViewer]) {
         const list = await json(token);
@@ -149,6 +149,39 @@ describe("GET /api/agents", () => {
     } finally {
       held();
     }
+  });
+
+  it("gives each agent's current status line, for every kind of token, and null with none, once expired or for a person", async () => {
+    registerAgent(db, OWNER_ACCOUNT, "alice", "x");
+    registerAgent(db, OWNER_ACCOUNT, "bob", "x");
+    registerAgent(db, OWNER_ACCOUNT, "carol", "x");
+    addPerson(db, "owner", "dana");
+    setStatus(db, OWNER_ACCOUNT, identityOf(db, OWNER_ACCOUNT, "alice")!, "reading Linear");
+    setStatus(db, OWNER_ACCOUNT, identityOf(db, OWNER_ACCOUNT, "carol")!, "long ago", Date.now() - STATUS_TTL_MS - 1000);
+    // Not reachable through any tool: a person's row with a line still shows none.
+    db.prepare("UPDATE agents SET status = 'stray', status_at = ? WHERE name = 'dana'").run(Date.now());
+    for (const token of [OWNER_TOKEN, ownerViewer]) {
+      const list = await json(token);
+      expect(Object.fromEntries(list.map((a) => [a.name, (a as { status: string | null }).status]))).toEqual({
+        alice: "reading Linear",
+        bob: null,
+        carol: null,
+        dana: null,
+      });
+    }
+  });
+
+  it("never shows another account's agent's status line, even one of the same name, and the reverse", async () => {
+    registerAgent(db, OWNER_ACCOUNT, "alice", "x");
+    registerAgent(db, friend, "alice", "x");
+    setStatus(db, friend, identityOf(db, friend, "alice")!, "friend's line");
+    const status = async (token: string) => (await json(token)).map((a) => [a.name, (a as { status: string | null }).status]);
+    for (const token of [OWNER_TOKEN, ownerViewer]) expect(await status(token)).toEqual([["alice", null]]);
+    for (const token of [friendToken, friendViewer]) expect(await status(token)).toEqual([["alice", "friend's line"]]);
+    setStatus(db, friend, identityOf(db, friend, "alice")!, "");
+    setStatus(db, OWNER_ACCOUNT, identityOf(db, OWNER_ACCOUNT, "alice")!, "owner's line");
+    for (const token of [OWNER_TOKEN, ownerViewer]) expect(await status(token)).toEqual([["alice", "owner's line"]]);
+    for (const token of [friendToken, friendViewer]) expect(await status(token)).toEqual([["alice", null]]);
   });
 
   it("counts an agent online while its /wait is held or it was seen in the last 5 minutes", async () => {
