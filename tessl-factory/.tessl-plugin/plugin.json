@@ -10,6 +10,7 @@
     "skills/findings-triage",
     "skills/vm-check",
     "skills/on-call",
-    "skills/findings-triage-generic"
+    "skills/findings-triage-generic",
+    "skills/tune-review-lenses"
   ]
 }
