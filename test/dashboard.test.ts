@@ -3075,7 +3075,7 @@ describe("the page's posting", () => {
     const posts = () => requests.filter((r) => r.method !== "GET");
     // The names the person picker offers, without its first "Choose who you are" entry.
     const picker = () => elements["as"].children.slice(1).map((o) => o.value);
-    return { elements, made, requests, store, documentOn, until, choose, send, posts, picker, poll: timers.poll, prevented: () => prevented };
+    return { elements, made, requests, store, documentOn, until, choose, send, posts, picker, poll: timers.poll, scheduled: timers.scheduled, prevented: () => prevented };
   }
 
   const seed = () => {
@@ -4612,6 +4612,22 @@ describe("the page's posting", () => {
       expect(stored()).toEqual([{ f: "bob", t: "dana" }]);
       expect(page.elements["post-rows"].children).toEqual([]);
       expect(page.elements["delete-pair"].hidden).toBe(true);
+    });
+
+    it("with no answer, keeps the open conversation's status line through the polls that read it again", async () => {
+      seedPairs();
+      setStatus(db, OWNER_ACCOUNT, identityOf(db, OWNER_ACCOUNT, "bob")!, "reading Linear");
+      const page = await load(OWNER_TOKEN, (url, method) => (method === "DELETE" ? { lose: true } : undefined));
+      await openReady(page, "bob ↔ colin");
+      expect(page.elements["log-status"].textContent).toBe("bob: reading Linear");
+      confirmDelete(page);
+      // The messages were deleted, so the read brings none back for the open pair, and it stays out of the sidebar.
+      await page.until(() => page.elements["pair-rows"].children.length === 1 && page.scheduled());
+      await page.poll();
+      await page.until(page.scheduled);
+      expect(page.elements["log-title"].textContent).toBe("bob ↔ colin");
+      expect(page.elements["log-status"].hidden).toBe(false);
+      expect(page.elements["log-status"].textContent).toBe("bob: reading Linear");
     });
   });
 
