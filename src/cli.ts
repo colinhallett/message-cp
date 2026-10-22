@@ -234,8 +234,9 @@ if (command === "serve") {
     if (option !== "--account" || opts.has(option) || !value || value.startsWith("--")) usage();
     opts.set(option, value!);
   }
-  const db = openDb();
+  let db: ReturnType<typeof openDb> | undefined;
   try {
+    db = openDb();
     if (reset) {
       const k = resetAgentKey(db, opts.get("--account") ?? "owner", name!);
       console.error(
@@ -249,6 +250,12 @@ if (command === "serve") {
       );
     }
   } catch (err) {
+    // A reset that could not take the write lock changed nothing: say so in one line, never with a stack trace.
+    const code = (err as { code?: unknown } | null)?.code;
+    if (reset && typeof code === "string" && code.startsWith("SQLITE_BUSY")) {
+      console.error("message-cp: the database is busy; nothing was changed. Try again.");
+      process.exit(1);
+    }
     if (!(err instanceof PurgeError) && !(err instanceof KeyResetError)) throw err;
     console.error(`message-cp: ${err.message}`);
     process.exit(1);

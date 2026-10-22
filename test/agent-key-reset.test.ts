@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { addAccount, listAccounts } from "../src/accounts.js";
-import { KeyResetError, addPerson, identityOf, registerAgent, removeAgent, resetAgentKey } from "../src/agents.js";
+import { KeyResetError, addPerson, identityOf, registerAgent, registerFromEnv, removeAgent, resetAgentKey } from "../src/agents.js";
 import { addWebhook } from "../src/webhooks.js";
 import { OWNER_ACCOUNT, openDb, type AccountId, type Db } from "../src/db.js";
 import { Session, createServer } from "../src/server.js";
@@ -122,6 +122,8 @@ describe("resetAgentKey", () => {
     expect((await call(other, "register", { name: "alice", bio: "x", key })).text).toMatch(/already registered and has a key/);
     expect((await call(other, "unregister", { name: "alice", key })).text).toMatch(/Wrong key for agent 'alice'/);
     expect(() => registerAgent(db, OWNER_ACCOUNT, "alice", undefined, key)).toThrow(/has a key/);
+    // A stdio server started with the old key in MESSAGE_CP_AGENT_KEY is refused too.
+    expect(() => registerFromEnv(db, OWNER_ACCOUNT, { MESSAGE_CP_AGENT: "alice", MESSAGE_CP_AGENT_KEY: key })).toThrow(/has a key/);
     expect((await call(other, "unregister", { name: "alice", key: newKey })).isError).toBe(false);
   });
 
@@ -227,10 +229,12 @@ describe("message-cp agent key reset", () => {
   it("fails with exit 1 and a reason for a person, an unknown name or an unknown account", () => {
     addPerson(db, "owner", "colin");
     registerAgent(db, OWNER_ACCOUNT, "alice", "x");
+    removeAgent(db, OWNER_ACCOUNT, "erin", registerAgent(db, OWNER_ACCOUNT, "erin", "x").key);
     const before = rows("SELECT * FROM agents ORDER BY id");
     for (const [args, message] of [
       [["agent", "key", "reset", "colin"], "The name 'colin' belongs to a person, not an agent."],
       [["agent", "key", "reset", "nobody"], "No agent named 'nobody' in account 'owner'."],
+      [["agent", "key", "reset", "erin"], "No agent named 'erin' in account 'owner'."],
       [["agent", "key", "reset", "alice", "--account", "friend"], "No agent named 'alice' in account 'friend'."],
       [["agent", "key", "reset", "alice", "--account", "nobody"], "No account named 'nobody'."],
     ] as const) {
@@ -239,6 +243,22 @@ describe("message-cp agent key reset", () => {
       expect(res.stdout).toBe("");
       expect(res.stderr).toContain(message);
     }
+    expect(rows("SELECT * FROM agents ORDER BY id")).toEqual(before);
+  }, 60_000);
+
+  it("says in one line that nothing changed when the database is too busy, and prints no key", () => {
+    registerAgent(db, OWNER_ACCOUNT, "alice", "x");
+    const before = rows("SELECT * FROM agents ORDER BY id");
+    db.exec("BEGIN IMMEDIATE");
+    let res;
+    try {
+      res = cli("agent", "key", "reset", "alice");
+    } finally {
+      db.exec("ROLLBACK");
+    }
+    expect(res.status).toBe(1);
+    expect(res.stdout).toBe("");
+    expect(res.stderr).toBe("message-cp: the database is busy; nothing was changed. Try again.\n");
     expect(rows("SELECT * FROM agents ORDER BY id")).toEqual(before);
   }, 60_000);
 
