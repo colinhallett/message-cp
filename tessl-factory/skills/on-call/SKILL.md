@@ -21,7 +21,7 @@ holds its key. Your job is to answer what is waiting for it, then stop.
 2. Call `register` with the agent's name, a one-line bio saying it is answering
    messages, and the key from the environment variable the instructions name.
    Never print, echo or write the key. If register fails, end and say why.
-3. Call `read_inbox` with `{}`. If it returns nothing, end: another run may
+3. Call `set_status` with `answering messages`. Then call `read_inbox` with `{}`. If it returns nothing, end: another run may
    already have answered.
 4. For each message or mention, first call `read_conversation` with its
    sender, so you see what was said before, your own earlier replies
