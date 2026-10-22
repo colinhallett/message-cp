@@ -43,6 +43,34 @@ const NO_DELIVERIES =
 const base = () => `http://127.0.0.1:${http.port}`;
 const auth = (token: string): Record<string, string> => ({ Authorization: `Bearer ${token}` });
 
+// The page's timers, run by hand. polls holds the 5-second poll timers the page has scheduled and not cleared, so a poll
+// it has cancelled never runs; every other timer, such as a request's deadline, goes to deadlines, also until it is cleared.
+function handTimers() {
+  const polls = new Map<number, () => void>();
+  const deadlines = new Map<number, () => void>();
+  let next = 0;
+  const set = (fn: () => void, ms: number) => {
+    next++;
+    if (ms === 5000) polls.set(next, fn);
+    else deadlines.set(next, fn);
+    return next;
+  };
+  const clear = (id: number) => void (polls.delete(id) || deadlines.delete(id));
+  // Runs the poll the page has scheduled, once it has scheduled one: a poll in flight schedules the next when it ends.
+  // Fails if none is scheduled within about a second, or if more than one is.
+  const poll = async () => {
+    for (let i = 0; i < 200 && polls.size === 0; i++) await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(polls.size, "the page has no poll scheduled to run").toBeGreaterThan(0);
+    expect(polls.size, "the page has more than one poll scheduled").toBe(1);
+    const [[id, fn]] = polls;
+    polls.delete(id);
+    fn();
+  };
+  // Whether a poll is scheduled, so none is in flight.
+  const scheduled = () => polls.size > 0;
+  return { polls, deadlines, set, clear, poll, scheduled };
+}
+
 describe("GET /", () => {
   it("answers 200 with the page and its security headers, without a token", async () => {
     const res = await fetch(`${base()}/`);
@@ -276,7 +304,7 @@ describe("the page's channels and messages", () => {
     const script = /<script>([\s\S]*?)<\/script>/.exec(html)![1];
     const elements: Record<string, Stub> = {};
     const urls: string[] = [];
-    const polls: (() => void)[] = [];
+    const timers = handTimers();
     const store = new Map([["message-cp-token", token]]);
     // The document's own listeners, such as the one for Escape.
     const documentOn: Record<string, (event: unknown) => void> = {};
@@ -292,8 +320,8 @@ describe("the page's channels and messages", () => {
       URLSearchParams,
       document: doc,
       sessionStorage: { getItem: (k: string) => store.get(k) ?? null, setItem: (k: string, v: string) => store.set(k, v), removeItem: (k: string) => store.delete(k) },
-      setTimeout: (fn: () => void, ms: number) => (ms === 5000 && polls.push(fn), 0),
-      clearTimeout: () => {},
+      setTimeout: timers.set,
+      clearTimeout: timers.clear,
       fetch: (url: string, init: RequestInit) => {
         urls.push(url);
         const status = refuse(url);
@@ -307,11 +335,7 @@ describe("the page's channels and messages", () => {
       for (let i = 0; i < 200 && !done(); i++) await new Promise((resolve) => setTimeout(resolve, 5));
       expect(done()).toBe(true);
     };
-    // Runs the poll the page scheduled last; earlier ones belong to polls it has since cancelled.
-    const poll = () => polls.splice(0).pop()!();
-    // Whether a poll is scheduled, so none is in flight.
-    const scheduled = () => polls.length > 0;
-    return { elements, urls, store, documentOn, doc, until, poll, scheduled };
+    return { elements, urls, store, documentOn, doc, until, poll: timers.poll, scheduled: timers.scheduled };
   }
 
   it("lists the channels with a read-only token and shows a chosen channel's posts oldest first", async () => {
@@ -480,9 +504,11 @@ describe("the page's channels and messages", () => {
     await page.until(() => channels.children.length === 1);
     open(channels.children[0]);
     await page.until(() => page.elements["post-rows"].children.length === 1);
+    // Opening the channel polls at once; let that poll finish so the refusal comes from the next one.
+    await page.until(page.scheduled);
 
     revokeToken(db, ticket.id);
-    page.poll();
+    await page.poll();
     await page.until(() => page.elements["status-line"].textContent.startsWith("The server refused"));
     expect(channels.children).toHaveLength(0);
     expect(page.elements["post-rows"].children).toHaveLength(0);
@@ -586,7 +612,7 @@ describe("the page's channels and messages", () => {
       post(db, OWNER_ACCOUNT, bob, "build", "two");
       sendMessage(db, OWNER_ACCOUNT, "bob", "alice", "hi");
       await page.until(page.scheduled);
-      page.poll();
+      await page.poll();
       await page.until(() => page.scheduled() && agentButton(rows.children[0]).title.includes("1 message, 2 posts"));
       expect(agentButton(rows.children[0]).title).toMatch(/· unread: 1 message, 2 posts, 0 mentions$/);
       expect(agentLine(rows.children[0])).toEqual(["online", "alice", "3"]);
@@ -616,7 +642,7 @@ describe("the page's channels and messages", () => {
       expect(field(details(bob()), "unread")).toBe("unread: 1 message, 0 posts, 2 mentions");
 
       const row = bob();
-      page.poll();
+      await page.poll();
       await page.until(() => page.scheduled() && bob() !== row);
       expect(agentButton(bob()).attributes["aria-expanded"]).toBe("true");
       expect(details(bob()).hidden).toBe(false);
@@ -667,7 +693,7 @@ describe("the page's channels and messages", () => {
 
     post(db, OWNER_ACCOUNT, alice, "build", "second");
     page.urls.length = 0;
-    page.poll();
+    await page.poll();
     await page.until(() => posts.children.length === 2);
     expect(page.urls).toContain("/api/channel-posts?channel=build&limit=200&offset=1");
     expect(page.urls).not.toContain("/api/channel-posts?channel=build&limit=200&offset=0");
@@ -676,7 +702,7 @@ describe("the page's channels and messages", () => {
     // A log read that has not answered yet does not hold back the agents and channels.
     joinChannel(db, OWNER_ACCOUNT, alice, "ops");
     hang = true;
-    page.poll();
+    await page.poll();
     await page.until(() => channels.children.length === 2);
     expect(posts.children).toHaveLength(2);
   });
@@ -753,7 +779,7 @@ describe("the page's channels and messages", () => {
     ]);
     expect(page.elements["log-title"].textContent).toBe("alice ↔ bob");
     // The pair comes from the messages the page holds, and the channel's log is no longer read.
-    page.poll();
+    await page.poll();
     await page.until(() => page.urls.some((url) => url.startsWith("/api/messages")));
     expect(page.urls.filter((url) => url.startsWith("/api/channel-posts"))).toEqual([]);
   });
@@ -790,13 +816,13 @@ describe("the page's channels and messages", () => {
     expect(log.scrollTop).toBe(100);
 
     sendMessage(db, OWNER_ACCOUNT, "bob", "alice", "at the bottom");
-    page.poll();
+    await page.poll();
     await page.until(() => log.children.length === 11);
     expect(log.scrollTop).toBe(120);
 
     log.scrollTop = 0;
     sendMessage(db, OWNER_ACCOUNT, "bob", "alice", "scrolled up");
-    page.poll();
+    await page.poll();
     await page.until(() => log.children.length === 12);
     expect(log.scrollTop).toBe(0);
   });
@@ -816,7 +842,7 @@ describe("the page's channels and messages", () => {
     sendMessage(db, OWNER_ACCOUNT, "bob", "alice", "reply");
     sendMessage(db, OWNER_ACCOUNT, "carol", "bob", "not this pair");
     page.urls.length = 0;
-    page.poll();
+    await page.poll();
     await page.until(() => log.children.length === 202);
     expect(page.urls.filter((url) => url.startsWith("/api/messages"))).toEqual(["/api/messages?limit=200&offset=201"]);
     expect(entries(log).slice(-1)).toEqual([["bob", "reply"]]);
@@ -833,8 +859,10 @@ describe("the page's channels and messages", () => {
     await page.until(() => pairs.children.length === 1);
     open(pairs.children[0]);
     expect(page.elements["post-rows"].children).toHaveLength(1);
+    // Opening the pair polls at once; let that poll finish so the refusal comes from the next one.
+    await page.until(page.scheduled);
     revokeToken(db, ticket.id);
-    page.poll();
+    await page.poll();
     await page.until(() => page.elements["status-line"].textContent.startsWith("The server refused"));
     expect(pairs.children).toHaveLength(0);
     expect(page.elements["post-rows"].children).toHaveLength(0);
@@ -875,7 +903,7 @@ describe("the page's channels and messages", () => {
     open(channels.children[0]);
     await page.until(() => page.elements["post-rows"].children.length === 1);
     revoked = true;
-    page.poll();
+    await page.poll();
     await page.until(() => page.elements["status-line"].textContent.startsWith("The server refused"));
     expect(page.elements["post-rows"].children).toHaveLength(0);
     expect(page.store.size).toBe(0);
@@ -922,16 +950,16 @@ describe("the page's channels and messages", () => {
       await page.until(() => members(page)?.[0] === "Members: alice" && page.scheduled());
 
       joinChannel(db, OWNER_ACCOUNT, member("bob"), "build");
-      page.poll();
+      await page.poll();
       await page.until(() => members(page)?.[0] === "Members: alice, bob" && page.scheduled());
       leaveChannel(db, OWNER_ACCOUNT, member("alice"), "build");
-      page.poll();
+      await page.poll();
       await page.until(() => members(page)?.[0] === "Members: bob" && page.scheduled());
 
       // A channel the answer no longer lists keeps the members last shown, and the log says it is not there.
       db.prepare("DELETE FROM channel_reads").run();
       db.prepare("DELETE FROM channels").run();
-      page.poll();
+      await page.poll();
       await page.until(() => page.elements["log-note"].textContent === "There is no channel by this name now.");
       expect(channels.children.map((row) => row.textContent)).toEqual([NO_CHANNELS]);
       expect(members(page)).toEqual(["Members: bob", "Members: bob"]);
@@ -954,7 +982,7 @@ describe("the page's channels and messages", () => {
       expect(page.elements["log-members"].textContent).toBe("");
       // A poll while the pair is open does not bring the channel's members back.
       await page.until(() => page.scheduled());
-      page.poll();
+      await page.poll();
       await page.until(() => page.scheduled());
       expect(members(page)).toBeUndefined();
 
@@ -999,7 +1027,7 @@ describe("the page's channels and messages", () => {
     };
     // Runs a poll and waits for it to finish, so the sidebar shows what it read.
     const pollOnce = async (page: Awaited<ReturnType<typeof load>>) => {
-      page.poll();
+      await page.poll();
       await page.until(page.scheduled);
     };
 
@@ -1221,14 +1249,14 @@ describe("the page's channels and messages", () => {
       // A message appended by a later poll continues the group of the last entry the log holds.
       sendMessage(db, OWNER_ACCOUNT, "bob", "alice", "y");
       sendMessage(db, OWNER_ACCOUNT, "alice", "bob", "z");
-      page.poll();
+      await page.poll();
       await page.until(() => log.children.length === 7);
       expect(grouped(log).slice(-2)).toEqual([
         ["bob", false],
         ["alice", false],
       ]);
       sendMessage(db, OWNER_ACCOUNT, "alice", "bob", "again");
-      page.poll();
+      await page.poll();
       await page.until(() => log.children.length === 8);
       expect(grouped(log).slice(-1)).toEqual([["alice", true]]);
     });
@@ -1262,7 +1290,7 @@ describe("the page's channels and messages", () => {
       open(channels.children[0]);
       await page.until(() => log.children.length === 1);
       post(db, OWNER_ACCOUNT, alice, "build", "two");
-      page.poll();
+      await page.poll();
       await page.until(() => log.children.length === 2);
       expect(grouped(log)).toEqual([
         ["alice", false],
@@ -1374,7 +1402,7 @@ describe("the page's channels and messages", () => {
       // The rows the log already holds follow the next answer, keeping their text.
       people = ["bob"];
       await page.until(page.scheduled);
-      page.poll();
+      await page.poll();
       await page.until(() => avatar(log.children[1]).className === "avatar person");
       expect(marks()).toEqual([
         ["alice", "avatar", undefined, "hi"],
@@ -1383,7 +1411,7 @@ describe("the page's channels and messages", () => {
       // And a sender no longer given as a person goes back to an agent's avatar.
       people = ["alice"];
       await page.until(page.scheduled);
-      page.poll();
+      await page.poll();
       await page.until(() => avatar(log.children[0]).className === "avatar person");
       expect(marks()).toEqual([
         ["alice", "avatar person", "person", "hi"],
@@ -1445,7 +1473,7 @@ describe("the page's channels and messages", () => {
       expect(field(log.children[0], "time")).toBe("2m ago");
       now += 5 * MIN;
       sendMessage(db, OWNER_ACCOUNT, "bob", "alice", "y");
-      page.poll();
+      await page.poll();
       await page.until(() => log.children.length === 2);
       expect(field(log.children[0], "time")).toBe("7m ago");
     });
@@ -1479,13 +1507,13 @@ describe("the page's channels and messages", () => {
       time(1).textContent = "unchanged";
       now += 10 * MIN;
       await page.until(page.scheduled);
-      page.poll();
+      await page.poll();
       await page.until(() => time(2).textContent === "12m ago");
       expect([time(0).textContent, time(1).textContent]).toEqual(["unchanged", "unchanged"]);
       // Past midnight, this morning's time becomes a date; the one days ago is never written again.
       now += 30 * MIN;
       await page.until(page.scheduled);
-      page.poll();
+      await page.poll();
       await page.until(() => time(1).textContent !== "unchanged");
       expect(time(1).textContent).toBe(new Date(sent[1]).toLocaleString([], { year: "numeric", month: "short", day: "numeric", ...clock }));
       expect(time(0).textContent).toBe("unchanged");
@@ -1512,11 +1540,11 @@ describe("the page's channels and messages", () => {
       time().textContent = "unchanged";
       now += 10 * MIN;
       await page.until(page.scheduled);
-      page.poll();
+      await page.poll();
       await page.until(page.scheduled);
       expect(time().textContent).toBe("unchanged");
       now += 20 * MIN;
-      page.poll();
+      await page.poll();
       await page.until(() => time().textContent === "just now");
     });
 
@@ -1596,7 +1624,7 @@ describe("the page's channels and messages", () => {
       expect(mentions(row).map(([, c]) => c)).toEqual(["mention", "mention me", "mention"]);
       // An entry that arrives later is marked as it is made.
       post(db, OWNER_ACCOUNT, bob, "build", "@dana again");
-      page.poll();
+      await page.poll();
       await page.until(() => log.children.length === 2);
       expect(mentions(log.children[1])).toEqual([["@dana", "mention me"]]);
       choose("");
@@ -1852,16 +1880,15 @@ describe("the page's search", () => {
     const elements: Record<string, Stub> = {};
     const urls: string[] = [];
     const held: (() => void)[] = [];
-    const deadlines: (() => void)[] = [];
-    const polls: (() => void)[] = [];
+    const timers = handTimers();
     const store = new Map([["message-cp-token", token]]);
     runInNewContext(script, {
       AbortController,
       URLSearchParams,
       document: { getElementById: (id: string) => (elements[id] ??= el()), createElement: el, addEventListener() {} },
       sessionStorage: { getItem: (k: string) => store.get(k) ?? null, setItem: (k: string, v: string) => store.set(k, v), removeItem: (k: string) => store.delete(k) },
-      setTimeout: (fn: () => void, ms: number) => (ms === 5000 ? polls.push(fn) : deadlines.push(fn), 0),
-      clearTimeout: () => {},
+      setTimeout: timers.set,
+      clearTimeout: timers.clear,
       fetch: async (url: string, init: RequestInit) => {
         urls.push(url);
         const status = options.refuse?.(url);
@@ -1880,7 +1907,7 @@ describe("the page's search", () => {
       elements["search-text"].value = text;
       elements["search"].on.submit({ preventDefault: () => prevented++ });
     };
-    return { elements, urls, store, held, polls, until, search, prevented: () => prevented };
+    return { elements, urls, store, held, polls: timers.polls, poll: timers.poll, until, search, prevented: () => prevented };
   }
 
   const searches = (urls: string[]) => urls.filter((url) => url.startsWith("/api/search"));
@@ -2001,7 +2028,7 @@ describe("the page's search", () => {
 
   it("shows a 400's reason and other failures in the results note, and keeps polling", async () => {
     const page = await load(viewer, { refuse: (url) => (url.includes("text=busy") ? 503 : url.includes("text=gone") ? "fail" : undefined) });
-    await page.until(() => page.polls.length === 1);
+    await page.until(() => page.polls.size === 1);
     page.search("x".repeat(201));
     await page.until(() => page.elements["results-note"].textContent !== "Searching…");
     expect(page.elements["results-note"].textContent).toMatch(/200/);
@@ -2012,8 +2039,8 @@ describe("the page's search", () => {
     expect(page.store.size).toBe(1);
     // The poll scheduled before the searches still runs, and reads no search.
     page.urls.length = 0;
-    page.polls.pop()!();
-    await page.until(() => page.polls.length === 1);
+    await page.poll();
+    await page.until(() => page.polls.size === 1);
     expect(searches(page.urls)).toEqual([]);
     expect(page.elements["results"].hidden).toBe(false);
   });
@@ -2086,16 +2113,15 @@ describe("the page's webhook deliveries", () => {
     const script = /<script>([\s\S]*?)<\/script>/.exec(html)![1];
     const elements: Record<string, Stub> = {};
     const urls: string[] = [];
-    const polls: (() => void)[] = [];
-    const deadlines: (() => void)[] = [];
+    const timers = handTimers();
     const store = new Map([["message-cp-token", token]]);
     runInNewContext(script, {
       AbortController,
       URLSearchParams,
       document: { getElementById: (id: string) => (elements[id] ??= el()), createElement: el, addEventListener() {} },
       sessionStorage: { getItem: (k: string) => store.get(k) ?? null, setItem: (k: string, v: string) => store.set(k, v), removeItem: (k: string) => store.delete(k) },
-      setTimeout: (fn: () => void, ms: number) => (ms === 5000 ? polls.push(fn) : deadlines.push(fn), 0),
-      clearTimeout: () => {},
+      setTimeout: timers.set,
+      clearTimeout: timers.clear,
       fetch: (url: string, init: RequestInit) => {
         urls.push(url);
         const status = refuse(url);
@@ -2114,13 +2140,12 @@ describe("the page's webhook deliveries", () => {
       for (let i = 0; i < 200 && !done(); i++) await new Promise((resolve) => setTimeout(resolve, 5));
       expect(done()).toBe(true);
     };
-    const poll = () => polls.splice(0).pop()!();
     const entry = () => elements["delivery-entry"].children[0]?.children[0] as Stub;
     const openDeliveries = async () => {
       await until(() => entry() !== undefined);
       entry().on.click();
     };
-    return { elements, urls, store, polls, deadlines, until, poll, entry, openDeliveries };
+    return { elements, urls, store, polls: timers.polls, deadlines: timers.deadlines, until, poll: timers.poll, entry, openDeliveries };
   }
 
   // The sidebar entry's label and count.
@@ -2180,7 +2205,7 @@ describe("the page's webhook deliveries", () => {
     sendMessage(db, OWNER_ACCOUNT, "alice", "bob", "again");
     set(pending!, 2, deliveredAt);
     page.urls.length = 0;
-    page.poll();
+    await page.poll();
     await page.until(() => rows.children.length === 4);
     expect(deliveryUrls(page.urls)).toEqual(["/api/webhook-deliveries?limit=200&offset=0"]);
     expect(rows.children.map((row) => field(row, "tag"))).toEqual(["pending", "delivered", "failed", "delivered"]);
@@ -2190,8 +2215,8 @@ describe("the page's webhook deliveries", () => {
     expect(page.elements["log"].hidden).toBe(true);
     expect(rows.children).toHaveLength(0);
     page.urls.length = 0;
-    page.poll();
-    await page.until(() => page.polls.length === 1);
+    await page.poll();
+    await page.until(() => page.polls.size === 1);
     expect(deliveryUrls(page.urls)).toEqual([]);
   });
 
@@ -2205,7 +2230,7 @@ describe("the page's webhook deliveries", () => {
 
     addWebhook(db, "owner", "https://example.com/", "agent:bob", true);
     for (let i = 0; i < 201; i++) sendMessage(db, OWNER_ACCOUNT, "alice", "bob", `m${i}`);
-    page.poll();
+    await page.poll();
     await page.until(() => page.elements["post-rows"].children.length === 200);
     expect(page.elements["log-note"].textContent).toBe("Only the newest 200 deliveries are shown.");
     expect(item(page)).toEqual(["Webhook deliveries", "200"]);
@@ -2224,18 +2249,18 @@ describe("the page's webhook deliveries", () => {
     for (const name of ["alice", "bob"]) registerAgent(db, OWNER_ACCOUNT, name, "x");
     post(db, OWNER_ACCOUNT, { ...identityOf(db, OWNER_ACCOUNT, "alice")!, name: "alice" }, "build", "hello");
     const page = await load(viewer, (url) => (url.startsWith("/api/webhook-deliveries") ? failure : undefined));
-    await page.until(() => page.polls.length === 1);
+    await page.until(() => page.polls.size === 1);
     // Opening the view drops the poll scheduled before it; wait for the one it starts to schedule the next.
-    page.polls.length = 0;
     await page.openDeliveries();
-    await page.until(() => page.elements["log-note"].textContent === note && page.polls.length === 1);
+    expect(page.polls.size).toBe(0);
+    await page.until(() => page.elements["log-note"].textContent === note && page.polls.size === 1);
     expect(page.elements["status-line"].textContent).toBe("");
     expect(page.store.size).toBe(1);
 
     // The agents, channels and messages still refresh.
     sendMessage(db, OWNER_ACCOUNT, "alice", "bob", "hi");
     joinChannel(db, OWNER_ACCOUNT, { ...identityOf(db, OWNER_ACCOUNT, "alice")!, name: "alice" }, "ops");
-    page.poll();
+    await page.poll();
     await page.until(() => page.elements["pair-rows"].children.length === 1 && page.elements["channel-rows"].children.length === 2);
     expect(page.elements["log-note"].textContent).toBe(note);
   });
@@ -2247,10 +2272,14 @@ describe("the page's webhook deliveries", () => {
     await page.openDeliveries();
     await page.until(() => page.elements["pair-rows"].children.length === 1 && deliveryUrls(page.urls).length === 1);
     // The poll's deadline aborts the request that never answers; the next poll is still scheduled.
-    page.polls.length = 0;
-    page.deadlines.splice(0).forEach((abort) => abort());
+    expect(page.polls.size).toBe(0);
+    // Only the hung request's deadline is left: every request that answered cleared its own.
+    expect(page.deadlines.size).toBe(1);
+    const deadlines = [...page.deadlines.values()];
+    page.deadlines.clear();
+    deadlines.forEach((abort) => abort());
     await page.until(() => page.elements["log-note"].textContent === "The server did not answer in time. Retrying…");
-    await page.until(() => page.polls.length === 1);
+    await page.until(() => page.polls.size === 1);
     expect(page.elements["pair-rows"].children).toHaveLength(1);
     expect(page.store.size).toBe(1);
   });
@@ -2266,7 +2295,7 @@ describe("the page's webhook deliveries", () => {
     await page.openDeliveries();
     await page.until(() => page.elements["post-rows"].children.length === 1);
     refused = true;
-    page.poll();
+    await page.poll();
     await page.until(() => page.elements["status-line"].textContent.startsWith("The server refused"));
     expect(page.elements["post-rows"].children).toHaveLength(0);
     expect(page.elements["log"].hidden).toBe(true);
@@ -2393,7 +2422,7 @@ describe("the page's posting", () => {
     const elements: Record<string, Stub> = {};
     const made: Stub[] = [];
     const requests: { url: string; method: string; body?: string; headers: Record<string, string>; init: RequestInit }[] = [];
-    const polls: (() => void)[] = [];
+    const timers = handTimers();
     const store = new Map([["message-cp-token", token]]);
     // The document's own listeners, such as the one for Escape.
     const documentOn: Record<string, (event?: unknown) => void> = {};
@@ -2411,8 +2440,8 @@ describe("the page's posting", () => {
         addEventListener: (type: string, fn: (event?: unknown) => void) => void (documentOn[type] = fn),
       },
       sessionStorage: { getItem: (k: string) => store.get(k) ?? null, setItem: (k: string, v: string) => store.set(k, v), removeItem: (k: string) => store.delete(k) },
-      setTimeout: (fn: () => void, ms: number) => (ms === 5000 && polls.push(fn), 0),
-      clearTimeout: () => {},
+      setTimeout: timers.set,
+      clearTimeout: timers.clear,
       fetch: (url: string, init: RequestInit) => {
         const method = init.method ?? "GET";
         requests.push({ url, method, body: init.body as string | undefined, headers: init.headers as Record<string, string>, init });
@@ -2441,12 +2470,7 @@ describe("the page's posting", () => {
     const posts = () => requests.filter((r) => r.method !== "GET");
     // The names the person picker offers, without its first "Choose who you are" entry.
     const picker = () => elements["as"].children.slice(1).map((o) => o.value);
-    // Runs the poll the page scheduled last, once it has scheduled one: the picker can fill before the messages are read.
-    const poll = async () => {
-      await until(() => polls.length > 0);
-      polls.splice(0).pop()!();
-    };
-    return { elements, made, requests, store, documentOn, until, choose, send, posts, picker, poll, prevented: () => prevented };
+    return { elements, made, requests, store, documentOn, until, choose, send, posts, picker, poll: timers.poll, prevented: () => prevented };
   }
 
   const seed = () => {
