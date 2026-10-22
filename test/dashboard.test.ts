@@ -1084,6 +1084,17 @@ describe("the page's channels and messages", () => {
       expect(page.elements["log-status"].title).toBe("");
     });
 
+    it("gives an agent's conversation with itself one line", async () => {
+      registerAgent(db, OWNER_ACCOUNT, "alice", "x");
+      sendMessage(db, OWNER_ACCOUNT, "alice", "alice", "note to self");
+      setLine("alice", "reading Linear");
+      const page = await load(viewer);
+      const pairs = page.elements["pair-rows"];
+      await page.until(() => page.scheduled() && pairs.children.length === 1);
+      open(pairs.children[0]);
+      expect(statusLine(page)).toEqual(["alice: reading Linear", "alice: reading Linear"]);
+    });
+
     it("keeps the line through a failed poll", async () => {
       for (const name of ["alice", "bob"]) registerAgent(db, OWNER_ACCOUNT, name, "x");
       sendMessage(db, OWNER_ACCOUNT, "alice", "bob", "hi");

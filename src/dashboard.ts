@@ -723,8 +723,9 @@ function openPairLog(key) {
 // The status lines of the open direct conversation's agents, as the last GET /api/agents gave them, in the header bar
 // under its names; hidden and empty when no pair is open or neither side has one. A person never has one.
 function showPairStatus() {
-  const names = openPair !== undefined ? pairs.get(openPair)?.names ?? [] : [];
-  const text = names.filter((n) => statuses.has(n)).map((n) => n + ": " + statuses.get(n)).join(" · ");
+  // An agent's conversation with itself names it twice, but gives its line once.
+  const names = new Set(openPair !== undefined ? pairs.get(openPair)?.names ?? [] : []);
+  const text = [...names].filter((n) => statuses.has(n)).map((n) => n + ": " + statuses.get(n)).join(" · ");
   logStatus.textContent = text;
   logStatus.title = text;
   logStatus.hidden = text === "";
@@ -2221,6 +2222,8 @@ function appendMessages(page) {
   if (page.length > 0) {
     showPairs();
     showDelete();
+    // A delete can leave the open pair out of pairs until its messages are read again; its line comes back with them.
+    showPairStatus();
   }
 }
 
