@@ -1543,7 +1543,7 @@ async function readReceipts(token, signal, gen, held, agents) {
     if (ids.has(m.id) || unsure.some(([after, before]) => m.id > after && m.id < before)) continue;
     m.read = true;
   }
-  for (const row of chatRows) if (row.receipt) row.receipt.textContent = receiptText(row.message);
+  for (const row of chatRows) if (row.message && row.receipt) row.receipt.textContent = receiptText(row.message);
   return { ok: true };
 }
 

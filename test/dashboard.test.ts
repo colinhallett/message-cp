@@ -2136,6 +2136,23 @@ describe("the page's channels and messages", () => {
       expect(log.children.slice(1).filter((row) => receipt(row) === "bob: read")).toHaveLength(0);
     });
 
+    it("keeps both kinds of receipt turning to read while a direct message to an agent is unread too", async () => {
+      for (const name of ["alice", "bob"]) registerAgent(db, OWNER_ACCOUNT, name, "x");
+      post(db, OWNER_ACCOUNT, member("alice"), "build", "@bob look");
+      sendMessage(db, OWNER_ACCOUNT, "alice", "bob", "direct");
+      const page = await load(viewer);
+      const log = page.elements["post-rows"];
+      await page.until(() => page.elements["channel-rows"].children.length === 1 && page.elements["pair-rows"].children.length === 1);
+      open(page.elements["channel-rows"].children[0]);
+      await page.until(() => log.children.length === 1 && page.scheduled());
+      readInbox(db, OWNER_ACCOUNT, "bob");
+      await page.poll();
+      await page.until(() => receipt(log.children[0]) === "bob: read" && page.scheduled());
+      expect(page.elements["status-line"].textContent).toBe("");
+      open(page.elements["pair-rows"].children[0]);
+      await page.until(() => field(log.children[0], "receipt") === "read");
+    });
+
     it("shows no receipt in search results", async () => {
       for (const name of ["alice", "bob"]) registerAgent(db, OWNER_ACCOUNT, name, "x");
       post(db, OWNER_ACCOUNT, member("alice"), "build", "@bob deploy");
