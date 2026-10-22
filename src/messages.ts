@@ -355,11 +355,25 @@ export interface AccountMessage {
   read: boolean;
 }
 
+/** One of the account's messages, as `listAccountMessages` gives it. */
+export interface ListedMessage extends AccountMessage {
+  /**
+   * Whether the message is to an agent, not to a person, its recipient has not read it, and at least one of its webhook
+   * deliveries has been delivered: its receiver answered 2xx, which says it accepted the delivery, not that a run
+   * started.
+   */
+  starting: boolean;
+}
+
+/** A row `listAccountMessages` reads: `person` is the recipient's, `delivered` 1 when a webhook delivered the message. */
+type ListedRow = Row & { recipient: string; person: number; delivered: number };
+
 /**
  * One page of the account's messages, oldest first, for the account rather than for one agent. A broadcast is one row
  * per recipient, so it appears once per recipient. A message to a removed agent shows the name it had. With `unreadOnly`,
  * only the messages to an agent, not to a person, whose recipient has not read them: a person has no `read_inbox`, so
- * every message to one would stay among them for good. Reads only, so nothing is marked read.
+ * every message to one would stay among them for good. `starting` is read from the message's own webhook deliveries,
+ * found through `webhook_deliveries_delivered_by_message`. Reads only, so nothing is marked read and no delivery is touched.
  */
 export function listAccountMessages(
   db: Db,
@@ -367,15 +381,17 @@ export function listAccountMessages(
   limit: number,
   offset: number,
   unreadOnly = false,
-): AccountMessage[] {
+): ListedMessage[] {
   const rows = db
     .prepare(
       `SELECT m.id, m.sender, CASE WHEN a.removed_at IS NULL THEN a.name ELSE a.removed_name END AS recipient,
-              m.body, m.broadcast, m.created_at, m.read_at
+              m.body, m.broadcast, m.created_at, m.read_at, a.person,
+              EXISTS (SELECT 1 FROM webhook_deliveries d
+                      WHERE d.message_id = m.id AND d.delivered_at IS NOT NULL) AS delivered
        FROM messages m JOIN agents a ON a.id = m.recipient_id
        WHERE a.account_id = ?${unreadOnly ? " AND a.person = 0 AND m.read_at IS NULL" : ""} ORDER BY m.id LIMIT ? OFFSET ?`,
     )
-    .all(account, Math.min(limit, MAX_INBOX_LIMIT), offset) as (Row & { recipient: string })[];
+    .all(account, Math.min(limit, MAX_INBOX_LIMIT), offset) as ListedRow[];
   return rows.map((r) => ({
     id: r.id,
     from: r.sender,
@@ -384,6 +400,7 @@ export function listAccountMessages(
     body: r.body,
     broadcast: r.broadcast === 1,
     read: r.read_at !== null,
+    starting: r.read_at === null && r.person === 0 && r.delivered === 1,
   }));
 }
 
@@ -550,7 +567,7 @@ export function search(
   })();
 }
 
-/** One of the account's messages, as `searchAccount` returns it: as `listAccountMessages` gives it. */
+/** One of the account's messages, as `searchAccount` returns it: as `listAccountMessages` gives it, less `starting`. */
 export interface AccountMessageMatch extends AccountMessage {
   kind: "message";
 }

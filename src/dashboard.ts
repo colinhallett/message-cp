@@ -1526,8 +1526,10 @@ async function readLog(token, signal, gen, channel) {
 // poll. The answer leaves out messages to a person, so it only looks at the first held messages, those the page held
 // before this poll read the agents, and only at those whose recipient that answer (agents) lists as an agent: a person
 // added later never counts as one, and a message sent to a person whose name is an agent's now was deleted with that
-// person, so it turns to read as any deleted message does. A failed read, or one answered after a newer poll or another token, changes nothing. When none of those is
-// still unread there is nothing to learn, so it asks nothing. It marks nothing read for any agent.
+// person, so it turns to read as any deleted message does. A held message still among them with starting true (a
+// webhook delivered it) is marked starting, and never unmarked. A failed read, or one answered after a newer poll or
+// another token, changes nothing. When none of those is still unread there is nothing to learn, so it asks nothing. It
+// marks nothing read for any agent.
 async function readReceipts(token, signal, gen, held, agents) {
   const names = new Set(agents.filter((a) => a.person !== true).map((a) => String(a.name).toLowerCase()));
   const candidates = messages.slice(0, held).filter((m) => m.read !== true && names.has(String(m.to).toLowerCase()));
@@ -1537,9 +1539,11 @@ async function readReceipts(token, signal, gen, held, agents) {
   if (!unread.items) return unread;
   const items = unread.items;
   const ids = new Set(items.map((m) => m.id));
+  const starting = new Set(items.filter((m) => m.starting === true).map((m) => m.id));
   const unsure = [];
   for (let i = PAGE; i <= items.length; i += PAGE) unsure.push([items[i - 1].id, i < items.length ? items[i].id : Infinity]);
   for (const m of candidates) {
+    if (starting.has(m.id)) m.starting = true;
     if (ids.has(m.id) || unsure.some(([after, before]) => m.id > after && m.id < before)) continue;
     m.read = true;
   }
@@ -2050,9 +2054,10 @@ function chatParts(row) {
   return parts;
 }
 
-// What a direct message's receipt says: whether its recipient has read it with read_inbox.
+// What a direct message's receipt says: whether its recipient has read it with read_inbox, and before that whether a
+// webhook has started it.
 function receiptText(m) {
-  return m.read === true ? "read" : "not read yet";
+  return m.read === true ? "read" : m.starting === true ? "starting…" : "not read yet";
 }
 
 // What a post's receipt says: for each agent it mentions, whether that agent has read the mention with read_inbox.
