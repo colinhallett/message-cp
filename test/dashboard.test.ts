@@ -8,7 +8,7 @@ import { addAccount, addToken, listAccounts, revokeToken } from "../src/accounts
 import { OWNER_ACCOUNT, openDb, type Db } from "../src/db.js";
 import { addPerson, identityOf, registerAgent } from "../src/agents.js";
 import { joinChannel, leaveChannel, post } from "../src/channels.js";
-import { MAX_BODY_LENGTH, sendMessage, unreadSummary } from "../src/messages.js";
+import { MAX_BODY_LENGTH, readInbox, sendMessage, unreadSummary } from "../src/messages.js";
 import { startHttp, type HttpServer } from "../src/http.js";
 import { addWebhook } from "../src/webhooks.js";
 
@@ -844,7 +844,13 @@ describe("the page's channels and messages", () => {
     page.urls.length = 0;
     await page.poll();
     await page.until(() => log.children.length === 202);
-    expect(page.urls.filter((url) => url.startsWith("/api/messages"))).toEqual(["/api/messages?limit=200&offset=201"]);
+    expect(page.urls.filter((url) => url.startsWith("/api/messages?limit"))).toEqual(["/api/messages?limit=200&offset=201"]);
+    // The receipts read every page of the unread messages, which are all 203 here.
+    await page.until(() => page.urls.includes("/api/messages?unread=true&limit=200&offset=200"));
+    expect(page.urls.filter((url) => url.startsWith("/api/messages?unread"))).toEqual([
+      "/api/messages?unread=true&limit=200&offset=0",
+      "/api/messages?unread=true&limit=200&offset=200",
+    ]);
     expect(entries(log).slice(-1)).toEqual([["bob", "reply"]]);
     await page.until(() => pairs.children.length === 2);
     expect(log.children).toHaveLength(202);
@@ -1813,6 +1819,200 @@ describe("the page's channels and messages", () => {
       expect([time.textContent, time.title]).toEqual(["sometime", "sometime"]);
     });
   });
+
+  describe("read receipts", () => {
+    const receipt = (row: Stub) => field(row, "receipt");
+    const receiptNode = (row: Stub) => row.children.find((c) => c.className === "receipt");
+
+    it("shows under each message to an agent whether it has been read, and turns it to read on a later poll in place", async () => {
+      for (const name of ["alice", "bob", "carol"]) registerAgent(db, OWNER_ACCOUNT, name, "x");
+      sendMessage(db, OWNER_ACCOUNT, "alice", "bob", "read already");
+      readInbox(db, OWNER_ACCOUNT, "bob");
+      sendMessage(db, OWNER_ACCOUNT, "alice", "bob", "not yet");
+      sendMessage(db, OWNER_ACCOUNT, "bob", "all", "to everyone");
+      const page = await load(viewer);
+      const pairs = page.elements["pair-rows"];
+      const log = page.elements["post-rows"];
+      await page.until(() => pairs.children.length === 2);
+      open(pairs.children.find((row) => item(row)[0] === "alice ↔ bob")!);
+      expect(log.children.map((row) => [field(row, "body"), receipt(row)])).toEqual([
+        ["read already", "read"],
+        ["not yet", "not read yet"],
+        ["to everyone", "not read yet"],
+      ]);
+      // The receipt comes after the time.
+      const names = log.children[0].children.map((c) => c.className);
+      expect(names.indexOf("receipt")).toBe(names.indexOf("time") + 1);
+      const rows = [...log.children];
+      const nodes = rows.map(receiptNode);
+
+      // bob reads his inbox between polls: his messages turn to read, alice's copy of the broadcast stays unread, and
+      // the rows are the same elements, updated in place.
+      readInbox(db, OWNER_ACCOUNT, "bob");
+      await page.poll();
+      await page.until(() => receipt(log.children[1]) === "read");
+      expect(log.children.map((row) => [field(row, "body"), receipt(row)])).toEqual([
+        ["read already", "read"],
+        ["not yet", "read"],
+        ["to everyone", "not read yet"],
+      ]);
+      expect(log.children).toEqual(rows);
+      expect(log.children.map(receiptNode)).toEqual(nodes);
+      readInbox(db, OWNER_ACCOUNT, "alice");
+      await page.poll();
+      await page.until(() => receipt(log.children[2]) === "read");
+      // Nothing the page did marked a message read: carol's copy of the broadcast is still unread.
+      expect(unreadSummary(db, OWNER_ACCOUNT, "carol")!.count).toBe(1);
+
+      // A reopened log shows what the page has learned, and no receipt turns back to "not read yet".
+      open(pairs.children.find((row) => item(row)[0] === "bob ↔ carol")!);
+      expect(log.children.map((row) => [field(row, "body"), receipt(row)])).toEqual([["to everyone", "not read yet"]]);
+      open(pairs.children.find((row) => item(row)[0] === "alice ↔ bob")!);
+      await page.poll();
+      await page.until(() => page.scheduled());
+      expect(log.children.map(receipt)).toEqual(["read", "read", "read"]);
+    });
+
+    it("leaves the row after a page boundary as it was when a message is read between the pages", async () => {
+      for (const name of ["alice", "bob"]) registerAgent(db, OWNER_ACCOUNT, name, "x");
+      for (let i = 0; i < 201; i++) sendMessage(db, OWNER_ACCOUNT, "alice", "bob", `message ${i}`);
+      let between = false;
+      // bob reads his oldest message after the first page of the unread read, so the last unread message moves onto
+      // the first page's offsets and the second page, read at offset 200, misses it.
+      const page = await load(viewer, (url) => {
+        if (between && url === "/api/messages?unread=true&limit=200&offset=200") {
+          between = false;
+          readInbox(db, OWNER_ACCOUNT, "bob", true, 1);
+        }
+        return undefined;
+      });
+      const pairs = page.elements["pair-rows"];
+      const log = page.elements["post-rows"];
+      await page.until(() => pairs.children.length === 1 && tip(pairs.children[0]) === "201 messages" && page.scheduled());
+      open(pairs.children[0]);
+      expect(new Set(log.children.map(receipt))).toEqual(new Set(["not read yet"]));
+      // Opening the pair polls at once; let that poll end first.
+      await page.until(() => page.scheduled());
+      between = true;
+      await page.poll();
+      await page.until(() => !between && page.scheduled());
+      // The missed message is not taken for read, and the one read, asked about before it was, is not yet shown read.
+      expect([receipt(log.children[0]), receipt(log.children[200])]).toEqual(["not read yet", "not read yet"]);
+      await page.poll();
+      await page.until(() => receipt(log.children[0]) === "read" && page.scheduled());
+      expect(log.children.slice(1).filter((row) => receipt(row) === "read")).toHaveLength(0);
+    });
+
+    it("asks nothing about receipts while no message the page holds to an agent is unread", async () => {
+      registerAgent(db, OWNER_ACCOUNT, "bob", "x");
+      addPerson(db, "owner", "colin");
+      sendMessage(db, OWNER_ACCOUNT, "bob", "colin", "to a person");
+      sendMessage(db, OWNER_ACCOUNT, "colin", "bob", "to bob");
+      readInbox(db, OWNER_ACCOUNT, "bob");
+      const page = await load(viewer);
+      await page.until(() => page.elements["pair-rows"].children.length === 1 && page.scheduled());
+      await page.poll();
+      await page.until(() => page.scheduled());
+      expect(page.urls.filter((url) => url.includes("unread="))).toEqual([]);
+      // A new message to an agent starts the asking again, from the poll after the one that brings it in.
+      sendMessage(db, OWNER_ACCOUNT, "colin", "bob", "again");
+      await page.poll();
+      await page.until(() => page.scheduled());
+      expect(page.urls.filter((url) => url.includes("unread="))).toEqual([]);
+      await page.poll();
+      await page.until(() => page.urls.some((url) => url.includes("unread=true")));
+    });
+
+    it("changes no receipt when the unread read fails, and asks for another token when it is refused", async () => {
+      for (const name of ["alice", "bob"]) registerAgent(db, OWNER_ACCOUNT, name, "x");
+      sendMessage(db, OWNER_ACCOUNT, "alice", "bob", "one");
+      let answer: number | undefined;
+      const page = await load(viewer, (url) => (url.startsWith("/api/messages?unread") ? answer : undefined));
+      const pairs = page.elements["pair-rows"];
+      const log = page.elements["post-rows"];
+      await page.until(() => pairs.children.length === 1);
+      open(pairs.children[0]);
+      expect(log.children.map(receipt)).toEqual(["not read yet"]);
+      readInbox(db, OWNER_ACCOUNT, "bob");
+      answer = 503;
+      await page.poll();
+      await page.until(() => page.elements["status-line"].textContent !== "" && page.scheduled());
+      expect(log.children.map(receipt)).toEqual(["not read yet"]);
+      answer = 401;
+      await page.poll();
+      await page.until(() => page.store.size === 0);
+      expect(pairs.children).toHaveLength(0);
+      expect(log.children).toHaveLength(0);
+    });
+
+    it("shows no receipt on a message to a person, and keeps one on a row re-marked when its sender becomes a person", async () => {
+      registerAgent(db, OWNER_ACCOUNT, "bob", "x");
+      addPerson(db, "owner", "colin");
+      sendMessage(db, OWNER_ACCOUNT, "bob", "colin", "to a person");
+      sendMessage(db, OWNER_ACCOUNT, "colin", "bob", "to an agent");
+      const page = await load(viewer);
+      const pairs = page.elements["pair-rows"];
+      const log = page.elements["post-rows"];
+      await page.until(() => pairs.children.length === 1 && page.elements["rows"].children.length === 2);
+      await page.poll();
+      await page.until(() => page.scheduled());
+      open(pairs.children[0]);
+      expect(log.children.map((row) => [field(row, "body"), receipt(row)])).toEqual([
+        ["to a person", undefined],
+        ["to an agent", "not read yet"],
+      ]);
+
+      // dana sent to bob before she was a person; once she is one her row is rebuilt and keeps its receipt.
+      sendMessage(db, OWNER_ACCOUNT, "dana", "bob", "before dana was a person");
+      await page.poll();
+      await page.until(() => pairs.children.length === 2 && page.scheduled());
+      open(pairs.children.find((row) => item(row)[0] === "bob ↔ dana")!);
+      expect(log.children.map((row) => [field(row, "kind"), receipt(row)])).toEqual([[undefined, "not read yet"]]);
+      addPerson(db, "owner", "dana");
+      await page.poll();
+      await page.until(() => field(log.children[0], "kind") === "person" && page.scheduled());
+      expect(receipt(log.children[0])).toBe("not read yet");
+    });
+
+    it("never takes a message to a person added during a poll for read", async () => {
+      for (const name of ["alice", "bob"]) registerAgent(db, OWNER_ACCOUNT, name, "x");
+      sendMessage(db, OWNER_ACCOUNT, "alice", "bob", "keeps the receipts asking");
+      let during = false;
+      // erin becomes a person, and is sent a message, after this poll has read the agents and before it reads the
+      // messages, so the page still takes erin for no one in particular while ?unread=true already leaves her out.
+      const page = await load(viewer, (url) => {
+        if (during && url.startsWith("/api/channels")) {
+          during = false;
+          addPerson(db, "owner", "erin");
+          sendMessage(db, OWNER_ACCOUNT, "bob", "erin", "to a new person");
+        }
+        return undefined;
+      });
+      const pairs = page.elements["pair-rows"];
+      const log = page.elements["post-rows"];
+      await page.until(() => pairs.children.length === 1 && page.scheduled());
+      during = true;
+      await page.poll();
+      await page.until(() => !during && pairs.children.length === 2 && page.scheduled());
+      expect(page.urls.some((url) => url.startsWith("/api/messages?unread=true"))).toBe(true);
+      open(pairs.children.find((row) => item(row)[0] === "bob ↔ erin")!);
+      expect(log.children.map((row) => [field(row, "body"), receipt(row)])).toEqual([["to a new person", "not read yet"]]);
+      // The next poll lists erin as a person, so the row shows no receipt at all.
+      await page.poll();
+      await page.until(() => receipt(log.children[0]) === undefined && page.scheduled());
+    });
+
+    it("never shows a receipt on a channel post", async () => {
+      registerAgent(db, OWNER_ACCOUNT, "alice", "x");
+      post(db, OWNER_ACCOUNT, { ...identityOf(db, OWNER_ACCOUNT, "alice")!, name: "alice" }, "build", "hello");
+      const page = await load(viewer);
+      const log = page.elements["post-rows"];
+      await page.until(() => page.elements["channel-rows"].children.length === 1);
+      open(page.elements["channel-rows"].children[0]);
+      await page.until(() => log.children.length === 1);
+      expect(receipt(log.children[0])).toBeUndefined();
+    });
+  });
 });
 
 describe("the page's search", () => {
@@ -1951,6 +2151,21 @@ describe("the page's search", () => {
     page.elements["close-results"].on.click();
     expect(page.elements["results"].hidden).toBe(true);
     expect(rows.children).toHaveLength(0);
+  });
+
+  it("shows no read receipt on a message in the results", async () => {
+    for (const name of ["alice", "bob"]) registerAgent(db, OWNER_ACCOUNT, name, "x");
+    sendMessage(db, OWNER_ACCOUNT, "alice", "bob", "findable unread");
+    sendMessage(db, OWNER_ACCOUNT, "bob", "alice", "findable read");
+    readInbox(db, OWNER_ACCOUNT, "alice");
+    const page = await load(viewer);
+    page.search("findable");
+    await page.until(() => page.elements["result-rows"].children.length === 2);
+    for (const row of page.elements["result-rows"].children) {
+      expect(row.children.map((c) => c.className)).not.toContain("receipt");
+      expect(row.children.map((c) => c.textContent)).not.toContain("not read yet");
+      expect(row.children.map((c) => c.textContent)).not.toContain("read");
+    }
   });
 
   it("says when nothing is found and when only the newest 200 are shown, and puts the text on the page as text", async () => {
