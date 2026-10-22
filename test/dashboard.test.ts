@@ -2013,6 +2013,141 @@ describe("the page's channels and messages", () => {
       expect(receipt(log.children[0])).toBeUndefined();
     });
   });
+
+  describe("mention receipts", () => {
+    const receipt = (row: Stub) => field(row, "receipt mentions");
+    const receiptNode = (row: Stub) => row.children.find((c) => c.className === "receipt mentions");
+    const member = (name: string) => ({ ...identityOf(db, OWNER_ACCOUNT, name)!, name });
+
+    it("shows after a post's time whether each agent it mentions has read it, and turns a part to read on a later poll in place", async () => {
+      for (const name of ["alice", "bob", "carol"]) registerAgent(db, OWNER_ACCOUNT, name, "x");
+      addPerson(db, "owner", "colin");
+      post(db, OWNER_ACCOUNT, member("alice"), "build", "no mention here");
+      post(db, OWNER_ACCOUNT, member("alice"), "build", "@carol @bob @colin please look");
+      const page = await load(viewer);
+      const log = page.elements["post-rows"];
+      await page.until(() => page.elements["channel-rows"].children.length === 1);
+      open(page.elements["channel-rows"].children[0]);
+      await page.until(() => log.children.length === 2 && page.scheduled());
+      // In name order, the person left out; no receipt on a post without a mentioned agent.
+      expect(log.children.map((row) => [field(row, "body"), receipt(row)])).toEqual([
+        ["no mention here", undefined],
+        ["@carol @bob @colin please look", "bob: not read yet · carol: not read yet"],
+      ]);
+      const names = log.children[1].children.map((c) => c.className);
+      expect(names.indexOf("receipt mentions")).toBe(names.indexOf("time") + 1);
+      const rows = [...log.children];
+      const node = receiptNode(log.children[1]);
+
+      // bob reads his inbox between polls: only his part turns to read, on the same elements.
+      readInbox(db, OWNER_ACCOUNT, "bob");
+      await page.poll();
+      await page.until(() => receipt(log.children[1]) === "bob: read · carol: not read yet" && page.scheduled());
+      expect(log.children).toEqual(rows);
+      expect(receiptNode(log.children[1])).toBe(node);
+      expect(page.urls).toContain("/api/channel-posts?channel=build&unread=true&limit=200&offset=0");
+      // Nothing the page did marked carol's mention read.
+      expect(unreadSummary(db, OWNER_ACCOUNT, "carol")!.mentions).toBe(1);
+      readInbox(db, OWNER_ACCOUNT, "carol");
+      await page.poll();
+      await page.until(() => receipt(log.children[1]) === "bob: read · carol: read" && page.scheduled());
+
+      // With every mention read there is nothing to ask, and no part turns back.
+      const asked = page.urls.filter((url) => url.includes("unread=true")).length;
+      await page.poll();
+      await page.until(() => page.scheduled());
+      expect(page.urls.filter((url) => url.includes("unread=true"))).toHaveLength(asked);
+      expect(receipt(log.children[1])).toBe("bob: read · carol: read");
+    });
+
+    it("changes no receipt when the unread read fails or finds the channel gone, and asks for another token on 401", async () => {
+      for (const name of ["alice", "bob"]) registerAgent(db, OWNER_ACCOUNT, name, "x");
+      post(db, OWNER_ACCOUNT, member("alice"), "build", "@bob one");
+      post(db, OWNER_ACCOUNT, member("alice"), "ops", "elsewhere");
+      let answer: number | undefined;
+      const page = await load(viewer, (url) => (url.includes("unread=true") ? answer : undefined));
+      const channels = page.elements["channel-rows"];
+      const log = page.elements["post-rows"];
+      await page.until(() => channels.children.length === 2);
+      open(channels.children[0]);
+      await page.until(() => log.children.length === 1 && page.scheduled());
+      readInbox(db, OWNER_ACCOUNT, "bob");
+      for (const status of [503, 404]) {
+        answer = status;
+        await page.poll();
+        await page.until(() => page.scheduled());
+        expect(log.children.map(receipt)).toEqual(["bob: not read yet"]);
+      }
+      answer = 401;
+      await page.poll();
+      await page.until(() => page.store.size === 0);
+      expect(log.children).toHaveLength(0);
+    });
+
+    it("leaves another channel's log alone when the unread read answers after it opened", async () => {
+      for (const name of ["alice", "bob"]) registerAgent(db, OWNER_ACCOUNT, name, "x");
+      post(db, OWNER_ACCOUNT, member("alice"), "build", "@bob one");
+      post(db, OWNER_ACCOUNT, member("alice"), "ops", "elsewhere");
+      let during = false;
+      let page: Awaited<ReturnType<typeof load>>;
+      // ops opens while build's unread read is in flight.
+      page = await load(viewer, (url) => {
+        if (during && url.includes("unread=true")) {
+          during = false;
+          open(page.elements["channel-rows"].children[1]);
+        }
+        return undefined;
+      });
+      const channels = page.elements["channel-rows"];
+      const log = page.elements["post-rows"];
+      await page.until(() => channels.children.length === 2);
+      open(channels.children[0]);
+      await page.until(() => log.children.length === 1 && page.scheduled());
+      during = true;
+      await page.poll();
+      await page.until(() => !during && page.elements["log-title"].textContent === "ops" && log.children.length === 1 && page.scheduled());
+      expect(log.children.map((row) => [field(row, "body"), receipt(row)])).toEqual([["elsewhere", undefined]]);
+    });
+
+    it("leaves the post after a page boundary as it was when a mention is read between the pages", async () => {
+      for (const name of ["alice", "bob"]) registerAgent(db, OWNER_ACCOUNT, name, "x");
+      for (let i = 0; i < 201; i++) post(db, OWNER_ACCOUNT, member("alice"), "build", `@bob post ${i}`);
+      let between = false;
+      // bob reads his oldest mention after the first page of the unread read, so the last unread post moves onto the
+      // first page's offsets and the second page, read at offset 200, misses it.
+      const page = await load(viewer, (url) => {
+        if (between && url === "/api/channel-posts?channel=build&unread=true&limit=200&offset=200") {
+          between = false;
+          readInbox(db, OWNER_ACCOUNT, "bob", true, 1);
+        }
+        return undefined;
+      });
+      const log = page.elements["post-rows"];
+      await page.until(() => page.elements["channel-rows"].children.length === 1);
+      open(page.elements["channel-rows"].children[0]);
+      await page.until(() => log.children.length === 201 && page.scheduled());
+      between = true;
+      await page.poll();
+      await page.until(() => !between && page.scheduled());
+      // The missed post is not taken for read, and the one read, asked about before it was, is not yet shown read.
+      expect([receipt(log.children[0]), receipt(log.children[200])]).toEqual(["bob: not read yet", "bob: not read yet"]);
+      await page.poll();
+      await page.until(() => receipt(log.children[0]) === "bob: read" && page.scheduled());
+      expect(log.children.slice(1).filter((row) => receipt(row) === "bob: read")).toHaveLength(0);
+    });
+
+    it("shows no receipt in search results", async () => {
+      for (const name of ["alice", "bob"]) registerAgent(db, OWNER_ACCOUNT, name, "x");
+      post(db, OWNER_ACCOUNT, member("alice"), "build", "@bob deploy");
+      const page = await load(viewer);
+      await page.until(() => page.elements["channel-rows"].children.length === 1);
+      page.elements["search-text"].value = "deploy";
+      page.elements["search"].on.submit({ preventDefault() {} } as never);
+      const found = page.elements["result-rows"];
+      await page.until(() => found.children.length === 1);
+      expect(found.children[0].children.some((c) => c.className.startsWith("receipt"))).toBe(false);
+    });
+  });
 });
 
 describe("the page's search", () => {

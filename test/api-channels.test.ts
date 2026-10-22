@@ -3,11 +3,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { addAccount, addToken, listAccounts, revokeToken } from "../src/accounts.js";
-import { identityOf, registerAgent, removeAgent } from "../src/agents.js";
+import { addPerson, identityOf, registerAgent, removeAgent } from "../src/agents.js";
 import { joinChannel, leaveChannel, post, type Member } from "../src/channels.js";
 import { OWNER_ACCOUNT, openDb, type AccountId, type Db } from "../src/db.js";
 import { startHttp, type HttpServer } from "../src/http.js";
-import { sendMessage } from "../src/messages.js";
+import { readInbox, sendMessage } from "../src/messages.js";
 
 // GET /api/channels and GET /api/channel-posts, on a server with the owner's account and a friend's.
 const OWNER_TOKEN = "owner-token";
@@ -42,7 +42,7 @@ interface ChannelJson {
 }
 interface PostsJson {
   channel: string;
-  posts: { id: number; from: string; sentAt: string; body: string }[];
+  posts: { id: number; from: string; sentAt: string; body: string; mentions: { name: string; read: boolean }[] }[];
 }
 
 const base = () => `http://127.0.0.1:${http.port}`;
@@ -63,6 +63,7 @@ const snapshot = () =>
     db.prepare("SELECT * FROM channel_reads ORDER BY agent_id, channel_id").all(),
     db.prepare("SELECT id, last_seen FROM agents ORDER BY id").all(),
     db.prepare("SELECT id, read_at FROM messages ORDER BY id").all(),
+    db.prepare("SELECT agent_id, post_id, read_at FROM mentions ORDER BY agent_id, post_id").all(),
   ]);
 
 describe("GET /api/channels", () => {
@@ -147,8 +148,8 @@ describe("GET /api/channel-posts", () => {
       expect(await posts(token, "?channel=BUILD")).toEqual({
         channel: "Build",
         posts: [
-          { id: first.id, from: "bob", sentAt: first.sentAt, body: "one" },
-          { id: second.id, from: "alice", sentAt: second.sentAt, body: "two" },
+          { id: first.id, from: "bob", sentAt: first.sentAt, body: "one", mentions: [] },
+          { id: second.id, from: "alice", sentAt: second.sentAt, body: "two", mentions: [] },
         ],
       });
     }
@@ -207,14 +208,136 @@ describe("GET /api/channel-posts", () => {
   });
 });
 
+describe("GET /api/channel-posts mentions", () => {
+  const mentions = async (token: string, query: string) =>
+    (await posts(token, query)).posts.map((p) => [p.body, p.mentions.map((m) => `${m.name}:${m.read ? "read" : "unread"}`)]);
+
+  it("gives each post its mentioned agents in name order with whether each has read the mention, leaving people out", async () => {
+    register(OWNER_ACCOUNT, "alice", "carol", "Bob");
+    addPerson(db, "owner", "colin");
+    post(db, OWNER_ACCOUNT, member(OWNER_ACCOUNT, "alice"), "build", "no mention");
+    post(db, OWNER_ACCOUNT, member(OWNER_ACCOUNT, "alice"), "build", "@carol @colin @bob @nobody @alice");
+    post(db, OWNER_ACCOUNT, member(OWNER_ACCOUNT, "alice"), "build", "@carol again");
+    readInbox(db, OWNER_ACCOUNT, "carol", true, 1);
+    for (const token of [OWNER_TOKEN, ownerFull, ownerViewer]) {
+      // alice mentions herself, which records nothing; colin is a person, who has no read_inbox; nobody is not an agent.
+      expect(await mentions(token, "?channel=build")).toEqual([
+        ["no mention", []],
+        ["@carol @colin @bob @nobody @alice", ["Bob:unread", "carol:read"]],
+        ["@carol again", ["carol:unread"]],
+      ]);
+    }
+  });
+
+  it("shows a mentioned agent that has since unregistered under the name it had", async () => {
+    register(OWNER_ACCOUNT, "alice");
+    const bob = registerAgent(db, OWNER_ACCOUNT, "bob", "x").key;
+    post(db, OWNER_ACCOUNT, member(OWNER_ACCOUNT, "alice"), "build", "@bob hello");
+    removeAgent(db, OWNER_ACCOUNT, "bob", bob);
+    register(OWNER_ACCOUNT, "bob");
+    expect(await mentions(ownerViewer, "?channel=build")).toEqual([["@bob hello", ["bob:unread"]]]);
+    expect(await mentions(ownerViewer, "?channel=build&unread=true")).toEqual([["@bob hello", ["bob:unread"]]]);
+  });
+
+  it("answers with ?unread=true only the posts with an unread mention of an agent, in the same shape, order and paging", async () => {
+    register(OWNER_ACCOUNT, "alice", "bob", "carol");
+    addPerson(db, "owner", "colin");
+    post(db, OWNER_ACCOUNT, member(OWNER_ACCOUNT, "alice"), "build", "plain");
+    post(db, OWNER_ACCOUNT, member(OWNER_ACCOUNT, "alice"), "build", "@bob @carol one");
+    post(db, OWNER_ACCOUNT, member(OWNER_ACCOUNT, "alice"), "build", "@colin only a person");
+    post(db, OWNER_ACCOUNT, member(OWNER_ACCOUNT, "alice"), "build", "@bob two");
+    post(db, OWNER_ACCOUNT, member(OWNER_ACCOUNT, "alice"), "build", "@carol three");
+    post(db, OWNER_ACCOUNT, member(OWNER_ACCOUNT, "alice"), "other", "@bob elsewhere");
+    expect(await mentions(ownerViewer, "?channel=build&unread=true")).toEqual([
+      ["@bob @carol one", ["bob:unread", "carol:unread"]],
+      ["@bob two", ["bob:unread"]],
+      ["@carol three", ["carol:unread"]],
+    ]);
+    const unread = await posts(ownerViewer, "?channel=build&unread=true");
+    const all = await posts(ownerViewer, "?channel=build");
+    expect(unread.channel).toBe("build");
+    expect(unread.posts).toEqual(all.posts.filter((p) => p.mentions.some((m) => !m.read)));
+    const bodies = async (query: string) => (await posts(ownerViewer, `?channel=build&unread=true${query}`)).posts.map((p) => p.body);
+    expect(await bodies("&limit=2")).toEqual(["@bob @carol one", "@bob two"]);
+    expect(await bodies("&limit=2&offset=2")).toEqual(["@carol three"]);
+    expect(await bodies("&offset=3")).toEqual([]);
+    // bob reads his mentions: the first post stays for carol's, the second goes.
+    readInbox(db, OWNER_ACCOUNT, "bob");
+    expect(await mentions(ownerViewer, "?channel=build&unread=true")).toEqual([
+      ["@bob @carol one", ["bob:read", "carol:unread"]],
+      ["@carol three", ["carol:unread"]],
+    ]);
+    readInbox(db, OWNER_ACCOUNT, "carol");
+    expect(await mentions(ownerViewer, "?channel=build&unread=true")).toEqual([]);
+  });
+
+  it("refuses unread given twice or with any value but true with 400", async () => {
+    register(OWNER_ACCOUNT, "alice");
+    post(db, OWNER_ACCOUNT, member(OWNER_ACCOUNT, "alice"), "build", "x");
+    for (const query of ["&unread=", "&unread=false", "&unread=TRUE", "&unread=1", "&unread=true&unread=true", "&unread=true&unread=false"]) {
+      expect((await get(`/api/channel-posts?channel=build${query}`, ownerViewer)).status).toBe(400);
+    }
+  });
+
+  it("never shows another account's mentions or read state, through its agents and channel of the same names", async () => {
+    register(OWNER_ACCOUNT, "alice", "bob");
+    register(friend, "alice", "bob");
+    post(db, OWNER_ACCOUNT, member(OWNER_ACCOUNT, "alice"), "build", "@bob owner's");
+    post(db, friend, member(friend, "alice"), "build", "@bob friend's");
+    post(db, friend, member(friend, "alice"), "build", "@bob friend's again");
+    readInbox(db, friend, "bob", true, 1);
+    // A mention of a friend's agent on the owner's post, which no tool can make, still never shows.
+    const ownerPost = db.prepare("SELECT id FROM channel_posts WHERE body = ?").pluck().get("@bob owner's");
+    db.prepare("INSERT INTO mentions (agent_id, post_id) VALUES (?, ?)").run(member(friend, "alice").id, ownerPost);
+    for (const token of [OWNER_TOKEN, ownerFull, ownerViewer]) {
+      expect(await mentions(token, "?channel=build")).toEqual([["@bob owner's", ["bob:unread"]]]);
+      expect(await mentions(token, "?channel=build&unread=true")).toEqual([["@bob owner's", ["bob:unread"]]]);
+    }
+    for (const token of [friendToken, friendViewer]) {
+      expect(await mentions(token, "?channel=build")).toEqual([
+        ["@bob friend's", ["bob:read"]],
+        ["@bob friend's again", ["bob:unread"]],
+      ]);
+      expect(await mentions(token, "?channel=build&unread=true")).toEqual([["@bob friend's again", ["bob:unread"]]]);
+    }
+  });
+
+  it("finds a page's mentions and the unread posts by index, without scanning mentions or channel_posts", async () => {
+    const plan = (sql: string) =>
+      (db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all(...Array(sql.split("?").length - 1).fill(1)) as { detail: string }[])
+        .map((p) => p.detail)
+        .join("\n");
+    // Run the queries readAccountChannel runs, by catching their SQL.
+    register(OWNER_ACCOUNT, "alice", "bob");
+    post(db, OWNER_ACCOUNT, member(OWNER_ACCOUNT, "alice"), "build", "@bob x");
+    const seen: string[] = [];
+    const prepare = db.prepare.bind(db);
+    vi.spyOn(db, "prepare").mockImplementation(((sql: string) => {
+      if (sql.includes("mentions") || sql.includes("channel_posts")) seen.push(sql);
+      return prepare(sql);
+    }) as typeof db.prepare);
+    await posts(ownerViewer, "?channel=build");
+    await posts(ownerViewer, "?channel=build&unread=true");
+    vi.restoreAllMocks();
+    // The page of posts and its mentions, without and with unread. The page itself (pg), at most 200 rows, is the only scan.
+    expect(seen).toHaveLength(4);
+    for (const sql of seen) expect(plan(sql)).not.toMatch(/SCAN (x|p|a|channel_posts|mentions)\b/);
+    expect(plan(seen[0])).toMatch(/SEARCH channel_posts USING INDEX channel_posts_by_channel \(channel_id=\?\)/);
+    expect(plan(seen[1])).toMatch(/SEARCH x USING INDEX mentions_by_post \(post_id=\?\)/);
+    expect(plan(seen[2])).toMatch(/SEARCH x USING COVERING INDEX mentions_unread \(agent_id=\? AND read_at=\?\)/);
+    expect(plan(seen[2])).toMatch(/SEARCH p USING INTEGER PRIMARY KEY/);
+    expect(plan(seen[3])).toMatch(/SEARCH x USING INDEX mentions_by_post \(post_id=\?\)/);
+  });
+});
+
 describe("both endpoints", () => {
-  const paths = ["/api/channels", "/api/channel-posts?channel=build"];
+  const paths = ["/api/channels", "/api/channel-posts?channel=build", "/api/channel-posts?channel=build&unread=true"];
 
   it("change nothing: read positions, last_seen and unread counts stay as they were", async () => {
     register(OWNER_ACCOUNT, "alice", "bob");
     joinChannel(db, OWNER_ACCOUNT, member(OWNER_ACCOUNT, "alice"), "build");
     post(db, OWNER_ACCOUNT, member(OWNER_ACCOUNT, "bob"), "build", "unread");
-    post(db, OWNER_ACCOUNT, member(OWNER_ACCOUNT, "bob"), "build", "unread too");
+    post(db, OWNER_ACCOUNT, member(OWNER_ACCOUNT, "bob"), "build", "unread too, @alice");
     db.prepare("UPDATE agents SET last_seen = 0").run();
     const before = snapshot();
     const agentsBefore = await ok<unknown>("/api/agents", ownerViewer);
