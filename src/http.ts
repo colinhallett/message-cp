@@ -416,7 +416,8 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
 
   /**
    * GET /api/agents: one page of the account's live agents, as `list_agents` pages them, each with its unread message,
-   * post and mention counts and whether it is online. Counts only, never a message or post; it reads nothing as read.
+   * post and mention counts, its status line while current (null otherwise) and whether it is online. Counts only,
+   * never a message or post; it reads nothing as read.
    */
   const apiAgents = (req: IncomingMessage, res: ServerResponse, account: AccountId) => {
     if (req.method !== "GET") return reply(res, 405, "Method not allowed", { Allow: "GET" });

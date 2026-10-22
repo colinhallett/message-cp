@@ -6,7 +6,7 @@ import { runInNewContext } from "node:vm";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { addAccount, addToken, listAccounts, revokeToken } from "../src/accounts.js";
 import { OWNER_ACCOUNT, openDb, type Db } from "../src/db.js";
-import { addPerson, identityOf, registerAgent } from "../src/agents.js";
+import { addPerson, identityOf, registerAgent, setStatus } from "../src/agents.js";
 import { joinChannel, leaveChannel, post } from "../src/channels.js";
 import { MAX_BODY_LENGTH, readInbox, sendMessage, unreadSummary } from "../src/messages.js";
 import { startHttp, type HttpServer } from "../src/http.js";
@@ -670,6 +670,30 @@ describe("the page's channels and messages", () => {
       await page.until(() => rows.children.length === 2);
       expect(rows.children.map((row) => details(row).hidden)).toEqual([true, true]);
       expect(rows.children.map((row) => agentButton(row).attributes["aria-expanded"])).toEqual(["false", "false"]);
+    });
+
+    it("shows an agent's status line after its name, in its tooltip and details, and drops it on the poll after it clears", async () => {
+      setup();
+      const line = "reading Linear for the next ticket";
+      setStatus(db, OWNER_ACCOUNT, identityOf(db, OWNER_ACCOUNT, "bob")!, line);
+      const page = await load(viewer);
+      const rows = page.elements["rows"];
+      await page.until(() => page.scheduled() && rows.children.length === 2);
+      const bob = () => rows.children[1];
+      expect(agentLine(bob())).toEqual(["online", "bob", line, "3"]);
+      expect(agentButton(bob()).children.map((c) => c.className)).toEqual(["dot online", "name", "status", "badge"]);
+      expect(agentButton(bob()).title).toMatch(/^reading Linear for the next ticket · builds the site · last seen /);
+      expect(details(bob()).children.map((c) => c.className)).toEqual(["status", "bio", "seen", "unread"]);
+      expect(field(details(bob()), "status")).toBe(line);
+      // alice has no line, so her row has no status part.
+      expect(agentLine(rows.children[0])).toEqual(["online", "alice", ""]);
+
+      setStatus(db, OWNER_ACCOUNT, identityOf(db, OWNER_ACCOUNT, "bob")!, "");
+      await page.poll();
+      await page.until(() => page.scheduled() && agentButton(bob()).children.length === 3);
+      expect(agentLine(bob())).toEqual(["online", "bob", "3"]);
+      expect(agentButton(bob()).title).toMatch(/^builds the site · /);
+      expect(details(bob()).children.map((c) => c.className)).toEqual(["bio", "seen", "unread"]);
     });
 
     it("still says when an account has no agents", async () => {
