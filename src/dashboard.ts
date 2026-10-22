@@ -176,6 +176,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .entry.chat.cont > .time { margin-left: 0; font-size: 0.65rem; line-height: 1.2; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: center; align-self: center; visibility: hidden; }
 .entry.cont:hover > .time { visibility: visible; }
 .receipt { grid-area: receipt; font-size: 0.75rem; color: var(--muted); white-space: nowrap; }
+.receipt.mentions { white-space: normal; overflow-wrap: anywhere; }
 .c0 { --who: var(--who0); }
 .c1 { --who: var(--who1); }
 .c2 { --who: var(--who2); }
@@ -338,7 +339,7 @@ const MAX_ROWS = 10;
 // The open log's last entry, as chatEntry made it: its sender in lower case, its time in ms (NaN if it could not be
 // read) and its tag, or undefined in an empty log. An entry continues its group only from this one.
 // chatRows holds each of the open log's rows as chatEntry made them, so a change in who is a person re-marks them and
-// a poll that finds a message read updates its receipt in place.
+// a poll that finds a message or a post's mention read updates its receipt in place.
 // chatTimes holds [time element, sentAt, due] for each row whose time can still change, so each poll can keep "2m ago"
 // current: due is the earliest ms its text can change at (see nextChange). A time that shows a date is not held.
 let lastEntry;
@@ -1546,7 +1547,36 @@ async function readReceipts(token, signal, gen, held, agents) {
     if (ids.has(m.id) || unsure.some(([after, before]) => m.id > after && m.id < before)) continue;
     m.read = true;
   }
-  for (const row of chatRows) if (row.receipt) row.receipt.textContent = receiptText(row.message);
+  for (const row of chatRows) if (row.message && row.receipt) row.receipt.textContent = receiptText(row.message);
+  return { ok: true };
+}
+
+// Reads every page of the open channel's posts that still have an unread mention of an agent, and marks each mention
+// the open log holds as read once its post is not among them, or is with that name read, updating the post's receipt
+// in place. read_at is only ever set, never cleared, so a mention is never marked unread again. As in readReceipts, a
+// mention read while the pages were read can make the post after a page boundary be skipped, so a held post there is
+// left as it was until a later poll. A failed read, a channel that is gone (404), or one answered after a newer poll,
+// another token or another open channel, changes nothing. When no mention the log holds is still unread there is
+// nothing to learn, so it asks nothing. It marks nothing read for any agent.
+async function readMentions(token, signal, gen, channel) {
+  const candidates = chatRows.filter((row) => row.post && row.post.mentions.some((m) => m.read !== true));
+  if (candidates.length === 0) return { ok: true };
+  const unread = await fetchAll(token, signal, "/api/channel-posts", postsOf, { channel, unread: "true" });
+  if (gen !== generation || channel !== openChannel || unread.status === 404) return { ok: true };
+  if (!unread.items) return unread;
+  const items = unread.items;
+  const byId = new Map(items.map((p) => [p.id, mentionsOf(p)]));
+  const unsure = [];
+  for (let i = PAGE; i <= items.length; i += PAGE) unsure.push([items[i - 1].id, i < items.length ? items[i].id : Infinity]);
+  for (const row of candidates) {
+    const id = row.post.id;
+    const now = byId.get(id);
+    if (now === undefined && unsure.some(([after, before]) => id > after && id < before)) continue;
+    for (const m of row.post.mentions) {
+      if (now === undefined || now.some((n) => n.read && n.name.toLowerCase() === m.name.toLowerCase())) m.read = true;
+    }
+    row.receipt.textContent = mentionsText(row.post.mentions);
+  }
   return { ok: true };
 }
 
@@ -1652,6 +1682,10 @@ async function poll(gen) {
       // message is among those it asks about.
       if (!refused && messages.status === "fulfilled" && messages.value.ok && gen === generation) {
         values.push(await readReceipts(token, ac.signal, gen, held, result.agents));
+      }
+      // Once the open channel's posts are read, whether each mention they hold has been read since.
+      if (!refused && channel !== undefined && posts.status === "fulfilled" && posts.value.ok && gen === generation) {
+        values.push(await readMentions(token, ac.signal, gen, channel));
       }
       result = values.find((v) => v.status === 401) ?? values.find((v) => !v.ok) ?? posts.value;
     }
@@ -1980,8 +2014,9 @@ function isPerson(name) {
 // that entry's group: it shows no avatar, name or tag of its own. A tagged entry (a broadcast) never continues a group
 // or is continued, so its tag always shows. The first entry of a group has an initials avatar in the sender's colour,
 // round for a person GET /api/agents gave and rounded-square for anyone else, and a person is labelled as one. A direct
-// message, given as message, has a receipt after its time unless its recipient is a person, who has no read_inbox.
-function chatEntry(from, tag, sentAt, body, message) {
+// message, given as message, has a receipt after its time unless its recipient is a person, who has no read_inbox. A
+// channel post, given as post, has one when it mentions an agent: one part for each.
+function chatEntry(from, tag, sentAt, body, message, post) {
   const name = String(from);
   const at = Date.parse(sentAt);
   const gap = lastEntry === undefined ? NaN : at - lastEntry.at;
@@ -1998,6 +2033,10 @@ function chatEntry(from, tag, sentAt, body, message) {
     row.message = message;
     row.toPerson = isPerson(String(message.to));
     row.receipt = part("span", "receipt", receiptText(message));
+  }
+  if (post && post.mentions.length > 0) {
+    row.post = post;
+    row.receipt = part("span", "receipt mentions", mentionsText(post.mentions));
   }
   chatRows.push(row);
   li.append(...chatParts(row));
@@ -2019,6 +2058,20 @@ function chatParts(row) {
 // webhook has started it.
 function receiptText(m) {
   return m.read === true ? "read" : m.starting === true ? "starting…" : "not read yet";
+}
+
+// What a post's receipt says: for each agent it mentions, whether that agent has read the mention with read_inbox.
+function mentionsText(mentions) {
+  return mentions.map((m) => m.name + ": " + receiptText(m)).join(" · ");
+}
+
+// A post's mentions as GET /api/channel-posts gives them, each with its name and whether it has been read; any entry
+// that is not one is left out.
+function mentionsOf(p) {
+  const mentions = p && typeof p === "object" && Array.isArray(p.mentions) ? p.mentions : [];
+  return mentions
+    .filter((m) => m && typeof m === "object" && typeof m.name === "string")
+    .map((m) => ({ name: m.name, read: m.read === true }));
 }
 
 // The earliest ms chatTime of a time in ms can change at: now for one it shows as relative, a minute before it for one
@@ -2119,7 +2172,7 @@ function appendLog(posts) {
   // What the open log shows counts as seen, even a post that came after GET /api/channels answered.
   const key = "channel " + openChannel;
   seen.set(key, Math.max(seen.get(key) ?? 0, held));
-  appendEntries(posts.map((p) => chatEntry(p.from, "", p.sentAt, p.body)));
+  appendEntries(posts.map((p) => chatEntry(p.from, "", p.sentAt, p.body, undefined, { id: p.id, mentions: mentionsOf(p) })));
 }
 
 function appendMessages(page) {
