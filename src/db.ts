@@ -30,6 +30,8 @@ CREATE TABLE IF NOT EXISTS ${table} (
   removed_at INTEGER,
   removed_name TEXT,
   person INTEGER NOT NULL DEFAULT 0,
+  status TEXT,
+  status_at INTEGER,
   UNIQUE (account_id, name)
 );`;
 
@@ -262,10 +264,11 @@ function addAccounts(db: Db, path: string): void {
       if (hasColumn(db, "account_id")) return;
       copyBeforeAccounts(path);
       db.exec(agentsTable("agents_by_account"));
-      // `person` is left to its default: no person can exist before accounts did.
+      // `person` is left to its default: no person can exist before accounts did. `migrate` has already added the
+      // status columns to the old table, so they come across too.
       db.prepare(
-        `INSERT INTO agents_by_account (id, account_id, name, bio, registered_at, last_seen, key_hash, instance, removed_at, removed_name)
-         SELECT id, ?, name, bio, registered_at, last_seen, key_hash, instance, removed_at, removed_name FROM agents`,
+        `INSERT INTO agents_by_account (id, account_id, name, bio, registered_at, last_seen, key_hash, instance, removed_at, removed_name, status, status_at)
+         SELECT id, ?, name, bio, registered_at, last_seen, key_hash, instance, removed_at, removed_name, status, status_at FROM agents`,
       ).run(OWNER_ACCOUNT);
       db.exec("DROP TABLE agents");
       db.exec("ALTER TABLE agents_by_account RENAME TO agents");

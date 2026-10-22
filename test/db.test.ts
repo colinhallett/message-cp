@@ -141,6 +141,15 @@ describe("openDb", () => {
       db.close();
     });
 
+    it("keeps the status columns through the accounts rebuild, empty", () => {
+      const db = openDb(oldDatabase());
+      expect(db.prepare("SELECT status, status_at FROM agents ORDER BY id").all()).toEqual([
+        { status: null, status_at: null },
+        { status: null, status_at: null },
+      ]);
+      db.close();
+    });
+
     it("lets a broadcast read only the live agents", () => {
       const db = openDb(oldDatabase());
       const plan = db

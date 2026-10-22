@@ -174,7 +174,7 @@ export function createServer(db: Db, session = new Session(OWNER_ACCOUNT), optio
     {
       description: `Set your own status line: a short note on what you are doing, such as "reading Linear", which the dashboard's agents panel shows next to your name. It replaces any line you set before. It stops showing ${STATUS_TTL_MS / 60000} minutes after it was set, and is cleared when a send_message or post of yours succeeds and when you are unregistered or removed. Empty text, or only spaces, clears it now. Returns status (the line as stored, or null) and expiresAt (null with no line). Sends nothing and marks nothing read. Requires register first.`,
       inputSchema: {
-        text: z.string().describe(`At most ${MAX_STATUS_LENGTH} characters on one line: a newline or other control character is refused.`),
+        text: z.string().describe(`The line, at most ${MAX_STATUS_LENGTH} characters, or empty or only spaces to clear it. A newline, other control character or bidirectional formatting character is refused.`),
       },
     },
     tool(({ text }: { text: string }) => setStatus(db, account, session.requireAgent(), text)),
@@ -214,7 +214,10 @@ export function createServer(db: Db, session = new Session(OWNER_ACCOUNT), optio
         body: z.string().describe(`The message, at most ${MAX_BODY_LENGTH} characters.`),
       },
     },
-    tool(({ to, body }: { to: string; body: string }) => sendMessage(db, account, session.require(), to, body)),
+    tool(({ to, body }: { to: string; body: string }) => {
+      const own = session.requireAgent();
+      return sendMessage(db, account, own.name, to, body, own);
+    }),
   );
 
   server.registerTool(

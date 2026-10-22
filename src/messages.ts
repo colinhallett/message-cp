@@ -61,9 +61,10 @@ export function validateBody(body: string, kind = "Message"): void {
 /**
  * Stores one delivery per recipient: the named agent, or for `all` every agent of the account registered right now
  * except the sender. Read state therefore belongs to each recipient. A message belongs to its recipient's account,
- * which is always the sender's.
+ * which is always the sender's. `own` is the sending agent's registration, whose status line the send clears; a
+ * person sends without one.
  */
-export function sendMessage(db: Db, account: AccountId, from: string, to: string, body: string): SendResult {
+export function sendMessage(db: Db, account: AccountId, from: string, to: string, body: string, own?: Identity): SendResult {
   validateBody(body);
   const broadcast = to.toLowerCase() === "all";
   // IMMEDIATE takes the write lock up front, so the recipient list cannot change under us.
@@ -94,10 +95,13 @@ export function sendMessage(db: Db, account: AccountId, from: string, to: string
         const id = insert.run(r.id, from, body, broadcast ? 1 : 0, now).lastInsertRowid;
         queue.run(id, now, account, r.name);
       }
-      // Sending clears the sender's status line. A person has none, so a send as one changes nothing here.
-      db.prepare(
-        "UPDATE agents SET status = NULL, status_at = NULL WHERE account_id = ? AND name = ? AND removed_at IS NULL AND person = 0 AND status IS NOT NULL",
-      ).run(account, from);
+      // Sending clears the sender's status line, on its own registration only, so a send from a session whose agent was
+      // removed meanwhile never clears the line of a later agent with the same name.
+      if (own) {
+        db.prepare(
+          "UPDATE agents SET status = NULL, status_at = NULL WHERE account_id = ? AND id = ? AND registered_at = ? AND instance IS ? AND removed_at IS NULL AND person = 0 AND status IS NOT NULL",
+        ).run(account, own.id, own.registeredAt, own.instance);
+      }
       return { delivered: recipients.length, recipients: recipients.map((r) => r.name) };
     })
     .immediate();

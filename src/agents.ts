@@ -234,15 +234,19 @@ export interface StatusResult {
 
 // A newline, any other control character, or a line or paragraph separator: the line has to stay one line.
 const NOT_ONE_LINE = /[\p{Cc}\p{Zl}\p{Zp}]/u;
+// Bidirectional marks, embeddings, overrides and isolates, which could reorder the text shown around the line. Other
+// format characters, such as the zero-width joiner in emoji sequences, are allowed.
+const BIDI_CONTROL = /\p{Bidi_Control}/u;
 
 /**
  * Sets the status line of the caller's own registration, `own`, replacing any earlier one, or clears it when `text` is
- * empty or only spaces. Throws, changing nothing, for a line that is too long or not one line, or NOT_REGISTERED
- * once that registration was removed. A person's row never matches.
+ * empty or only spaces. Throws, changing nothing, for a line that is too long, not one line or holds a bidirectional
+ * formatting character, or NOT_REGISTERED once that registration was removed. A person's row never matches.
  */
 export const setStatus = (db: Db, account: AccountId, own: Identity, text: string, now = Date.now()): StatusResult => {
   // Before the blank check, so a lone newline or tab is refused rather than taken as clearing the line.
   if (NOT_ONE_LINE.test(text)) throw new ToolError("Status must be one line, with no newline or other control character.");
+  if (BIDI_CONTROL.test(text)) throw new ToolError("Status must not contain bidirectional formatting characters.");
   const clear = text.trim().length === 0;
   if (!clear) {
     // Count characters (code points), as validateBody does.

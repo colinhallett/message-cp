@@ -4,9 +4,9 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { MAX_STATUS_LENGTH, STATUS_TTL_MS, addPerson, purgeAgent, registerAgent, removeAgent } from "../src/agents.js";
+import { MAX_STATUS_LENGTH, STATUS_TTL_MS, addPerson, purgeAgent, registerAgent, removeAgent, type Identity } from "../src/agents.js";
 import { OWNER_ACCOUNT, openDb, type Db } from "../src/db.js";
-import { listAgentsUnread, unreadSummary } from "../src/messages.js";
+import { listAgentsUnread, sendMessage, unreadSummary } from "../src/messages.js";
 import { Session, createServer } from "../src/server.js";
 
 let dbFile: string;
@@ -101,6 +101,18 @@ describe("set_status", () => {
     }
   });
 
+  it("leaves a later agent's line alone when a send comes from a removed registration of the same name", async () => {
+    const a = await agent("alice");
+    await agent("bob");
+    const stale = db.prepare("SELECT id, registered_at AS registeredAt, instance FROM agents WHERE name = 'alice'").get() as Identity;
+    await call(a.client, "unregister");
+    const again = await agent("alice");
+    await call(again.client, "set_status", { text: "new alice" });
+    // As a send authorized for the old registration that reached the write lock only after the name was taken again.
+    sendMessage(db, OWNER_ACCOUNT, "alice", "bob", "late", stale);
+    expect(statuses()).toEqual({ alice: "new alice", bob: null });
+  });
+
   it("keeps the line when the send is refused", async () => {
     const a = await agent("alice");
     await call(a.client, "set_status", { text: "drafting" });
@@ -174,6 +186,31 @@ describe("set_status", () => {
       expect(statuses()).toEqual({ alice: "before" });
     },
   );
+
+  it.each(["rtl\u202eoverride", "iso\u2066late\u2069", "mark\u200f", "alm\u061c"])(
+    "refuses a line with a bidirectional formatting character (%j) and changes nothing",
+    async (text) => {
+      const a = await agent("alice");
+      await call(a.client, "set_status", { text: "before" });
+      const res = await call(a.client, "set_status", { text });
+      expect(res.isError).toBe(true);
+      expect(res.text).toMatch(/bidirectional/);
+      expect(statuses()).toEqual({ alice: "before" });
+    },
+  );
+
+  it("keeps format characters that are not bidirectional, such as the joiner in an emoji sequence", async () => {
+    const a = await agent("alice");
+    const family = "\u{1F468}\u200d\u{1F469}\u200d\u{1F467}";
+    expect((await call(a.client, "set_status", { text: `with ${family}` })).json.status).toBe(`with ${family}`);
+  });
+
+  it(`clears with only spaces even past ${MAX_STATUS_LENGTH} characters`, async () => {
+    const a = await agent("alice");
+    await call(a.client, "set_status", { text: "busy" });
+    expect((await call(a.client, "set_status", { text: " ".repeat(MAX_STATUS_LENGTH + 1) })).json).toEqual({ status: null, expiresAt: null });
+    expect(statuses()).toEqual({ alice: null });
+  });
 
   it("requires register first", async () => {
     const client = await connect();
