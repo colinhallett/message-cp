@@ -11,7 +11,7 @@ import {
   listAccountChannels,
   postAsPerson,
   readAccountChannel,
-  type ChannelPage,
+  type AccountChannelPage,
 } from "./channels.js";
 import { DASHBOARD_HEADERS, DASHBOARD_HTML } from "./dashboard.js";
 import type { AccountId, Db } from "./db.js";
@@ -454,8 +454,10 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
   };
 
   /**
-   * GET /api/channel-posts?channel=<name>: one page of the account's channel, oldest first, without moving any agent's
-   * read position. A channel only another account has is answered like one that does not exist.
+   * GET /api/channel-posts?channel=<name>: one page of the account's channel, oldest first, each post with whether each
+   * agent of the account it mentions has read the mention. `?unread=true` answers only the posts with at least one
+   * unread mention of an agent. It moves no agent's read position and marks nothing read. A channel only another account
+   * has is answered like one that does not exist.
    */
   const apiChannelPosts = (req: IncomingMessage, res: ServerResponse, account: AccountId) => {
     if (req.method !== "GET") return reply(res, 405, "Method not allowed", { Allow: "GET" });
@@ -464,9 +466,12 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
     if (names.length !== 1) return reply(res, 404, "No such channel");
     const paging = page(query, DEFAULT_CHANNEL_LIMIT, MAX_CHANNEL_LIMIT);
     if (paging === undefined) return reply(res, 400, `limit must be 1-${MAX_CHANNEL_LIMIT} and offset 0 or more`);
-    let channel: ChannelPage | undefined;
+    const unread = query.getAll("unread");
+    if (unread.length > 1 || (unread.length === 1 && unread[0] !== "true")) return reply(res, 400, "unread must be true");
+    const unreadOnly = unread.length === 1;
+    let channel: AccountChannelPage | undefined;
     try {
-      channel = unlessBusy(res, () => readAccountChannel(db, account, names[0], paging.limit, paging.offset));
+      channel = unlessBusy(res, () => readAccountChannel(db, account, names[0], paging.limit, paging.offset, unreadOnly));
     } catch (err) {
       // An invalid name and a missing channel are the same answer, so neither says more than the other.
       if (err instanceof ToolError) return reply(res, 404, "No such channel");

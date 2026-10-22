@@ -13,6 +13,17 @@ export interface Post {
   body: string;
 }
 
+/** A post as `readAccountChannel` gives it: with whether each agent of the account it mentions has read the mention. */
+export interface AccountPost extends Post {
+  /** In name order. A mentioned person is left out; a removed agent shows the name it had. */
+  mentions: { name: string; read: boolean }[];
+}
+
+export interface AccountChannelPage {
+  channel: string;
+  posts: AccountPost[];
+}
+
 export interface PostResult {
   channel: string;
   id: number;
@@ -348,7 +359,9 @@ export function listAccountChannels(
 
 /**
  * One page of the account's channel `channel`, oldest first, paged by `limit` and `offset`, for the account rather than for one
- * agent. Reads only, so no read position moves.
+ * agent, each post with whether each agent of the account it mentions has read the mention with `read_inbox`. With
+ * `unreadOnly`, only the posts with at least one unread mention of an agent. Reads only, so no read position moves and
+ * nothing is marked read.
  */
 export function readAccountChannel(
   db: Db,
@@ -356,12 +369,33 @@ export function readAccountChannel(
   channel: string,
   limit = DEFAULT_CHANNEL_LIMIT,
   offset = 0,
-): ChannelPage {
-  return db.transaction((): ChannelPage => {
+  unreadOnly = false,
+): AccountChannelPage {
+  // With unreadOnly, the posts are found from the account's agents and their unread mentions (mentions_unread), so only
+  // unread rows are read, never the channel's whole history; a post with several unread mentions is listed once.
+  const page = unreadOnly
+    ? `SELECT DISTINCT p.id, p.sender, p.body, p.created_at
+       FROM agents a CROSS JOIN mentions x ON x.agent_id = a.id AND x.read_at IS NULL CROSS JOIN channel_posts p ON p.id = x.post_id
+       WHERE p.channel_id = ? AND a.account_id = ? AND a.person = 0 ORDER BY p.id LIMIT ? OFFSET ?`
+    : "SELECT id, sender, body, created_at FROM channel_posts WHERE channel_id = ? ORDER BY id LIMIT ? OFFSET ?";
+  return db.transaction((): AccountChannelPage => {
     const found = findChannel(db, account, channel);
-    const rows = db
-      .prepare("SELECT id, sender, body, created_at FROM channel_posts WHERE channel_id = ? ORDER BY id LIMIT ? OFFSET ?")
-      .all(found.id, Math.min(limit, MAX_CHANNEL_LIMIT), offset) as PostRow[];
-    return { channel: found.name, posts: rows.map(toPost) };
+    const params = [found.id, ...(unreadOnly ? [account] : []), Math.min(limit, MAX_CHANNEL_LIMIT), offset];
+    const rows = db.prepare(page).all(...params) as PostRow[];
+    // The page's mentions in one statement, with the page as a subquery rather than a list of ids.
+    const mentions = db
+      .prepare(
+        `SELECT x.post_id, CASE WHEN a.removed_at IS NULL THEN a.name ELSE a.removed_name END AS name, x.read_at
+         FROM (${page}) pg JOIN mentions x ON x.post_id = pg.id JOIN agents a ON a.id = x.agent_id
+         WHERE a.account_id = ? AND a.person = 0 ORDER BY x.post_id, name COLLATE NOCASE, a.id`,
+      )
+      .all(...params, account) as { post_id: number; name: string; read_at: number | null }[];
+    const byPost = new Map<number, { name: string; read: boolean }[]>();
+    for (const m of mentions) {
+      const list = byPost.get(m.post_id) ?? [];
+      list.push({ name: m.name, read: m.read_at !== null });
+      byPost.set(m.post_id, list);
+    }
+    return { channel: found.name, posts: rows.map((r) => ({ ...toPost(r), mentions: byPost.get(r.id) ?? [] })) };
   })();
 }
