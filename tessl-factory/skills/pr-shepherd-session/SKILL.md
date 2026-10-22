@@ -167,8 +167,8 @@ looping.
 6. **Only the owner merges the owner's files.** List the changed files with
    `git diff --name-only --no-renames origin/<base>...<sha>`, so a renamed
    file shows both its old and new path. If any is `DIRECTION.md` or
-   `tessl.json` at the repository root, or is under `tessl-factory/` or
-   `.tessl/`, do not merge. `AGENTS.md` may be merged only when the change
+   `tessl.json` or `.tessl-code-review.yml` at the repository root, or is
+   under `tessl-factory/`, `.tessl/` or `review-lenses/`, do not merge. `AGENTS.md` may be merged only when the change
    adds lines and changes or removes none: `git diff origin/<base>...<sha> --
    AGENTS.md` shows no line starting with a single `-` other than the `---`
    header. Otherwise treat it as an owner's file too. If the PR has no such comment

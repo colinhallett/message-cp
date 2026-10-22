@@ -37,7 +37,7 @@ Account separation is the one security boundary that matters most here: a change
 
 - Never break a working agent's setup without a migration path: old names, paths and settings keep working for at least one release after a change.
 - Messages and tokens are private. Nothing logs a message body or a token, and no check posts one anywhere.
-- Changes to this file, to `tessl.json` and to `tessl-factory/` are the owner's, and so is changing or removing anything already in `AGENTS.md`. The factory may propose them but never merges them. The factory may add to `AGENTS.md` (guidance agents learned the hard way), and merges that itself.
+- Changes to this file, to `tessl.json`, to `tessl-factory/`, and to the code review policy (`.tessl-code-review.yml` and `review-lenses/`, which a pull request is reviewed with its own copy of) are the owner's, and so is changing or removing anything already in `AGENTS.md`. The factory may propose them but never merges them. The factory may add to `AGENTS.md` (guidance agents learned the hard way), and merges that itself.
 - Prefer removing code to adding it. A feature needs a reason an agent hits in practice, not a reason it might.
 - At most three factory tickets are in flight at once.
 

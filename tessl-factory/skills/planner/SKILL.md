@@ -56,7 +56,8 @@ The working tree is a checkout of `main`. Record its commit with
    duplicate only when an open or recently closed issue already says
    `Traces to: <that identifier>`.
 4. **The owner's files are the owner's.** Work that would change
-   `DIRECTION.md`, `tessl.json`, anything under `tessl-factory/` or `.tessl/`,
+   `DIRECTION.md`, `tessl.json`, `.tessl-code-review.yml`, anything under
+   `tessl-factory/`, `.tessl/` or `review-lenses/`,
    or that would change or remove an existing line of `AGENTS.md`, is never
    delegated (adding to `AGENTS.md` may be). File it in Backlog with no delegate and no
    assignee, as in "Filing", step 4.
