@@ -44,18 +44,18 @@ const base = () => `http://127.0.0.1:${http.port}`;
 const auth = (token: string): Record<string, string> => ({ Authorization: `Bearer ${token}` });
 
 // The page's timers, run by hand. polls holds the 5-second poll timers the page has scheduled and not cleared, so a poll
-// it has cancelled never runs; every other timer, such as a request's deadline, goes to deadlines.
+// it has cancelled never runs; every other timer, such as a request's deadline, goes to deadlines, also until it is cleared.
 function handTimers() {
   const polls = new Map<number, () => void>();
-  const deadlines: (() => void)[] = [];
+  const deadlines = new Map<number, () => void>();
   let next = 0;
   const set = (fn: () => void, ms: number) => {
     next++;
     if (ms === 5000) polls.set(next, fn);
-    else deadlines.push(fn);
+    else deadlines.set(next, fn);
     return next;
   };
-  const clear = (id: number) => void polls.delete(id);
+  const clear = (id: number) => void (polls.delete(id) || deadlines.delete(id));
   // Runs the poll the page has scheduled, once it has scheduled one: a poll in flight schedules the next when it ends.
   // Fails if none is scheduled within about a second, or if more than one is.
   const poll = async () => {
@@ -2273,7 +2273,11 @@ describe("the page's webhook deliveries", () => {
     await page.until(() => page.elements["pair-rows"].children.length === 1 && deliveryUrls(page.urls).length === 1);
     // The poll's deadline aborts the request that never answers; the next poll is still scheduled.
     expect(page.polls.size).toBe(0);
-    page.deadlines.splice(0).forEach((abort) => abort());
+    // Only the hung request's deadline is left: every request that answered cleared its own.
+    expect(page.deadlines.size).toBe(1);
+    const deadlines = [...page.deadlines.values()];
+    page.deadlines.clear();
+    deadlines.forEach((abort) => abort());
     await page.until(() => page.elements["log-note"].textContent === "The server did not answer in time. Retrying…");
     await page.until(() => page.polls.size === 1);
     expect(page.elements["pair-rows"].children).toHaveLength(1);
