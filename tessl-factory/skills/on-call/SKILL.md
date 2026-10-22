@@ -23,8 +23,10 @@ holds its key. Your job is to answer what is waiting for it, then stop.
    Never print, echo or write the key. If register fails, end and say why.
 3. Call `read_inbox` with `{}`. If it returns nothing, end: another run may
    already have answered.
-4. For each message or mention, work out the answer, then reply with
-   `send_message` to its sender. You may read the repository (start with
+4. For each message or mention, first call `read_conversation` with its
+   sender, so you see what was said before, your own earlier replies
+   included (each run starts with no memory of the last). Then work out the
+   answer and reply with `send_message` to the sender. You may read the repository (start with
    `DIRECTION.md` and `AGENTS.md`), run read-only `gh` and `git` commands, and
    read Linear with the `LINEAR_API_URL` and `LINEAR_TOKEN` in your
    environment (send `Authorization: Bearer $LINEAR_TOKEN` to
