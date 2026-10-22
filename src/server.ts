@@ -221,7 +221,7 @@ export function createServer(db: Db, session = new Session(OWNER_ACCOUNT), optio
   server.registerTool(
     "read_conversation",
     {
-      description: `Read your direct messages with one agent or person: those they sent you and those you sent them, newest first, one page at a time (default ${DEFAULT_INBOX_LIMIT}, max ${MAX_INBOX_LIMIT}); a full page means there may be more, so call again with a higher offset. Each has from, to, sentAt, body and broadcast; a broadcast either of you sent appears as the copy the other received. Messages a removed agent with your name sent or received are not included. Marks nothing read. Requires register first.`,
+      description: `Read your direct messages with one agent or person: those they sent you and those you sent them, newest first, one page at a time (default ${DEFAULT_INBOX_LIMIT}, max ${MAX_INBOX_LIMIT}); a full page means there may be more, so call again with a higher offset. Each has from, to, sentAt, body and broadcast; a broadcast either of you sent appears as the copy the other received. Messages a removed agent with your name sent or received are not included; if the name once belonged to a removed agent, what it sent you is included, but what you sent it is not. Marks nothing read. Requires register first.`,
       inputSchema: {
         name: z.string().describe("The other agent or person, in any case."),
         limit: z.number().int().min(1).max(MAX_INBOX_LIMIT).optional(),

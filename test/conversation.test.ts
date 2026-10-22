@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { addAccount } from "../src/accounts.js";
 import { addPerson, registerAgent, registerWithIdentity } from "../src/agents.js";
 import { OWNER_ACCOUNT, openDb, type AccountId, type Db } from "../src/db.js";
-import { readConversation, sendAsPerson, unreadSummary } from "../src/messages.js";
+import { readConversation, sendAsPerson, sendMessage, unreadSummary } from "../src/messages.js";
 import { Session, createServer } from "../src/server.js";
 
 let dbFile: string;
@@ -183,6 +183,14 @@ describe("read_conversation", () => {
     ]);
     // The removed registration's session is unregistered, so it cannot read either.
     expect((await call(bob, "read_conversation", { name: "alice" })).isError).toBe(true);
+  });
+
+  it("returns nothing for a registration that is no longer live", () => {
+    registerAgent(db, OWNER_ACCOUNT, "bob", "x");
+    const { identity } = registerWithIdentity(db, OWNER_ACCOUNT, "alice", "x");
+    sendMessage(db, OWNER_ACCOUNT, "bob", "alice", "hi");
+    db.prepare("UPDATE agents SET instance = 'other' WHERE id = ?").run(identity.id);
+    expect(readConversation(db, OWNER_ACCOUNT, { ...identity, name: "alice" }, "bob")).toEqual([]);
   });
 
   it("keeps what an agent sent when its name is taken over with its key", async () => {
