@@ -359,10 +359,13 @@ export interface AccountMessage {
 export interface ListedMessage extends AccountMessage {
   /**
    * Whether the message is to an agent, not to a person, its recipient has not read it, and at least one of its webhook
-   * deliveries has been delivered: a webhook-started agent is on its way to it.
+   * deliveries has been delivered: a webhook has started a run for it.
    */
   starting: boolean;
 }
+
+/** A row `listAccountMessages` reads: `person` is the recipient's, `delivered` 1 when a webhook delivered the message. */
+type ListedRow = Row & { recipient: string; person: number; delivered: number };
 
 /**
  * One page of the account's messages, oldest first, for the account rather than for one agent. A broadcast is one row
@@ -382,11 +385,12 @@ export function listAccountMessages(
     .prepare(
       `SELECT m.id, m.sender, CASE WHEN a.removed_at IS NULL THEN a.name ELSE a.removed_name END AS recipient,
               m.body, m.broadcast, m.created_at, m.read_at, a.person,
-              EXISTS (SELECT 1 FROM webhook_deliveries d WHERE d.message_id = m.id AND d.delivered_at IS NOT NULL) AS delivered
+              EXISTS (SELECT 1 FROM webhook_deliveries d
+                      WHERE d.message_id = m.id AND d.delivered_at IS NOT NULL) AS delivered
        FROM messages m JOIN agents a ON a.id = m.recipient_id
        WHERE a.account_id = ?${unreadOnly ? " AND a.person = 0 AND m.read_at IS NULL" : ""} ORDER BY m.id LIMIT ? OFFSET ?`,
     )
-    .all(account, Math.min(limit, MAX_INBOX_LIMIT), offset) as (Row & { recipient: string; person: number; delivered: number })[];
+    .all(account, Math.min(limit, MAX_INBOX_LIMIT), offset) as ListedRow[];
   return rows.map((r) => ({
     id: r.id,
     from: r.sender,

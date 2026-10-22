@@ -2002,7 +2002,7 @@ describe("the page's channels and messages", () => {
       await page.until(() => receipt(log.children[0]) === undefined && page.scheduled());
     });
 
-    // The delivery a webhook on agent:bob queued for each message, marked as the receiver having taken it (a 2xx).
+    // Marks every queued webhook delivery as taken by its receiver (a 2xx); in these tests only bob has a webhook.
     const deliver = () => db.prepare("UPDATE webhook_deliveries SET attempts = 1, delivered_at = ?").run(Date.now());
 
     it("turns a held unread message to starting… once a webhook delivered it, and then to read, in place", async () => {
@@ -2038,6 +2038,25 @@ describe("the page's channels and messages", () => {
 
       open(pairs.children.find((row) => item(row)[0] === "alice ↔ carol")!);
       expect(log.children.map(receipt)).toEqual(["not read yet"]);
+    });
+
+    it("shows starting… at once for a message already delivered when the page loads, and none to a person", async () => {
+      registerAgent(db, OWNER_ACCOUNT, "bob", "x");
+      addPerson(db, "owner", "colin");
+      addWebhook(db, "owner", "http://127.0.0.1:1/hook", "agent:bob", true);
+      addWebhook(db, "owner", "http://127.0.0.1:1/hook", "agent:colin", true);
+      sendMessage(db, OWNER_ACCOUNT, "colin", "bob", "to bob");
+      sendMessage(db, OWNER_ACCOUNT, "bob", "colin", "to colin");
+      deliver();
+      const page = await load(viewer);
+      const pairs = page.elements["pair-rows"];
+      const log = page.elements["post-rows"];
+      await page.until(() => pairs.children.length === 1 && page.elements["rows"].children.length === 2);
+      open(pairs.children[0]);
+      expect(log.children.map((row) => [field(row, "body"), receipt(row)])).toEqual([
+        ["to bob", "starting…"],
+        ["to colin", undefined],
+      ]);
     });
 
     it("shows no starting… without a delivered delivery, and keeps starting… once the server stops saying it", async () => {
