@@ -477,14 +477,18 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
 
   /**
    * GET /api/messages: one page of the account's direct messages, oldest first, each with its recipient and whether
-   * it has been read. It marks nothing read, so no unread count, `lastSeen` or /wait answer moves.
+   * it has been read. `?unread=true` answers only the messages to an agent, not to a person, whose recipient has not
+   * read them. It marks nothing read, so no unread count, `lastSeen` or /wait answer moves.
    */
   const apiMessages = (req: IncomingMessage, res: ServerResponse, account: AccountId) => {
     if (req.method !== "GET") return reply(res, 405, "Method not allowed", { Allow: "GET" });
     const query = new URL(req.url ?? "", "http://x").searchParams;
     const paging = page(query, DEFAULT_INBOX_LIMIT, MAX_INBOX_LIMIT);
     if (paging === undefined) return reply(res, 400, `limit must be 1-${MAX_INBOX_LIMIT} and offset 0 or more`);
-    const messages = unlessBusy(res, () => listAccountMessages(db, account, paging.limit, paging.offset));
+    const unread = query.getAll("unread");
+    if (unread.length > 1 || (unread.length === 1 && unread[0] !== "true")) return reply(res, 400, "unread must be true");
+    const unreadOnly = unread.length === 1;
+    const messages = unlessBusy(res, () => listAccountMessages(db, account, paging.limit, paging.offset, unreadOnly));
     if (messages === undefined) return;
     sendJson(res, messages);
   };

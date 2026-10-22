@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { addAccount, addToken, listAccounts, revokeToken } from "../src/accounts.js";
-import { registerAgent, removeAgent } from "../src/agents.js";
+import { addPerson, registerAgent, removeAgent } from "../src/agents.js";
 import { OWNER_ACCOUNT, openDb, type AccountId, type Db } from "../src/db.js";
 import { startHttp, type HttpServer } from "../src/http.js";
 import { readInbox, sendMessage } from "../src/messages.js";
@@ -136,7 +136,7 @@ describe("GET /api/messages", () => {
     for (const query of bad) expect((await get(`/api/messages${query}`, friendViewer)).status).toBe(400);
   });
 
-  it("changes nothing: no message is marked read, and unread counts, lastSeen and /wait stay as they were", async () => {
+  it("changes nothing, with or without unread: no message is marked read, and unread counts, lastSeen and /wait stay as they were", async () => {
     register(OWNER_ACCOUNT, "alice", "bob");
     sendMessage(db, OWNER_ACCOUNT, "bob", "alice", "unread");
     sendMessage(db, OWNER_ACCOUNT, "alice", "all", "unread too");
@@ -144,12 +144,94 @@ describe("GET /api/messages", () => {
     const waitBefore = await (await get("/wait?agent=alice", OWNER_TOKEN)).text();
     const before = snapshot();
     const agentsBefore = await ok<unknown>("/api/agents", ownerViewer);
-    for (const token of [OWNER_TOKEN, ownerFull, ownerViewer]) await messages(token);
+    for (const token of [OWNER_TOKEN, ownerFull, ownerViewer]) {
+      await messages(token);
+      expect((await messages(token, "?unread=true")).map((m) => m.body)).toEqual(["unread", "unread too"]);
+    }
     expect(snapshot()).toBe(before);
     expect(db.prepare("SELECT COUNT(*) FROM messages WHERE read_at IS NOT NULL").pluck().get()).toBe(0);
     expect(await ok<unknown>("/api/agents", ownerViewer)).toEqual(agentsBefore);
     expect(await (await get("/wait?agent=alice", OWNER_TOKEN)).text()).toBe(waitBefore);
     expect(waitBefore).toBe("1 unread message from bob\n");
+  });
+
+  describe("?unread=true", () => {
+    it("answers only the messages whose recipient has not read them, a broadcast once per unread recipient", async () => {
+      register(OWNER_ACCOUNT, "alice", "bob", "carol");
+      sendMessage(db, OWNER_ACCOUNT, "alice", "bob", "read by bob");
+      readInbox(db, OWNER_ACCOUNT, "bob");
+      sendMessage(db, OWNER_ACCOUNT, "alice", "bob", "unread by bob");
+      sendMessage(db, OWNER_ACCOUNT, "bob", "all", "hello everyone");
+      readInbox(db, OWNER_ACCOUNT, "alice");
+      const all = await messages(ownerViewer);
+      for (const token of [OWNER_TOKEN, ownerFull, ownerViewer]) {
+        // The same shape and order as without unread, less the rows that have been read.
+        expect(await messages(token, "?unread=true")).toEqual(all.filter((m) => !m.read));
+        expect((await messages(token, "?unread=true")).map((m) => [m.to, m.body, m.broadcast, m.read])).toEqual([
+          ["bob", "unread by bob", false, false],
+          ["carol", "hello everyone", true, false],
+        ]);
+      }
+      readInbox(db, OWNER_ACCOUNT, "carol");
+      expect((await messages(ownerViewer, "?unread=true")).map((m) => [m.to, m.body])).toEqual([["bob", "unread by bob"]]);
+    });
+
+    it("leaves out messages to a person, which no read_inbox ever reads", async () => {
+      register(OWNER_ACCOUNT, "alice");
+      addPerson(db, "owner", "colin");
+      sendMessage(db, OWNER_ACCOUNT, "alice", "colin", "to the person");
+      sendMessage(db, OWNER_ACCOUNT, "colin", "alice", "to the agent");
+      sendMessage(db, OWNER_ACCOUNT, "alice", "all", "everyone");
+      expect((await messages(ownerViewer)).map((m) => [m.to, m.body, m.read])).toEqual([
+        ["colin", "to the person", false],
+        ["alice", "to the agent", false],
+        ["colin", "everyone", false],
+      ]);
+      for (const token of [OWNER_TOKEN, ownerFull, ownerViewer]) {
+        expect((await messages(token, "?unread=true")).map((m) => [m.to, m.body])).toEqual([["alice", "to the agent"]]);
+      }
+    });
+
+    it("never answers another account's unread messages, even between agents of the same names", async () => {
+      register(OWNER_ACCOUNT, "alice", "bob");
+      register(friend, "alice", "bob", "fred");
+      sendMessage(db, OWNER_ACCOUNT, "alice", "bob", "owner's message");
+      sendMessage(db, friend, "alice", "bob", "friend's message");
+      sendMessage(db, friend, "fred", "all", "friend's broadcast");
+      const query = `?unread=true&limit=200&account=${friend}&agent=fred`;
+      for (const token of [OWNER_TOKEN, ownerFull, ownerViewer]) {
+        expect(await (await get(`/api/messages${query}`, token)).text()).not.toContain("friend's");
+        expect((await messages(token, query)).map((m) => [m.from, m.to, m.body])).toEqual([["alice", "bob", "owner's message"]]);
+      }
+      for (const token of [friendToken, friendViewer]) {
+        expect((await messages(token, "?unread=true")).map((m) => [m.from, m.to, m.body])).toEqual([
+          ["alice", "bob", "friend's message"],
+          ["fred", "alice", "friend's broadcast"],
+          ["fred", "bob", "friend's broadcast"],
+        ]);
+      }
+    });
+
+    it("pages the unread messages with limit and offset", async () => {
+      register(friend, "fred", "gina");
+      for (const body of ["a", "b", "c", "d", "e"]) sendMessage(db, friend, "fred", "gina", body);
+      readInbox(db, friend, "gina", true, 1);
+      const bodies = async (query: string) => (await messages(friendViewer, `?unread=true${query}`)).map((m) => m.body);
+      expect(await bodies("")).toEqual(["b", "c", "d", "e"]);
+      expect(await bodies("&limit=2")).toEqual(["b", "c"]);
+      expect(await bodies("&limit=2&offset=2")).toEqual(["d", "e"]);
+      expect(await bodies("&offset=9")).toEqual([]);
+      for (let i = 0; i < 205; i++) sendMessage(db, friend, "fred", "gina", `m${i}`);
+      expect(await messages(friendViewer, "?unread=true")).toHaveLength(50);
+      expect(await messages(friendViewer, "?unread=true&limit=200")).toHaveLength(200);
+    });
+
+    it("refuses unread given twice or with any value but true with 400", async () => {
+      const bad = ["?unread=", "?unread=false", "?unread=1", "?unread=TRUE", "?unread=true&unread=true", "?unread=true&unread=false"];
+      bad.push("?unread", "?unread=true&limit=0");
+      for (const query of bad) expect((await get(`/api/messages${query}`, friendViewer)).status).toBe(400);
+      expect((await get("/api/messages?unread=true", friendViewer)).status).toBe(200);
+    });
   });
 
   it("answers 405 with Allow: GET to any method but GET", async () => {
