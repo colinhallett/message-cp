@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { addAccount, addToken, listAccounts, revokeToken } from "../src/accounts.js";
-import { registerAgent, removeAgent } from "../src/agents.js";
+import { addPerson, registerAgent, removeAgent } from "../src/agents.js";
 import { OWNER_ACCOUNT, openDb, type AccountId, type Db } from "../src/db.js";
 import { startHttp, type HttpServer } from "../src/http.js";
 import { readInbox, sendMessage } from "../src/messages.js";
@@ -174,6 +174,22 @@ describe("GET /api/messages", () => {
       }
       readInbox(db, OWNER_ACCOUNT, "carol");
       expect((await messages(ownerViewer, "?unread=true")).map((m) => [m.to, m.body])).toEqual([["bob", "unread by bob"]]);
+    });
+
+    it("leaves out messages to a person, which no read_inbox ever reads", async () => {
+      register(OWNER_ACCOUNT, "alice");
+      addPerson(db, "owner", "colin");
+      sendMessage(db, OWNER_ACCOUNT, "alice", "colin", "to the person");
+      sendMessage(db, OWNER_ACCOUNT, "colin", "alice", "to the agent");
+      sendMessage(db, OWNER_ACCOUNT, "alice", "all", "everyone");
+      expect((await messages(ownerViewer)).map((m) => [m.to, m.body, m.read])).toEqual([
+        ["colin", "to the person", false],
+        ["alice", "to the agent", false],
+        ["colin", "everyone", false],
+      ]);
+      for (const token of [OWNER_TOKEN, ownerFull, ownerViewer]) {
+        expect((await messages(token, "?unread=true")).map((m) => [m.to, m.body])).toEqual([["alice", "to the agent"]]);
+      }
     });
 
     it("never answers another account's unread messages, even between agents of the same names", async () => {

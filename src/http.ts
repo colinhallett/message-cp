@@ -477,8 +477,8 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
 
   /**
    * GET /api/messages: one page of the account's direct messages, oldest first, each with its recipient and whether
-   * it has been read. `?unread=true` answers only the messages whose recipient has not read them. It marks nothing
-   * read, so no unread count, `lastSeen` or /wait answer moves.
+   * it has been read. `?unread=true` answers only the messages to an agent, not to a person, whose recipient has not
+   * read them. It marks nothing read, so no unread count, `lastSeen` or /wait answer moves.
    */
   const apiMessages = (req: IncomingMessage, res: ServerResponse, account: AccountId) => {
     if (req.method !== "GET") return reply(res, 405, "Method not allowed", { Allow: "GET" });
