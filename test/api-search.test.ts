@@ -174,7 +174,7 @@ describe("GET /api/search", () => {
     const tool = search(db, OWNER_ACCOUNT, member(OWNER_ACCOUNT, "bob"), "find");
     expect(tool).toEqual([
       expect.objectContaining({ kind: "post", body: "find me too" }),
-      { kind: "message", from: "alice", sentAt: expect.any(String), body: "find me", broadcast: false },
+      { kind: "message", id: expect.any(Number), inReplyTo: null, from: "alice", sentAt: expect.any(String), body: "find me", broadcast: false },
     ]);
     const found = await find(ownerViewer, "text=find");
     expect(found[0]).toEqual(tool[0]);

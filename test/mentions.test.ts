@@ -116,11 +116,11 @@ describe("read_inbox with mentions", () => {
     await ok(alice, "send_message", { to: "all", body: "to everyone" });
     const inbox = await ok(bob, "read_inbox");
     expect(inbox).toEqual([
-      { from: "alice", sentAt: expect.any(String), body: "direct one", broadcast: false },
+      { id: expect.any(Number), inReplyTo: null, from: "alice", sentAt: expect.any(String), body: "direct one", broadcast: false },
       { channel: "dev", id: posted.id, from: "alice", sentAt: posted.sentAt, body: "hey @bob" },
-      { from: "alice", sentAt: expect.any(String), body: "to everyone", broadcast: true },
+      { id: expect.any(Number), inReplyTo: null, from: "alice", sentAt: expect.any(String), body: "to everyone", broadcast: true },
     ]);
-    expect(Object.keys(inbox[0]).sort()).toEqual(["body", "broadcast", "from", "sentAt"]);
+    expect(Object.keys(inbox[0]).sort()).toEqual(["body", "broadcast", "from", "id", "inReplyTo", "sentAt"]);
     expect(await ok(bob, "read_inbox")).toEqual([]);
     expect(summary("bob")).toMatchObject({ count: 0, mentions: 0, posts: 1, channels: ["dev"] });
   });

@@ -68,8 +68,8 @@ describe("search", () => {
     const found = await ok(bob, "search", { text: "deploy" });
     expect(found).toEqual([
       { kind: "post", channel: "ops", id: posted.id, from: "alice", sentAt: posted.sentAt, body: "DEPLOY log attached" },
-      { kind: "message", from: "alice", sentAt: expect.any(String), body: "deploy again tomorrow", broadcast: true },
-      { kind: "message", from: "alice", sentAt: expect.any(String), body: "the Deploy is done", broadcast: false },
+      { kind: "message", id: expect.any(Number), inReplyTo: null, from: "alice", sentAt: expect.any(String), body: "deploy again tomorrow", broadcast: true },
+      { kind: "message", id: expect.any(Number), inReplyTo: null, from: "alice", sentAt: expect.any(String), body: "the Deploy is done", broadcast: false },
     ]);
     // The sender searches what it received, not what it sent; posts are anyone's in the account.
     expect(bodies(await ok(alice, "search", { text: "deploy" }))).toEqual(["DEPLOY log attached"]);
