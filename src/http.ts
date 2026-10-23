@@ -628,10 +628,15 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
 
   const handle = async (req: IncomingMessage, res: ServerResponse) => {
     const path = (req.url ?? "").split("?")[0];
-    // The dashboard page is the same constant for everyone and holds no data, so it alone comes before the token.
+    // The dashboard page is the same constant for everyone and holds no data, so it comes before the token.
     if (req.method === "GET" && path === "/") {
       res.writeHead(200, DASHBOARD_HEADERS);
       return void res.end(DASHBOARD_HTML);
+    }
+    // The health check is the same constant for everyone, reads nothing and touches no account, so it too comes before the token.
+    if (path === "/health") {
+      if (req.method !== "GET") return reply(res, 405, "Method not allowed", { Allow: "GET" });
+      return sendJson(res, { ok: true });
     }
     // The token is the first thing any other request meets, and decides the account everything after it acts as.
     const access = accountOf(db, req.headers.authorization, options.token);

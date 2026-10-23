@@ -71,6 +71,24 @@ describe("token", () => {
     await expect(connect("wrong")).rejects.toThrow();
   });
 
+  it("answers GET /health the same with no token, a wrong one and a valid one, and 405 to any other method", async () => {
+    const health = new URL("/health", url());
+    for (const headers of [{}, { Authorization: "Bearer nope" }, { Authorization: `Bearer ${TOKEN}` }]) {
+      const res = await fetch(health, { headers });
+      expect(res.status).toBe(200);
+      expect(res.headers.get("content-type")).toBe("application/json");
+      expect(await res.text()).toBe('{"ok":true}');
+    }
+    for (const method of ["POST", "DELETE", "HEAD"]) {
+      const res = await fetch(health, { method, headers: { Authorization: `Bearer ${TOKEN}` } });
+      expect(res.status).toBe(405);
+      expect(res.headers.get("allow")).toBe("GET");
+    }
+    expect((await fetch(new URL("/nope", url()))).status).toBe(401);
+    expect((await fetch(new URL("/health/", url()))).status).toBe(401);
+    expect(http.sessionCount()).toBe(0);
+  });
+
   it("accepts the right token", async () => {
     const res = await post({ Authorization: `Bearer ${TOKEN}` });
     expect(res.status).toBe(200);
