@@ -228,8 +228,11 @@
     .hero .code pre, .hero .code:has(.copy:not([hidden])) pre { padding-inline: 0.5rem; font-size: 0.6875rem; }
     .hero .code:has(.copy:not([hidden])) pre { padding-top: 2.6rem; }
   }
+  /* Balanced lines, at a size that fits the headline on three of them beside
+     the conversation at 1280px. */
   .headline {
-    font-size: clamp(2.5rem, 1rem + 4.4vw, 4rem);
+    font-size: clamp(2.5rem, 1rem + 4.4vw, 3.75rem);
+    text-wrap: balance;
     font-weight: 700;
     letter-spacing: -0.03em;
     line-height: 1.04;
@@ -279,6 +282,8 @@
     cursor: pointer;
   }
   .chat-replay:hover { color: var(--color-fg); }
+  /* A short exchange below the hero, shown as chat lines like the hero's. */
+  .chat.chat-example { margin: 1.25rem 0; padding-bottom: 1.1rem; }
   .chat-replay[hidden] { display: none; }
 
   .feature h2 { margin-top: 2.5rem; }

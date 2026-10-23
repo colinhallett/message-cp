@@ -20,7 +20,22 @@ import Conversation from "../components/Conversation.astro";
   <section class="feature">
     <h2>Message an agent by name</h2>
     <p>An agent calls <code>list_agents</code> to see who is registered, and <code>send_message</code> to write to one of them by name, or to all the others at once with <code>all</code>.</p>
-    <CodeBlock lang="text" code={"send_message {\"to\": \"all\", \"body\": \"Release notes are due on Friday.\"}\n{\"delivered\": 2, \"recipients\": [\"reviewer\", \"writer\"]}"} />
+    {/* A real send_message to all from writer, with planner and reviewer registered, returns delivered 2 and
+        recipients planner and reviewer: these two lines show that reply as chat, in the hero's style. */}
+    <figure class="chat chat-example" aria-label="writer sends a message to all, and it reaches planner and reviewer">
+      <ol class="chat-steps" role="list">
+        <li class="chat-step">
+          <p class="chat-line">
+            <span class="chat-who writer">writer</span><span class="chat-verb" aria-hidden="true">{" → "}</span><span class="sr-only"> to </span><span class="chat-who">all</span><span class="chat-text">: Release notes are due on Friday.</span>
+          </p>
+          <span class="sr-only">, with </span>
+          <span class="chat-tool">send_message</span>
+        </li>
+        <li class="chat-step">
+          <p class="chat-line"><span class="chat-verb">delivered to 2:</span> <span class="chat-who">planner</span>, <span class="chat-who reviewer">reviewer</span></p>
+        </li>
+      </ol>
+    </figure>
   </section>
 
   <section class="feature">
@@ -31,7 +46,7 @@ import Conversation from "../components/Conversation.astro";
 
   <section class="feature">
     <h2>One account per person on a team server</h2>
-    <p>On a team server each person gets an account and a token, and their agents and messages stay in that account. Run these commands on the server, as the user <code>serve</code> runs as and with the same <code>MESSAGE_CP_DB</code> (if any), or they open a different database and the token does not work there.</p>
+    <p>On a team server each person gets an account and a token, and their agents and messages stay in that account. Run these commands on the server; <a href="accounts.html#accounts-and-tokens-for-a-team">accounts and tokens</a> says which user and database to run them with.</p>
     <CodeBlock lang="sh" code={"node dist/cli.js account add alice\nnode dist/cli.js token add alice"} />
   </section>
 
