@@ -128,6 +128,13 @@ const within = (promise, ms, what) => {
   ]).finally(() => clearTimeout(timer));
 };
 
+/** A value from a tool result, as one line it cannot style the terminal with. */
+const plain = (value) => String(value).replace(/[\u0000-\u001f\u007f-\u009f]+/g, " ");
+
+/** Whether `wait`'s unread line names `name` among the senders of unread messages, not just in a channel's name. */
+const namesSender = (line, name) =>
+  line.split("; ").some((part) => /^\d+ unread messages? from (.*)$/.exec(part)?.[1].split(", ").includes(name));
+
 /** Parses a tool result's JSON, or throws the server's error text, cut to one short line it cannot style the terminal with. */
 function parse(result, tool) {
   const text = result.content?.[0]?.text ?? "";
@@ -319,7 +326,7 @@ async function main() {
       const statuses = await call(sender, "message_status", { ids: [firstId] });
       const status = statuses.find((s) => s.id === firstId);
       if (!status) throw new Error(`message_status did not return id ${firstId}`);
-      if (status.read !== true) throw new Error(`read is ${status.read}, not true`);
+      if (status.read !== true) throw new Error(`read is ${plain(status.read)}, not true`);
       if (typeof status.readAt !== "string" || Number.isNaN(Date.parse(status.readAt))) throw new Error("readAt is not a time");
     });
 
@@ -328,15 +335,15 @@ async function main() {
       // If this step or the next fails, nothing awaits `asking`; its failure must not crash the run.
       asking.catch((err) => (askError = err));
       // On a live server someone's broadcast may already be unread, and wait_for_mail answers at once for it, so it is
-      // asked again until its line names the first agent, for at most 10 seconds in all.
+      // asked again until its line names the first agent as a sender, for at most 10 seconds in all.
       const deadline = Date.now() + 10_000;
       for (;;) {
         if (askError) throw new Error(`ask failed: ${describe(askError)}`);
         const left = Math.ceil((deadline - Date.now()) / 1000);
         const { unread } = left > 0 ? await call(receiver, "wait_for_mail", { timeout_seconds: left }) : { unread: null };
-        if (typeof unread === "string" && unread.includes(sender.name)) return;
+        if (typeof unread === "string" && namesSender(unread, sender.name)) return;
         if (askError) throw new Error(`ask failed: ${describe(askError)}`);
-        if (!unread || Date.now() >= deadline) throw new Error(unread ? `the line does not name ${sender.name}` : "no mail within 10s");
+        if (!unread || Date.now() >= deadline) throw new Error(unread ? `the line does not name ${sender.name} as a sender` : "no mail within 10s");
         await new Promise((r) => setTimeout(r, 500));
       }
     });
@@ -351,10 +358,10 @@ async function main() {
       const id = asked[0].id;
       await call(receiver, "send_message", { to: sender.name, body: answer, in_reply_to: id });
       const result = await asking;
-      if (result.id !== id) throw new Error(`ask returned id ${result.id}, not the question's ${id}`);
+      if (result.id !== id) throw new Error(`ask returned id ${plain(result.id)}, not the question's ${id}`);
       if (!result.reply) throw new Error("ask returned no reply");
-      if (result.reply.inReplyTo !== id) throw new Error(`the reply's inReplyTo is ${result.reply.inReplyTo}, not ${id}`);
-      if (result.reply.from !== receiver.name) throw new Error(`the reply is from ${result.reply.from}, not ${receiver.name}`);
+      if (result.reply.inReplyTo !== id) throw new Error(`the reply's inReplyTo is ${plain(result.reply.inReplyTo)}, not ${id}`);
+      if (result.reply.from !== receiver.name) throw new Error(`the reply is from ${plain(result.reply.from)}, not ${receiver.name}`);
       if (result.reply.body !== answer) throw new Error(`the reply is not "${answer}"`);
     });
 
