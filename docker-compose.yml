@@ -1,5 +1,6 @@
 # A message-cp team server behind Caddy for HTTPS. Set MESSAGE_CP_DOMAIN and MESSAGE_CP_HTTP_TOKEN
 # in .env (see .env.example) or the environment, then run `docker compose up -d`.
+# Run server commands in the running container, for example `docker compose exec message-cp message-cp account add alice`.
 # See "Running with Docker" in the reference, https://message-cp.vercel.app/server.html#running-with-docker.
 
 services:

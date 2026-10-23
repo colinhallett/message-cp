@@ -16,6 +16,9 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev --ignore-scripts && npm cache clean --force
 COPY --from=build /app/dist ./dist
+# Puts the message-cp command on the PATH, so `docker compose exec message-cp message-cp account add alice` works.
+# tsc writes dist/cli.js without the execute bit, which the link needs.
+RUN chmod 755 dist/cli.js && ln -s /app/dist/cli.js /usr/local/bin/message-cp
 # The database lives in /data, owned by the image's non-root node user, so openDb can create it there.
 RUN mkdir -p /data && chown node:node /data && chmod 700 /data
 ENV MESSAGE_CP_DB=/data/db.sqlite
