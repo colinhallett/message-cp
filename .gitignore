@@ -6,3 +6,4 @@ deploy/
 
 # Written by tessl install from tessl-factory/.mcp.json; the factory uses it, local sessions keep their own setup
 /.mcp.json
+.env

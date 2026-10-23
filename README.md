@@ -123,6 +123,25 @@ MESSAGE_CP_HTTP_TOKEN=<token> npm run e2e -- --url https://message-cp.example.co
 
 The URL must be `https` (plain `http` only for `127.x.x.x` or `[::1]`). It registers agents named `e2e-<random>-a` and `-b` in that token's account; before it exits, even after a failure, it tries to unregister them and delete every direct message to or from either name, and exits 1 if it cannot. It never prints the token.
 
+## Running with Docker
+
+The repository has a `Dockerfile`, which builds message-cp from the clone and runs `node dist/cli.js serve` on port 8787 of the container, and a `docker-compose.yml`, which runs it behind [Caddy](https://caddyserver.com) for HTTPS. Nothing is published to a registry, so the image is always built from your clone. You need Docker with Compose, and a domain whose DNS points at the machine with ports 80 and 443 reachable, so that Caddy can get its certificate (see **Address** under [Running the HTTP server](#running-the-http-server)).
+
+```sh
+git clone https://github.com/colinhallett/message-cp.git
+cd message-cp
+cp .env.example .env    # then set MESSAGE_CP_DOMAIN and MESSAGE_CP_HTTP_TOKEN in it
+docker compose up -d
+```
+
+- **Settings.** `MESSAGE_CP_DOMAIN` is the public domain, for example `message-cp.example.com`. It is the only place the domain is set: Caddy serves that site address (from the committed `Caddyfile`), and `serve` gets `--public-url https://<domain>`. `MESSAGE_CP_HTTP_TOKEN` is the owner account's token (for example from `openssl rand -hex 32`), read when the container starts and kept out of the image. Compose reads both from `.env` or from the environment, and a value set in the shell's environment wins over the one in `.env`. If either is missing or empty, `docker compose up` stops before starting anything and names it. `.env` is ignored by git and left out of the image build. After changing either, run `docker compose up -d` again to restart with the new value.
+- **Network.** Only Caddy publishes ports, 80 and 443. message-cp is reachable only on the compose network, at `message-cp:8787`, where Caddy forwards to it, so its plain HTTP never leaves the machine. Clients, the dashboard and the wake-up loop use `https://<domain>` as anywhere else in this README.
+- **Data.** The database is `/data/db.sqlite` in the container, on the named volume `data`, and Caddy's certificates are on the volume `caddy_data`. Both survive `docker compose down` followed by `docker compose up -d`; `docker compose down -v` deletes them. message-cp runs as the image's non-root `node` user, which owns `/data`.
+- **Server commands.** Run them in the running container, against the same database: for example `docker compose exec message-cp node dist/cli.js account add alice` or `docker compose exec message-cp node dist/cli.js account list`. Every command under [Accounts and tokens for a team](#accounts-and-tokens-for-a-team) works this way.
+- **Updating.** After `git pull`, run `docker compose up -d --build` to rebuild the image and restart with it; the volumes are kept.
+
+To try it on one machine without a domain, set `MESSAGE_CP_DOMAIN=localhost`: Caddy then serves `https://localhost` with a certificate from its own local authority, which clients do not trust unless you add that authority.
+
 ## Accounts and tokens for a team
 
 Give each person an account and a token. Every agent and every message belongs to one account, and nothing crosses between accounts: a session sees, messages, wakes on and removes only its own account's agents, and another account's agent looks exactly like one that does not exist. Names are unique within an account, so two accounts can each have a `planner`.

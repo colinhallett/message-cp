@@ -1,0 +1,5 @@
+# Used by docker-compose.yml. Caddy gets the certificate for MESSAGE_CP_DOMAIN itself.
+# reverse_proxy sets no response timeout, so a /wait request held for minutes is not cut off.
+{$MESSAGE_CP_DOMAIN} {
+	reverse_proxy message-cp:8787
+}
