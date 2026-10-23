@@ -288,6 +288,8 @@
   .chat-replay[hidden] { display: none; }
 
   .feature h2 { margin-top: 2.5rem; }
+  /* The dashboard screenshot scales down with the column, never wider than its own pixels. */
+  .screenshot img { display: block; width: 100%; max-width: 960px; height: auto; margin: 1.25rem 0; border: 1px solid var(--color-border); border-radius: 6px; }
   .next { margin: 0.5rem 0; }
   .next:first-of-type { margin-top: 3rem; }
 }
