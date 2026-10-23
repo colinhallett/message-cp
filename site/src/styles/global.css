@@ -87,7 +87,7 @@
   li + li { margin-top: 0.35rem; }
   strong { font-weight: 600; }
 
-  code { font-family: var(--font-mono); font-size: 0.875em; overflow-wrap: anywhere; }
+  code { font-family: var(--font-mono); font-size: 0.875em; overflow-wrap: break-word; }
   :not(pre) > code {
     background: var(--color-surface);
     border: 1px solid var(--color-border);
@@ -118,6 +118,10 @@
   .site-header a { color: var(--color-muted); text-decoration: none; white-space: nowrap; }
   .site-header a:hover { color: var(--color-fg); }
   .site-header .name { color: var(--color-fg); font-weight: 700; font-size: var(--text-base); margin-right: auto; letter-spacing: -0.01em; }
+  @media (max-width: 30rem) {
+    .site-header nav { gap: 0.1rem 0.75rem; padding: 0.5rem 1rem; font-size: 0.8125rem; }
+    .site-header .name { flex-basis: 100%; }
+  }
 
   .page { width: 100%; max-width: 48rem; margin: 0 auto; padding: 0 1.25rem; flex: 1; }
 
