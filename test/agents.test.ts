@@ -114,7 +114,7 @@ describe("tools", () => {
   it("are only the registration, messaging, read-state, channel, search and waiting tools", async () => {
     const { tools } = await (await connect()).listTools();
     expect(tools.map((t) => t.name).sort()).toEqual(
-      ["get_agent", "join_channel", "leave_channel", "list_agents", "list_channels", "message_status", "post", "read_channel", "read_conversation", "read_inbox", "register", "search", "send_message", "set_status", "unregister", "wait_for_mail"],
+      ["ask", "get_agent", "join_channel", "leave_channel", "list_agents", "list_channels", "message_status", "post", "read_channel", "read_conversation", "read_inbox", "register", "search", "send_message", "set_status", "unregister", "wait_for_mail"],
     );
   });
 });

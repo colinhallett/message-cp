@@ -161,6 +161,62 @@ export function sendAsPerson(db: Db, account: AccountId, as: string, to: string,
 }
 
 /**
+ * `sendMessage` from the agent `own` to the one live agent `to`, as `ask` sends its question: `all` and a person are
+ * refused, as a person cannot reply with an id, and an unknown name fails as in `sendMessage`. One transaction, so `to`
+ * cannot become a person between the check and the send.
+ */
+export function sendQuestion(db: Db, account: AccountId, own: Member, to: string, body: string): SendResult {
+  validateBody(body);
+  if (to.toLowerCase() === "all") throw new ToolError("ask goes to one agent, so to cannot be 'all'.");
+  return db
+    .transaction((): SendResult => {
+      const agent = getAgent(db, account, to);
+      if (agent?.person) throw new ToolError(`'${agent.name}' is a person, who cannot answer ask; use send_message.`);
+      return sendMessage(db, account, own.name, to, body, own);
+    })
+    .immediate();
+}
+
+/**
+ * The earliest message to `own`'s live row that answers message `questionId`, marked read as `readInbox` would mark it.
+ * Null when there is none yet, undefined when `own` is no longer registered, even if another agent now has its name.
+ * Found through the caller's row, so another account's or agent's reply never matches.
+ */
+export function takeReply(db: Db, account: AccountId, own: Identity, questionId: number): Message | null | undefined {
+  const find = (): Omit<Row, "read_at"> | null | undefined => {
+    const agent = db
+      .prepare("SELECT id FROM agents WHERE account_id = ? AND id = ? AND registered_at = ? AND instance IS ? AND removed_at IS NULL")
+      .get(account, own.id, own.registeredAt, own.instance) as { id: number } | undefined;
+    if (!agent) return undefined;
+    return (db.prepare(TAKE_REPLY_SQL).get(questionId, agent.id) as Omit<Row, "read_at"> | undefined) ?? null;
+  };
+  // A plain read first, which never waits for the write lock, so a poll with no reply yet takes no lock; the lock is
+  // taken only to mark a reply read, and the caller's row and the reply are found again under it.
+  const seen = db.transaction(find)();
+  if (!seen) return seen;
+  return db
+    .transaction((): Message | null | undefined => {
+      const r = find();
+      if (!r) return r;
+      db.prepare("UPDATE messages SET read_at = ? WHERE id = ? AND read_at IS NULL").run(Date.now(), r.id);
+      return {
+        id: r.id,
+        inReplyTo: r.in_reply_to,
+        from: r.sender,
+        sentAt: new Date(r.created_at).toISOString(),
+        body: r.body,
+        broadcast: r.broadcast === 1,
+      };
+    })
+    .immediate();
+}
+
+// Found through messages_by_question, whose rows for one recipient and question are already in id order, so replies
+// to the question sent to other agents are never read.
+export const TAKE_REPLY_SQL = `SELECT id, sender, body, broadcast, created_at, in_reply_to FROM messages
+  WHERE in_reply_to = ? AND recipient_id = ? ORDER BY id LIMIT 1`;
+
+/**
  * One page of the caller's messages and mentions together, oldest first. Everything returned is marked read. Unread
  * ones beyond the page stay unread for the next call; with `unreadOnly` false, use `offset`. Reading a mention does
  * not move the caller's read position in its channel. `reader` is the caller's name, or its registration.

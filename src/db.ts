@@ -321,6 +321,8 @@ function migrate(db: Db, path: string): void {
   addColumn(db, "in_reply_to", "INTEGER REFERENCES messages(id) ON DELETE SET NULL", "messages");
   // Deleting a message finds the replies to it (ON DELETE SET NULL) through this, not by scanning the table.
   db.exec("CREATE INDEX IF NOT EXISTS messages_by_reply ON messages (in_reply_to)");
+  // `ask` finds the replies to one question sent to the asker through this, in id order, not by walking every reply to it.
+  db.exec("CREATE INDEX IF NOT EXISTS messages_by_question ON messages (in_reply_to, recipient_id)");
   db.exec(DROP_REMOVED);
   db.prepare("INSERT OR IGNORE INTO accounts (id, name, created_at) VALUES (?, 'owner', ?)").run(OWNER_ACCOUNT, Date.now());
   addAccounts(db, path);
