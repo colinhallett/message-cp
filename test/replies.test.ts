@@ -119,7 +119,7 @@ describe("in_reply_to", () => {
     await ok(alice, "send_message", { to: "bob", body: "to bob" });
     await ok(alice, "send_message", { to: "carol", body: "to carol" });
     await ok(stranger, "send_message", { to: "alice", body: "other account" });
-    // Posts have ids of their own; the fourth is past every message's, so it can only be taken as a post's.
+    // Posts are numbered apart from messages; the fourth post's id is past every message's, so it names no message.
     for (const body of ["one", "two", "three"]) await ok(alice, "post", { channel: "ops", body });
     const post = await ok(alice, "post", { channel: "ops", body: "@bob a post" });
     expect((await ok(bob, "read_inbox")).map((m: { id: number }) => m.id)).toEqual([idOf("to bob"), post.id]);
@@ -146,8 +146,9 @@ describe("in_reply_to", () => {
     await ok(bob, "unregister");
     const later = await connect("bob");
     await refused(later, "alice", first);
-    // The first bob's session is no longer registered at all.
-    expect((await call(bob, "send_message", { to: "alice", body: "x", in_reply_to: first })).isError).toBe(true);
+    // The first bob's session is no longer registered at all, so it fails before the id is looked at.
+    const gone = await call(bob, "send_message", { to: "alice", body: "x", in_reply_to: first });
+    expect(gone.text).toContain("Call `register` first");
   });
 
   it("is rejected by the tool when it is not a positive integer", async () => {

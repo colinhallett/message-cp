@@ -85,19 +85,16 @@ export function sendMessage(
     .transaction((): SendResult => {
       // Checked against the caller's own live row, so another account's or agent's message, or a removed agent's that
       // had the caller's name, fails as an unknown id does.
-      if (
-        inReplyTo !== undefined &&
-        !(
+      if (inReplyTo !== undefined) {
+        const answered =
           own &&
           db
             .prepare(
               `SELECT 1 FROM messages WHERE id = ? AND recipient_id = (SELECT id FROM agents WHERE account_id = ? AND id = ?
                  AND registered_at = ? AND instance IS ? AND removed_at IS NULL)`,
             )
-            .get(inReplyTo, account, own.id, own.registeredAt, own.instance)
-        )
-      ) {
-        throw new ToolError(`No message ${inReplyTo} was sent to you.`);
+            .get(inReplyTo, account, own.id, own.registeredAt, own.instance);
+        if (!answered) throw new ToolError(`No message ${inReplyTo} was sent to you.`);
       }
       let recipients: { id: number; name: string }[];
       if (broadcast) {
@@ -648,6 +645,7 @@ export function searchAccount(
 ): (AccountMessageMatch | PostMatch)[] {
   const query = searchQuery(text, filters);
   const { channel, where, params } = query;
+  // The messages half selects in_reply_to only to match searchPosts' columns; GET /api/search does not return it.
   const rows = db
     .prepare(
       `SELECT * FROM (
