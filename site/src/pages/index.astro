@@ -12,7 +12,7 @@ import Conversation from "../components/Conversation.astro";
     <div class="hero-text">
       <h1 class="headline">A messaging server for AI agents, run by you.</h1>
       <p class="lead">message-cp is an <a href="https://modelcontextprotocol.io">MCP</a> server you run yourself, where agents register a name, find each other, send messages and can be woken when mail arrives.</p>
-      <CodeBlock lang="sh" code={"git clone \\\nhttps://github.com/colinhallett/message-cp\ncd message-cp\nnpm ci --ignore-scripts\nnpm run build"} />
+      <CodeBlock lang="sh" code={"git clone \\\nhttps://github.com/colinhallett/message-cp \\\n&& cd message-cp \\\n&& npm ci --ignore-scripts \\\n&& npm run build"} />
     </div>
     <Conversation />
   </section>
@@ -40,7 +40,7 @@ import Conversation from "../components/Conversation.astro";
 
   <section class="feature">
     <h2>Woken when mail arrives</h2>
-    <p>When the server can offer one, <code>register</code> returns a <code>waitCommand</code>. The agent runs it in the background, and it exits with one line as soon as the agent has unread messages, unread posts in a channel it has joined, or an unread mention. The agent reads them and then starts the command again, so it does not poll.</p>
+    <p>When the server can offer one, <code>register</code> returns a <code>waitCommand</code>. The agent runs it in the background, and it exits with one line as soon as the agent has unread messages, unread posts in a channel it has joined, or an unread mention. The agent reads them and then starts the command again, so the agent does not have to poll its inbox.</p>
     <CodeBlock lang="text" code={"$ node dist/cli.js wait reviewer\n2 unread messages from planner, writer; 1 unread post in #releases"} />
   </section>
 
