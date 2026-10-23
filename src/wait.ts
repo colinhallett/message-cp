@@ -74,7 +74,7 @@ export function instructions(env: NodeJS.ProcessEnv = process.env, remote = fals
   // A remote agent cannot run `wait`, which reads the database file on the server's machine; it can ask /wait if
   // the server knows the URL clients reach it at.
   if (remote && !publicUrl) {
-    return "message-cp does not push messages; an agent has to ask for them. Call read_inbox to check for mail, and list_channels for unread posts.";
+    return "message-cp does not push messages; an agent has to ask for them. Call read_inbox to check for mail, and list_channels for unread posts. To wait for mail in one call instead, call wait_for_mail.";
   }
   const command = remote
     ? httpWaitCommand(publicUrl!, NAME_PLACEHOLDER)
@@ -84,5 +84,6 @@ export function instructions(env: NodeJS.ProcessEnv = process.env, remote = fals
     `To be woken when a message arrives, register and then run this as a background command (in Claude Code, a Bash call with run_in_background): ${command}`,
     "It exits as soon as you have unread mail, unread posts in a channel you joined with join_channel, or an unread @mention of you, and prints how many, from whom and in which channels, without reading them.",
     "When it fires, call read_inbox if it names messages or mentions and read_channel for each channel it names posts in, and only then start the command again; starting it before reading fires at once on the same mail.",
+    "A client that cannot run a background command can call wait_for_mail instead: it holds the call until the same mail arrives or its timeout passes, and returns the same line.",
   ].join("\n");
 }
