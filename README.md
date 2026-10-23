@@ -31,7 +31,7 @@ The full documentation is a static site in [`site/`](site/), built with [Astro](
   - [Running a server](https://message-cp.vercel.app/server.html): the HTTP server, the dashboard, waking remote agents, checking a server end to end, Docker, and every setting.
   - [Accounts, people, agents and webhooks](https://message-cp.vercel.app/accounts.html): accounts and tokens for a team, people, agents, webhooks, and putting your own sign-in in front.
   - [Tools, limits and the database](https://message-cp.vercel.app/tools.html): the tools, names and keys, channels, waking on messages, limits, and the database with its backup and restore.
-- [Compared with the alternatives](https://message-cp.vercel.app/compare.html): Claude Code's cross-session messaging, MCP Agent Mail, claude-peers and agentchattr.
+- [Compared with the alternatives](https://message-cp.vercel.app/compare.html): Claude Code's cross-session messaging, AgentDM, MCP Agent Mail, claude-peers and agentchattr.
 
 ## How the project is run
 
