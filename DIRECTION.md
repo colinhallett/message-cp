@@ -12,7 +12,7 @@ People who run it themselves: alone, with one token, or for a small team, with a
 
 ## Current goal: ready for other people to use
 
-Someone who has never seen message-cp should be able to understand what it is, run it on one machine in five minutes, and run a team server in fifteen. In this order, each part a ticket of its own or more:
+Someone who has never seen message-cp should be able to understand what it is, run it on one machine in five minutes, and run a team server in fifteen. Each part is a ticket of its own or more. Parts 1 to 3 touch different files and can be built at the same time; part 4 comes after them, because the site documents them:
 
 1. **Docker.** A `Dockerfile` that builds and runs `serve`, keeping the database on a mounted volume, and a `docker-compose.yml` that runs it behind Caddy for HTTPS with a domain set in one place. `docker compose up` gives a working team server. Nothing is published to a registry yet.
 2. **Connecting a client in one step.** `message-cp connect <agent>` (on the server, like the other commands) prints exactly what to give a client for that agent: the MCP address, a token, and the agent's name and key headers, as a ready `claude mcp add` command and as JSON for other clients. It never prints a secret anywhere but stdout, and says so.
