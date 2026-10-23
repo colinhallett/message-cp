@@ -2,7 +2,10 @@ import { NAME_PATTERN, STATUS_TTL_MS, ToolError, getAgent, personOf, type Identi
 import type { Member } from "./channels.js";
 import type { AccountId, Db } from "./db.js";
 
+/** A direct message: `id` is its own, `inReplyTo` the id of the message it answers, or null. */
 export interface Message {
+  id: number;
+  inReplyTo: number | null;
   from: string;
   sentAt: string;
   body: string;
@@ -30,6 +33,7 @@ interface Row {
   broadcast: number;
   created_at: number;
   read_at: number | null;
+  in_reply_to: number | null;
 }
 
 /** A row of read_inbox's page: a message, or with `mention` 1 a mentioning post, whose `channel` is then set. */
@@ -62,14 +66,36 @@ export function validateBody(body: string, kind = "Message"): void {
  * Stores one delivery per recipient: the named agent, or for `all` every agent of the account registered right now
  * except the sender. Read state therefore belongs to each recipient. A message belongs to its recipient's account,
  * which is always the sender's. `own` is the sending agent's registration, whose status line the send clears; a
- * person sends without one.
+ * person sends without one. `inReplyTo`, which needs `own`, is the id of a message stored for that registration, which
+ * each stored row records; any other id throws the same error, so it does not tell whether the id exists.
  */
-export function sendMessage(db: Db, account: AccountId, from: string, to: string, body: string, own?: Identity): SendResult {
+export function sendMessage(
+  db: Db,
+  account: AccountId,
+  from: string,
+  to: string,
+  body: string,
+  own?: Identity,
+  inReplyTo?: number,
+): SendResult {
   validateBody(body);
   const broadcast = to.toLowerCase() === "all";
   // IMMEDIATE takes the write lock up front, so the recipient list cannot change under us.
   return db
     .transaction((): SendResult => {
+      // Checked against the caller's own live row, so another account's or agent's message, or a removed agent's that
+      // had the caller's name, fails as an unknown id does.
+      if (inReplyTo !== undefined) {
+        const answered =
+          own &&
+          db
+            .prepare(
+              `SELECT 1 FROM messages WHERE id = ? AND recipient_id = (SELECT id FROM agents WHERE account_id = ? AND id = ?
+                 AND registered_at = ? AND instance IS ? AND removed_at IS NULL)`,
+            )
+            .get(inReplyTo, account, own.id, own.registeredAt, own.instance);
+        if (!answered) throw new ToolError(`No message ${inReplyTo} was sent to you.`);
+      }
       let recipients: { id: number; name: string }[];
       if (broadcast) {
         recipients = db
@@ -83,7 +109,7 @@ export function sendMessage(db: Db, account: AccountId, from: string, to: string
           .all(account, agent.name) as typeof recipients;
       }
       const insert = db.prepare(
-        "INSERT INTO messages (recipient_id, sender, body, broadcast, created_at) VALUES (?, ?, ?, ?, ?)",
+        "INSERT INTO messages (recipient_id, sender, body, broadcast, created_at, in_reply_to) VALUES (?, ?, ?, ?, ?, ?)",
       );
       // Each recipient's row is owed to every `agent:<recipient>` webhook of the account.
       const queue = db.prepare(
@@ -92,7 +118,7 @@ export function sendMessage(db: Db, account: AccountId, from: string, to: string
       );
       const now = Date.now();
       for (const r of recipients) {
-        const id = insert.run(r.id, from, body, broadcast ? 1 : 0, now).lastInsertRowid;
+        const id = insert.run(r.id, from, body, broadcast ? 1 : 0, now, inReplyTo ?? null).lastInsertRowid;
         queue.run(id, now, account, r.name);
       }
       // Sending clears the sender's status line, on its own registration only, so a send from a session whose agent was
@@ -149,10 +175,10 @@ export function readInbox(
       // Oldest first; a message before a mention of the same millisecond, and each kind in id order.
       const rows = db
         .prepare(
-          `SELECT 0 AS mention, id, sender, body, broadcast, created_at, NULL AS channel
+          `SELECT 0 AS mention, id, sender, body, broadcast, created_at, NULL AS channel, in_reply_to
            FROM messages WHERE recipient_id = ? ${unreadOnly ? "AND read_at IS NULL" : ""}
            UNION ALL
-           SELECT 1, p.id, p.sender, p.body, 0, p.created_at, c.name
+           SELECT 1, p.id, p.sender, p.body, 0, p.created_at, c.name, NULL
            FROM mentions x JOIN channel_posts p ON p.id = x.post_id
            JOIN channels c ON c.id = p.channel_id AND c.account_id = ?
            WHERE x.agent_id = ? ${unreadOnly ? "AND x.read_at IS NULL" : ""}
@@ -171,7 +197,14 @@ export function readInbox(
       return rows.map((r): Message | Mention =>
         r.mention === 1
           ? { channel: r.channel!, id: r.id, from: r.sender, sentAt: new Date(r.created_at).toISOString(), body: r.body }
-          : { from: r.sender, sentAt: new Date(r.created_at).toISOString(), body: r.body, broadcast: r.broadcast === 1 },
+          : {
+              id: r.id,
+              inReplyTo: r.in_reply_to,
+              from: r.sender,
+              sentAt: new Date(r.created_at).toISOString(),
+              body: r.body,
+              broadcast: r.broadcast === 1,
+            },
       );
     })
     .immediate();
@@ -211,10 +244,10 @@ export function readConversation(
     // each message appears once.
     const rows = db
       .prepare(
-        `SELECT id, sender, ? AS recipient, body, broadcast, created_at FROM messages
+        `SELECT id, sender, ? AS recipient, body, broadcast, created_at, in_reply_to FROM messages
          WHERE recipient_id = ? AND sender = ? COLLATE NOCASE
          ${self ? "" : `UNION ALL
-         SELECT id, sender, ?, body, broadcast, created_at FROM messages
+         SELECT id, sender, ?, body, broadcast, created_at, in_reply_to FROM messages
          WHERE recipient_id = (SELECT id FROM agents WHERE account_id = ? AND name = ? AND removed_at IS NULL)
            AND sender = ? COLLATE NOCASE AND created_at >= ?`}
          ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?`,
@@ -228,6 +261,8 @@ export function readConversation(
         offset,
       ) as (Omit<Row, "read_at"> & { recipient: string })[];
     return rows.map((r) => ({
+      id: r.id,
+      inReplyTo: r.in_reply_to,
       from: r.sender,
       to: r.recipient,
       sentAt: new Date(r.created_at).toISOString(),
@@ -379,7 +414,7 @@ export interface ListedMessage extends AccountMessage {
 }
 
 /** A row `listAccountMessages` reads: `person` is the recipient's, `delivered` 1 when a webhook delivered the message. */
-type ListedRow = Row & { recipient: string; person: number; delivered: number };
+type ListedRow = Omit<Row, "in_reply_to"> & { recipient: string; person: number; delivered: number };
 
 /**
  * One page of the account's messages, oldest first, for the account rather than for one agent. A broadcast is one row
@@ -518,7 +553,8 @@ function searchQuery(text: string, filters: SearchFilters): SearchQuery {
 
 /** The posts half of a search, newest first, scoped to the account's channels; its first placeholder is the account. */
 const searchPosts = ({ channel, where }: SearchQuery) =>
-  `SELECT 1 AS is_post, p.id, p.sender, p.body, 0 AS broadcast, p.created_at, c.name AS channel, NULL AS recipient, NULL AS read_at
+  `SELECT 1 AS is_post, p.id, p.sender, p.body, 0 AS broadcast, p.created_at, c.name AS channel, NULL AS recipient, NULL AS read_at,
+     NULL AS in_reply_to
    FROM channel_posts p JOIN channels c ON c.id = p.channel_id AND c.account_id = ?
    WHERE ${channel === undefined ? "" : "c.name = ? AND "}${where("p")}`;
 
@@ -560,7 +596,7 @@ export function search(
     const rows = db
       .prepare(
         `SELECT * FROM (
-           ${channel === undefined ? `SELECT 0 AS is_post, m.id, m.sender, m.body, m.broadcast, m.created_at, NULL AS channel, NULL AS recipient, NULL AS read_at FROM messages m WHERE m.recipient_id = ? AND ${where("m")} UNION ALL` : ""}
+           ${channel === undefined ? `SELECT 0 AS is_post, m.id, m.sender, m.body, m.broadcast, m.created_at, NULL AS channel, NULL AS recipient, NULL AS read_at, m.in_reply_to FROM messages m WHERE m.recipient_id = ? AND ${where("m")} UNION ALL` : ""}
            ${searchPosts(query)})
          ${SEARCH_ORDER}`,
       )
@@ -575,7 +611,15 @@ export function search(
     return rows.map((r): MessageMatch | PostMatch =>
       r.is_post === 1
         ? toPost(r)
-        : { kind: "message", from: r.sender, sentAt: new Date(r.created_at).toISOString(), body: r.body, broadcast: r.broadcast === 1 },
+        : {
+            kind: "message",
+            id: r.id,
+            inReplyTo: r.in_reply_to,
+            from: r.sender,
+            sentAt: new Date(r.created_at).toISOString(),
+            body: r.body,
+            broadcast: r.broadcast === 1,
+          },
     );
   })();
 }
@@ -601,11 +645,12 @@ export function searchAccount(
 ): (AccountMessageMatch | PostMatch)[] {
   const query = searchQuery(text, filters);
   const { channel, where, params } = query;
+  // The messages half selects in_reply_to only to match searchPosts' columns; GET /api/search does not return it.
   const rows = db
     .prepare(
       `SELECT * FROM (
          ${channel === undefined ? `SELECT 0 AS is_post, m.id, m.sender, m.body, m.broadcast, m.created_at, NULL AS channel,
-             CASE WHEN a.removed_at IS NULL THEN a.name ELSE a.removed_name END AS recipient, m.read_at
+             CASE WHEN a.removed_at IS NULL THEN a.name ELSE a.removed_name END AS recipient, m.read_at, m.in_reply_to
            FROM messages m JOIN agents a ON a.id = m.recipient_id AND a.account_id = ? WHERE ${where("m")} UNION ALL` : ""}
          ${searchPosts(query)})
        ${SEARCH_ORDER}`,

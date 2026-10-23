@@ -208,22 +208,28 @@ export function createServer(db: Db, session = new Session(OWNER_ACCOUNT), optio
   server.registerTool(
     "send_message",
     {
-      description: `Send a message to one registered agent or person by name, or to every other registered agent and person with to: 'all'. A broadcast only reaches agents registered, and people added, when it is sent. Requires register first.`,
+      description: `Send a message to one registered agent or person by name, or to every other registered agent and person with to: 'all'. A broadcast only reaches agents registered, and people added, when it is sent. With in_reply_to, each copy stored records the id of the message it answers, which read_inbox, read_conversation and search return as inReplyTo. Requires register first.`,
       inputSchema: {
         to: z.string().describe("An agent name, or 'all'."),
         body: z.string().describe(`The message, at most ${MAX_BODY_LENGTH} characters.`),
+        in_reply_to: z
+          .number()
+          .int()
+          .positive()
+          .optional()
+          .describe("The id of a direct message sent to you, as read_inbox, read_conversation or search returns it, that this one answers. Any other id fails, and nothing is sent."),
       },
     },
-    tool(({ to, body }: { to: string; body: string }) => {
+    tool(({ to, body, in_reply_to }: { to: string; body: string; in_reply_to?: number }) => {
       const own = session.requireAgent();
-      return sendMessage(db, account, own.name, to, body, own);
+      return sendMessage(db, account, own.name, to, body, own, in_reply_to);
     }),
   );
 
   server.registerTool(
     "read_inbox",
     {
-      description: `Read your messages and your mentions (channel posts that name you as @<your-name>), oldest first, one page at a time (default ${DEFAULT_INBOX_LIMIT}, max ${MAX_INBOX_LIMIT}). A message has from, sentAt, body and broadcast; a mention has channel, id (the post's), from, sentAt and body. By default only unread ones; everything returned is marked read, so a full page means there may be more: call again. With unread_only false, use offset to page through history. To be woken when mail arrives instead of polling, run the wait command that register returns in the background, and start it again after reading what it names. Requires register first.`,
+      description: `Read your messages and your mentions (channel posts that name you as @<your-name>), oldest first, one page at a time (default ${DEFAULT_INBOX_LIMIT}, max ${MAX_INBOX_LIMIT}). A message has id (its own), inReplyTo (the id of the message it answers, or null), from, sentAt, body and broadcast; a mention has channel, id (the post's), from, sentAt and body. By default only unread ones; everything returned is marked read, so a full page means there may be more: call again. With unread_only false, use offset to page through history. To be woken when mail arrives instead of polling, run the wait command that register returns in the background, and start it again after reading what it names. Requires register first.`,
       inputSchema: {
         unread_only: z.boolean().optional().describe("Default true."),
         limit: z.number().int().min(1).max(MAX_INBOX_LIMIT).optional(),
@@ -238,7 +244,7 @@ export function createServer(db: Db, session = new Session(OWNER_ACCOUNT), optio
   server.registerTool(
     "read_conversation",
     {
-      description: `Read your direct messages with one agent or person: those they sent you and those you sent them, newest first, one page at a time (default ${DEFAULT_INBOX_LIMIT}, max ${MAX_INBOX_LIMIT}); a full page means there may be more, so call again with a higher offset. Each has from, to, sentAt, body and broadcast; a broadcast either of you sent appears as the copy the other received, and a conversation with yourself has no broadcasts. Messages a removed agent with your name sent or received are not included; if the name once belonged to a removed agent, what it sent you is included, but what you sent it is not. Marks nothing read. Requires register first.`,
+      description: `Read your direct messages with one agent or person: those they sent you and those you sent them, newest first, one page at a time (default ${DEFAULT_INBOX_LIMIT}, max ${MAX_INBOX_LIMIT}); a full page means there may be more, so call again with a higher offset. Each has id (its own), inReplyTo (the id of the message it answers, or null), from, to, sentAt, body and broadcast; a broadcast either of you sent appears as the copy the other received, and a conversation with yourself has no broadcasts. Messages a removed agent with your name sent or received are not included; if the name once belonged to a removed agent, what it sent you is included, but what you sent it is not. Marks nothing read. Requires register first.`,
       inputSchema: {
         name: z.string().describe("The other agent or person, in any case."),
         limit: z.number().int().min(1).max(MAX_INBOX_LIMIT).optional(),
@@ -253,7 +259,7 @@ export function createServer(db: Db, session = new Session(OWNER_ACCOUNT), optio
   server.registerTool(
     "search",
     {
-      description: `Search the messages you have received and your account's channel posts for text, newest first, one page at a time (default ${DEFAULT_INBOX_LIMIT}, max ${MAX_INBOX_LIMIT}); a full page means there may be more, so call again with a higher offset. A message has kind "message", from, sentAt, body and broadcast; a post has kind "post", channel, id (the post's), from, sentAt and body. Marks nothing read and does not move your read position in any channel. Requires register first.`,
+      description: `Search the messages you have received and your account's channel posts for text, newest first, one page at a time (default ${DEFAULT_INBOX_LIMIT}, max ${MAX_INBOX_LIMIT}); a full page means there may be more, so call again with a higher offset. A message has kind "message", id (its own), inReplyTo (the id of the message it answers, or null), from, sentAt, body and broadcast; a post has kind "post", channel, id (the post's), from, sentAt and body. Marks nothing read and does not move your read position in any channel. Requires register first.`,
       inputSchema: {
         text: z.string().describe(`1-${MAX_SEARCH_LENGTH} characters, found anywhere in the body; ASCII letters match in any case, and % and _ are literal.`),
         channel: z.string().optional().describe("Only this channel's posts, and no messages."),

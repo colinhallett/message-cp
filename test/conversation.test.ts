@@ -70,9 +70,9 @@ describe("read_conversation", () => {
 
     const page = await ok(alice, "read_conversation", { name: "BOB" });
     expect(page).toEqual([
-      { from: "alice", to: "bob", sentAt: expect.any(String), body: "a-all", broadcast: true },
-      { from: "bob", to: "alice", sentAt: expect.any(String), body: "b1", broadcast: false },
-      { from: "alice", to: "bob", sentAt: expect.any(String), body: "a1", broadcast: false },
+      { id: expect.any(Number), inReplyTo: null, from: "alice", to: "bob", sentAt: expect.any(String), body: "a-all", broadcast: true },
+      { id: expect.any(Number), inReplyTo: null, from: "bob", to: "alice", sentAt: expect.any(String), body: "b1", broadcast: false },
+      { id: expect.any(Number), inReplyTo: null, from: "alice", to: "bob", sentAt: expect.any(String), body: "a1", broadcast: false },
     ]);
     expect(Date.parse(page[0].sentAt)).toBeGreaterThan(Date.parse(page[1].sentAt));
     expect(bodies(await ok(bob, "read_conversation", { name: "alice" }))).toEqual(["a-all", "b1", "a1"]);
@@ -84,8 +84,8 @@ describe("read_conversation", () => {
     await ok(alice, "send_message", { to: "colin", body: "to colin" });
     sendAsPerson(db, OWNER_ACCOUNT, "colin", "alice", "from colin");
     expect(await ok(alice, "read_conversation", { name: "Colin" })).toEqual([
-      { from: "colin", to: "alice", sentAt: expect.any(String), body: "from colin", broadcast: false },
-      { from: "alice", to: "colin", sentAt: expect.any(String), body: "to colin", broadcast: false },
+      { id: expect.any(Number), inReplyTo: null, from: "colin", to: "alice", sentAt: expect.any(String), body: "from colin", broadcast: false },
+      { id: expect.any(Number), inReplyTo: null, from: "alice", to: "colin", sentAt: expect.any(String), body: "to colin", broadcast: false },
     ]);
   });
 
@@ -93,7 +93,7 @@ describe("read_conversation", () => {
     const alice = await connect("alice");
     await ok(alice, "send_message", { to: "alice", body: "note to self" });
     expect(await ok(alice, "read_conversation", { name: "ALICE" })).toEqual([
-      { from: "alice", to: "alice", sentAt: expect.any(String), body: "note to self", broadcast: false },
+      { id: expect.any(Number), inReplyTo: null, from: "alice", to: "alice", sentAt: expect.any(String), body: "note to self", broadcast: false },
     ]);
   });
 

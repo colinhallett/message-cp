@@ -81,7 +81,7 @@ describe("POST /api/send", () => {
     expect(await woke.text()).toBe("1 unread message from colin\n");
     const deliveries = db.prepare("SELECT id, webhook_id FROM webhook_deliveries").all() as { id: number; webhook_id: number }[];
     expect(deliveries.map((d) => [d.webhook_id, deliveryBody(db, d.id)?.event])).toEqual([[hook.id, "agent"]]);
-    expect(readInbox(db, OWNER_ACCOUNT, "bob")).toEqual([{ from: "colin", sentAt: expect.any(String), body: "hello bob", broadcast: false }]);
+    expect(readInbox(db, OWNER_ACCOUNT, "bob")).toEqual([{ id: expect.any(Number), inReplyTo: null, from: "colin", sentAt: expect.any(String), body: "hello bob", broadcast: false }]);
   });
 
   it("broadcasts to every other agent and person of the account, and only that account", async () => {
