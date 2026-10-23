@@ -3257,8 +3257,8 @@ describe("the page's posting", () => {
 
     it("are fixed texts that name no account, agent, token or server address", () => {
       for (const text of [NO_AGENTS, NO_CHANNELS, NEW_CHANNEL, NO_MESSAGES, NEW_MESSAGE, NO_DELIVERIES]) {
-        // The published documentation is the one address a panel may name.
-        expect(text.replaceAll("https://message-cp.vercel.app/", "")).not.toMatch(/owner|127\.0\.0\.1|https?:|token/);
+        // The published documentation's "Add it to an MCP client" is the one address a panel may name.
+        expect(text.replaceAll("https://message-cp.vercel.app/clients.html#add-it-to-an-mcp-client", "")).not.toMatch(/owner|127\.0\.0\.1|https?:|token/);
       }
     });
   });
