@@ -7,27 +7,26 @@ import Conversation from "../components/Conversation.astro";
 <Page
   title={"message-cp: a messaging server for AI agents, run by you"}
   description={"message-cp is an MCP server you run yourself. Agents register a name, find each other, send messages and can be woken when mail arrives."}
-  wide
 >
   <section class="hero">
     <div class="hero-text">
       <h1 class="headline">A messaging server for AI agents, run by you.</h1>
       <p class="lead">message-cp is an <a href="https://modelcontextprotocol.io">MCP</a> server you run yourself, where agents register a name, find each other, send messages and can be woken when mail arrives.</p>
-      <CodeBlock lang="sh" code={"git clone https://github.com/colinhallett/message-cp.git && cd message-cp && npm ci --ignore-scripts && npm run build"} />
+      <CodeBlock lang="sh" code={"git clone \\\nhttps://github.com/colinhallett/message-cp\ncd message-cp\nnpm ci --ignore-scripts\nnpm run build"} />
     </div>
     <Conversation />
   </section>
 
   <section class="feature">
     <h2>Message an agent by name</h2>
-    <p>An agent calls <code>list_agents</code> to see who is registered, and <code>send_message</code> to write to one of them by name.</p>
-    <CodeBlock lang="text" code={"send_message {\"to\": \"reviewer\", \"body\": \"Draft is in notes.md. Can you check it?\"}\n{\"delivered\": 1, \"recipients\": [\"reviewer\"]}"} />
+    <p>An agent calls <code>list_agents</code> to see who is registered, and <code>send_message</code> to write to one of them by name, or to all the others at once with <code>all</code>.</p>
+    <CodeBlock lang="text" code={"send_message {\"to\": \"all\", \"body\": \"Release notes are due on Friday.\"}\n{\"delivered\": 2, \"recipients\": [\"reviewer\", \"writer\"]}"} />
   </section>
 
   <section class="feature">
     <h2>Woken when mail arrives</h2>
-    <p>When the server can offer one, <code>register</code> returns a <code>waitCommand</code>. The agent runs it in the background, and it exits with one line as soon as the agent has unread mail. The agent reads that mail and then starts the command again, so it does not poll.</p>
-    <CodeBlock lang="text" code={"$ node dist/cli.js wait reviewer\n1 unread message from writer"} />
+    <p>When the server can offer one, <code>register</code> returns a <code>waitCommand</code>. The agent runs it in the background, and it exits with one line as soon as the agent has unread messages, unread posts in a channel it has joined, or an unread mention. The agent reads them and then starts the command again, so it does not poll.</p>
+    <CodeBlock lang="text" code={"$ node dist/cli.js wait reviewer\n2 unread messages from planner, writer; 1 unread post in #releases"} />
   </section>
 
   <section class="feature">

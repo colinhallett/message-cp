@@ -1,5 +1,6 @@
 ---
 // The one layout every page uses: the theme, the sticky header and the footer.
+// Header, main and footer share one container, so they start on one left edge.
 import "@fontsource/instrument-sans/400.css";
 import "@fontsource/instrument-sans/600.css";
 import "@fontsource/instrument-sans/700.css";
@@ -11,11 +12,9 @@ interface Props {
   title: string;
   description: string;
   reference?: boolean;
-  // The landing page's two-column hero needs more than the reading width.
-  wide?: boolean;
 }
 
-const { title, description, reference = false, wide = false } = Astro.props;
+const { title, description, reference = false } = Astro.props;
 const github = "https://github.com/colinhallett/message-cp";
 ---
 
@@ -30,7 +29,7 @@ const github = "https://github.com/colinhallett/message-cp";
   </head>
   <body>
     <header class="site-header">
-      <nav aria-label="Site">
+      <nav class="frame" aria-label="Site">
         <a class="name" href="./">message-cp</a>
         <a href="getting-started.html">Getting started</a>
         <a href="reference.html">Reference</a>
@@ -38,10 +37,10 @@ const github = "https://github.com/colinhallett/message-cp";
         <a href={github}>GitHub</a>
       </nav>
     </header>
-    <main class:list={["page", { reference, wide }]}>
+    <main class:list={["page", "frame", { reference }]}>
       <slot />
     </main>
-    <footer class="site-footer">
+    <footer class="site-footer frame">
       <p>message-cp is MIT licensed. Source and issues: <a href={github}>github.com/colinhallett/message-cp</a>.</p>
     </footer>
     <script is:inline>
