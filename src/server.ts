@@ -1,4 +1,6 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import type { RequestHandlerExtra } from "@modelcontextprotocol/sdk/shared/protocol.js";
+import type { RequestId, ServerNotification, ServerRequest } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import {
   DEFAULT_LIST_LIMIT,
@@ -17,17 +19,20 @@ import {
   type Identity,
 } from "./agents.js";
 import { OWNER_ACCOUNT, type AccountId, type Db } from "./db.js";
-import { httpWaitCommand, instructions, waitCommand } from "./wait.js";
+import { DEFAULT_WAIT_HOLD_MS, formatUnread, httpWaitCommand, instructions, waitCommand } from "./wait.js";
 import {
   DEFAULT_INBOX_LIMIT,
   MAX_BODY_LENGTH,
   MAX_INBOX_LIMIT,
   MAX_SEARCH_LENGTH,
+  hasUnread,
   messageStatus,
   readConversation,
   readInbox,
   search,
   sendMessage,
+  unreadSummary,
+  type Unread,
 } from "./messages.js";
 import {
   DEFAULT_CHANNEL_LIMIT,
@@ -103,9 +108,63 @@ export class Session {
   }
 }
 
+/** Most held calls at once: sessions, waiting GET /wait requests and held `wait_for_mail` calls each have this cap. */
+export const DEFAULT_MAX_SESSIONS = 256;
+/** How long `wait_for_mail` holds a call with no mail by default, and at most, in seconds. */
+export const DEFAULT_WAIT_FOR_MAIL_SECONDS = 50;
+export const MAX_WAIT_FOR_MAIL_SECONDS = DEFAULT_WAIT_HOLD_MS / 1000;
+export const WAIT_FOR_MAIL_FULL = "Too many calls are waiting for mail on this server. Try again shortly.";
+
+// The held `wait_for_mail` calls of every server in this process that was not given a `hold`, as over stdio.
+let held = 0;
+const holdInProcess = (): (() => void) | undefined => {
+  if (held >= DEFAULT_MAX_SESSIONS) return undefined;
+  held++;
+  return () => void held--;
+};
+
+export interface ServerOptions {
+  remote?: boolean;
+  publicUrl?: string;
+  /**
+   * Takes a slot for a held `wait_for_mail` call: returns the function that gives it back, or undefined when every slot
+   * is taken. Without it, the calls of this process are counted together against DEFAULT_MAX_SESSIONS.
+   */
+  hold?: () => (() => void) | undefined;
+  /** A signal that aborts once the response that would carry request `id` has closed, where the transport knows it. */
+  closed?: (id: RequestId) => AbortSignal | undefined;
+}
+
+type Extra = RequestHandlerExtra<ServerRequest, ServerNotification>;
+
+/** One check for mail; a lock held past the busy timeout counts as nothing unread this time, as in `message-cp wait`. */
+function check(db: Db, account: AccountId, own: Identity): Unread | undefined {
+  try {
+    return unreadSummary(db, account, own);
+  } catch (err) {
+    const code = (err as { code?: unknown } | null)?.code;
+    if (typeof code !== "string" || !code.startsWith("SQLITE_BUSY")) throw err;
+    return { count: 0, senders: [], posts: 0, channels: [], mentions: 0, mentionChannels: [] };
+  }
+}
+
+/** Waits `ms`, or less if `signal` aborts first; the timer and listener are removed either way. */
+const sleep = (ms: number, signal: AbortSignal) =>
+  new Promise<void>((resolve) => {
+    if (signal.aborted) return resolve();
+    const done = () => {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", done);
+      resolve();
+    };
+    const timer = setTimeout(done, ms);
+    signal.addEventListener("abort", done);
+  });
+
 /** One server per session. */
-export function createServer(db: Db, session = new Session(OWNER_ACCOUNT), options: { remote?: boolean; publicUrl?: string } = {}): McpServer {
+export function createServer(db: Db, session = new Session(OWNER_ACCOUNT), options: ServerOptions = {}): McpServer {
   const remote = options.remote ?? false;
+  const hold = options.hold ?? holdInProcess;
   session.attach(db);
   const account = session.account;
   const server = new McpServer(
@@ -114,12 +173,12 @@ export function createServer(db: Db, session = new Session(OWNER_ACCOUNT), optio
   );
 
   // Wraps a tool: bumps last-seen for a registered session and turns ToolError into an error result.
-  const tool = <A>(run: (args: A) => unknown) => async (args: A) => {
+  const tool = <A>(run: (args: A, extra: Extra) => unknown) => async (args: A, extra: Extra) => {
     // Touch first so a failing call still counts. `register` sets last-seen itself.
     const name = session.current();
     if (name) touchAgent(db, account, name);
     try {
-      const result = run(args);
+      const result = await run(args, extra);
       return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
     } catch (err) {
       if (err instanceof ToolError) {
@@ -251,6 +310,52 @@ export function createServer(db: Db, session = new Session(OWNER_ACCOUNT), optio
     tool(({ unread_only, limit, offset }: { unread_only?: boolean; limit?: number; offset?: number }) =>
       readInbox(db, account, session.requireAgent(), unread_only, limit, offset),
     ),
+  );
+
+  server.registerTool(
+    "wait_for_mail",
+    {
+      description: `Wait until you have mail, for a client that cannot run the wait command in the background. Returns { unread } as soon as you have an unread message, an unread post by another agent in a channel you joined or an unread @mention of you, with unread the one line the wait command prints (how many, from whom and in which channels, never the bodies); returns at once if you already have any. Otherwise it checks about once a second, and returns { unread: null } after timeout_seconds without any; a check that finds the database busy counts as nothing unread that second. Reads and marks nothing, so call read_inbox if the line names messages or mentions and read_channel for each channel it names posts in, and only then wait again. Calls held at once are capped, over HTTP together with the server's GET /wait requests and over stdio for the whole process; past the cap it fails at once, so try again shortly. If your agent is removed while you wait, it fails as not registered. Requires register first.`,
+      inputSchema: {
+        timeout_seconds: z
+          .number()
+          .int()
+          .min(1)
+          .max(MAX_WAIT_FOR_MAIL_SECONDS)
+          .optional()
+          .describe(`How long to wait with no mail, in seconds: default ${DEFAULT_WAIT_FOR_MAIL_SECONDS}, at most ${MAX_WAIT_FOR_MAIL_SECONDS}.`),
+      },
+    },
+    tool(async ({ timeout_seconds }: { timeout_seconds?: number }, extra) => {
+      const own = session.requireAgent();
+      const deadline = Date.now() + (timeout_seconds ?? DEFAULT_WAIT_FOR_MAIL_SECONDS) * 1000;
+      // Each check finds the caller by its registration, so a removed agent, or another that took its name, ends the call.
+      const answer = () => {
+        const unread = check(db, account, own);
+        if (!unread) throw new ToolError(NOT_REGISTERED);
+        return hasUnread(unread) ? { unread: formatUnread(unread) } : undefined;
+      };
+      // Mail that is already there is answered at once, whatever the cap.
+      const first = answer();
+      if (first) return first;
+      const release = hold();
+      if (!release) throw new ToolError(WAIT_FOR_MAIL_FULL);
+      try {
+        const closed = options.closed?.(extra.requestId);
+        const signal = closed ? AbortSignal.any([extra.signal, closed]) : extra.signal;
+        for (;;) {
+          const left = deadline - Date.now();
+          if (left <= 0) return { unread: null };
+          // Sleep a second, or until the call is cancelled or its client goes away; nobody is listening then.
+          await sleep(Math.min(1000, left), signal);
+          if (signal.aborted) return { unread: null };
+          const unread = answer();
+          if (unread) return unread;
+        }
+      } finally {
+        release();
+      }
+    }),
   );
 
   server.registerTool(

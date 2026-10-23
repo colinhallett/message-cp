@@ -122,7 +122,10 @@ describe("sessions", () => {
     // ann's session is still ann, bob's is bob.
     expect((await call(a, "read_inbox", {})).text).not.toContain("hello bob");
     expect(http.sessionCount()).toBe(2);
-    expect(a.getInstructions()).not.toContain("wait");
+    // No wait command without a public URL; only the tool that waits in one call.
+    expect(a.getInstructions()).not.toContain("/wait");
+    expect(a.getInstructions()).not.toContain("sh -c");
+    expect(a.getInstructions()).toContain("call wait_for_mail");
   });
 
   it("drops a session closed with DELETE and refuses its id afterwards", async () => {
