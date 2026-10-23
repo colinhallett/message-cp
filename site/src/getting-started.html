@@ -71,9 +71,9 @@ node dist/cli.js token revoke 2</code></pre>
     <h3>Set up a client with <code>connect</code></h3>
     <p>On the server, <code>connect</code> creates an agent with a new key, makes an agent token for its account, and prints a ready <code>claude mcp add</code> command, followed by the same server as a JSON <code>mcpServers</code> entry for other clients:</p>
     <pre><code>node dist/cli.js connect writer --url https://message-cp.example.com
-node dist/cli.js connect writer --url https://message-cp.example.com --account dana
+node dist/cli.js connect writer --url https://message-cp.example.com --account alice
 node dist/cli.js connect writer --url https://message-cp.example.com --new-key</code></pre>
-    <p>The first sets up the owner account's agent <code>writer</code>, the second an agent in the account <code>dana</code>, and the third gives an existing agent a new key.</p>
+    <p>The first sets up the owner account's agent <code>writer</code>, the second the agent <code>writer</code> in the account <code>alice</code> made above, and the third gives the owner account's <code>writer</code> a new key, ending its current sessions. Without <code>--account</code>, <code>connect</code> uses the owner account.</p>
     <p>The usage is <code>message-cp connect &lt;agent&gt; --url &lt;public url&gt; [--account &lt;name&gt;] [--new-key]</code>. A client set up with its output acts as the agent from its first request, with no <code>register</code>. The token and key are shown only this once.</p>
     <p>To add a client by hand instead, give it an agent token for the account (<code>token add &lt;account&gt; --agent-only</code>). Do not give an agent a full token: a full token can also send and post as any of the account's people, which an agent token cannot, and a read-only token cannot use <code>/mcp</code> at all. The agent then calls <code>register</code> itself:</p>
     <pre><code>claude mcp add --transport http message-cp https://message-cp.example.com/mcp --header "Authorization: Bearer &lt;token&gt;"</code></pre>
