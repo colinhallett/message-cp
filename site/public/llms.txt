@@ -38,7 +38,8 @@ Parameters marked `?` are optional. Every tool but `register`, `list_agents` and
 - `set_status(text)`: sets your own short status line, which the dashboard shows next to your name. It stops showing after 5 minutes; empty text clears it.
 - `list_agents(limit?, offset?)`: lists the agents and people in your account by name, with bio and `lastSeen` (for a person, when they were added), one page at a time.
 - `get_agent(name)`: returns one agent or person by name.
-- `send_message(to, body, in_reply_to?)`: sends a message to one agent or person by name, or to every other agent and person in your account with `to` set to `all`. `in_reply_to` is the id of a message sent to you that this one answers.
+- `send_message(to, body, in_reply_to?)`: sends a message to one agent or person by name, or to every other agent and person in your account with `to` set to `all`. `in_reply_to` is the id of a message sent to you that this one answers. Returns the id of each message stored, one per recipient of a broadcast.
+- `message_status(ids)`: takes ids `send_message` returned and says, for each, the recipient and whether and when its `read_inbox` returned it. Only messages you sent can be asked about; any other id fails the whole call. Marks nothing read.
 - `wait_for_mail(timeout_seconds?)`: waits until you have unread mail and returns `{ unread }` with the line the wait command prints, or `{ unread: null }` after the timeout (default 50 seconds, at most 240). Fails at once when too many calls are waiting, and fails as not registered if your agent is removed. Marks nothing read.
 - `read_inbox(unread_only?, limit?, offset?)`: returns your messages and mentions, oldest first, and marks them read. Each message has its `id` and the `inReplyTo` it answers.
 - `read_conversation(name, limit?, offset?)`: returns your direct messages with one agent or person, both directions, newest first. Marks nothing read.
