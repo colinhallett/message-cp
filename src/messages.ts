@@ -288,22 +288,30 @@ export interface Unread {
 export const hasUnread = (unread: Unread) => unread.count > 0 || unread.posts > 0 || unread.mentions > 0;
 
 /**
- * How many unread messages `name` has and who sent them, how many unread posts are in the channels it has joined and
- * where, and how many unread mentions it has and where, without reading or marking anything. Undefined if there is no
- * such agent.
+ * How many unread messages `reader` has and who sent them, how many unread posts are in the channels it has joined and
+ * where, and how many unread mentions it has and where, without reading or marking anything. `reader` is a name, as
+ * `wait` and GET /wait pass it, or a registration, as `wait_for_mail` passes it, so a registration that has been
+ * removed, or whose key was reset, counts nothing even if another agent now has its name; a takeover with the key keeps
+ * the same row and counts as before. Undefined if there is no such agent.
  */
-export function unreadSummary(db: Db, account: AccountId, name: string): Unread | undefined {
+export function unreadSummary(db: Db, account: AccountId, reader: string | Identity): Unread | undefined {
   // One read transaction, so the messages and the posts are counted at the same moment.
   return db.transaction((): Unread | undefined => {
-    const agent = getAgent(db, account, name);
+    const agent = (
+      typeof reader === "string"
+        ? db.prepare("SELECT id FROM agents WHERE account_id = ? AND name = ? AND removed_at IS NULL").get(account, reader)
+        : db
+            .prepare("SELECT id FROM agents WHERE account_id = ? AND id = ? AND registered_at = ? AND instance IS ? AND removed_at IS NULL")
+            .get(account, reader.id, reader.registeredAt, reader.instance)
+    ) as { id: number } | undefined;
     if (!agent) return undefined;
     // One query each, so a count and its names always describe the same rows.
     const messages = db
       .prepare(
         `SELECT m.sender, COUNT(*) AS n FROM messages m JOIN agents a ON a.id = m.recipient_id
-         WHERE a.account_id = ? AND a.name = ? AND a.removed_at IS NULL AND m.read_at IS NULL GROUP BY m.sender ORDER BY MIN(m.id)`,
+         WHERE a.account_id = ? AND a.id = ? AND a.removed_at IS NULL AND m.read_at IS NULL GROUP BY m.sender ORDER BY MIN(m.id)`,
       )
-      .all(account, agent.name) as { sender: string; n: number }[];
+      .all(account, agent.id) as { sender: string; n: number }[];
     // The agent's own posts never count as unread, as in list_channels.
     const posts = db
       .prepare(
@@ -311,18 +319,18 @@ export function unreadSummary(db: Db, account: AccountId, name: string): Unread 
          JOIN channel_reads r ON r.agent_id = a.id AND r.joined = 1
          JOIN channels c ON c.id = r.channel_id AND c.account_id = a.account_id
          JOIN channel_posts p ON p.channel_id = c.id AND p.id > r.last_read_id AND p.sender_id <> a.id
-         WHERE a.account_id = ? AND a.name = ? AND a.removed_at IS NULL GROUP BY c.id ORDER BY MIN(p.id)`,
+         WHERE a.account_id = ? AND a.id = ? AND a.removed_at IS NULL GROUP BY c.id ORDER BY MIN(p.id)`,
       )
-      .all(account, agent.name) as { name: string; n: number }[];
+      .all(account, agent.id) as { name: string; n: number }[];
     const mentions = db
       .prepare(
         `SELECT c.name, COUNT(*) AS n FROM agents a
          JOIN mentions x ON x.agent_id = a.id AND x.read_at IS NULL
          JOIN channel_posts p ON p.id = x.post_id
          JOIN channels c ON c.id = p.channel_id AND c.account_id = a.account_id
-         WHERE a.account_id = ? AND a.name = ? AND a.removed_at IS NULL GROUP BY c.id ORDER BY MIN(p.id)`,
+         WHERE a.account_id = ? AND a.id = ? AND a.removed_at IS NULL GROUP BY c.id ORDER BY MIN(p.id)`,
       )
-      .all(account, agent.name) as { name: string; n: number }[];
+      .all(account, agent.id) as { name: string; n: number }[];
     return {
       count: messages.reduce((sum, r) => sum + r.n, 0),
       senders: messages.map((r) => r.sender),

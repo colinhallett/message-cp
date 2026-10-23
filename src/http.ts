@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { IncomingMessage, ServerResponse, createServer as createHttpServer, type Server } from "node:http";
 import { PassThrough } from "node:stream";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import { LATEST_PROTOCOL_VERSION, isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
+import { LATEST_PROTOCOL_VERSION, isInitializeRequest, isJSONRPCRequest, type RequestId } from "@modelcontextprotocol/sdk/types.js";
 import { accountForToken, type TokenAccess } from "./accounts.js";
 import { DEFAULT_LIST_LIMIT, MAX_LIST_LIMIT, ToolError, registerWithIdentity, type Identity } from "./agents.js";
 import {
@@ -28,7 +28,7 @@ import {
   type SearchFilters,
   type Unread,
 } from "./messages.js";
-import { Session, createServer } from "./server.js";
+import { DEFAULT_MAX_SESSIONS, Session, createServer, type ServerOptions } from "./server.js";
 import { endSession, forgetIdleSessions, restorableSession, saveSession, sessionEnded, touchSession } from "./sessions.js";
 import { DEFAULT_WAIT_HOLD_MS, formatUnread } from "./wait.js";
 import { listAccountDeliveries, sendOptions, sendPending, type SendOptions } from "./webhooks.js";
@@ -42,7 +42,6 @@ const MAX_BODY_BYTES = 4 * 1024 * 1024;
  * escaped astral character), so this fits any valid request, and a full cap of them buffers at most 16 MiB.
  */
 const MAX_PERSON_BODY_BYTES = 64 * 1024;
-export const DEFAULT_MAX_SESSIONS = 256;
 /** An agent seen this recently counts as online in GET /api/agents, as does one with a GET /wait held now. */
 export const ONLINE_WINDOW_MS = 5 * 60 * 1000;
 /** How often a pass over the webhook delivery queue is due; a tick while a pass is still running is skipped. */
@@ -84,6 +83,8 @@ interface Live {
   ready?: Promise<void>;
   /** The session its tools act through, which knows the agent it is currently registered as. */
   session?: Session;
+  /** For each request on the session whose response is still open, aborted when that response closes. */
+  open: Map<RequestId, AbortController>;
 }
 
 const isBusy = (err: unknown) => {
@@ -343,6 +344,21 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
     })();
   }, webhookIntervalMs);
   deliver.unref();
+
+  /**
+   * What each session's tools are given: `wait_for_mail` holds count with waiting GET /wait requests against the same
+   * cap, and a hold ends once the response that would carry its answer has closed.
+   */
+  const serverOptions = (live: Live): ServerOptions => ({
+    remote: true,
+    publicUrl: options.publicUrl,
+    hold: () => {
+      if (waiting >= maxSessions) return undefined;
+      waiting++;
+      return () => void waiting--;
+    },
+    closed: (id) => live.open.get(id)?.signal,
+  });
 
   /** One check for mail; a lock held past the busy timeout counts as no mail this time, as in `message-cp wait`. */
   const poll = (account: AccountId, name: string): Unread | undefined => {
@@ -720,6 +736,9 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
       // Another account's session looks like one that does not exist.
       if (!live || live.account !== account) return reply(res, 404, "Unknown session");
       await live.ready;
+      // A client that went away while the session was restored is not listening, and its close has already fired, so
+      // `track` would never see it.
+      if (res.closed) return;
       // A session another server sharing the database ended with DELETE is ended here too.
       const ended = unlessBusy(res, () => sessionEnded(db, id));
       if (ended === undefined) return;
@@ -728,6 +747,7 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
         return reply(res, 404, "Unknown session");
       }
       live.lastUsed = Date.now();
+      track(live, res, body);
       await live.transport.handleRequest(req, res, body);
       live.lastUsed = Date.now();
       // A session dropped by close() while a request was open keeps its row, so the restart can restore it; any other
@@ -753,7 +773,7 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
       if (registered === undefined) return;
       identity = registered.identity;
     }
-    const live: Live = { lastUsed: Date.now(), transport: undefined as never, account };
+    const live: Live = { lastUsed: Date.now(), transport: undefined as never, account, open: new Map() };
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: () => randomUUID(),
       onsessioninitialized: (sid) => {
@@ -774,8 +794,24 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
       if (sessions.get(sid) === live) recordSession(() => saveSession(db, sid, account, identity));
     });
     live.session = session;
-    await createServer(db, session, { remote: true, publicUrl: options.publicUrl }).connect(transport);
+    await createServer(db, session, serverOptions(live)).connect(transport);
     await transport.handleRequest(req, res, body);
+  };
+
+  /**
+   * Notes each JSON-RPC request in a POST body as open until its response closes, whether answered or abandoned by the
+   * client, so a held tool call can stop. A later request reusing an id replaces the entry, and is the one kept.
+   */
+  const track = (live: Live, res: ServerResponse, body: unknown) => {
+    for (const message of Array.isArray(body) ? body : [body]) {
+      if (!isJSONRPCRequest(message)) continue;
+      const controller = new AbortController();
+      live.open.set(message.id, controller);
+      res.once("close", () => {
+        controller.abort();
+        if (live.open.get(message.id) === controller) live.open.delete(message.id);
+      });
+    }
   };
 
   /**
@@ -791,7 +827,7 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
    */
   const restore = (id: string, account: AccountId, identity: Identity) => {
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: () => id, onsessionclosed: endRecorded });
-    const live: Live = { lastUsed: Date.now(), transport, account };
+    const live: Live = { lastUsed: Date.now(), transport, account, open: new Map() };
     sessions.set(id, live);
     transport.onclose = () => {
       if (sessions.get(id) === live) sessions.delete(id);
@@ -801,7 +837,7 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
         const session = new Session(account, (bound) => {
           if (sessions.get(id) === live) recordSession(() => saveSession(db, id, account, bound));
         });
-        await createServer(db, session, { remote: true, publicUrl: options.publicUrl }).connect(transport);
+        await createServer(db, session, serverOptions(live)).connect(transport);
         // Its row is already there, so it is not recorded again: one another server deleted meanwhile stays deleted.
         session.restore(identity);
         live.session = session;

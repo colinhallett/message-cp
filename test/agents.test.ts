@@ -111,10 +111,10 @@ describe("shared database", () => {
 });
 
 describe("tools", () => {
-  it("are only the registration, messaging, channel and search tools", async () => {
+  it("are only the registration, messaging, channel, search and waiting tools", async () => {
     const { tools } = await (await connect()).listTools();
     expect(tools.map((t) => t.name).sort()).toEqual(
-      ["get_agent", "join_channel", "leave_channel", "list_agents", "list_channels", "post", "read_channel", "read_conversation", "read_inbox", "register", "search", "send_message", "set_status", "unregister"],
+      ["get_agent", "join_channel", "leave_channel", "list_agents", "list_channels", "post", "read_channel", "read_conversation", "read_inbox", "register", "search", "send_message", "set_status", "unregister", "wait_for_mail"],
     );
   });
 });
