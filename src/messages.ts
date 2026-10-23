@@ -21,9 +21,19 @@ export interface Mention {
   body: string;
 }
 
+/** What a send stored: `messages` pairs each stored row's id with its recipient, one per recipient of a broadcast. */
 export interface SendResult {
   delivered: number;
   recipients: string[];
+  messages: { id: number; to: string }[];
+}
+
+/** One message's read state, as message_status returns it: `readAt` is null while unread. */
+export interface MessageStatus {
+  id: number;
+  to: string;
+  read: boolean;
+  readAt: string | null;
 }
 
 interface Row {
@@ -117,9 +127,11 @@ export function sendMessage(
          SELECT id, ?, ? FROM webhooks WHERE account_id = ? AND event = 'agent' AND name = ? COLLATE NOCASE ORDER BY id`,
       );
       const now = Date.now();
+      const stored: SendResult["messages"] = [];
       for (const r of recipients) {
         const id = insert.run(r.id, from, body, broadcast ? 1 : 0, now, inReplyTo ?? null).lastInsertRowid;
         queue.run(id, now, account, r.name);
+        stored.push({ id: Number(id), to: r.name });
       }
       // Sending clears the sender's status line, on its own registration only, so a send from a session whose agent was
       // removed meanwhile never clears the line of a later agent with the same name.
@@ -128,7 +140,7 @@ export function sendMessage(
           "UPDATE agents SET status = NULL, status_at = NULL WHERE account_id = ? AND id = ? AND registered_at = ? AND instance IS ? AND removed_at IS NULL AND person = 0 AND status IS NOT NULL",
         ).run(account, own.id, own.registeredAt, own.instance);
       }
-      return { delivered: recipients.length, recipients: recipients.map((r) => r.name) };
+      return { delivered: recipients.length, recipients: recipients.map((r) => r.name), messages: stored };
     })
     .immediate();
 }
@@ -208,6 +220,39 @@ export function readInbox(
       );
     })
     .immediate();
+}
+
+export const NOT_YOUR_MESSAGES = "Not every id is a message you sent.";
+
+/**
+ * The recipient and read state of each of `ids`, in the order asked, a repeated id once. `sender` is only a name, so
+ * sent means sent under the caller's name since its row was registered, as `readConversation` matches it, to a
+ * recipient of the caller's account; a removed recipient is named by the name it had. Any other id, or a caller whose
+ * registration is no longer live, throws one error, so it does not tell whether an id exists. Reads only.
+ */
+export function messageStatus(db: Db, account: AccountId, caller: Member, ids: number[]): MessageStatus[] {
+  const wanted = [...new Set(ids)];
+  // One read transaction, so the caller's row and the messages are read at the same moment.
+  return db.transaction((): MessageStatus[] => {
+    const me = db
+      .prepare("SELECT name, registered_at FROM agents WHERE account_id = ? AND id = ? AND registered_at = ? AND instance IS ? AND removed_at IS NULL")
+      .get(account, caller.id, caller.registeredAt, caller.instance) as { name: string; registered_at: number } | undefined;
+    if (!me) throw new ToolError(NOT_YOUR_MESSAGES);
+    // The ids are one bound JSON array; CROSS JOIN keeps them first, so each row is found by its primary key.
+    const rows = db
+      .prepare(
+        `SELECT m.id, CASE WHEN a.removed_at IS NULL THEN a.name ELSE a.removed_name END AS recipient, m.read_at
+         FROM json_each(?) j CROSS JOIN messages m ON m.id = j.value JOIN agents a ON a.id = m.recipient_id AND a.account_id = ?
+         WHERE m.sender = ? COLLATE NOCASE AND m.created_at >= ?`,
+      )
+      .all(JSON.stringify(wanted), account, me.name, me.registered_at) as { id: number; recipient: string; read_at: number | null }[];
+    if (rows.length !== wanted.length) throw new ToolError(NOT_YOUR_MESSAGES);
+    const byId = new Map(rows.map((r) => [r.id, r]));
+    return wanted.map((id) => {
+      const r = byId.get(id)!;
+      return { id, to: r.recipient, read: r.read_at !== null, readAt: r.read_at === null ? null : new Date(r.read_at).toISOString() };
+    });
+  })();
 }
 
 /** A direct message between the caller and one other agent or person, as `read_conversation` returns it. */
