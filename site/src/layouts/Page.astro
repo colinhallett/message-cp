@@ -45,6 +45,8 @@ const image = new URL("preview.png", Astro.site).href;
     <meta name="twitter:image" content={image} />
   </head>
   <body>
+    {/* Root-absolute, because Vercel serves 404.html at any unknown path,
+        including nested ones like /a/b, where relative links would break. */}
     <header class="site-header">
       <nav class="frame" aria-label="Site">
         <a class="name" href="/">message-cp</a>
