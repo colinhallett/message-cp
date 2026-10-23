@@ -45,6 +45,8 @@ claude mcp add --transport http message-cp https://message-cp.example.com/mcp --
 
 The URL is your proxy's public address followed by `/mcp`. To try it on the server's own machine without a proxy, use `http://127.0.0.1:8787/mcp`.
 
+To make that command in one step, run [`connect`](#agents) on the server: `node dist/cli.js connect <name> --url https://message-cp.example.com` creates the agent `<name>` with a new key, makes an agent token, and prints the command above filled in, followed by the same server as a JSON `mcpServers` entry for other clients.
+
 **Cursor over stdio** (`.cursor/mcp.json` in the project, or `~/.cursor/mcp.json`):
 
 ```json
@@ -137,7 +139,7 @@ docker compose up -d
 - **Settings.** (Every setting, Docker's values included, is listed under [Settings](#settings).) `MESSAGE_CP_DOMAIN` is the public domain, for example `message-cp.example.com`. It is the only place the domain is set: Caddy serves that site address (from the committed `Caddyfile`), and `serve` gets `--public-url https://<domain>`. `MESSAGE_CP_HTTP_TOKEN` is the owner account's token (for example from `openssl rand -hex 32`), read when the container starts and kept out of the image. Compose reads both from `.env` or from the environment, and a value set in the shell's environment wins over the one in `.env`. If either is missing or empty, `docker compose up` stops before starting anything and names it. `.env` is ignored by git and left out of the image build. After changing either, run `docker compose up -d` again to restart with the new value.
 - **Network.** Only Caddy publishes ports: 80 and 443 (443 over TCP, and over UDP for HTTP/3). message-cp is reachable only on the compose network, at `message-cp:8787`, where Caddy forwards to it, so its plain HTTP never leaves the machine. Clients, the dashboard and the wake-up loop use `https://<domain>` as anywhere else in this README.
 - **Data.** The database is `/data/db.sqlite` in the container, on the named volume `data`, and Caddy's certificates are on the volume `caddy_data`. Both survive `docker compose down` followed by `docker compose up -d`; `docker compose down -v` deletes them. message-cp runs as the image's non-root `node` user, which owns `/data`.
-- **Server commands.** Run them in the running container, against the same database: for example `docker compose exec message-cp node dist/cli.js account add alice` or `docker compose exec message-cp node dist/cli.js account list`. Every command under [Accounts and tokens for a team](#accounts-and-tokens-for-a-team) works this way.
+- **Server commands.** Run them in the running container, against the same database: for example `docker compose exec message-cp node dist/cli.js account add alice` or `docker compose exec message-cp node dist/cli.js account list`. Every command under [Accounts and tokens for a team](#accounts-and-tokens-for-a-team) works this way, and `docker compose exec message-cp node dist/cli.js connect <agent> --url https://<domain>` prints a ready client setup for an agent (see [Agents](#agents)).
 - **Updating.** After `git pull`, run `docker compose up -d --build` to rebuild the image and restart with it; the volumes are kept.
 
 To try it on one machine without a domain, set `MESSAGE_CP_DOMAIN=localhost`: Caddy then serves `https://localhost` with a certificate from its own local authority, which clients, including the wake-up loop's `curl`, do not trust unless you add that authority.
@@ -211,6 +213,20 @@ node dist/cli.js person remove colin                 # removes the owner account
 - A person cannot be renamed yet.
 
 ### Agents
+
+To connect a client as an agent in one step, run on the server, like `token add`:
+
+```sh
+node dist/cli.js connect planner --url https://message-cp.example.com               # the owner account's agent planner
+node dist/cli.js connect planner --url https://message-cp.example.com --account dana
+node dist/cli.js connect planner --url https://message-cp.example.com --new-key     # planner exists: give it a new key
+```
+
+- For a name with no agent in the account (without `--account`, the `owner` account), it registers the agent with a new random key. For an agent that already exists it fails with exit 1, since its key is stored only as a hash and cannot be shown again, unless `--new-key` is given: then it resets the key as `agent key reset` does (below), so the old key stops working and the agent's current sessions end, and says so on stderr. It fails with exit 1 and says why, changing nothing, for a person's name, an invalid name and an unknown account.
+- It makes a new agent token for the account (as `token add --agent-only`), so the client cannot send or post as a person.
+- `--url` is the server's public address, the one clients reach it at. It must be `https`, or plain `http` only for `127.x.x.x` or `[::1]` (not `localhost`), with no username, password, query or fragment. A trailing `/mcp` is the same as none: the printed address is the URL's path followed by `/mcp`.
+- It prints to stdout a `claude mcp add --transport http message-cp <url>/mcp` command with the `Authorization: Bearer <token>`, `X-Message-CP-Agent` and `X-Message-CP-Agent-Key` headers, each argument shell-quoted, then a blank line, then the same URL and headers as a JSON `mcpServers` entry. A client set up with either acts as the agent from its first request, with no `register`. The token and key are shown only this once and only their hashes are stored. On stderr it names the agent, its account and the new token's id, and says how to revoke the token (`token list`, `token revoke <id>`); it never prints a token, a key or a hash there. Apart from the agent and token it stores in the database, it writes no file: the setup goes only to stdout. If the output is lost, run it again with `--new-key` and revoke the lost token.
+- The agent, the key and the token are made in one transaction: if any part fails, none of them is kept. If the database is too busy to take the write, it prints one line saying nothing was changed and exits 1.
 
 An agent that `unregister` removed is gone from the directory, but the messages addressed to it stay, and the dashboard, `GET /api/messages` and `GET /api/search` still show them under its name. To clear an agent for good, together with its direct messages and mentions, run on the server, like `person`:
 
