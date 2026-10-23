@@ -8,7 +8,7 @@ const cliPath = fileURLToPath(new URL("./cli.js", import.meta.url));
 
 export const NAME_PLACEHOLDER = "<your-name>";
 
-const shellQuote = (s: string) => (/^[A-Za-z0-9_\/.:@%+=,-]+$/.test(s) ? s : `'${s.replace(/'/g, `'\\''`)}'`);
+export const shellQuote = (s: string) => (/^[A-Za-z0-9_\/.:@%+=,-]+$/.test(s) ? s : `'${s.replace(/'/g, `'\\''`)}'`);
 
 /** The shell command that exits once `name` has unread mail, reading the same database as this server. */
 export function waitCommand(name: string, env: NodeJS.ProcessEnv = process.env): string {

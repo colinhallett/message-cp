@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 import { readFileSync } from "node:fs";
 import { DEFAULT_HTTP_HOST, DEFAULT_HTTP_PORT, startHttp } from "./http.js";
-import { KeyResetError, PersonError, PurgeError, addPerson, listPeople, purgeAgent, removePerson, resetAgentKey } from "./agents.js";
+import { KeyResetError, PersonError, PurgeError, ToolError, addPerson, listPeople, purgeAgent, removePerson, resetAgentKey } from "./agents.js";
 import { AccountError, addAccount, addToken, listAccounts, listTokens, revokeToken, type NewToken } from "./accounts.js";
+import { ConnectError, clientSetup, connectAgent, mcpEndpoint } from "./connect.js";
 import { OWNER_ACCOUNT, openDb } from "./db.js";
 import { hasUnread, unreadSummary } from "./messages.js";
 import { setting } from "./settings.js";
@@ -267,9 +268,57 @@ if (command === "serve") {
     process.exit(1);
   }
   db.close();
+} else if (command === "connect") {
+  // Run on the server, like `agent`. The token and the agent's key are printed this once, to stdout, inside the client
+  // setup; stderr says what was made and how to revoke the token, and never carries a token, a key or a hash.
+  const usage = () => {
+    console.error("usage: message-cp connect <agent> --url <public url> [--account <name>] [--new-key]");
+    process.exit(2);
+  };
+  const [name, ...args] = rest;
+  if (!name || name.startsWith("--")) usage();
+  const opts = new Map<string, string>();
+  let newKey = false;
+  for (let i = 0; i < args.length; i++) {
+    const option = args[i]!;
+    if (option === "--new-key" && !newKey) {
+      newKey = true;
+      continue;
+    }
+    const value = args[++i];
+    if ((option !== "--url" && option !== "--account") || opts.has(option) || !value || value.startsWith("--")) usage();
+    opts.set(option, value!);
+  }
+  if (!opts.has("--url")) usage();
+  let db: ReturnType<typeof openDb> | undefined;
+  try {
+    // The URL first, so a refused one changes nothing.
+    const endpoint = mcpEndpoint(opts.get("--url")!);
+    db = openDb();
+    const c = connectAgent(db, opts.get("--account") ?? "owner", name!, newKey);
+    console.error(
+      c.reset
+        ? `message-cp: new key for agent '${c.name}' of account '${c.account}'; its old key no longer works and its current sessions have ended.`
+        : `message-cp: agent '${c.name}' in account '${c.account}'.`,
+    );
+    console.error(
+      `message-cp: agent token ${c.tokenId} for account '${c.account}'. The output holds this token and the agent's key, shown only now; keep them. To revoke the token: message-cp token list, then message-cp token revoke ${c.tokenId}.`,
+    );
+    console.log(clientSetup(endpoint, c).replace(/\n$/, ""));
+  } catch (err) {
+    const code = (err as { code?: unknown } | null)?.code;
+    if (typeof code === "string" && code.startsWith("SQLITE_BUSY")) {
+      console.error("message-cp: the database is busy; nothing was changed. Try again.");
+      process.exit(1);
+    }
+    if (!(err instanceof ConnectError) && !(err instanceof ToolError) && !(err instanceof KeyResetError) && !(err instanceof AccountError)) throw err;
+    console.error(`message-cp: ${err.message}`);
+    process.exit(1);
+  }
+  db.close();
 } else if (command === undefined) {
   await import("./index.js");
 } else {
-  console.error(`message-cp: unknown command '${command}'. Commands: serve, wait, account, token, webhook, person, agent`);
+  console.error(`message-cp: unknown command '${command}'. Commands: serve, wait, account, token, webhook, person, agent, connect`);
   process.exit(2);
 }
