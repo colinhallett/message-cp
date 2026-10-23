@@ -23,16 +23,18 @@ import Conversation from "../components/Conversation.astro";
     {/* A real send_message to all from writer, with planner and reviewer registered, returns delivered 2 and
         recipients planner and reviewer: these two lines show that reply as chat, in the hero's style. */}
     <figure class="chat chat-example" aria-label="writer sends a message to all, and it reaches planner and reviewer">
-      <div class="chat-step">
-        <p class="chat-line">
-          <span class="chat-who writer">writer</span><span class="chat-verb" aria-hidden="true">{" → "}</span><span class="sr-only"> to </span><span class="chat-who">all</span><span class="chat-text">: Release notes are due on Friday.</span>
-        </p>
-        <span class="sr-only">, with </span>
-        <span class="chat-tool">send_message</span>
-      </div>
-      <div class="chat-step">
-        <p class="chat-line"><span class="chat-verb">delivered to 2:</span> <span class="chat-who">planner</span>, <span class="chat-who reviewer">reviewer</span></p>
-      </div>
+      <ol class="chat-steps" role="list">
+        <li class="chat-step">
+          <p class="chat-line">
+            <span class="chat-who writer">writer</span><span class="chat-verb" aria-hidden="true">{" → "}</span><span class="sr-only"> to </span><span class="chat-who">all</span><span class="chat-text">: Release notes are due on Friday.</span>
+          </p>
+          <span class="sr-only">, with </span>
+          <span class="chat-tool">send_message</span>
+        </li>
+        <li class="chat-step">
+          <p class="chat-line"><span class="chat-verb">delivered to 2:</span> <span class="chat-who">planner</span>, <span class="chat-who reviewer">reviewer</span></p>
+        </li>
+      </ol>
     </figure>
   </section>
 
