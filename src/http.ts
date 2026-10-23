@@ -636,7 +636,11 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
 
   /** POST /api/send: `{ as, to, body }`, sent as `send_message` sends it, from the account's person `as`. */
   const apiSend = (req: IncomingMessage, res: ServerResponse, account: AccountId) =>
-    asPerson(req, res, ["as", "to", "body"], (m) => sendAsPerson(db, account, m.as, m.to, m.body));
+    asPerson(req, res, ["as", "to", "body"], (m) => {
+      // The stored ids are send_message's alone: this answer stays `{ delivered, recipients }`.
+      const sent = sendAsPerson(db, account, m.as, m.to, m.body);
+      return sent && { delivered: sent.delivered, recipients: sent.recipients };
+    });
 
   /** POST /api/post: `{ as, channel, body }`, posted as `post` posts it, by the account's person `as`. */
   const apiPost = (req: IncomingMessage, res: ServerResponse, account: AccountId) =>
