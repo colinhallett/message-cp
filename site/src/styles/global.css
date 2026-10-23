@@ -127,7 +127,7 @@
   }
 
   .page { width: 100%; max-width: 48rem; margin: 0 auto; padding: 0 1.25rem; flex: 1; }
-  .page.wide { max-width: 76rem; overflow-x: clip; }
+  .page.wide { max-width: 76rem; }
 
   .site-footer {
     width: 100%;
@@ -146,19 +146,6 @@
   nav.toc li.sub { margin-left: 1.2rem; list-style: circle; }
   nav.toc ul ul { padding-left: 1.2rem; margin: 0.35rem 0; }
   .reference li > p { margin: 0.4rem 0; }
-
-  .actions { display: flex; flex-wrap: wrap; gap: 0.75rem; margin: 1.75rem 0; }
-  .button {
-    display: inline-block;
-    padding: 0.55rem 1.1rem;
-    border: 1px solid var(--color-border);
-    border-radius: 8px;
-    color: var(--color-fg);
-    text-decoration: none;
-    font-weight: 600;
-  }
-  .button:hover { border-color: var(--color-muted); }
-  .button.primary { background: var(--color-accent); border-color: var(--color-accent); color: var(--color-bg); }
 
   /* Code blocks: long lines wrap instead of scrolling, so a phone shows
      every line. */
@@ -188,7 +175,6 @@
     cursor: pointer;
   }
   .code .copy:hover { color: var(--color-fg); }
-  .code .who { color: var(--color-agent); font-weight: 700; }
 
   /* Tables scroll inside their box on a wide screen and stack on a narrow
      one, each cell under its column's name. */
@@ -219,10 +205,10 @@
   .hero::before {
     content: "";
     position: absolute;
-    inset: -2rem -50vw 0;
+    inset: -2rem 0 0;
     z-index: -1;
     pointer-events: none;
-    background: radial-gradient(ellipse 60% 70% at 70% 40%, color-mix(in srgb, var(--color-accent) 9%, transparent), transparent 70%);
+    background: radial-gradient(ellipse 50% 60% at 70% 45%, color-mix(in srgb, var(--color-accent) 9%, transparent), transparent 70%);
   }
   .hero > * { min-width: 0; }
   @media (min-width: 64rem) {

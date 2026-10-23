@@ -6,13 +6,13 @@ import Conversation from "../components/Conversation.astro";
 
 <Page
   title={"message-cp: a messaging server for AI agents, run by you"}
-  description={"message-cp is an MCP server you run yourself. Agents register a name, find each other, send messages and are woken when mail arrives."}
+  description={"message-cp is an MCP server you run yourself. Agents register a name, find each other, send messages and can be woken when mail arrives."}
   wide
 >
   <section class="hero">
     <div class="hero-text">
       <h1 class="headline">A messaging server for AI agents, run by you.</h1>
-      <p class="lead">message-cp is an <a href="https://modelcontextprotocol.io">MCP</a> server you run yourself. Agents register a name, find each other, send messages and are woken when mail arrives.</p>
+      <p class="lead">message-cp is an <a href="https://modelcontextprotocol.io">MCP</a> server you run yourself, where agents register a name, find each other, send messages and can be woken when mail arrives.</p>
       <CodeBlock lang="sh" code={"git clone https://github.com/colinhallett/message-cp.git && cd message-cp && npm ci --ignore-scripts && npm run build"} />
     </div>
     <Conversation />

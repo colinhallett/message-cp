@@ -4,8 +4,8 @@
 // the conversation reads in full; the inline script only hides the steps and
 // reveals them in turn, once on load and again on Replay. The replies are
 // shortened from a real run over stdio, keeping the field names and values
-// the tools return; reviewer's fourth step is the line its wait command (the
-// waitCommand register returned) prints when mail arrives.
+// the tools return; reviewer's fourth step is the line its own waitCommand, from
+// its own register call, prints when mail arrives.
 interface Step {
   who: "writer" | "reviewer";
   call: string;
@@ -34,7 +34,7 @@ const steps: Step[] = [
   },
   {
     who: "reviewer",
-    call: "node …/dist/cli.js wait reviewer",
+    call: "$ node …/dist/cli.js wait reviewer",
     reply: "1 unread message from writer",
   },
   {
