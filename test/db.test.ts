@@ -130,7 +130,7 @@ describe("openDb", () => {
     const snapshot = (db: Database.Database) => ({
       // The columns the old schema had; later releases add columns of their own.
       agents: db.prepare("SELECT id, name, bio, registered_at, last_seen, key_hash, instance FROM agents ORDER BY id").all(),
-      messages: db.prepare("SELECT * FROM messages ORDER BY id").all(),
+      messages: db.prepare("SELECT id, recipient_id, sender, body, broadcast, created_at, read_at FROM messages ORDER BY id").all(),
     });
 
     it("drops the removed tables, their index and triggers, and keeps every agent and message", () => {
@@ -148,7 +148,7 @@ describe("openDb", () => {
       const left = db.prepare("SELECT name FROM sqlite_master WHERE name LIKE 'memor%' OR name LIKE '%task%' OR name LIKE 'hive%'").all();
       expect(left).toEqual([]);
       expect(db.prepare("SELECT type, name FROM sqlite_master WHERE tbl_name IN ('agents', 'messages') ORDER BY name").all()).toEqual(
-        [...otherObjects, { type: "index", name: "agents_live" }, { type: "index", name: "messages_by_sender" }, { type: "index", name: "messages_by_pair" }].sort((a, b) => (a.name < b.name ? -1 : 1)),
+        [...otherObjects, { type: "index", name: "agents_live" }, { type: "index", name: "messages_by_sender" }, { type: "index", name: "messages_by_pair" }, { type: "index", name: "messages_by_reply" }].sort((a, b) => (a.name < b.name ? -1 : 1)),
       );
       db.close();
     });
@@ -158,6 +158,15 @@ describe("openDb", () => {
       expect(db.prepare("SELECT removed_at, removed_name FROM agents ORDER BY id").all()).toEqual([
         { removed_at: null, removed_name: null },
         { removed_at: null, removed_name: null },
+      ]);
+      db.close();
+    });
+
+    it("adds in_reply_to to every existing message, null, so each reads as answering nothing", () => {
+      const db = openDb(oldDatabase());
+      expect(db.prepare("SELECT id, in_reply_to FROM messages ORDER BY id").all()).toEqual([
+        { id: 1, in_reply_to: null },
+        { id: 2, in_reply_to: null },
       ]);
       db.close();
     });

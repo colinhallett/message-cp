@@ -316,6 +316,11 @@ function migrate(db: Db, path: string): void {
   addColumn(db, "delivery_uuid", "TEXT", "webhook_deliveries");
   // Set once a DELETE ends an HTTP session, so no server restores it or records it again.
   addColumn(db, "ended", "INTEGER NOT NULL DEFAULT 0", "http_sessions");
+  // The id of the message a reply answers (`send_message` with `in_reply_to`), null for none. Deleting that message sets
+  // it to null, so a reply never points at a later message that reuses the id.
+  addColumn(db, "in_reply_to", "INTEGER REFERENCES messages(id) ON DELETE SET NULL", "messages");
+  // Deleting a message finds the replies to it (ON DELETE SET NULL) through this, not by scanning the table.
+  db.exec("CREATE INDEX IF NOT EXISTS messages_by_reply ON messages (in_reply_to)");
   db.exec(DROP_REMOVED);
   db.prepare("INSERT OR IGNORE INTO accounts (id, name, created_at) VALUES (?, 'owner', ?)").run(OWNER_ACCOUNT, Date.now());
   addAccounts(db, path);
