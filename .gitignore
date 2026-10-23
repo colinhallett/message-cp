@@ -9,3 +9,6 @@ deploy/
 .env
 .env.*
 !.env.example
+
+# Astro writes its generated types here when it builds the site
+.astro

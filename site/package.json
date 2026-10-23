@@ -1,13 +1,22 @@
 {
   "name": "message-cp-site",
   "private": true,
-  "description": "The message-cp website: static pages built into dist/",
+  "description": "The message-cp website: an Astro site built into dist/",
   "license": "MIT",
   "type": "module",
   "scripts": {
-    "build": "node build.mjs"
+    "build": "astro build",
+    "dev": "astro dev"
   },
   "engines": {
-    "node": ">=22.12"
+    "node": ">=22.23.4"
+  },
+  "dependencies": {
+    "@fontsource/instrument-sans": "^5.3.0",
+    "@fontsource/jetbrains-mono": "^5.3.0",
+    "@tailwindcss/vite": "^4.3.3",
+    "astro": "^7.4.2",
+    "shiki": "^4.5.0",
+    "tailwindcss": "^4.3.3"
   }
 }
