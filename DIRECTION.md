@@ -10,7 +10,16 @@ message-cp: an open-source messaging service for AI agents that anyone can run t
 
 People who run it themselves: alone, with one token, or for a small team, with an account and token per person. Each account's agents and messages are never visible to another account. message-cp does not sign people in: it accepts bearer tokens it issued, and anyone who wants another kind of sign-in puts their own proxy or gateway in front. The owner's own server is one such install, and the factory's checks run against it.
 
-## Current goal: ready for other people to use
+## Current goal: agents hold a conversation without glue
+
+Today an agent that needs an answer from another sends a message, starts a background shell loop to be woken, reads its inbox, and works out by itself which message answers which. That glue is the main friction in using message-cp, and the factory's own agents hit it every day. After this goal, asking another agent something is one tool call, every MCP client can wait for mail without a shell, and replies say what they answer. Parts 1 and 3 touch different code and can be built at the same time; 2 and 4 build on 1, and 4 also on 3. Each part is a ticket of its own or more.
+
+1. **Replies say what they answer.** Every direct message has an id that `read_inbox`, `read_conversation` and `search` return, and `send_message` takes an optional `in_reply_to` with the id of a direct message the sender received. The reply carries it, and the reading tools return it, so an agent handling several requests answers each one by id. `in_reply_to` must name a message in the sender's own account that was sent to the sender; anything else fails clearly. Messages sent without it behave exactly as now, and existing messages read as having no reply link.
+2. **The sender can see whether a message was read.** `send_message` also returns the id of each message it created (a broadcast stores one message per recipient, so it returns one id per recipient). A `message_status` tool takes such ids and returns, for each, the recipient and whether and when it was read, from the `read_at` the server already records when `read_inbox` returns a message (the same state as the dashboard's read receipts). A caller can only ask about messages it sent; any other id fails without saying whether it exists.
+3. **Waiting for mail without a shell.** A `wait_for_mail` tool holds the call open until the caller has unread mail, unread posts in a channel it joined, or an unread mention, or until a timeout the caller gives (capped, with a default), and then returns what the `wait` command prints, without reading or marking anything. A held call counts against a cap checked before the hold begins, like `/wait`, and gives its slot back when it ends. This is for clients that cannot run a background command (Cursor, Claude Desktop); the `wait` command stays for those that can.
+4. **Asking in one call.** An `ask` tool sends a direct message to one agent and waits, up to a timeout the caller gives (capped, with a default, and counted like part 3's hold), for that agent's reply to it (a message with `in_reply_to` set to the question's id). It returns the reply, or says plainly that none came in time and gives the question's id so the caller can look for the answer later. The reply is marked read when `ask` returns it, as `read_inbox` would. The tool descriptions tell a receiving agent to answer with `in_reply_to`, so that `ask` sees the answer.
+
+## Also current: ready for other people to use
 
 Someone who has never seen message-cp should be able to understand what it is, run it on one machine in five minutes, and run a team server in fifteen. Each part is a ticket of its own or more. Parts 1 to 3 touch different files and can be built at the same time; part 4 comes after them, because the site documents them:
 
@@ -29,7 +38,14 @@ Someone who has never seen message-cp should be able to understand what it is, r
    - *Copy:* short, plain and concrete; every sentence says what the software does or what the reader does next. No marketing filler ("seamless", "powerful", "effortless", "unlock", "supercharge", "empower", "next-generation", "game-changing"), no em-dashes, no lists of three adjectives, no rhetorical questions, no "not just X, but Y". Cut any sentence that would still be true of a different product.
    - *Evidence:* a pull request that changes how a page looks includes screenshots of each changed page at phone and desktop width, in light and dark, and a short screen recording or GIF of the hero playing.
 
-The plain front page and everything before it are done.
+5. **Finishing the site.** These touch only `site/`, so they can be built alongside the goal above.
+   - The comparison adds AgentDM (agentdm.ai), the closest hosted product, described from its own site: hosted, with messages passing through its servers, against message-cp running on the reader's own machine, with people in the chat and webhooks that wake agents.
+   - Every page has a favicon, a title and description for link previews (Open Graph and Twitter tags, with one plain preview image), and the site has its own 404 page in the same look.
+   - `/llms.txt` on the site says in plain text what message-cp is, how an agent connects to a server, and its tools, for agents reading the site.
+   - The landing page shows a screenshot of the dashboard with a person and two agents in one conversation, taken from a local server with made-up names, since people taking part is what sets message-cp apart.
+   - Getting started has one block with a tab per client (Claude Code, Cursor, Claude Desktop, plain JSON), each holding exactly what to paste, as `message-cp connect` prints it.
+
+Parts 1 to 4 and the plain front page are done.
 
 ## Previous goal (done): seeing agents work, and keeping their names
 
@@ -67,4 +83,4 @@ Account separation is the one security boundary that matters most here: a change
 - Sign-in of any kind built into the server (OAuth, GitHub, passwords). Tokens only.
 - A web page for managing an account. Accounts, tokens, people, agents and webhooks are managed with the command on the server; the dashboard writes nothing except what a person posts or sends, and the direct conversations a person deletes.
 - Publishing to npm or to a container registry, and numbered releases. They come when the owner decides to launch.
-- New kinds of content beyond messages (files, memories, tasks). Channel posts are messages; pinned or editable posts, threads, reactions and per-channel permissions are not now either.
+- New kinds of content beyond messages (files, memories, tasks). Channel posts are messages; pinned or editable posts, threads of channel posts, reactions and per-channel permissions are not now either. A direct message saying which message it answers (the current goal) is not a thread view: nothing groups or nests messages.
