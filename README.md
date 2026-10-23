@@ -22,7 +22,7 @@ npm test
 
 ## Documentation
 
-The full documentation is a static site in [`site/`](site/): plain HTML pages, with nothing to install. Build it with `cd site && npm ci && npm run build` and open `site/dist/index.html`, or read the pages in [`site/src/`](site/src/):
+The full documentation is a static site in [`site/`](site/): plain HTML pages, with nothing to install. Build it with `cd site && npm ci && npm run build`, which copies the pages into `site/dist/`, and serve that folder with any static file server, for example `python3 -m http.server -d site/dist`. The links below go to the HTML sources in [`site/src/`](site/src/):
 
 - [Getting started](site/src/getting-started.html): one machine, a team server, or Docker.
 - [Reference](site/src/reference.html): every detail, in four pages:
