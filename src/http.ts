@@ -736,6 +736,9 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
       // Another account's session looks like one that does not exist.
       if (!live || live.account !== account) return reply(res, 404, "Unknown session");
       await live.ready;
+      // A client that went away while the session was restored is not listening, and its close has already fired, so
+      // `track` would never see it.
+      if (res.closed) return;
       // A session another server sharing the database ended with DELETE is ended here too.
       const ended = unlessBusy(res, () => sessionEnded(db, id));
       if (ended === undefined) return;

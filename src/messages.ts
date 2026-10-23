@@ -290,8 +290,9 @@ export const hasUnread = (unread: Unread) => unread.count > 0 || unread.posts > 
 /**
  * How many unread messages `reader` has and who sent them, how many unread posts are in the channels it has joined and
  * where, and how many unread mentions it has and where, without reading or marking anything. `reader` is a name, as
- * `wait` and GET /wait pass it, or a registration, as `wait_for_mail` passes it, so a name taken over since the session
- * checked it counts nothing. Undefined if there is no such agent.
+ * `wait` and GET /wait pass it, or a registration, as `wait_for_mail` passes it, so a registration that has been
+ * removed, or whose key was reset, counts nothing even if another agent now has its name; a takeover with the key keeps
+ * the same row and counts as before. Undefined if there is no such agent.
  */
 export function unreadSummary(db: Db, account: AccountId, reader: string | Identity): Unread | undefined {
   // One read transaction, so the messages and the posts are counted at the same moment.
