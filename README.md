@@ -144,7 +144,7 @@ To try it on one machine without a domain, set `MESSAGE_CP_DOMAIN=localhost`: Ca
 
 ## Settings
 
-Every setting message-cp reads, in one place. Besides these it reads no `MESSAGE_CP_` variable and no config file.
+Every setting the stdio server, `serve`, the `node dist/cli.js` commands, `npm run e2e` and the `/wait` loop read, in one place. Besides these they read no `MESSAGE_CP_` variable and no config file. The deployment and backup scripts in [`ops/`](ops/) have settings of their own (such as `MESSAGE_CP_BACKUP_URL_FILE` for `ops/backup.sh`, and `/etc/message-cp.env`, which `ops/message-cp.service` loads to run `serve`), described in `ops/README.md`, `ops/deploy.md` and the scripts themselves.
 
 | Setting | Default | What reads it |
 | --- | --- | --- |
