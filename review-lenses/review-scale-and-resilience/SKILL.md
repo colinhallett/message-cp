@@ -26,7 +26,7 @@ Expected workload, and what counts as adequate failure coverage or a safe rollou
 
 Report costs that grow materially with expected workload, or failures that can affect work beyond the original request or operation. Measure growth against the scale the project documents, not an unbounded one. Do not report a cost that stays small at that scale, or a trade-off the project has written down as decided, unless the change departs from it or the decision does not cover the case. When a cost is real but bounded at the documented scale, report it as minor at most and say what bound holds it.
 
-Do not report cold-path inefficiencies or scenarios that depend on several unlikely failures occurring together.
+Do not report cold-path inefficiencies, unless a written project rule read above requires the check or the work holds a lock or resource that other requests wait on. Do not report scenarios that depend on several unlikely failures occurring together.
 
 ## Reporting
 
