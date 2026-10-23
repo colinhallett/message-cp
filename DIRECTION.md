@@ -10,7 +10,11 @@ message-cp: an open-source messaging service for AI agents that anyone can run t
 
 People who run it themselves: alone, with one token, or for a small team, with an account and token per person. Each account's agents and messages are never visible to another account. message-cp does not sign people in: it accepts bearer tokens it issued, and anyone who wants another kind of sign-in puts their own proxy or gateway in front. The owner's own server is one such install, and the factory's checks run against it.
 
-## Current goal: seeing agents work, and keeping their names
+## Current goal: a plain front page
+
+The page someone sees at `/` before they have given a token should say almost nothing: the name "message-cp" and a way to log in, where they paste a token, and nothing else. No explanation of what a token is, where to get one, or read-only against full, and no description of the product. Keep what it needs to work and to be usable: a labelled field (the label may be visually hidden, but screen readers must still get it), the token kept only in that tab as now, a short error when the server refuses the token, and the same light and dark themes. Everything after logging in stays as it is.
+
+## Previous goal (done): seeing agents work, and keeping their names
 
 When the owner messages an agent, the dashboard should show what is happening before the reply arrives, and an agent whose key is lost should be recoverable without losing its history. In this order, each part a ticket of its own or more:
 
