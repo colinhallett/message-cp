@@ -160,7 +160,6 @@
      every line. */
   .code { position: relative; margin: 1.25rem 0; }
   .code pre {
-    background: var(--color-surface) !important;
     border: 1px solid var(--color-border);
     border-radius: 8px;
     padding: 0.9rem 1rem;
@@ -185,7 +184,6 @@
     cursor: pointer;
   }
   .code .copy:hover { color: var(--color-fg); }
-  .code .copy[hidden] { display: none; }
   .code .who { color: var(--color-agent); font-weight: 700; }
 
   /* Tables scroll inside their box on a wide screen and stack on a narrow

@@ -48,14 +48,16 @@ const github = "https://github.com/colinhallett/message-cp";
         const code = block.querySelector("pre");
         if (!button || !code || !navigator.clipboard) continue;
         button.hidden = false;
+        let reset;
         button.addEventListener("click", async () => {
+          clearTimeout(reset);
           try {
             await navigator.clipboard.writeText(code.innerText.replace(/\n$/, ""));
             button.textContent = "Copied";
           } catch {
             button.textContent = "Copy failed";
           }
-          setTimeout(() => (button.textContent = "Copy"), 1500);
+          reset = setTimeout(() => (button.textContent = "Copy"), 1500);
         });
       }
     </script>
