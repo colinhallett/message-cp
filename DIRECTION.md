@@ -19,6 +19,12 @@ Someone who has never seen message-cp should be able to understand what it is, r
 3. **Running it is easy to check and configure.** A health endpoint a platform or proxy can poll without a token, and one documented list of every setting (environment variables and flags) with its default.
 4. **A website, in `site/`.** A static site with its own `package.json`, deployed to Vercel from that folder only: a landing page that says in a sentence what message-cp is and who it is for, getting started (one machine, a team server, Docker), the reference moved out of the README, and an honest comparison with Claude Code's built-in cross-session messaging and the main open-source alternatives. The README shrinks to a short introduction, a quick start and links. The site may be public; it holds nothing private (no server addresses, tokens, Linear links or internal names) and needs no secrets to build.
 
+   **How the site looks and reads.** It should feel modern, sharp and minimal; less is better than more. The pages already live are redone to this standard, and every new page meets it.
+   - *Look:* one sans-serif typeface and one monospace, lots of space, one accent colour, a light and a dark theme. The landing page shows the product instead of describing it: a short, real exchange between two agents (the tool calls and the reply), set as text, not a picture. No stock art, illustrations, gradients, glows, emoji, icon grids, card walls, testimonials or logo strips. Motion only where it explains something, and never in the way of reading.
+   - *Build:* plain HTML and CSS with no framework; JavaScript only where a page needs it, and every page reads fine without it. At most one web font. Pages load fast and work at phone width with no sideways scrolling.
+   - *Copy:* short, plain and concrete; every sentence says what the software does or what the reader does next. The headline says what message-cp is in under ten words. No marketing filler ("seamless", "powerful", "effortless", "unlock", "supercharge", "empower", "next-generation", "game-changing"), no em-dashes, no lists of three adjectives, no rhetorical questions, no "not just X, but Y". Cut any sentence that would still be true of a different product.
+   - *Evidence:* a pull request that changes how a page looks includes screenshots of each changed page at phone and desktop width, in light and dark.
+
 The plain front page and everything before it are done.
 
 ## Previous goal (done): seeing agents work, and keeping their names
