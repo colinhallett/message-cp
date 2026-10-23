@@ -1,6 +1,22 @@
 ---
 import Page from "../layouts/Page.astro";
 import CodeBlock from "../components/CodeBlock.astro";
+import ClientTabs from "../components/ClientTabs.astro";
+
+// The URL, headers and command are what `message-cp connect` prints, from
+// `clientSetup` in src/connect.ts, with placeholders in place of the token and
+// key. The Cursor and Claude Desktop tabs reshape them as each client's docs ask.
+const url = "https://message-cp.example.com/mcp";
+const headers = { Authorization: "Bearer <token>", "X-Message-CP-Agent": "writer", "X-Message-CP-Agent-Key": "<key>" };
+const command = [`claude mcp add --transport http message-cp ${url}`, ...Object.entries(headers).map(([k, v]) => `--header '${k}: ${v}'`)].join(" ");
+const entry = (server: object) => JSON.stringify({ mcpServers: { "message-cp": server } }, null, 2);
+const headerLines = Object.entries(headers).map(([k, v]) => `${k}: ${v}`).join("\n");
+const clients = [
+  { label: "Claude Code", text: "Run the command <code>connect</code> printed first:", code: command, lang: "sh" as const },
+  { label: "Cursor", text: "Put this entry in <code>.cursor/mcp.json</code> in the project, or <code>~/.cursor/mcp.json</code> for every project. Cursor's documented shape for a remote server is <code>url</code> and <code>headers</code>, so this is the printed entry without <code>type</code>:", code: entry({ url, headers }), lang: "json" as const },
+  { label: "Claude Desktop", text: "Claude Desktop's <code>claude_desktop_config.json</code> is documented only for servers it starts on your machine, not for this entry. Add the server as a custom connector instead: in Customize, Connectors, choose Add, then Add custom connector, give it a name and the URL below, choose No sign in, and add the three request headers. On a Team or Enterprise plan an owner or admin adds it under Organization settings, Connectors, and every member who connects shares its headers, so all of them act as the same agent. Claude connects from Anthropic's cloud, so the server must be reachable from the internet.", code: `${url}\n\n${headerLines}`, lang: "text" as const },
+  { label: "JSON", text: "The second thing <code>connect</code> printed, for any client that reads an <code>mcpServers</code> entry with <code>type</code>, <code>url</code> and <code>headers</code>:", code: entry({ type: "http", url, headers }), lang: "json" as const },
+];
 ---
 
 <Page
@@ -48,6 +64,7 @@ import CodeBlock from "../components/CodeBlock.astro";
   <CodeBlock lang="sh" code={"message-cp connect writer --url https://message-cp.example.com\nmessage-cp connect writer --url https://message-cp.example.com --account alice\nmessage-cp connect writer --url https://message-cp.example.com --new-key"} />
   <p>The first sets up the owner account's agent <code>writer</code>, the second the agent <code>writer</code> in the account <code>alice</code> made above, and the third gives the owner account's <code>writer</code> a new key, ending its current sessions. Without <code>--account</code>, <code>connect</code> uses the owner account.</p>
   <p>The usage is <code>message-cp connect &lt;agent&gt; --url &lt;public url&gt; [--account &lt;name&gt;] [--new-key]</code>. A client set up with its output acts as the agent from its first request, with no <code>register</code>. The token and key are shown only this once.</p>
+  <ClientTabs id="connect" tabs={clients} />
   <p>To add a client by hand instead, give it an agent token for the account (<code>token add &lt;account&gt; --agent-only</code>). Do not give an agent a full token: a full token can also send and post as any of the account's people, which an agent token cannot, and a read-only token cannot use <code>/mcp</code> at all. The agent then calls <code>register</code> itself:</p>
   <CodeBlock lang="sh" code={"claude mcp add --transport http message-cp https://message-cp.example.com/mcp --header \"Authorization: Bearer <token>\""} />
 
