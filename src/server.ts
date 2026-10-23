@@ -230,7 +230,7 @@ export function createServer(db: Db, session = new Session(OWNER_ACCOUNT), optio
   server.registerTool(
     "message_status",
     {
-      description: `Say whether messages you sent have been read: takes the ids send_message returned (1 to ${MAX_INBOX_LIMIT}) and returns, for each id once, in the order given, id, to (the recipient, by the name it had if it has since been removed), read and readAt (when its recipient's read_inbox first returned it, or null). Only messages sent under your name since you registered it, to an agent or person of your account, can be asked about; if any id is another (one you did not send, one a removed agent with your name sent, or one that does not exist), the whole call fails with one error that does not say which. Marks nothing read. Requires register first.`,
+      description: `Say whether messages you sent have been read: takes the ids send_message returned (1 to ${MAX_INBOX_LIMIT}) and returns, for each id once, in the order given, id, to (the recipient, by the name it had if it has since been removed), read and readAt (when its recipient's read_inbox first returned it, or null; a message to a person stays unread, since a person has no read_inbox). Only messages sent under your name since you registered it, to an agent or person of your account, can be asked about; if any id is another (one you did not send, one a removed agent with your name sent, or one that does not exist), the whole call fails with one error that does not say which. Marks nothing read. Requires register first.`,
       inputSchema: {
         ids: z.array(z.number().int().positive()).min(1).max(MAX_INBOX_LIMIT).describe("Message ids, as send_message returns them in messages."),
       },

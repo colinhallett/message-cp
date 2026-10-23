@@ -5,8 +5,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { addAccount } from "../src/accounts.js";
+import { addPerson } from "../src/agents.js";
 import { OWNER_ACCOUNT, openDb, type AccountId, type Db } from "../src/db.js";
-import { MAX_INBOX_LIMIT, NOT_YOUR_MESSAGES } from "../src/messages.js";
+import { MAX_INBOX_LIMIT, MESSAGE_STATUS_SQL, NOT_YOUR_MESSAGES } from "../src/messages.js";
 import { Session, createServer } from "../src/server.js";
 
 // The message ids `send_message` returns, and `message_status`, which says whether each was read.
@@ -123,6 +124,16 @@ describe("message_status", () => {
     expect(await ok(alice, "message_status", { ids: [id] })).toEqual([{ id, to: "bob", read: true, readAt: expect.any(String) }]);
   });
 
+  it("keeps a message to a person unread, since a person has no read_inbox", async () => {
+    addPerson(db, "owner", "colin");
+    const alice = await connect("alice");
+    const sent = await ok(alice, "send_message", { to: "all", body: "hi all" });
+    expect(sent.messages).toEqual([{ id: expect.any(Number), to: "colin" }]);
+    expect(await ok(alice, "message_status", { ids: [sent.messages[0].id] })).toEqual([
+      { id: sent.messages[0].id, to: "colin", read: false, readAt: null },
+    ]);
+  });
+
   it("refuses, with the same error, any id the caller did not send", async () => {
     const alice = await connect("alice");
     const bob = await connect("bob");
@@ -171,11 +182,7 @@ describe("message_status", () => {
   it("finds each message by its primary key, without scanning history", () => {
     const plan = (
       db
-        .prepare(
-          `EXPLAIN QUERY PLAN SELECT m.id, CASE WHEN a.removed_at IS NULL THEN a.name ELSE a.removed_name END AS recipient, m.read_at
-           FROM json_each(?) j CROSS JOIN messages m ON m.id = j.value JOIN agents a ON a.id = m.recipient_id AND a.account_id = ?
-           WHERE m.sender = ? COLLATE NOCASE AND m.created_at >= ?`,
-        )
+        .prepare(`EXPLAIN QUERY PLAN ${MESSAGE_STATUS_SQL}`)
         .all("[1]", OWNER_ACCOUNT, "alice", 0) as { detail: string }[]
     ).map((p) => p.detail);
     expect(plan.some((d) => /SEARCH m USING INTEGER PRIMARY KEY/.test(d))).toBe(true);

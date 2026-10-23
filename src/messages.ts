@@ -224,11 +224,16 @@ export function readInbox(
 
 export const NOT_YOUR_MESSAGES = "Not every id is a message you sent.";
 
+// The ids are one bound JSON array; CROSS JOIN keeps them first, so each row is found by its primary key.
+export const MESSAGE_STATUS_SQL = `SELECT m.id, CASE WHEN a.removed_at IS NULL THEN a.name ELSE a.removed_name END AS recipient, m.read_at
+  FROM json_each(?) j CROSS JOIN messages m ON m.id = j.value JOIN agents a ON a.id = m.recipient_id AND a.account_id = ?
+  WHERE m.sender = ? COLLATE NOCASE AND m.created_at >= ?`;
+
 /**
  * The recipient and read state of each of `ids`, in the order asked, a repeated id once. `sender` is only a name, so
  * sent means sent under the caller's name since its row was registered, as `readConversation` matches it, to a
- * recipient of the caller's account; a removed recipient is named by the name it had. Any other id, or a caller whose
- * registration is no longer live, throws one error, so it does not tell whether an id exists. Reads only.
+ * recipient of the caller's account; a removed recipient is named by the name it had. Any other id, or a caller removed
+ * since the session checked it, throws one error, so it does not tell whether an id exists. Reads only.
  */
 export function messageStatus(db: Db, account: AccountId, caller: Member, ids: number[]): MessageStatus[] {
   const wanted = [...new Set(ids)];
@@ -238,13 +243,8 @@ export function messageStatus(db: Db, account: AccountId, caller: Member, ids: n
       .prepare("SELECT name, registered_at FROM agents WHERE account_id = ? AND id = ? AND registered_at = ? AND instance IS ? AND removed_at IS NULL")
       .get(account, caller.id, caller.registeredAt, caller.instance) as { name: string; registered_at: number } | undefined;
     if (!me) throw new ToolError(NOT_YOUR_MESSAGES);
-    // The ids are one bound JSON array; CROSS JOIN keeps them first, so each row is found by its primary key.
     const rows = db
-      .prepare(
-        `SELECT m.id, CASE WHEN a.removed_at IS NULL THEN a.name ELSE a.removed_name END AS recipient, m.read_at
-         FROM json_each(?) j CROSS JOIN messages m ON m.id = j.value JOIN agents a ON a.id = m.recipient_id AND a.account_id = ?
-         WHERE m.sender = ? COLLATE NOCASE AND m.created_at >= ?`,
-      )
+      .prepare(MESSAGE_STATUS_SQL)
       .all(JSON.stringify(wanted), account, me.name, me.registered_at) as { id: number; recipient: string; read_at: number | null }[];
     if (rows.length !== wanted.length) throw new ToolError(NOT_YOUR_MESSAGES);
     const byId = new Map(rows.map((r) => [r.id, r]));
