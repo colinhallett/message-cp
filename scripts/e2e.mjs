@@ -164,7 +164,10 @@ async function main() {
   const answer = `e2e answer ${suffix}`;
   /** The id of the first message, as send_message returned it. */
   let firstId;
-  /** The first agent's ask, started in one step and awaited in the next; it rejects only into `askError`. */
+  /**
+   * The first agent's ask, started in one step and awaited in the next. Its `.catch` keeps the wait_for_mail step's
+   * failure from leaving an unhandled rejection, and records why the ask failed in `askError` for that step to report.
+   */
   let asking;
   let askError;
   let failure;
@@ -328,6 +331,7 @@ async function main() {
       // asked again until its line names the first agent, for at most 10 seconds in all.
       const deadline = Date.now() + 10_000;
       for (;;) {
+        if (askError) throw new Error(`ask failed: ${describe(askError)}`);
         const left = Math.ceil((deadline - Date.now()) / 1000);
         const { unread } = left > 0 ? await call(receiver, "wait_for_mail", { timeout_seconds: left }) : { unread: null };
         if (typeof unread === "string" && unread.includes(sender.name)) return;
@@ -351,6 +355,7 @@ async function main() {
       if (!result.reply) throw new Error("ask returned no reply");
       if (result.reply.inReplyTo !== id) throw new Error(`the reply's inReplyTo is ${result.reply.inReplyTo}, not ${id}`);
       if (result.reply.from !== receiver.name) throw new Error(`the reply is from ${result.reply.from}, not ${receiver.name}`);
+      if (result.reply.body !== answer) throw new Error(`the reply is not "${answer}"`);
     });
 
     await step("both agents unregister and list_agents no longer shows them", async () => {
