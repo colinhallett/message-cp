@@ -182,6 +182,34 @@
   }
   .code .copy:hover { color: var(--color-fg); }
 
+  /* Client tabs: the tab list wraps onto a second row rather than scrolling
+     at 360px. Without the script, the list stays hidden and each panel shows
+     under its own heading. */
+  .tabs { margin: 1.25rem 0; }
+  .tab-list { display: flex; flex-wrap: wrap; gap: 0.25rem; border-bottom: 1px solid var(--color-border); }
+  .tab-list[hidden] { display: none; }
+  .tab-list [role="tab"] {
+    font: inherit;
+    font-size: var(--text-sm);
+    padding: 0.4rem 0.75rem;
+    color: var(--color-muted);
+    background: none;
+    border: 1px solid transparent;
+    border-bottom: none;
+    border-radius: 6px 6px 0 0;
+    margin-bottom: -1px;
+    cursor: pointer;
+  }
+  .tab-list [role="tab"]:hover { color: var(--color-fg); }
+  .tab-list [role="tab"][aria-selected="true"] {
+    color: var(--color-fg);
+    font-weight: 600;
+    background: var(--color-bg);
+    border-color: var(--color-border);
+  }
+  .tab-panel h4 { font-size: var(--text-base); margin: 1.5rem 0 0.25rem; }
+  .tab-panel[role="tabpanel"] > p { margin-top: 0.9rem; }
+
   /* Tables scroll inside their box on a wide screen and stack on a narrow
      one, each cell under its column's name. */
   .table { overflow-x: auto; margin: 1.75rem 0; }
