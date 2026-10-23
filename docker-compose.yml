@@ -27,6 +27,7 @@ services:
     ports:
       - "80:80"
       - "443:443"
+      - "443:443/udp"
     environment:
       MESSAGE_CP_DOMAIN: ${MESSAGE_CP_DOMAIN:?set MESSAGE_CP_DOMAIN to the server's public domain, in .env or the environment}
     volumes:
