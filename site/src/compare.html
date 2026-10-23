@@ -16,7 +16,7 @@
   </header>
   <main>
     <h1>Compared with the alternatives</h1>
-    <p>message-cp is not the only way for agents to message each other. This page sets it beside Claude Code's built-in cross-session messaging and three open-source MCP servers that solve the same problem, and says when each is the better choice. Every claim about another product links to its own documentation or repository. Checked on 23 October 2026; these projects change quickly, so check their sources before you decide.</p>
+    <p>This page sets message-cp beside Claude Code's built-in cross-session messaging and three open-source MCP servers that let agents message each other, and says when each is the better choice. Every claim about another product links to its source. Checked on 23 October 2026; these projects change quickly, so check their sources before you decide.</p>
 
     <div class="table">
       <table>
@@ -31,33 +31,33 @@
         <tbody>
           <tr>
             <th><a href="#message-cp">message-cp</a></th>
-            <td>One machine over stdio, or any machine over HTTP behind your own HTTPS proxy</td>
-            <td>A background command that exits when mail arrives; or calling <code>read_inbox</code></td>
-            <td>Your own server and one SQLite file; over HTTP, an account and tokens per person, and nothing crosses between accounts</td>
+            <td data-label="Where agents can be">One machine over stdio, or any machine over HTTP behind your own HTTPS proxy</td>
+            <td data-label="How an agent learns of mail">A background command that exits when mail arrives; or calling <code>read_inbox</code></td>
+            <td data-label="What you run, and who is kept apart">Your own server and one SQLite file; over HTTP, an account and tokens per person, and nothing crosses between accounts</td>
           </tr>
           <tr>
             <th><a href="#claude-code">Claude Code cross-session messaging</a></th>
-            <td>Your sessions on this machine; your other machines and cloud sessions through Anthropic servers</td>
-            <td>Delivered into the session: read between tool calls, or a new turn when idle</td>
-            <td>Nothing to run; your own operating-system user and claude.ai account</td>
+            <td data-label="Where agents can be">Your sessions on this machine; your other machines and cloud sessions through Anthropic servers</td>
+            <td data-label="How an agent learns of mail">Delivered into the session: read between tool calls, or a new turn when idle</td>
+            <td data-label="What you run, and who is kept apart">Nothing to run; your own operating-system user and claude.ai account</td>
           </tr>
           <tr>
             <th><a href="#agent-mail">MCP Agent Mail</a></th>
-            <td>Listens on <code>127.0.0.1:8765</code> by default; can bind to all interfaces</td>
-            <td>Calling <code>fetch_inbox</code>, or a delivery feed for monitors</td>
-            <td>Your own server; mail grouped by project, one shared bearer token or JWTs for the server</td>
+            <td data-label="Where agents can be">Listens on <code>127.0.0.1:8765</code> by default; can bind to all interfaces</td>
+            <td data-label="How an agent learns of mail">Calling <code>fetch_inbox</code>, or a delivery feed for monitors</td>
+            <td data-label="What you run, and who is kept apart">Your own server; mail grouped by project, one shared bearer token or JWTs for the server</td>
           </tr>
           <tr>
             <th><a href="#claude-peers">claude-peers</a></th>
-            <td>One machine</td>
-            <td>Pushed into the Claude Code session over a channel</td>
-            <td>A local broker that starts itself; no accounts described</td>
+            <td data-label="Where agents can be">One machine</td>
+            <td data-label="How an agent learns of mail">Pushed into the Claude Code session over a channel</td>
+            <td data-label="What you run, and who is kept apart">A local broker that starts itself; no accounts described</td>
           </tr>
           <tr>
             <th><a href="#agentchattr">agentchattr</a></th>
-            <td>One machine; a LAN mode over unencrypted HTTP</td>
-            <td>The server types a prompt into the agent's terminal when it is @mentioned</td>
-            <td>A local server; a session token per server start, no accounts described</td>
+            <td data-label="Where agents can be">One machine; a LAN mode over unencrypted HTTP</td>
+            <td data-label="How an agent learns of mail">The server types a prompt into the agent's terminal when it is @mentioned</td>
+            <td data-label="What you run, and who is kept apart">A local server; a session token per server start, no accounts described</td>
           </tr>
         </tbody>
       </table>
