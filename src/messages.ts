@@ -183,14 +183,21 @@ export function sendQuestion(db: Db, account: AccountId, own: Member, to: string
  * Found through the caller's row, so another account's or agent's reply never matches.
  */
 export function takeReply(db: Db, account: AccountId, own: Identity, questionId: number): Message | null | undefined {
+  const find = (): Omit<Row, "read_at"> | null | undefined => {
+    const agent = db
+      .prepare("SELECT id FROM agents WHERE account_id = ? AND id = ? AND registered_at = ? AND instance IS ? AND removed_at IS NULL")
+      .get(account, own.id, own.registeredAt, own.instance) as { id: number } | undefined;
+    if (!agent) return undefined;
+    return (db.prepare(TAKE_REPLY_SQL).get(questionId, agent.id) as Omit<Row, "read_at"> | undefined) ?? null;
+  };
+  // A plain read first, which never waits for the write lock, so a poll with no reply yet takes no lock; the lock is
+  // taken only to mark a reply read, and the caller's row and the reply are found again under it.
+  const seen = db.transaction(find)();
+  if (!seen) return seen;
   return db
     .transaction((): Message | null | undefined => {
-      const agent = db
-        .prepare("SELECT id FROM agents WHERE account_id = ? AND id = ? AND registered_at = ? AND instance IS ? AND removed_at IS NULL")
-        .get(account, own.id, own.registeredAt, own.instance) as { id: number } | undefined;
-      if (!agent) return undefined;
-      const r = db.prepare(TAKE_REPLY_SQL).get(questionId, agent.id) as Omit<Row, "read_at"> | undefined;
-      if (!r) return null;
+      const r = find();
+      if (!r) return r;
       db.prepare("UPDATE messages SET read_at = ? WHERE id = ? AND read_at IS NULL").run(Date.now(), r.id);
       return {
         id: r.id,

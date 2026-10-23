@@ -116,6 +116,7 @@ export const DEFAULT_MAX_SESSIONS = 256;
 export const DEFAULT_WAIT_FOR_MAIL_SECONDS = 50;
 export const MAX_WAIT_FOR_MAIL_SECONDS = DEFAULT_WAIT_HOLD_MS / 1000;
 export const WAIT_FOR_MAIL_FULL = "Too many calls are waiting for mail on this server. Try again shortly.";
+export const ASK_FULL = "Too many calls are waiting on this server. Try again shortly; nothing was sent.";
 
 // The held `wait_for_mail` and `ask` calls of every server in this process that was not given a `hold`, as over stdio.
 let held = 0;
@@ -377,7 +378,7 @@ export function createServer(db: Db, session = new Session(OWNER_ACCOUNT), optio
   server.registerTool(
     "ask",
     {
-      description: `Ask one agent a question and wait for its answer in one call: sends body to the agent to, as send_message does, and holds the call until that agent answers it: sends you a message with send_message whose in_reply_to is the question's id. Returns id (the question's message id) and reply: the earliest such reply, shaped as read_inbox returns a message and marked read, or null if none came within timeout_seconds or the call was cancelled. With reply null, look for the answer later with read_inbox, read_conversation or message_status and the id. It checks about once a second; a check that finds the database busy counts as no reply that second. To answer a question someone asks you, call send_message with in_reply_to set to the question's id, so that their ask sees it. 'all' and a person are refused, and nothing is sent. Calls held at once are capped together with wait_for_mail, over HTTP also with the server's GET /wait requests and over stdio for the whole process; past the cap it fails at once and sends nothing, so try again shortly. If your agent is removed while you wait, it fails as not registered, and the question stays sent. Requires register first.`,
+      description: `Ask one agent a question and wait for its answer in one call: sends body to the agent to, as send_message does, and holds the call until that agent answers it with send_message and in_reply_to set to the question's id. Returns id (the question's message id) and reply: the earliest such reply, shaped as read_inbox returns a message and marked read, or null if none came within timeout_seconds or the call was cancelled. With reply null, look for the answer later with read_inbox, read_conversation or message_status and the id. It checks about once a second; a check that finds the database busy counts as no reply that time. To answer a question someone asks you, call send_message with in_reply_to set to the question's id, so that their ask sees it. 'all' and a person are refused, and nothing is sent. Calls held at once are capped together with wait_for_mail, over HTTP also with the server's GET /wait requests and over stdio for the whole process; past the cap it fails at once and sends nothing, so try again shortly. If your agent is removed while you wait, it fails as not registered. Requires register first.`,
       inputSchema: {
         to: z.string().describe("The agent to ask, by name. Not 'all' or a person."),
         body: z.string().describe(`The question, at most ${MAX_BODY_LENGTH} characters.`),
@@ -394,7 +395,7 @@ export function createServer(db: Db, session = new Session(OWNER_ACCOUNT), optio
       const own = session.requireAgent();
       // The slot comes first: no reply can exist before the question is sent, so nothing is answered without one.
       const release = hold();
-      if (!release) throw new ToolError(WAIT_FOR_MAIL_FULL);
+      if (!release) throw new ToolError(ASK_FULL);
       try {
         const deadline = Date.now() + (timeout_seconds ?? DEFAULT_WAIT_FOR_MAIL_SECONDS) * 1000;
         const id = sendQuestion(db, account, own, to, body).messages[0].id;
@@ -402,6 +403,7 @@ export function createServer(db: Db, session = new Session(OWNER_ACCOUNT), optio
         const answer = () => {
           const reply = check(() => takeReply(db, account, own, id), null);
           if (reply === undefined) throw new ToolError(NOT_REGISTERED);
+          // poll goes on while this returns undefined: no reply yet.
           return reply ?? undefined;
         };
         return { id, reply: (await poll(deadline, ended(extra), answer)) ?? null };

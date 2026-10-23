@@ -1,6 +1,7 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import Database from "better-sqlite3";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -10,7 +11,7 @@ import { NOT_REGISTERED, addPerson, identityOf, registerAgent, removeAgent } fro
 import { OWNER_ACCOUNT, openDb, type AccountId, type Db } from "../src/db.js";
 import { startHttp, type HttpServer } from "../src/http.js";
 import { TAKE_REPLY_SQL, sendMessage } from "../src/messages.js";
-import { Session, WAIT_FOR_MAIL_FULL, createServer, type ServerOptions } from "../src/server.js";
+import { ASK_FULL, Session, WAIT_FOR_MAIL_FULL, createServer, type ServerOptions } from "../src/server.js";
 import { addWebhook } from "../src/webhooks.js";
 
 const TOKEN = "s3cret-token";
@@ -128,6 +129,23 @@ describe("ask", () => {
     expect((await call(alice, "read_inbox")).json.map((m: { body: string }) => m.body)).toEqual(["second"]);
   });
 
+  it("polls without waiting for the write lock while no reply has come", async () => {
+    const alice = await agent("alice");
+    const pending = call(alice, "ask", { to: "bob", body: "q", timeout_seconds: 10 });
+    const question = await questionTo("bob");
+    // Another connection holds the write lock over two of ask's checks; a check that waited for it would stall the
+    // event loop for the busy timeout and this sleep with it.
+    const other = new Database(db.name);
+    other.exec("BEGIN IMMEDIATE");
+    const started = Date.now();
+    await sleep(2200);
+    other.exec("ROLLBACK");
+    other.close();
+    expect(Date.now() - started).toBeLessThan(3000);
+    sendMessage(db, OWNER_ACCOUNT, "bob", "alice", "a", identityOf(db, OWNER_ACCOUNT, "bob"), question);
+    expect((await pending).json.reply).toMatchObject({ inReplyTo: question, body: "a" });
+  });
+
   it("queues the recipient's agent webhooks for the question", async () => {
     addWebhook(db, "owner", "https://example.com/hook", "agent:bob", false);
     const alice = await agent("alice");
@@ -186,7 +204,7 @@ describe("ask", () => {
     const held = call(alice, "wait_for_mail", { timeout_seconds: 1 });
     await sleep(200);
     const started = Date.now();
-    expect(await call(carol, "ask", { to: "bob", body: "q", timeout_seconds: 10 })).toMatchObject({ isError: true, text: WAIT_FOR_MAIL_FULL });
+    expect(await call(carol, "ask", { to: "bob", body: "q", timeout_seconds: 10 })).toMatchObject({ isError: true, text: ASK_FULL });
     expect(Date.now() - started).toBeLessThan(500);
     expect(messageCount()).toBe(0);
     expect((await held).json).toEqual({ unread: null });
@@ -302,7 +320,7 @@ describe("ask over HTTP", () => {
     expect((await call(client, "register", { name: "carol", bio: "asks" })).isError).toBe(false);
     const held = wait("alice");
     await sleep(100);
-    expect(await call(client, "ask", { to: "bob", body: "q", timeout_seconds: 10 })).toMatchObject({ isError: true, text: WAIT_FOR_MAIL_FULL });
+    expect(await call(client, "ask", { to: "bob", body: "q", timeout_seconds: 10 })).toMatchObject({ isError: true, text: ASK_FULL });
     expect(messageCount()).toBe(0);
     expect((await held).status).toBe(204);
   });
