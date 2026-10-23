@@ -1,0 +1,44 @@
+# A message-cp team server behind Caddy for HTTPS. Set MESSAGE_CP_DOMAIN and MESSAGE_CP_HTTP_TOKEN
+# in .env (see .env.example) or the environment, then run `docker compose up -d`.
+# See "Running with Docker" in README.md.
+
+services:
+  message-cp:
+    build: .
+    command:
+      - node
+      - dist/cli.js
+      - serve
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8787"
+      - --public-url
+      - https://${MESSAGE_CP_DOMAIN:?set MESSAGE_CP_DOMAIN to the server's public domain, in .env or the environment}
+    environment:
+      MESSAGE_CP_HTTP_TOKEN: ${MESSAGE_CP_HTTP_TOKEN:?set MESSAGE_CP_HTTP_TOKEN to the owner token, in .env or the environment}
+    volumes:
+      - data:/data
+    # No ports: message-cp speaks plain HTTP and is reachable only on the compose network, through Caddy.
+    restart: unless-stopped
+
+  caddy:
+    image: caddy:2
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      MESSAGE_CP_DOMAIN: ${MESSAGE_CP_DOMAIN:?set MESSAGE_CP_DOMAIN to the server's public domain, in .env or the environment}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - message-cp
+    restart: unless-stopped
+
+volumes:
+  data:
+  caddy_data:
+  caddy_config:
