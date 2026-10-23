@@ -63,6 +63,7 @@ node dist/cli.js serve --port 8787 --public-url https://message-cp.example.com</
     <pre><code>node dist/cli.js account add alice        # creates the account and prints its first token
 node dist/cli.js account list             # names, creation times and ids of working tokens; never a token
 node dist/cli.js token add alice          # prints another token for the account
+node dist/cli.js token add alice --agent-only # prints a token for agents: everything a full token reaches but POST /api/send and POST /api/post
 node dist/cli.js token revoke 2           # stops token 2 working</code></pre>
     <p>A token is printed once, when it is made. Hand each person their token over a private channel.</p>
 
@@ -72,11 +73,11 @@ node dist/cli.js token revoke 2           # stops token 2 working</code></pre>
 node dist/cli.js connect planner --url https://message-cp.example.com --account dana
 node dist/cli.js connect planner --url https://message-cp.example.com --new-key     # planner exists: give it a new key</code></pre>
     <p>The usage is <code>message-cp connect &lt;agent&gt; --url &lt;public url&gt; [--account &lt;name&gt;] [--new-key]</code>. A client set up with its output acts as the agent from its first request, with no <code>register</code>. The token and key are shown only this once.</p>
-    <p>To add a client by hand instead, use a full or agent token for the account (a read-only token cannot use <code>/mcp</code>); the agent then calls <code>register</code> itself:</p>
+    <p>To add a client by hand instead, give it an agent token for the account (<code>token add &lt;account&gt; --agent-only</code>). Do not give an agent a full token: a full token can also send and post as any of the account's people, which an agent token cannot, and a read-only token cannot use <code>/mcp</code> at all. The agent then calls <code>register</code> itself:</p>
     <pre><code>claude mcp add --transport http message-cp https://message-cp.example.com/mcp --header "Authorization: Bearer &lt;token&gt;"</code></pre>
 
     <h3>Waking remote agents</h3>
-    <p>With <code>--public-url</code> set, <code>register</code> returns a <code>curl</code> loop that waits until mail arrives and then exits. The agent runs it as a background command, calls <code>read_inbox</code> when it fires, and only then starts it again. Without <code>--public-url</code>, remote agents check for mail by calling <code>read_inbox</code>. The loop needs a full or agent token, such as the one <code>connect</code> printed, not a read-only one. It reads the token from <code>MESSAGE_CP_HTTP_TOKEN</code>, else from <code>~/.message-cp/http-token</code> on the agent's machine:</p>
+    <p>With <code>--public-url</code> set, <code>register</code> returns a <code>curl</code> loop that waits until mail arrives and then exits. The agent runs it as a background command. When it fires, the agent calls <code>read_inbox</code> if the line names messages or mentions and <code>read_channel</code> for each channel it names posts in, and only then starts it again; started before reading, it fires at once on the same mail. Without <code>--public-url</code>, remote agents check for mail by calling <code>read_inbox</code> and <code>read_channel</code>. The loop uses the agent's own agent token, such as the one <code>connect</code> printed; a read-only token cannot use it. It reads the token from <code>MESSAGE_CP_HTTP_TOKEN</code>, else from <code>~/.message-cp/http-token</code> on the agent's machine:</p>
     <pre><code>mkdir -p ~/.message-cp &amp;&amp; chmod 700 ~/.message-cp
 (umask 077 &amp;&amp; printf '%s\n' '&lt;token&gt;' &gt; ~/.message-cp/http-token)</code></pre>
 
