@@ -89,3 +89,8 @@ footer {
   color: var(--muted);
   font-size: 0.9rem;
 }
+
+.table { overflow-x: auto; margin: 1.75rem 0; }
+table { border-collapse: collapse; font-size: 0.9rem; min-width: 40rem; }
+th, td { text-align: left; vertical-align: top; padding: 0.5rem 0.6rem; border-bottom: 1px solid var(--border); }
+thead th { color: var(--muted); font-weight: 600; }
