@@ -79,14 +79,22 @@ describe("token", () => {
       expect(res.headers.get("content-type")).toBe("application/json");
       expect(await res.text()).toBe('{"ok":true}');
     }
-    for (const method of ["POST", "DELETE", "HEAD"]) {
-      const res = await fetch(health, { method, headers: { Authorization: `Bearer ${TOKEN}` } });
-      expect(res.status).toBe(405);
-      expect(res.headers.get("allow")).toBe("GET");
+    for (const headers of [{}, { Authorization: `Bearer ${TOKEN}` }]) {
+      for (const method of ["POST", "DELETE", "HEAD"]) {
+        const res = await fetch(health, { method, headers });
+        expect(res.status).toBe(405);
+        expect(res.headers.get("allow")).toBe("GET");
+      }
     }
+    expect(await (await fetch(new URL("/health?x=1", url()))).text()).toBe('{"ok":true}');
     expect((await fetch(new URL("/nope", url()))).status).toBe(401);
     expect((await fetch(new URL("/health/", url()))).status).toBe(401);
     expect(http.sessionCount()).toBe(0);
+  });
+
+  it("answers GET /health without reading the database", async () => {
+    db.close();
+    expect(await (await fetch(new URL("/health", url()))).text()).toBe('{"ok":true}');
   });
 
   it("accepts the right token", async () => {
