@@ -14,6 +14,9 @@
   --color-muted: #8b93a7;
   --color-accent: #7aa2ff;
   --color-agent: #5ee6b5;
+  /* The two agents in the landing page's hero, each in its own colour. */
+  --color-writer: var(--color-accent);
+  --color-reviewer: var(--color-agent);
 
   /* One type scale for every page. */
   --text-sm: 0.875rem;
@@ -124,6 +127,7 @@
   }
 
   .page { width: 100%; max-width: 48rem; margin: 0 auto; padding: 0 1.25rem; flex: 1; }
+  .page.wide { max-width: 76rem; }
 
   .site-footer {
     width: 100%;
@@ -142,19 +146,6 @@
   nav.toc li.sub { margin-left: 1.2rem; list-style: circle; }
   nav.toc ul ul { padding-left: 1.2rem; margin: 0.35rem 0; }
   .reference li > p { margin: 0.4rem 0; }
-
-  .actions { display: flex; flex-wrap: wrap; gap: 0.75rem; margin: 1.75rem 0; }
-  .button {
-    display: inline-block;
-    padding: 0.55rem 1.1rem;
-    border: 1px solid var(--color-border);
-    border-radius: 8px;
-    color: var(--color-fg);
-    text-decoration: none;
-    font-weight: 600;
-  }
-  .button:hover { border-color: var(--color-muted); }
-  .button.primary { background: var(--color-accent); border-color: var(--color-accent); color: var(--color-bg); }
 
   /* Code blocks: long lines wrap instead of scrolling, so a phone shows
      every line. */
@@ -184,7 +175,6 @@
     cursor: pointer;
   }
   .code .copy:hover { color: var(--color-fg); }
-  .code .who { color: var(--color-agent); font-weight: 700; }
 
   /* Tables scroll inside their box on a wide screen and stack on a narrow
      one, each cell under its column's name. */
@@ -202,4 +192,72 @@
     td::before { content: attr(data-label); display: block; color: var(--color-muted); font-weight: 600; }
     tr { border-bottom: 1px solid var(--color-border); padding-bottom: 0.5rem; }
   }
+
+  /* The landing page: the hero, then three short sections. The headline is
+     the only text at this size on the site. */
+  .hero {
+    position: relative;
+    display: grid;
+    gap: 2.5rem;
+    align-items: center;
+    padding: 3.5rem 0 3rem;
+  }
+  .hero::before {
+    content: "";
+    position: absolute;
+    inset: -2rem 0 0;
+    z-index: -1;
+    pointer-events: none;
+    background: radial-gradient(ellipse 50% 60% at 70% 45%, color-mix(in srgb, var(--color-accent) 9%, transparent), transparent 70%);
+  }
+  .hero > * { min-width: 0; }
+  @media (min-width: 64rem) {
+    .hero { grid-template-columns: minmax(0, 1fr) minmax(0, 1.05fr); gap: 3.5rem; padding: 5rem 0 4rem; }
+  }
+  .headline {
+    font-size: clamp(2.5rem, 1rem + 4.4vw, 4rem);
+    font-weight: 700;
+    letter-spacing: -0.03em;
+    line-height: 1.04;
+    margin: 0 0 1.25rem;
+  }
+
+  .chat {
+    margin: 0;
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+    border-radius: 12px;
+    padding: 1.1rem 1.2rem 0.8rem;
+    font-family: var(--font-mono);
+    font-size: 0.8125rem;
+    line-height: 1.55;
+  }
+  .chat-step + .chat-step { margin-top: 0.85rem; }
+  .chat p { margin: 0; overflow-wrap: anywhere; }
+  .chat-who { font-weight: 700; }
+  .chat-who.writer { color: var(--color-writer); }
+  .chat-who.reviewer { color: var(--color-reviewer); }
+  .chat-args { color: var(--color-muted); }
+  .chat-reply { color: var(--color-fg); padding-left: 1rem; border-left: 2px solid var(--color-border); margin-top: 0.2rem !important; }
+  .chat-call, .chat-reply { transition: opacity 0.25s ease, transform 0.25s ease; }
+  .chat-pending { opacity: 0; transform: translateY(4px); }
+  .chat-replay {
+    display: block;
+    margin: 0.9rem 0 0 auto;
+    padding: 0.15rem 0.55rem;
+    font: inherit;
+    font-size: 0.75rem;
+    color: var(--color-muted);
+    background: var(--color-bg);
+    border: 1px solid var(--color-border);
+    border-radius: 6px;
+    cursor: pointer;
+  }
+  .chat-replay:hover { color: var(--color-fg); }
+  .chat-replay[hidden] { display: none; }
+
+  .feature { max-width: 48rem; }
+  .feature h2 { margin-top: 2.5rem; }
+  .next { margin: 0.5rem 0; }
+  .next:first-of-type { margin-top: 3rem; }
 }

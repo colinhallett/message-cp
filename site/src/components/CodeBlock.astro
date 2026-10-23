@@ -3,42 +3,20 @@
 // global.css, so one highlighted block serves both themes. The copy button is
 // hidden until the inline script in the layout shows it, so with JavaScript
 // off the block is a plain highlighted block.
-import type { ShikiTransformer } from "shiki";
 import { highlighter } from "./highlighter";
 
 interface Props {
   code: string;
   lang?: "sh" | "json" | "js" | "caddyfile" | "text";
-  // Lines that start with one of these names get the name picked out, as in
-  // the landing page's exchange between two agents.
-  speakers?: string[];
 }
 
-const { code, lang = "text", speakers = [] } = Astro.props;
+const { code, lang = "text" } = Astro.props;
 
 // Shiki has no Caddyfile grammar; nginx's is the closest and colours its
 // directives and braces.
 const grammar = { sh: "shellscript", json: "json", js: "javascript", caddyfile: "nginx", text: "text" }[lang];
 
-const speaker: ShikiTransformer = {
-  line(node) {
-    const first = node.children[0];
-    if (first?.type !== "element") return;
-    const text = first.children[0];
-    if (text?.type !== "text") return;
-    const name = speakers.find((s) => text.value.startsWith(`${s} `));
-    if (!name) return;
-    text.value = text.value.slice(name.length);
-    node.children.unshift({
-      type: "element",
-      tagName: "span",
-      properties: { class: "who" },
-      children: [{ type: "text", value: name }],
-    });
-  },
-};
-
-const html = (await highlighter).codeToHtml(code, { lang: grammar, theme: "site", transformers: [speaker] });
+const html = (await highlighter).codeToHtml(code, { lang: grammar, theme: "site" });
 ---
 
 <div class="code">

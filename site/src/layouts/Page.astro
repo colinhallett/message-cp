@@ -11,9 +11,11 @@ interface Props {
   title: string;
   description: string;
   reference?: boolean;
+  // The landing page's two-column hero needs more than the reading width.
+  wide?: boolean;
 }
 
-const { title, description, reference = false } = Astro.props;
+const { title, description, reference = false, wide = false } = Astro.props;
 const github = "https://github.com/colinhallett/message-cp";
 ---
 
@@ -36,7 +38,7 @@ const github = "https://github.com/colinhallett/message-cp";
         <a href={github}>GitHub</a>
       </nav>
     </header>
-    <main class:list={["page", { reference }]}>
+    <main class:list={["page", { reference, wide }]}>
       <slot />
     </main>
     <footer class="site-footer">
