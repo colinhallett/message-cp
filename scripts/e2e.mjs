@@ -4,7 +4,7 @@
 //   MESSAGE_CP_HTTP_TOKEN=... npm run e2e -- --url https://host  checks a live server instead
 //
 // Prints one line per step it saw pass and exits 0, or names the step that failed and exits 1 (2 for bad usage).
-// It never prints the token, and of message bodies only the one it sent. The agents it registers are named
+// It never prints the token, and of message bodies only the ones it sent. The agents it registers are named
 // e2e-<random>-a and -b and are unregistered before it exits, and every direct message to or from either name is
 // then deleted, even when a step fails.
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -160,6 +160,13 @@ async function main() {
   }));
   const [sender, receiver] = agents;
   const body = `e2e check ${suffix}`;
+  const question = `e2e question ${suffix}`;
+  const answer = `e2e answer ${suffix}`;
+  /** The id of the first message, as send_message returned it. */
+  let firstId;
+  /** The first agent's ask, started in one step and awaited in the next; it rejects only into `askError`. */
+  let asking;
+  let askError;
   let failure;
 
   const call = async (agent, name, args = {}) =>
@@ -282,7 +289,7 @@ async function main() {
       pending.catch(() => {});
       // Give the request time to reach the server, so it is held when the message arrives.
       await new Promise((r) => setTimeout(r, 500));
-      await call(sender, "send_message", { to: receiver.name, body });
+      firstId = (await call(sender, "send_message", { to: receiver.name, body })).messages?.[0]?.id;
       const sent = Date.now();
       const { status, text } = await pending;
       const took = Date.now() - sent;
@@ -302,6 +309,48 @@ async function main() {
       }
       const { status } = await wait(receiver.name, NO_MAIL_MS);
       if (status !== 204 && status !== "waiting") throw new Error(`GET /wait after read_inbox got ${status}`);
+    });
+
+    await step("message_status says the first message was read", async () => {
+      if (!Number.isInteger(firstId)) throw new Error("send_message did not return the message's id");
+      const statuses = await call(sender, "message_status", { ids: [firstId] });
+      const status = statuses.find((s) => s.id === firstId);
+      if (!status) throw new Error(`message_status did not return id ${firstId}`);
+      if (status.read !== true) throw new Error(`read is ${status.read}, not true`);
+      if (typeof status.readAt !== "string" || Number.isNaN(Date.parse(status.readAt))) throw new Error("readAt is not a time");
+    });
+
+    await step("wait_for_mail tells the second agent about the first agent's ask", async () => {
+      asking = call(sender, "ask", { to: receiver.name, body: question, timeout_seconds: 10 });
+      // If this step or the next fails, nothing awaits `asking`; its failure must not crash the run.
+      asking.catch((err) => (askError = err));
+      // On a live server someone's broadcast may already be unread, and wait_for_mail answers at once for it, so it is
+      // asked again until its line names the first agent, for at most 10 seconds in all.
+      const deadline = Date.now() + 10_000;
+      for (;;) {
+        const left = Math.ceil((deadline - Date.now()) / 1000);
+        const { unread } = left > 0 ? await call(receiver, "wait_for_mail", { timeout_seconds: left }) : { unread: null };
+        if (typeof unread === "string" && unread.includes(sender.name)) return;
+        if (askError) throw new Error(`ask failed: ${describe(askError)}`);
+        if (!unread || Date.now() >= deadline) throw new Error(unread ? `the line does not name ${sender.name}` : "no mail within 10s");
+        await new Promise((r) => setTimeout(r, 500));
+      }
+    });
+
+    await step("the second agent answers with in_reply_to and ask returns that reply", async () => {
+      // As in the read_inbox step, only this run's question is matched, and no other body is printed.
+      const messages = await call(receiver, "read_inbox");
+      const asked = messages.filter((m) => m.from === sender.name && m.body === question);
+      if (asked.length !== 1) {
+        throw new Error(`expected "${question}" from ${sender.name} once among ${messages.length} message(s), found it ${asked.length} times`);
+      }
+      const id = asked[0].id;
+      await call(receiver, "send_message", { to: sender.name, body: answer, in_reply_to: id });
+      const result = await asking;
+      if (result.id !== id) throw new Error(`ask returned id ${result.id}, not the question's ${id}`);
+      if (!result.reply) throw new Error("ask returned no reply");
+      if (result.reply.inReplyTo !== id) throw new Error(`the reply's inReplyTo is ${result.reply.inReplyTo}, not ${id}`);
+      if (result.reply.from !== receiver.name) throw new Error(`the reply is from ${result.reply.from}, not ${receiver.name}`);
     });
 
     await step("both agents unregister and list_agents no longer shows them", async () => {
