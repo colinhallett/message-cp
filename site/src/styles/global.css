@@ -108,10 +108,17 @@
     backdrop-filter: blur(8px);
     border-bottom: 1px solid var(--color-border);
   }
+  /* One width and gutter for the header, main and footer of every page, so
+     the name, the headline, each section and the footer share a left edge.
+     Text inside it keeps a readable width; only the landing page's hero uses
+     the full width, for its two columns. */
+  .frame { width: 100%; max-width: 72rem; margin-inline: auto; padding-inline: 1.25rem; }
+  @media (min-width: 40rem) {
+    .frame { padding-inline: 2rem; }
+  }
+
   .site-header nav {
-    max-width: 48rem;
-    margin: 0 auto;
-    padding: 0.7rem 1.25rem;
+    padding-block: 0.7rem;
     display: flex;
     flex-wrap: wrap;
     align-items: baseline;
@@ -122,22 +129,21 @@
   .site-header a:hover { color: var(--color-fg); }
   .site-header .name { color: var(--color-fg); font-weight: 700; font-size: var(--text-base); margin-right: auto; letter-spacing: -0.01em; }
   @media (max-width: 30rem) {
-    .site-header nav { gap: 0.1rem 0.75rem; padding: 0.5rem 1rem; font-size: 0.8125rem; }
+    .site-header nav { gap: 0.1rem 0.75rem; padding-block: 0.5rem; font-size: 0.8125rem; }
     .site-header .name { flex-basis: 100%; }
   }
 
-  .page { width: 100%; max-width: 48rem; margin: 0 auto; padding: 0 1.25rem; flex: 1; }
-  .page.wide { max-width: 76rem; }
+  .page { flex: 1; }
+  .page > :not(.hero) { max-width: 48rem; }
 
   .site-footer {
-    width: 100%;
-    max-width: 48rem;
-    margin: 4rem auto 0;
-    padding: 1.25rem 1.25rem 2rem;
-    border-top: 1px solid var(--color-border);
+    margin-top: 4rem;
+    padding-bottom: 2rem;
     color: var(--color-muted);
     font-size: var(--text-sm);
   }
+  /* The rule sits on the text, so it starts on the same edge as everything else. */
+  .site-footer p { margin: 0; padding-top: 1.25rem; border-top: 1px solid var(--color-border); }
 
   .lead { font-size: var(--text-lg); color: var(--color-fg); }
   .crumb { margin: 2rem 0 -2rem; font-size: var(--text-sm); }
@@ -214,6 +220,14 @@
   @media (min-width: 64rem) {
     .hero { grid-template-columns: minmax(0, 1fr) minmax(0, 1.05fr); gap: 3.5rem; padding: 5rem 0 4rem; }
   }
+  /* The start command: one command per line, with the clone address on a
+     continued line of its own so it fits at 360px. On a phone the copy button
+     sits above the first line and the type is a step smaller. */
+  .hero .code:has(.copy:not([hidden])) pre { padding-right: 1rem; }
+  @media (max-width: 40rem) {
+    .hero .code pre, .hero .code:has(.copy:not([hidden])) pre { padding-inline: 0.5rem; font-size: 0.6875rem; }
+    .hero .code:has(.copy:not([hidden])) pre { padding-top: 2.6rem; }
+  }
   .headline {
     font-size: clamp(2.5rem, 1rem + 4.4vw, 4rem);
     font-weight: 700;
@@ -232,14 +246,25 @@
     font-size: 0.8125rem;
     line-height: 1.55;
   }
-  .chat-step + .chat-step { margin-top: 0.85rem; }
-  .chat p { margin: 0; overflow-wrap: anywhere; }
+  .chat-steps { list-style: none; margin: 0; padding: 0; }
+  /* Each step is one line, with the tool behind it small and muted on the
+     right, or under the line when there is no room beside it. */
+  .chat-step {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 0.1rem 1rem;
+    margin: 0;
+  }
+  .chat-step + .chat-step { margin-top: 0.7rem; }
+  .chat p { margin: 0; flex: 1 1 18rem; min-width: 0; overflow-wrap: anywhere; }
   .chat-who { font-weight: 700; }
   .chat-who.writer { color: var(--color-writer); }
   .chat-who.reviewer { color: var(--color-reviewer); }
-  .chat-args { color: var(--color-muted); }
-  .chat-reply { color: var(--color-fg); padding-left: 1rem; border-left: 2px solid var(--color-border); margin-top: 0.2rem !important; }
-  .chat-call, .chat-reply { transition: opacity 0.25s ease, transform 0.25s ease; }
+  .chat-verb { color: var(--color-muted); }
+  .chat-tool { color: var(--color-muted); font-size: 0.6875rem; white-space: nowrap; }
+  .chat-step { transition: opacity 0.25s ease, transform 0.25s ease; }
   .chat-pending { opacity: 0; transform: translateY(4px); }
   .chat-replay {
     display: block;
@@ -256,7 +281,6 @@
   .chat-replay:hover { color: var(--color-fg); }
   .chat-replay[hidden] { display: none; }
 
-  .feature { max-width: 48rem; }
   .feature h2 { margin-top: 2.5rem; }
   .next { margin: 0.5rem 0; }
   .next:first-of-type { margin-top: 3rem; }

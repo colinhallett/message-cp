@@ -1,72 +1,65 @@
 ---
 // The landing page's hero: two agents, each in its own session on one machine,
-// calling the server's tools. Every step is in the HTML, so with JavaScript off
-// the conversation reads in full; the inline script only hides the steps and
-// reveals them in turn, once on load and again on Replay. The replies are
-// shortened from a real run over stdio, keeping the field names and values
-// the tools return and the brackets of the replies that are lists; reviewer's
-// fourth step is the line its own waitCommand, from its own register call,
-// prints when mail arrives.
+// talking through the server. Each step is one chat line, with the tool or
+// command behind it named small beside it. Every step is in the HTML, so with
+// JavaScript off the conversation reads in full; the inline script only hides
+// the steps and reveals them in turn, once on load and again on Replay. The
+// names, bio, message text and the wake-up line are what a real run over stdio
+// returns: list_agents gives reviewer with that bio, and reviewer's wait
+// command, from its own register call, prints that line when mail arrives.
 interface Step {
   who: "writer" | "reviewer";
-  call: string;
-  args?: string;
-  reply: string;
+  // The other agent: who a message goes to, or the agent found.
+  to?: "writer" | "reviewer";
+  // What happened, when the step is not a message.
+  verb?: string;
+  // A message's text, or what follows the verb.
+  text?: string;
+  // The bio of the agent found, shown apart so it does not read as a message.
+  bio?: string;
+  tool: string;
 }
 
 const steps: Step[] = [
-  {
-    who: "writer",
-    call: "register",
-    args: '{"name": "writer", "bio": "Writes the release notes"}',
-    reply: 'key: "<key>", waitCommand: "node …/dist/cli.js wait writer"',
-  },
-  {
-    who: "writer",
-    call: "list_agents",
-    args: "{}",
-    reply: '[{name: "reviewer", bio: "Reviews drafts before they ship", person: false}, {name: "writer", …}]',
-  },
-  {
-    who: "writer",
-    call: "send_message",
-    args: '{"to": "reviewer", "body": "Draft is in notes.md. Can you check it?"}',
-    reply: 'delivered: 1, recipients: ["reviewer"]',
-  },
-  {
-    who: "reviewer",
-    call: "$ node …/dist/cli.js wait reviewer",
-    reply: "1 unread message from writer",
-  },
-  {
-    who: "reviewer",
-    call: "read_inbox",
-    args: "{}",
-    reply: '[{from: "writer", body: "Draft is in notes.md. Can you check it?", broadcast: false}]',
-  },
-  {
-    who: "reviewer",
-    call: "send_message",
-    args: '{"to": "writer", "body": "Read it. Two typos in the second section, otherwise ready."}',
-    reply: 'delivered: 1, recipients: ["writer"]',
-  },
+  { who: "writer", verb: "registered", tool: "register" },
+  { who: "writer", verb: "found", to: "reviewer", bio: "Reviews drafts before they ship", tool: "list_agents" },
+  { who: "writer", to: "reviewer", text: "Draft is in notes.md. Can you check it?", tool: "send_message" },
+  { who: "reviewer", verb: "woken by", text: "1 unread message from writer", tool: "wait" },
+  { who: "reviewer", verb: "read 1 message", tool: "read_inbox" },
+  { who: "reviewer", to: "writer", text: "Read it. Two typos in the second section, otherwise ready.", tool: "send_message" },
 ];
 ---
 
 <figure class="chat" aria-label="Two agents, writer and reviewer, messaging through message-cp">
-  <div class="chat-steps">
+  <ol class="chat-steps" role="list">
     {
       steps.map((s) => (
-        <div class="chat-step">
-          <p class="chat-call">
-            <span class:list={["chat-who", s.who]}>{s.who}</span> <span class="chat-tool">{s.call}</span>
-            {s.args && <span class="chat-args">{" " + s.args}</span>}
+        <li class="chat-step">
+          <p class="chat-line">
+            <span class:list={["chat-who", s.who]}>{s.who}</span>
+            {s.verb && <span class="chat-verb">{" " + s.verb}</span>}
+            {s.to && (
+              <>
+                {s.verb ? (
+                  " "
+                ) : (
+                  <>
+                    <span class="chat-verb" aria-hidden="true">{" → "}</span>
+                    <span class="sr-only"> to </span>
+                  </>
+                )}
+                <span class:list={["chat-who", s.to]}>{s.to}</span>
+              </>
+            )}
+            {s.text && <span class="chat-text">{(s.verb ? " " : ": ") + s.text}</span>}
+            {s.bio && <span class="chat-verb">{" (" + s.bio + ")"}</span>}
           </p>
-          <p class="chat-reply">{s.reply}</p>
-        </div>
+          <span class="sr-only">, with </span>
+          <span class="chat-tool">{s.tool}</span>
+        </li>
       ))
     }
-  </div>
+  </ol>
   <button type="button" class="chat-replay" hidden>Replay</button>
 </figure>
 
@@ -75,14 +68,14 @@ const steps: Step[] = [
     const chat = document.querySelector(".chat");
     const replay = chat?.querySelector(".chat-replay");
     if (!chat || !replay || matchMedia("(prefers-reduced-motion: reduce)").matches) return;
-    // Each step shows its call, then its reply; six steps take about 4 seconds.
-    const parts = [...chat.querySelectorAll(".chat-call, .chat-reply")];
-    const STEP_MS = 330;
+    // One step at a time; six steps take about 4 seconds.
+    const steps = [...chat.querySelectorAll(".chat-step")];
+    const STEP_MS = 650;
     let timers = [];
     const play = () => {
       timers.forEach(clearTimeout);
-      parts.forEach((p) => p.classList.add("chat-pending"));
-      timers = parts.map((p, i) => setTimeout(() => p.classList.remove("chat-pending"), 200 + i * STEP_MS));
+      steps.forEach((s) => s.classList.add("chat-pending"));
+      timers = steps.map((s, i) => setTimeout(() => s.classList.remove("chat-pending"), 200 + i * STEP_MS));
     };
     replay.hidden = false;
     replay.addEventListener("click", play);
