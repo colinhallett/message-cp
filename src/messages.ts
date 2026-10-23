@@ -211,7 +211,8 @@ export function takeReply(db: Db, account: AccountId, own: Identity, questionId:
     .immediate();
 }
 
-// Found through messages_by_reply, whose rows for one question are already in id order.
+// Found through messages_by_question, whose rows for one recipient and question are already in id order, so replies
+// to the question sent to other agents are never read.
 export const TAKE_REPLY_SQL = `SELECT id, sender, body, broadcast, created_at, in_reply_to FROM messages
   WHERE in_reply_to = ? AND recipient_id = ? ORDER BY id LIMIT 1`;
 

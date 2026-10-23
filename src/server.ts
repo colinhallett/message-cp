@@ -378,7 +378,7 @@ export function createServer(db: Db, session = new Session(OWNER_ACCOUNT), optio
   server.registerTool(
     "ask",
     {
-      description: `Ask one agent a question and wait for its answer in one call: sends body to the agent to, as send_message does, and holds the call until that agent answers it with send_message and in_reply_to set to the question's id. Returns id (the question's message id) and reply: the earliest such reply, shaped as read_inbox returns a message and marked read, or null if none came within timeout_seconds or the call was cancelled. With reply null, look for the answer later with read_inbox, read_conversation or message_status and the id. It checks about once a second; a check that finds the database busy counts as no reply that time. To answer a question someone asks you, call send_message with in_reply_to set to the question's id, so that their ask sees it. 'all' and a person are refused, and nothing is sent. Calls held at once are capped together with wait_for_mail, over HTTP also with the server's GET /wait requests and over stdio for the whole process; past the cap it fails at once and sends nothing, so try again shortly. If your agent is removed while you wait, it fails as not registered. Requires register first.`,
+      description: `Ask one agent a question and wait for its answer in one call: sends body to the agent to, as send_message does, and holds the call until that agent answers it with send_message and in_reply_to set to the question's id. Returns id (the question's message id) and reply: the earliest such reply, shaped as read_inbox returns a message and marked read, or null if none came within timeout_seconds or the call was cancelled. With reply null, a later answer arrives as an ordinary message: find it with read_inbox or read_conversation by its inReplyTo, the question's id; message_status with the id says only whether the question was read. It checks about once a second; a check that finds the database busy counts as no reply that time. To answer a question someone asks you, call send_message with in_reply_to set to the question's id, so that their ask sees it. 'all' and a person are refused, and nothing is sent. Calls held at once are capped together with wait_for_mail, over HTTP also with the server's GET /wait requests and over stdio for the whole process; past the cap it fails at once and sends nothing, so try again shortly. If your agent is removed while you wait, it fails as not registered. Requires register first.`,
       inputSchema: {
         to: z.string().describe("The agent to ask, by name. Not 'all' or a person."),
         body: z.string().describe(`The question, at most ${MAX_BODY_LENGTH} characters.`),
@@ -397,8 +397,10 @@ export function createServer(db: Db, session = new Session(OWNER_ACCOUNT), optio
       const release = hold();
       if (!release) throw new ToolError(ASK_FULL);
       try {
-        const deadline = Date.now() + (timeout_seconds ?? DEFAULT_WAIT_FOR_MAIL_SECONDS) * 1000;
         const id = sendQuestion(db, account, own, to, body).messages[0].id;
+        // Counted from once the question is stored, so time spent waiting for the write lock to send it is not taken
+        // from the time the other agent has to answer.
+        const deadline = Date.now() + (timeout_seconds ?? DEFAULT_WAIT_FOR_MAIL_SECONDS) * 1000;
         // Each check finds the caller by its registration, so a removed agent, or another that took its name, ends the call.
         const answer = () => {
           const reply = check(() => takeReply(db, account, own, id), null);

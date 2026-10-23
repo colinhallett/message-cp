@@ -129,6 +129,20 @@ describe("ask", () => {
     expect((await call(alice, "read_inbox")).json.map((m: { body: string }) => m.body)).toEqual(["second"]);
   });
 
+  it("passes over replies to the question that went to other agents", async () => {
+    registerAgent(db, OWNER_ACCOUNT, "carol", "also hears");
+    const alice = await agent("alice");
+    const bob = await agent("bob");
+    const pending = call(alice, "ask", { to: "bob", body: "q", timeout_seconds: 10 });
+    const question = await questionTo("bob");
+    db.transaction(() => {
+      sendMessage(db, OWNER_ACCOUNT, "bob", "carol", "to carol", identityOf(db, OWNER_ACCOUNT, "bob"), question);
+      sendMessage(db, OWNER_ACCOUNT, "bob", "alice", "to alice", identityOf(db, OWNER_ACCOUNT, "bob"), question);
+    })();
+    expect((await pending).json.reply.body).toBe("to alice");
+    expect((await call(bob, "read_inbox")).isError).toBe(false);
+  });
+
   it("polls without waiting for the write lock while no reply has come", async () => {
     const alice = await agent("alice");
     const pending = call(alice, "ask", { to: "bob", body: "q", timeout_seconds: 10 });
@@ -271,9 +285,9 @@ describe("ask", () => {
     expect((await pending).json).toEqual({ id: question, reply: null });
   });
 
-  it("finds a question's reply through messages_by_reply, without scanning or sorting history", () => {
+  it("finds a question's reply through messages_by_question, without scanning, sorting or reading replies to others", () => {
     const plan = (db.prepare(`EXPLAIN QUERY PLAN ${TAKE_REPLY_SQL}`).all(1, 1) as { detail: string }[]).map((r) => r.detail);
-    expect(plan).toEqual(["SEARCH messages USING INDEX messages_by_reply (in_reply_to=?)"]);
+    expect(plan).toEqual(["SEARCH messages USING INDEX messages_by_question (in_reply_to=? AND recipient_id=?)"]);
   });
 });
 
