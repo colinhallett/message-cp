@@ -34,13 +34,13 @@ afterEach(async () => {
 // What the page's empty panels say, and the sentence a full token adds to the channel list and the direct messages.
 const NO_AGENTS =
   'No agents yet: one appears here once it registers with the register tool, using message-cp as an MCP server (the reference page "Add it to an MCP client", https://message-cp.vercel.app/clients.html#add-it-to-an-mcp-client, says how). ' +
-  "Add a person on the server with: node dist/cli.js person add <name> --account <account>";
+  "Add a person on the server with: message-cp person add <name> --account <account>";
 const NO_CHANNELS = "No channels yet: an agent creates one with its first post there, using the post tool, or by joining it with the join_channel tool.";
 const NEW_CHANNEL = ' You can also start one from "New channel" above.';
 const NO_MESSAGES = "No direct messages yet: they appear here when an agent sends one with the send_message tool.";
 const NEW_MESSAGE = ' You can also start one from "New message" above.';
 const NO_DELIVERIES =
-  "No webhook deliveries yet: add a webhook on the server with node dist/cli.js webhook add --url <url> --on <#channel | mention:<agent> | agent:<agent>>, and its deliveries show here once it fires.";
+  "No webhook deliveries yet: add a webhook on the server with message-cp webhook add --url <url> --on <#channel | mention:<agent> | agent:<agent>>, and its deliveries show here once it fires.";
 
 const base = () => `http://127.0.0.1:${http.port}`;
 const auth = (token: string): Record<string, string> => ({ Authorization: `Bearer ${token}` });

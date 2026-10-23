@@ -130,6 +130,18 @@ describe("message-cp hive", () => {
   });
 });
 
+describe("message-cp help", () => {
+  it.each(["help", "--help"])("%s prints every command to stdout and exits 0", async (arg) => {
+    const child = spawn(tsx, [join(root, "src/cli.ts"), arg], { env: { ...process.env, MESSAGE_CP_DB: dbFile } });
+    let stdout = "";
+    child.stdout.on("data", (d) => (stdout += d));
+    expect(await new Promise((res) => child.on("close", res))).toBe(0);
+    for (const c of ["serve", "wait", "account add", "account list", "token add", "token list", "token revoke", "webhook add", "webhook list", "webhook remove", "person add", "person remove", "person list", "agent remove", "agent key reset", "connect"]) {
+      expect(stdout).toMatch(new RegExp(`^ +message-cp ${c}( |$)`, "m"));
+    }
+  });
+});
+
 describe("register result", () => {
   it("returns the wait command for the agent, next to the existing fields", async () => {
     process.env.MESSAGE_CP_DB = dbFile;

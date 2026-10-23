@@ -10,11 +10,22 @@ import { setting } from "./settings.js";
 import { formatUnread } from "./wait.js";
 import { WebhookError, addWebhook, formatOn, listWebhooks, removeWebhook, webhookMaxPerHour } from "./webhooks.js";
 
+// Each command's usage, printed by its own usage error and, all together, by `message-cp help`.
+const USAGE = {
+  serve: "message-cp serve [--host <address>] [--port <port>] [--public-url <url>]",
+  wait: "message-cp wait <name>",
+  account: "message-cp account add <name> | message-cp account list | message-cp token add <account> [--read-only | --agent-only] | message-cp token list | message-cp token revoke <token id>",
+  webhook: "message-cp webhook add --url <url> --on <#channel | mention:<agent> | agent:<agent>> [--account <name>] [--no-text] [--header-stdin] [--max-per-hour <n>] [--body <json>] | message-cp webhook list [--account <name>] | message-cp webhook remove <webhook id>",
+  person: "message-cp person add <name> [--account <name>] | message-cp person remove <name> [--account <name>] | message-cp person list [--account <name>]",
+  agent: "message-cp agent remove <name> [--account <name>] | message-cp agent key reset <name> [--account <name>]",
+  connect: "message-cp connect <agent> --url <public url> [--account <name>] [--new-key]",
+};
+
 const [command, ...rest] = process.argv.slice(2);
 
 if (command === "serve") {
   const usage = () => {
-    console.error("usage: message-cp serve [--host <address>] [--port <port>] [--public-url <url>]");
+    console.error(`usage: ${USAGE.serve}`);
     process.exit(2);
   };
   const opts = new Map<string, string>();
@@ -42,7 +53,7 @@ if (command === "serve") {
 } else if (command === "wait") {
   const name = rest[0];
   if (!name) {
-    console.error("usage: message-cp wait <name>");
+    console.error(`usage: ${USAGE.wait}`);
     process.exit(2);
   }
   const db = openDb();
@@ -80,9 +91,7 @@ if (command === "serve") {
   // Run on the server, against the database serve uses. A new token is printed this once, to stdout, and only its
   // hash is stored; everything else goes to stderr, except `list`, which never prints a token or a hash.
   const usage = () => {
-    console.error(
-      "usage: message-cp account add <name> | message-cp account list | message-cp token add <account> [--read-only | --agent-only] | message-cp token list | message-cp token revoke <token id>",
-    );
+    console.error(`usage: ${USAGE.account}`);
     process.exit(2);
   };
   const [action, arg, extra, ...more] = rest;
@@ -124,9 +133,7 @@ if (command === "serve") {
   // else goes to stderr, except `list`, which never prints a secret. `--header-stdin` reads the header line from stdin,
   // so its value is never in an argument list, and the value is never printed. Nor is a `--body`.
   const usage = () => {
-    console.error(
-      "usage: message-cp webhook add --url <url> --on <#channel | mention:<agent> | agent:<agent>> [--account <name>] [--no-text] [--header-stdin] [--max-per-hour <n>] [--body <json>] | message-cp webhook list [--account <name>] | message-cp webhook remove <webhook id>",
-    );
+    console.error(`usage: ${USAGE.webhook}`);
     process.exit(2);
   };
   const [action, ...args] = rest;
@@ -189,9 +196,7 @@ if (command === "serve") {
 } else if (command === "person") {
   // Run on the server, like `webhook`. A person has no key or token, so nothing secret is printed.
   const usage = () => {
-    console.error(
-      "usage: message-cp person add <name> [--account <name>] | message-cp person remove <name> [--account <name>] | message-cp person list [--account <name>]",
-    );
+    console.error(`usage: ${USAGE.person}`);
     process.exit(2);
   };
   const [action, ...args] = rest;
@@ -228,7 +233,7 @@ if (command === "serve") {
   // Run on the server, like `person`. `remove` prints only names and counts, never a message body or a key. `key reset`
   // prints the new key this once, to stdout, and only names to stderr; it never prints the old key or a hash.
   const usage = () => {
-    console.error("usage: message-cp agent remove <name> [--account <name>] | message-cp agent key reset <name> [--account <name>]");
+    console.error(`usage: ${USAGE.agent}`);
     process.exit(2);
   };
   const reset = rest[0] === "key" && rest[1] === "reset";
@@ -272,7 +277,7 @@ if (command === "serve") {
   // Run on the server, like `agent`. The token and the agent's key are printed this once, to stdout, inside the client
   // setup; stderr says what was made and how to revoke the token, and never carries a token, a key or a hash.
   const usage = () => {
-    console.error("usage: message-cp connect <agent> --url <public url> [--account <name>] [--new-key]");
+    console.error(`usage: ${USAGE.connect}`);
     process.exit(2);
   };
   const [name, ...args] = rest;
@@ -318,7 +323,12 @@ if (command === "serve") {
   db.close();
 } else if (command === undefined) {
   await import("./index.js");
+} else if (command === "help" || command === "--help") {
+  // With no command, message-cp runs the stdio server, so help names that too.
+  console.log(
+    ["usage: message-cp              runs the stdio MCP server", ...Object.values(USAGE).flatMap((u) => u.split(" | message-cp ").map((line, i) => `       ${i ? "message-cp " : ""}${line}`))].join("\n"),
+  );
 } else {
-  console.error(`message-cp: unknown command '${command}'. Commands: serve, wait, account, token, webhook, person, agent, connect`);
+  console.error(`message-cp: unknown command '${command}'. Commands: serve, wait, account, token, webhook, person, agent, connect, help`);
   process.exit(2);
 }
