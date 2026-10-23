@@ -64,7 +64,6 @@ describe("mcpEndpoint", () => {
     expect(mcpEndpoint("https://message-cp.example.com/mcp").href).toBe("https://message-cp.example.com/mcp");
     expect(mcpEndpoint("https://h.example/base//").href).toBe("https://h.example/base/mcp");
     expect(mcpEndpoint("https://h.example:8443/base/mcp/").href).toBe("https://h.example:8443/base/mcp");
-    expect(mcpEndpoint("https://h.example/?").href).toBe("https://h.example/mcp");
     expect(mcpEndpoint("http://127.0.0.1:8787").href).toBe("http://127.0.0.1:8787/mcp");
     expect(mcpEndpoint("http://[::1]:8787/").href).toBe("http://[::1]:8787/mcp");
   });
@@ -75,6 +74,8 @@ describe("mcpEndpoint", () => {
       "https://@/",
       "https://h/?x=/o/",
       "https://h/#/o/",
+      "https://h.example/?",
+      "https://h.example/#",
       "http://localhost:8787",
       "http://example.com",
       "http://10.0.0.1",

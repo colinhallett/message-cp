@@ -24,15 +24,13 @@ export function mcpEndpoint(raw: string): URL {
   if (url.protocol !== "https:" && !(url.protocol === "http:" && loopback)) {
     throw new ConnectError("--url must be https (plain http only for 127.x.x.x or [::1]): the token would cross the network in the clear.");
   }
-  if (url.username || url.password || url.search || url.hash) {
+  // `href` keeps an empty `?` or `#`, which `search` and `hash` report as "".
+  if (url.username || url.password || url.href.includes("?") || url.href.includes("#")) {
     throw new ConnectError("--url must not carry a username, password, query or fragment.");
   }
   const endpoint = new URL(url.href);
   // Set as the path, never resolved as a reference, so no path can change the host.
   endpoint.pathname = `${url.pathname.replace(/\/+$/, "").replace(/\/mcp$/, "")}/mcp`;
-  // An empty `?` or `#` leaves search and hash empty but still in the URL.
-  endpoint.search = "";
-  endpoint.hash = "";
   return endpoint;
 }
 
