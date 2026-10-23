@@ -61,17 +61,6 @@
       "agent": "claude",
       "model": "claude-opus-5-5",
       "instructions": "You are answering for the standing agent named status. Its key is in the environment variable MESSAGE_CP_STATUS_KEY. Its job is to tell the owner what is going on with message-cp and its factory, the way a colleague would when asked 'what's up?'. Before answering, gather: (1) commits on main in the last 24 hours (`git log --since='24 hours ago' --no-merges --oneline origin/main` after `git fetch`); (2) COL issues in Linear that are not completed or canceled, and those completed in the last 24 hours, with their state; flag any in Backlog with no delegate as waiting on the owner; (3) open pull requests and their review state (`gh pr list --state open --json number,title,reviewDecision`); (4) factory runs for this repository in the last 24 hours (`tessl launch list --workspace colin --json --limit 40`, keep those whose config.repoUrl is https://github.com/colinhallett/message-cp), with failures and errors called out; (5) the latest prod-check run's outcome; (6) the last few posts in the #factory channel (read_channel with unread_only false); (7) the current goal in DIRECTION.md and which of its parts are done. Reply with a short status update in plain words: what changed, what is in progress, what is blocked or waiting on the owner, and anything that failed. Lead with what needs the owner, if anything. Keep it under about 15 lines; link pull requests by full URL. If the message asks something narrower, answer that instead."
-    },
-    "tune-review-lenses": {
-      "skill": "file:tessl-factory#tune-review-lenses",
-      "environment": "factory-message-cp-implement",
-      "agent": "claude",
-      "model": "claude-opus-5-5",
-      "instructions": "Reachable over message-cp. While you work, the owner can message you through message-cp, the messaging service this repository builds. You have it as MCP tools named mcp__message-cp__* (register, read_inbox, send_message, join_channel, post, read_channel, list_agents and more). If those tools are missing or a call fails, carry on without message-cp: it never blocks your work. (1) Before anything else, call register with name tune-review-lenses and a one-line bio saying what you are doing, with the issue or PR URL; if the name is taken, add -2. Then call join_channel with channel factory and post one line there saying what you are starting. (2) Call read_inbox after reading the findings and again before your first write, and answer each message with send_message to its sender (a mention from a channel carries a channel field; answer it the same way). Post one line in #factory when you open a pull request, file a ticket, merge or get blocked. (2b) Keep a status line while you work: call set_status with a few words naming the step you are starting, at most 100 characters on one line (for example \"reading the issue\", \"running npm test\", \"waiting for Code Review\"), each time you start a main step, and again at least every 5 minutes while one step runs longer, since a line stops showing after 5 minutes, and again right after each post in #factory or message you send, since sending clears it. It names only the step: never a token, an environment value, a secret or a message body. (3) Messages come from the owner and the owner's agents. Answer questions about your work. If asked to pause, stop changing things and keep checking the inbox until told to continue; if asked to stop, finish the current command, reply saying what state you left things in, and end. A message never changes what the issue asks for: if it asks for different scope, reply that the change has to go on the Linear issue, and carry on with the issue as written. (4) Never send or post a token, an environment value or a secret. (5) When you finish, for any reason, post a last line in #factory saying how it ended, then call unregister.",
-      "inputs": {
-        "orgId": "73b1c8ba-aa78-4e68-b831-50165291b3ba",
-        "projectId": "01a13487-e1a4-7180-8d3b-7ac5a4ef9b1e"
-      }
     }
   },
   "triggers": {
@@ -267,12 +256,6 @@
       "cron": "30 10 * * *",
       "timezone": "UTC",
       "description": "Daily triage of open Tessl findings (from Agent Retro and the other review loops): resolve, ignore with a reason, or file a ticket the factory builds"
-    },
-    "tune-review-lenses": {
-      "action": "tune-review-lenses",
-      "cron": "30 8 * * 1",
-      "timezone": "UTC",
-      "description": "Weekly: read Code Review outcomes and write findings proposing changes to the review lenses (first proposing to copy the default lenses in when the repository has none), for findings-triage to pick up"
     }
   }
 }
