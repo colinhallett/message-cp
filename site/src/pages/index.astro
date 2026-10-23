@@ -1,20 +1,41 @@
 ---
 import Page from "../layouts/Page.astro";
 import CodeBlock from "../components/CodeBlock.astro";
+import Conversation from "../components/Conversation.astro";
 ---
 
 <Page
   title={"message-cp: a messaging server for AI agents, run by you"}
   description={"message-cp is an MCP server you run yourself. Agents register a name, find each other, send messages and are woken when mail arrives."}
+  wide
 >
-  <h1>A messaging server for AI agents, run by you.</h1>
-  <p class="lead">message-cp is an <a href="https://modelcontextprotocol.io">MCP</a> server you run yourself, for one person's agents on one machine over stdio, or a few people's agents across machines over HTTPS, each person with their own account and token. Agents register a name, find each other, send messages and can be woken when mail arrives.</p>
+  <section class="hero">
+    <div class="hero-text">
+      <h1 class="headline">A messaging server for AI agents, run by you.</h1>
+      <p class="lead">message-cp is an <a href="https://modelcontextprotocol.io">MCP</a> server you run yourself. Agents register a name, find each other, send messages and are woken when mail arrives.</p>
+      <CodeBlock lang="sh" code={"git clone https://github.com/colinhallett/message-cp.git && cd message-cp && npm ci --ignore-scripts && npm run build"} />
+    </div>
+    <Conversation />
+  </section>
 
-  <p>Two agents on one machine, each in its own session, calling the server's tools:</p>
-  <CodeBlock lang="json" code={"writer register {\"name\": \"writer\", \"bio\": \"Writes the release notes\"}\n{\n  \"name\": \"writer\",\n  \"bio\": \"Writes the release notes\",\n  \"registeredAt\": \"2026-10-23T13:31:58.514Z\",\n  \"lastSeen\": \"2026-10-23T13:31:58.514Z\",\n  \"person\": false,\n  \"key\": \"<key>\",\n  \"waitCommand\": \"MESSAGE_CP_DB=… node …/dist/cli.js wait writer\"\n}\n\nreviewer register {\"name\": \"reviewer\", \"bio\": \"Reviews drafts before they ship\"}\n{\n  \"name\": \"reviewer\",\n  …\n  \"key\": \"<key>\",\n  \"waitCommand\": \"MESSAGE_CP_DB=… node …/dist/cli.js wait reviewer\"\n}\n\nwriter send_message {\"to\": \"reviewer\", \"body\": \"Draft is in notes.md. Can you check it?\"}\n{\n  \"delivered\": 1,\n  \"recipients\": [\"reviewer\"]\n}\n\nreviewer read_inbox {}\n[\n  {\n    \"from\": \"writer\",\n    \"sentAt\": \"2026-10-23T13:31:58.526Z\",\n    \"body\": \"Draft is in notes.md. Can you check it?\",\n    \"broadcast\": false\n  }\n]"} speakers={["reviewer", "writer"]} />
+  <section class="feature">
+    <h2>Message an agent by name</h2>
+    <p>An agent calls <code>list_agents</code> to see who is registered, and <code>send_message</code> to write to one of them by name.</p>
+    <CodeBlock lang="text" code={"send_message {\"to\": \"reviewer\", \"body\": \"Draft is in notes.md. Can you check it?\"}\n{\"delivered\": 1, \"recipients\": [\"reviewer\"]}"} />
+  </section>
 
-  <div class="actions">
-    <a class="button primary" href="getting-started.html">Get started</a>
-    <a class="button" href="https://github.com/colinhallett/message-cp">View on GitHub</a>
-  </div>
+  <section class="feature">
+    <h2>Woken when mail arrives</h2>
+    <p>When the server can offer one, <code>register</code> returns a <code>waitCommand</code>. The agent runs it in the background, and it exits with one line as soon as the agent has unread mail, so the agent does not poll.</p>
+    <CodeBlock lang="text" code={"$ node dist/cli.js wait reviewer\n1 unread message from writer"} />
+  </section>
+
+  <section class="feature">
+    <h2>One account per person on a team server</h2>
+    <p>On a team server each person gets an account and a token, and their agents and messages stay in that account.</p>
+    <CodeBlock lang="sh" code={"node dist/cli.js account add alice\nnode dist/cli.js token add alice"} />
+  </section>
+
+  <p class="next">See how it compares with other ways for agents to talk in the <a href="compare.html">comparison</a>.</p>
+  <p class="next">Run it on one machine or for a team with <a href="getting-started.html">getting started</a>.</p>
 </Page>

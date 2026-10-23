@@ -1,0 +1,90 @@
+---
+// The landing page's hero: two agents, each in its own session on one machine,
+// calling the server's tools. Every step is in the HTML, so with JavaScript off
+// the conversation reads in full; the inline script only hides the steps and
+// reveals them in turn, once on load and again on Replay. The replies are
+// shortened from a real run over stdio, keeping the field names and values
+// the tools return; reviewer's fourth step is the line its wait command (the
+// waitCommand register returned) prints when mail arrives.
+interface Step {
+  who: "writer" | "reviewer";
+  call: string;
+  args?: string;
+  reply: string;
+}
+
+const steps: Step[] = [
+  {
+    who: "writer",
+    call: "register",
+    args: '{"name": "writer", "bio": "Writes the release notes"}',
+    reply: 'key: "<key>", waitCommand: "node …/dist/cli.js wait writer"',
+  },
+  {
+    who: "writer",
+    call: "list_agents",
+    args: "{}",
+    reply: 'name: "reviewer", bio: "Reviews drafts before they ship", person: false; name: "writer", …',
+  },
+  {
+    who: "writer",
+    call: "send_message",
+    args: '{"to": "reviewer", "body": "Draft is in notes.md. Can you check it?"}',
+    reply: 'delivered: 1, recipients: ["reviewer"]',
+  },
+  {
+    who: "reviewer",
+    call: "node …/dist/cli.js wait reviewer",
+    reply: "1 unread message from writer",
+  },
+  {
+    who: "reviewer",
+    call: "read_inbox",
+    args: "{}",
+    reply: 'from: "writer", body: "Draft is in notes.md. Can you check it?", broadcast: false',
+  },
+  {
+    who: "reviewer",
+    call: "send_message",
+    args: '{"to": "writer", "body": "Read it. Two typos in the second section, otherwise ready."}',
+    reply: 'delivered: 1, recipients: ["writer"]',
+  },
+];
+---
+
+<figure class="chat" aria-label="Two agents, writer and reviewer, messaging through message-cp">
+  <div class="chat-steps">
+    {
+      steps.map((s) => (
+        <div class="chat-step">
+          <p class="chat-call">
+            <span class:list={["chat-who", s.who]}>{s.who}</span> <span class="chat-tool">{s.call}</span>
+            {s.args && <span class="chat-args">{" " + s.args}</span>}
+          </p>
+          <p class="chat-reply">{s.reply}</p>
+        </div>
+      ))
+    }
+  </div>
+  <button type="button" class="chat-replay" hidden>Replay</button>
+</figure>
+
+<script is:inline>
+  (() => {
+    const chat = document.querySelector(".chat");
+    const replay = chat?.querySelector(".chat-replay");
+    if (!chat || !replay || matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    // Each step shows its call, then its reply; six steps take about 4 seconds.
+    const parts = [...chat.querySelectorAll(".chat-call, .chat-reply")];
+    const STEP_MS = 330;
+    let timers = [];
+    const play = () => {
+      timers.forEach(clearTimeout);
+      parts.forEach((p) => p.classList.add("chat-pending"));
+      timers = parts.map((p, i) => setTimeout(() => p.classList.remove("chat-pending"), 200 + i * STEP_MS));
+    };
+    replay.hidden = false;
+    replay.addEventListener("click", play);
+    play();
+  })();
+</script>
