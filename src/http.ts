@@ -346,8 +346,8 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
   deliver.unref();
 
   /**
-   * What each session's tools are given: `wait_for_mail` holds count with waiting GET /wait requests against the same
-   * cap, and a hold ends once the response that would carry its answer has closed.
+   * What each session's tools are given: `wait_for_mail` and `ask` holds count with waiting GET /wait requests against
+   * the same cap, and a hold ends once the response that would carry its answer has closed.
    */
   const serverOptions = (live: Live): ServerOptions => ({
     remote: true,

@@ -31,6 +31,8 @@ import {
   readInbox,
   search,
   sendMessage,
+  sendQuestion,
+  takeReply,
   unreadSummary,
   type Unread,
 } from "./messages.js";
@@ -108,14 +110,14 @@ export class Session {
   }
 }
 
-/** Most held calls at once: sessions, waiting GET /wait requests and held `wait_for_mail` calls each have this cap. */
+/** Most held calls at once: sessions, waiting GET /wait requests and held `wait_for_mail` and `ask` calls each have this cap. */
 export const DEFAULT_MAX_SESSIONS = 256;
 /** How long `wait_for_mail` holds a call with no mail by default, and at most, in seconds. */
 export const DEFAULT_WAIT_FOR_MAIL_SECONDS = 50;
 export const MAX_WAIT_FOR_MAIL_SECONDS = DEFAULT_WAIT_HOLD_MS / 1000;
 export const WAIT_FOR_MAIL_FULL = "Too many calls are waiting for mail on this server. Try again shortly.";
 
-// The held `wait_for_mail` calls of every server in this process that was not given a `hold`, as over stdio.
+// The held `wait_for_mail` and `ask` calls of every server in this process that was not given a `hold`, as over stdio.
 let held = 0;
 const holdInProcess = (): (() => void) | undefined => {
   if (held >= DEFAULT_MAX_SESSIONS) return undefined;
@@ -127,7 +129,7 @@ export interface ServerOptions {
   remote?: boolean;
   publicUrl?: string;
   /**
-   * Takes a slot for a held `wait_for_mail` call: returns the function that gives it back, or undefined when every slot
+   * Takes a slot for a held `wait_for_mail` or `ask` call: returns the function that gives it back, or undefined when every slot
    * is taken. Without it, the calls of this process are counted together against DEFAULT_MAX_SESSIONS.
    */
   hold?: () => (() => void) | undefined;
@@ -137,16 +139,18 @@ export interface ServerOptions {
 
 type Extra = RequestHandlerExtra<ServerRequest, ServerNotification>;
 
-/** One check for mail; a lock held past the busy timeout counts as nothing unread this time, as in `message-cp wait`. */
-function check(db: Db, account: AccountId, own: Identity): Unread | undefined {
+/** Runs one check; a lock held past the busy timeout counts as finding nothing this time, as in `message-cp wait`. */
+function check<T>(run: () => T, nothing: T): T {
   try {
-    return unreadSummary(db, account, own);
+    return run();
   } catch (err) {
     const code = (err as { code?: unknown } | null)?.code;
     if (typeof code !== "string" || !code.startsWith("SQLITE_BUSY")) throw err;
-    return { count: 0, senders: [], posts: 0, channels: [], mentions: 0, mentionChannels: [] };
+    return nothing;
   }
 }
+
+const NOTHING_UNREAD: Unread = { count: 0, senders: [], posts: 0, channels: [], mentions: 0, mentionChannels: [] };
 
 /** Waits `ms`, or less if `signal` aborts first; the timer and listener are removed either way. */
 const sleep = (ms: number, signal: AbortSignal) =>
@@ -161,6 +165,22 @@ const sleep = (ms: number, signal: AbortSignal) =>
     signal.addEventListener("abort", done);
   });
 
+/**
+ * Runs `answer` about once a second until it returns something, which `poll` returns, or until `deadline` passes or
+ * `signal` aborts, when it returns undefined. Whatever `answer` throws ends the poll.
+ */
+async function poll<T>(deadline: number, signal: AbortSignal, answer: () => T | undefined): Promise<T | undefined> {
+  for (;;) {
+    const left = deadline - Date.now();
+    if (left <= 0) return undefined;
+    // Sleep a second, or until the call is cancelled or its client goes away; nobody is listening then.
+    await sleep(Math.min(1000, left), signal);
+    if (signal.aborted) return undefined;
+    const found = answer();
+    if (found !== undefined) return found;
+  }
+}
+
 /** One server per session. */
 export function createServer(db: Db, session = new Session(OWNER_ACCOUNT), options: ServerOptions = {}): McpServer {
   const remote = options.remote ?? false;
@@ -171,6 +191,12 @@ export function createServer(db: Db, session = new Session(OWNER_ACCOUNT), optio
     { name: "message-cp", version: "0.1.0" },
     { instructions: instructions(process.env, remote, options.publicUrl) },
   );
+
+  // Aborts when the call is cancelled or, where the transport knows it, the response that would carry its answer closes.
+  const ended = (extra: Extra) => {
+    const closed = options.closed?.(extra.requestId);
+    return closed ? AbortSignal.any([extra.signal, closed]) : extra.signal;
+  };
 
   // Wraps a tool: bumps last-seen for a registered session and turns ToolError into an error result.
   const tool = <A>(run: (args: A, extra: Extra) => unknown) => async (args: A, extra: Extra) => {
@@ -300,7 +326,7 @@ export function createServer(db: Db, session = new Session(OWNER_ACCOUNT), optio
   server.registerTool(
     "read_inbox",
     {
-      description: `Read your messages and your mentions (channel posts that name you as @<your-name>), oldest first, one page at a time (default ${DEFAULT_INBOX_LIMIT}, max ${MAX_INBOX_LIMIT}). A message has id (its own), inReplyTo (the id of the message it answers, or null), from, sentAt, body and broadcast; a mention has channel, id (the post's), from, sentAt and body. By default only unread ones; everything returned is marked read, so a full page means there may be more: call again. With unread_only false, use offset to page through history. To be woken when mail arrives instead of polling, run the wait command that register returns in the background, and start it again after reading what it names. Requires register first.`,
+      description: `Read your messages and your mentions (channel posts that name you as @<your-name>), oldest first, one page at a time (default ${DEFAULT_INBOX_LIMIT}, max ${MAX_INBOX_LIMIT}). A message has id (its own), inReplyTo (the id of the message it answers, or null), from, sentAt, body and broadcast; to answer a message, call send_message with in_reply_to set to its id, so that an ask waiting for the answer sees it. A mention has channel, id (the post's), from, sentAt and body. By default only unread ones; everything returned is marked read, so a full page means there may be more: call again. With unread_only false, use offset to page through history. To be woken when mail arrives instead of polling, run the wait command that register returns in the background, and start it again after reading what it names. Requires register first.`,
       inputSchema: {
         unread_only: z.boolean().optional().describe("Default true."),
         limit: z.number().int().min(1).max(MAX_INBOX_LIMIT).optional(),
@@ -331,7 +357,7 @@ export function createServer(db: Db, session = new Session(OWNER_ACCOUNT), optio
       const deadline = Date.now() + (timeout_seconds ?? DEFAULT_WAIT_FOR_MAIL_SECONDS) * 1000;
       // Each check finds the caller by its registration, so a removed agent, or another that took its name, ends the call.
       const answer = () => {
-        const unread = check(db, account, own);
+        const unread = check(() => unreadSummary(db, account, own), NOTHING_UNREAD);
         if (!unread) throw new ToolError(NOT_REGISTERED);
         return hasUnread(unread) ? { unread: formatUnread(unread) } : undefined;
       };
@@ -341,17 +367,44 @@ export function createServer(db: Db, session = new Session(OWNER_ACCOUNT), optio
       const release = hold();
       if (!release) throw new ToolError(WAIT_FOR_MAIL_FULL);
       try {
-        const closed = options.closed?.(extra.requestId);
-        const signal = closed ? AbortSignal.any([extra.signal, closed]) : extra.signal;
-        for (;;) {
-          const left = deadline - Date.now();
-          if (left <= 0) return { unread: null };
-          // Sleep a second, or until the call is cancelled or its client goes away; nobody is listening then.
-          await sleep(Math.min(1000, left), signal);
-          if (signal.aborted) return { unread: null };
-          const unread = answer();
-          if (unread) return unread;
-        }
+        return (await poll(deadline, ended(extra), answer)) ?? { unread: null };
+      } finally {
+        release();
+      }
+    }),
+  );
+
+  server.registerTool(
+    "ask",
+    {
+      description: `Ask one agent a question and wait for its answer in one call: sends body to the agent to, as send_message does, and holds the call until that agent answers it: sends you a message with send_message whose in_reply_to is the question's id. Returns id (the question's message id) and reply: the earliest such reply, shaped as read_inbox returns a message and marked read, or null if none came within timeout_seconds or the call was cancelled. With reply null, look for the answer later with read_inbox, read_conversation or message_status and the id. It checks about once a second; a check that finds the database busy counts as no reply that second. To answer a question someone asks you, call send_message with in_reply_to set to the question's id, so that their ask sees it. 'all' and a person are refused, and nothing is sent. Calls held at once are capped together with wait_for_mail, over HTTP also with the server's GET /wait requests and over stdio for the whole process; past the cap it fails at once and sends nothing, so try again shortly. If your agent is removed while you wait, it fails as not registered, and the question stays sent. Requires register first.`,
+      inputSchema: {
+        to: z.string().describe("The agent to ask, by name. Not 'all' or a person."),
+        body: z.string().describe(`The question, at most ${MAX_BODY_LENGTH} characters.`),
+        timeout_seconds: z
+          .number()
+          .int()
+          .min(1)
+          .max(MAX_WAIT_FOR_MAIL_SECONDS)
+          .optional()
+          .describe(`How long to wait for the reply, in seconds: default ${DEFAULT_WAIT_FOR_MAIL_SECONDS}, at most ${MAX_WAIT_FOR_MAIL_SECONDS}.`),
+      },
+    },
+    tool(async ({ to, body, timeout_seconds }: { to: string; body: string; timeout_seconds?: number }, extra) => {
+      const own = session.requireAgent();
+      // The slot comes first: no reply can exist before the question is sent, so nothing is answered without one.
+      const release = hold();
+      if (!release) throw new ToolError(WAIT_FOR_MAIL_FULL);
+      try {
+        const deadline = Date.now() + (timeout_seconds ?? DEFAULT_WAIT_FOR_MAIL_SECONDS) * 1000;
+        const id = sendQuestion(db, account, own, to, body).messages[0].id;
+        // Each check finds the caller by its registration, so a removed agent, or another that took its name, ends the call.
+        const answer = () => {
+          const reply = check(() => takeReply(db, account, own, id), null);
+          if (reply === undefined) throw new ToolError(NOT_REGISTERED);
+          return reply ?? undefined;
+        };
+        return { id, reply: (await poll(deadline, ended(extra), answer)) ?? null };
       } finally {
         release();
       }
