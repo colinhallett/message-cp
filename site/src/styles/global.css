@@ -221,11 +221,12 @@
     .hero { grid-template-columns: minmax(0, 1fr) minmax(0, 1.05fr); gap: 3.5rem; padding: 5rem 0 4rem; }
   }
   /* The start command: one step per line, each continued line starting
-     with &&, and the clone address on a line of its own so it fits at 360px. On a phone the copy button
-     sits above the first line and the type is a step smaller. */
+     with &&, and the clone address on a line of its own. On a phone the copy
+     button sits above the first line and the type is small enough for the
+     clone address and its trailing backslash to fit on one line at 360px. */
   .hero .code:has(.copy:not([hidden])) pre { padding-right: 1rem; }
   @media (max-width: 40rem) {
-    .hero .code pre, .hero .code:has(.copy:not([hidden])) pre { padding-inline: 0.5rem; font-size: 0.6875rem; }
+    .hero .code pre, .hero .code:has(.copy:not([hidden])) pre { padding-inline: 0.5rem; font-size: 0.625rem; }
     .hero .code:has(.copy:not([hidden])) pre { padding-top: 2.6rem; }
   }
   /* Balanced lines, at a size that fits the headline on three of them beside
