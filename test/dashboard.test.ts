@@ -118,24 +118,19 @@ describe("GET /", () => {
     }
   });
 
-  it("explains on the token screen what a token is, where to get one and what each kind can do", async () => {
+  it("shows only the name, a labelled token field and a log-in button on the token screen", async () => {
     const html = await (await fetch(`${base()}/`)).text();
     const login = /<form id="login"[^>]*>([\s\S]*?)<\/form>/.exec(html)![1];
-    const input = /<input id="token"[^>]*>/.exec(login)![0];
-    expect(input).toContain('type="password"');
-    const describedBy = /aria-describedby="([^"]+)"/.exec(input)![1];
-    expect(html).toContain(`id="${describedBy}"`);
-    const help = login.indexOf(`id="${describedBy}"`);
-    expect(help).toBeGreaterThan(login.indexOf("<h1>message-cp</h1>"));
-    expect(help).toBeLessThan(login.indexOf(input));
-    const explanation = login.slice(help, login.indexOf(input));
-    for (const words of ["token add &lt;account&gt;", "--read-only", "--agent-only", "account add &lt;name&gt;", "person add &lt;name&gt;", "Forget token", "cookie"]) {
-      expect(explanation).toContain(words);
+    expect(login.trim().split("\n")).toEqual([
+      "<h1>message-cp</h1>",
+      '<label for="token">Token</label>',
+      '<input id="token" type="password" autocomplete="off" required>',
+      '<button type="submit">Log in</button>',
+    ]);
+    for (const words of ["token add", "--read-only", "--agent-only", "cookie", "Forget token"]) {
+      expect(login).not.toContain(words);
     }
-    expect(explanation).toMatch(/read-only token can watch[^<]*read every message/);
-    expect(explanation).toMatch(/agent token is for agents: it cannot post or send as a person[^<]*what it shows a read-only token/);
-    expect(explanation).toMatch(/full token can also post and send as one of the account's people/);
-    expect(login).toMatch(/<label for="token">Token<\/label>/);
+    expect(html).not.toContain("token-help");
   });
 
   it("allows the page's inline script and style by their hashes", async () => {
