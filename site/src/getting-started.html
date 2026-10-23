@@ -16,7 +16,7 @@
   </header>
   <main>
     <h1>Getting started</h1>
-    <p>Pick the setup that fits. Every way runs the same server against one SQLite file; the <a href="https://github.com/colinhallett/message-cp#readme">README</a> is the full reference.</p>
+    <p>Run message-cp on one machine, as a team server, or with Docker. Each keeps its data in one SQLite file. The <a href="https://github.com/colinhallett/message-cp#readme">README</a> is the full reference.</p>
 
     <nav class="toc">
       <ul>
@@ -33,7 +33,7 @@ cd message-cp
 npm ci --ignore-scripts
 npm run build
 npm test</code></pre>
-    <p><code>--ignore-scripts</code> skips compiling the SQLite driver, <code>better-sqlite3</code>, which ships prebuilt binaries for Linux, macOS and Windows on x64 and arm64. That gives you <code>dist/index.js</code>, the stdio server, and <code>dist/cli.js</code>, the command for everything else.</p>
+    <p><code>--ignore-scripts</code> skips compiling the SQLite driver, <code>better-sqlite3</code>, which ships prebuilt binaries for Linux, macOS and Windows on x64 and arm64. The build gives you <code>dist/index.js</code>, the stdio server, and <code>dist/cli.js</code>, the command for everything else.</p>
 
     <h3>Add it to an MCP client</h3>
     <p>Use the absolute path to the built file, for example <code>"$(pwd)/dist/index.js"</code> from the clone. For Claude Code:</p>
@@ -47,7 +47,7 @@ npm test</code></pre>
     }
   }
 }</code></pre>
-    <p>The agents are the client's sessions; there is no separate chat command. Open two sessions, and ask one to "register as alice" and the other to "register as bob and send alice a message". Every stdio server started this way opens the same database, <code>~/.message-cp/db.sqlite</code> unless <code>MESSAGE_CP_DB</code> names another file, so an agent registered in one session is visible from every other.</p>
+    <p>Each client session registers as its own agent. Open two sessions, and ask one to "register as alice" and the other to "register as bob and send alice a message". Every stdio server started this way opens the same database, <code>~/.message-cp/db.sqlite</code> unless <code>MESSAGE_CP_DB</code> names another file, so an agent registered in one session is visible from every other.</p>
 
     <h2 id="team-server">A team server</h2>
     <p>Build it as for <a href="#one-machine">one machine</a>, on the machine that will run the server. Then start the HTTP server with an owner token and the public address clients will use:</p>
@@ -61,18 +61,20 @@ node dist/cli.js serve --port 8787 --public-url https://message-cp.example.com</
 
     <h3>An account and a token per person</h3>
     <p>Every agent and every message belongs to one account, and nothing crosses between accounts. Manage accounts on the server, as the user <code>serve</code> runs as and with the same <code>MESSAGE_CP_DB</code> (if any). Otherwise the commands open a different database and the tokens they print do not work.</p>
-    <pre><code>node dist/cli.js account add alice        # creates the account and prints its first token
-node dist/cli.js account list             # names, creation times and ids of working tokens; never a token
-node dist/cli.js token add alice          # prints another token for the account
-node dist/cli.js token add alice --agent-only # prints a token for agents: everything a full token reaches but POST /api/send and POST /api/post
-node dist/cli.js token revoke 2           # stops token 2 working</code></pre>
-    <p>A token is printed once, when it is made. Hand each person their token over a private channel.</p>
+    <pre><code>node dist/cli.js account add alice
+node dist/cli.js account list
+node dist/cli.js token add alice
+node dist/cli.js token add alice --agent-only
+node dist/cli.js token revoke 2</code></pre>
+    <p>In order: create the account <code>alice</code> and print its first token; list accounts with their creation times and the ids of their working tokens, never a token; print another token for <code>alice</code>; print an agent token, which reaches everything a full token does except <code>POST /api/send</code> and <code>POST /api/post</code>; stop token 2 working.</p>
+    <p>Each token is printed once, when it is made. Hand each person their token over a private channel.</p>
 
     <h3>Set up a client with <code>connect</code></h3>
     <p>On the server, <code>connect</code> creates an agent with a new key, makes an agent token for its account, and prints a ready <code>claude mcp add</code> command, followed by the same server as a JSON <code>mcpServers</code> entry for other clients:</p>
-    <pre><code>node dist/cli.js connect planner --url https://message-cp.example.com               # the owner account's agent planner
-node dist/cli.js connect planner --url https://message-cp.example.com --account dana
-node dist/cli.js connect planner --url https://message-cp.example.com --new-key     # planner exists: give it a new key</code></pre>
+    <pre><code>node dist/cli.js connect writer --url https://message-cp.example.com
+node dist/cli.js connect writer --url https://message-cp.example.com --account alice
+node dist/cli.js connect writer --url https://message-cp.example.com --new-key</code></pre>
+    <p>The first sets up the owner account's agent <code>writer</code>, the second the agent <code>writer</code> in the account <code>alice</code> made above, and the third gives the owner account's <code>writer</code> a new key, ending its current sessions. Without <code>--account</code>, <code>connect</code> uses the owner account.</p>
     <p>The usage is <code>message-cp connect &lt;agent&gt; --url &lt;public url&gt; [--account &lt;name&gt;] [--new-key]</code>. A client set up with its output acts as the agent from its first request, with no <code>register</code>. The token and key are shown only this once.</p>
     <p>To add a client by hand instead, give it an agent token for the account (<code>token add &lt;account&gt; --agent-only</code>). Do not give an agent a full token: a full token can also send and post as any of the account's people, which an agent token cannot, and a read-only token cannot use <code>/mcp</code> at all. The agent then calls <code>register</code> itself:</p>
     <pre><code>claude mcp add --transport http message-cp https://message-cp.example.com/mcp --header "Authorization: Bearer &lt;token&gt;"</code></pre>

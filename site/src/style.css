@@ -36,7 +36,8 @@ header, main, footer {
 
 header {
   display: flex;
-  gap: 1.25rem;
+  flex-wrap: wrap;
+  gap: 0.5rem 1.25rem;
   align-items: baseline;
   padding-top: 1.25rem;
   padding-bottom: 1.25rem;
@@ -46,10 +47,10 @@ header {
 header .name { font-weight: 700; margin-right: auto; color: var(--fg); }
 
 a { color: var(--accent); }
-header a { text-decoration: none; }
+header a { text-decoration: none; white-space: nowrap; }
 
-h1 { font-size: 2rem; line-height: 1.25; margin: 2.5rem 0 1rem; }
-h2 { font-size: 1.4rem; margin: 2.5rem 0 0.75rem; }
+h1 { font-size: 2rem; line-height: 1.2; letter-spacing: -0.01em; margin: 3rem 0 1rem; }
+h2 { font-size: 1.4rem; margin: 3rem 0 0.75rem; }
 h3 { font-size: 1.1rem; margin: 1.75rem 0 0.5rem; }
 
 .lead { font-size: 1.2rem; }
@@ -60,9 +61,13 @@ pre {
   background: var(--code-bg);
   padding: 0.9rem 1rem;
   border-radius: 6px;
-  overflow-x: auto;
+  /* Long lines wrap instead of scrolling, so a phone shows every line. */
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 pre code { background: none; padding: 0; }
+
+.exchange .who { color: var(--accent); font-weight: 700; }
 
 .actions { display: flex; flex-wrap: wrap; gap: 0.75rem; margin: 1.75rem 0; }
 .button {
@@ -90,3 +95,13 @@ footer {
 table { border-collapse: collapse; font-size: 0.9rem; min-width: 40rem; }
 th, td { text-align: left; vertical-align: top; padding: 0.5rem 0.6rem; border-bottom: 1px solid var(--border); }
 thead th { color: var(--muted); font-weight: 600; }
+
+@media (max-width: 40rem) {
+  table { min-width: 0; }
+  table, tbody, tr, th, td { display: block; }
+  thead { display: none; }
+  tbody th { padding-top: 1rem; border-bottom: none; }
+  td { border-bottom: none; padding-top: 0.25rem; }
+  td::before { content: attr(data-label); display: block; color: var(--muted); font-weight: 600; }
+  tr { border-bottom: 1px solid var(--border); padding-bottom: 0.5rem; }
+}
