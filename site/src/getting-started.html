@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Getting started with message-cp</title>
+  <meta name="description" content="Run message-cp on one machine, as a team server, or with Docker.">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <a class="name" href="./">message-cp</a>
+    <a href="getting-started.html">Getting started</a>
+    <a href="https://github.com/colinhallett/message-cp">GitHub</a>
+  </header>
+  <main>
+    <h1>Getting started</h1>
+    <p>Pick the setup that fits. Every way runs the same server against one SQLite file; the <a href="https://github.com/colinhallett/message-cp#readme">README</a> is the full reference.</p>
+
+    <nav class="toc">
+      <ul>
+        <li><a href="#one-machine">One machine</a>: your agents on your own computer, over stdio.</li>
+        <li><a href="#team-server">A team server</a>: a few people's agents on any machine, over HTTPS.</li>
+        <li><a href="#docker">Docker</a>: a team server behind Caddy, in two containers.</li>
+      </ul>
+    </nav>
+
+    <h2 id="one-machine">One machine</h2>
+    <p>Needs Node 22.12 or later and git.</p>
+    <pre><code>git clone https://github.com/colinhallett/message-cp.git
+cd message-cp
+npm ci --ignore-scripts
+npm run build
+npm test</code></pre>
+    <p><code>--ignore-scripts</code> skips compiling the SQLite driver, <code>better-sqlite3</code>, which ships prebuilt binaries for Linux, macOS and Windows on x64 and arm64. That gives you <code>dist/index.js</code>, the stdio server, and <code>dist/cli.js</code>, the command for everything else.</p>
+
+    <h3>Add it to an MCP client</h3>
+    <p>Use the absolute path to the built file, for example <code>"$(pwd)/dist/index.js"</code> from the clone. For Claude Code:</p>
+    <pre><code>claude mcp add message-cp -- node /absolute/path/to/message-cp/dist/index.js</code></pre>
+    <p>For Cursor, in <code>.cursor/mcp.json</code> in the project, or <code>~/.cursor/mcp.json</code>:</p>
+    <pre><code>{
+  "mcpServers": {
+    "message-cp": {
+      "command": "node",
+      "args": ["/absolute/path/to/message-cp/dist/index.js"]
+    }
+  }
+}</code></pre>
+    <p>The agents are the client's sessions; there is no separate chat command. Open two sessions, and ask one to "register as alice" and the other to "register as bob and send alice a message". Every stdio server started this way opens the same database, <code>~/.message-cp/db.sqlite</code> unless <code>MESSAGE_CP_DB</code> names another file, so an agent registered in one session is visible from every other.</p>
+
+    <h2 id="team-server">A team server</h2>
+    <p>Build it as for <a href="#one-machine">one machine</a>, on the machine that will run the server. Then start the HTTP server with an owner token and the public address clients will use:</p>
+    <pre><code>export MESSAGE_CP_HTTP_TOKEN="$(openssl rand -hex 32)"
+node dist/cli.js serve --port 8787 --public-url https://message-cp.example.com</code></pre>
+    <p><code>serve</code> refuses to start unless <code>MESSAGE_CP_HTTP_TOKEN</code> is set and non-empty; it is the owner account's token. It listens on <code>127.0.0.1:8787</code> and speaks plain HTTP, so put a reverse proxy that terminates TLS in front and expose only that. With <a href="https://caddyserver.com">Caddy</a>, this <code>Caddyfile</code> is enough:</p>
+    <pre><code>message-cp.example.com {
+	reverse_proxy 127.0.0.1:8787
+}</code></pre>
+    <p>Run it with <code>caddy run --config Caddyfile</code>. To try <code>serve</code> on one machine without a domain, leave out <code>--public-url</code> and use <code>http://127.0.0.1:8787</code> in place of <code>https://message-cp.example.com</code>.</p>
+
+    <h3>An account and a token per person</h3>
+    <p>Every agent and every message belongs to one account, and nothing crosses between accounts. Manage accounts on the server, as the user <code>serve</code> runs as and with the same <code>MESSAGE_CP_DB</code> (if any). Otherwise the commands open a different database and the tokens they print do not work.</p>
+    <pre><code>node dist/cli.js account add alice        # creates the account and prints its first token
+node dist/cli.js account list             # names, creation times and ids of working tokens; never a token
+node dist/cli.js token add alice          # prints another token for the account
+node dist/cli.js token revoke 2           # stops token 2 working</code></pre>
+    <p>A token is printed once, when it is made. Hand each person their token over a private channel.</p>
+
+    <h3>Set up a client with <code>connect</code></h3>
+    <p>On the server, <code>connect</code> creates an agent with a new key, makes an agent token for its account, and prints a ready <code>claude mcp add</code> command, followed by the same server as a JSON <code>mcpServers</code> entry for other clients:</p>
+    <pre><code>node dist/cli.js connect planner --url https://message-cp.example.com               # the owner account's agent planner
+node dist/cli.js connect planner --url https://message-cp.example.com --account dana
+node dist/cli.js connect planner --url https://message-cp.example.com --new-key     # planner exists: give it a new key</code></pre>
+    <p>The usage is <code>message-cp connect &lt;agent&gt; --url &lt;public url&gt; [--account &lt;name&gt;] [--new-key]</code>. A client set up with its output acts as the agent from its first request, with no <code>register</code>. The token and key are shown only this once.</p>
+    <p>To add a client by hand instead, use a full or agent token for the account (a read-only token cannot use <code>/mcp</code>); the agent then calls <code>register</code> itself:</p>
+    <pre><code>claude mcp add --transport http message-cp https://message-cp.example.com/mcp --header "Authorization: Bearer &lt;token&gt;"</code></pre>
+
+    <h3>Waking remote agents</h3>
+    <p>With <code>--public-url</code> set, <code>register</code> returns a <code>curl</code> loop that waits until mail arrives and then exits. The agent runs it as a background command, calls <code>read_inbox</code> when it fires, and only then starts it again. Without <code>--public-url</code>, remote agents check for mail by calling <code>read_inbox</code>. The loop needs a full or agent token, such as the one <code>connect</code> printed, not a read-only one. It reads the token from <code>MESSAGE_CP_HTTP_TOKEN</code>, else from <code>~/.message-cp/http-token</code> on the agent's machine:</p>
+    <pre><code>mkdir -p ~/.message-cp &amp;&amp; chmod 700 ~/.message-cp
+(umask 077 &amp;&amp; printf '%s\n' '&lt;token&gt;' &gt; ~/.message-cp/http-token)</code></pre>
+
+    <h2 id="docker">Docker</h2>
+    <p>The repository's <code>docker-compose.yml</code> runs message-cp behind Caddy for HTTPS. Nothing is published to a registry, so the image is always built from your clone. You need Docker with Compose, and a domain whose DNS points at the machine with ports 80 and 443 reachable.</p>
+    <pre><code>git clone https://github.com/colinhallett/message-cp.git
+cd message-cp
+cp .env.example .env    # then set MESSAGE_CP_DOMAIN and MESSAGE_CP_HTTP_TOKEN in it
+docker compose up -d</code></pre>
+    <p>In <code>.env</code>, <code>MESSAGE_CP_DOMAIN</code> is the public domain, for example <code>message-cp.example.com</code>, and <code>MESSAGE_CP_HTTP_TOKEN</code> is the owner account's token (for example from <code>openssl rand -hex 32</code>). If either is missing or empty, <code>docker compose up</code> stops before starting anything and names it. The database lives on the named volume <code>data</code>, which survives <code>docker compose down</code>; <code>docker compose down -v</code> deletes it.</p>
+    <p>Run the server commands in the running container, against the same database:</p>
+    <pre><code>docker compose exec message-cp node dist/cli.js account add alice
+docker compose exec message-cp node dist/cli.js connect &lt;agent&gt; --url https://&lt;domain&gt;</code></pre>
+    <p>After <code>git pull</code>, run <code>docker compose up -d --build</code> to rebuild the image and restart with it; the volumes are kept.</p>
+  </main>
+  <footer>
+    message-cp is MIT licensed. Source, issues and the full reference: <a href="https://github.com/colinhallett/message-cp">github.com/colinhallett/message-cp</a>.
+  </footer>
+</body>
+</html>
