@@ -1,0 +1,63 @@
+---
+// The one layout every page uses: the theme, the sticky header and the footer.
+import "@fontsource/instrument-sans/400.css";
+import "@fontsource/instrument-sans/600.css";
+import "@fontsource/instrument-sans/700.css";
+import "@fontsource/jetbrains-mono/400.css";
+import "@fontsource/jetbrains-mono/700.css";
+import "../styles/global.css";
+
+interface Props {
+  title: string;
+  description: string;
+  reference?: boolean;
+}
+
+const { title, description, reference = false } = Astro.props;
+const github = "https://github.com/colinhallett/message-cp";
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark light" />
+    <title>{title}</title>
+    <meta name="description" content={description} />
+  </head>
+  <body>
+    <header class="site-header">
+      <nav aria-label="Site">
+        <a class="name" href="./">message-cp</a>
+        <a href="getting-started.html">Getting started</a>
+        <a href="reference.html">Reference</a>
+        <a href="compare.html">Compare</a>
+        <a href={github}>GitHub</a>
+      </nav>
+    </header>
+    <main class:list={["page", { reference }]}>
+      <slot />
+    </main>
+    <footer class="site-footer">
+      <p>message-cp is MIT licensed. Source and issues: <a href={github}>github.com/colinhallett/message-cp</a>.</p>
+    </footer>
+    <script is:inline>
+      for (const block of document.querySelectorAll(".code")) {
+        const button = block.querySelector(".copy");
+        const code = block.querySelector("pre");
+        if (!button || !code || !navigator.clipboard) continue;
+        button.hidden = false;
+        button.addEventListener("click", async () => {
+          try {
+            await navigator.clipboard.writeText(code.innerText.replace(/\n$/, ""));
+            button.textContent = "Copied";
+          } catch {
+            button.textContent = "Copy failed";
+          }
+          setTimeout(() => (button.textContent = "Copy"), 1500);
+        });
+      }
+    </script>
+  </body>
+</html>

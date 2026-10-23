@@ -1,6 +1,6 @@
 # A message-cp team server behind Caddy for HTTPS. Set MESSAGE_CP_DOMAIN and MESSAGE_CP_HTTP_TOKEN
 # in .env (see .env.example) or the environment, then run `docker compose up -d`.
-# See "Running with Docker" in the reference, site/src/server.html.
+# See "Running with Docker" in the reference, site/src/pages/server.astro.
 
 services:
   message-cp:

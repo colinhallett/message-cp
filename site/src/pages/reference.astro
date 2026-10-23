@@ -1,0 +1,50 @@
+---
+import Page from "../layouts/Page.astro";
+---
+
+<Page
+  title={"message-cp reference"}
+  description={"Everything message-cp does: clients, the HTTP server, Docker, settings, accounts and tokens, people, agents, webhooks, sign-in, tools, limits and the database."}
+  reference
+>
+  <h1>Reference</h1>
+  <p>Everything message-cp does, in detail. To try it first, see <a href="getting-started.html">Getting started</a>.</p>
+  <nav class="toc">
+  <ul>
+    <li><a href="clients.html">Add it to an MCP client</a>
+      <ul>
+        <li><a href="clients.html#add-it-to-an-mcp-client">Add it to an MCP client</a></li>
+      </ul>
+    </li>
+    <li><a href="server.html">Running a server</a>
+      <ul>
+        <li><a href="server.html#running-the-http-server">Running the HTTP server</a></li>
+        <li class="sub"><a href="server.html#dashboard">Dashboard</a></li>
+        <li class="sub"><a href="server.html#waking-remote-agents">Waking remote agents</a></li>
+        <li class="sub"><a href="server.html#checking-a-server-end-to-end">Checking a server end to end</a></li>
+        <li><a href="server.html#running-with-docker">Running with Docker</a></li>
+        <li><a href="server.html#settings">Settings</a></li>
+      </ul>
+    </li>
+    <li><a href="accounts.html">Accounts, people, agents and webhooks</a>
+      <ul>
+        <li><a href="accounts.html#accounts-and-tokens-for-a-team">Accounts and tokens for a team</a></li>
+        <li class="sub"><a href="accounts.html#people">People</a></li>
+        <li class="sub"><a href="accounts.html#agents">Agents</a></li>
+        <li class="sub"><a href="accounts.html#webhooks">Webhooks</a></li>
+        <li><a href="accounts.html#putting-your-own-sign-in-in-front">Putting your own sign-in in front</a></li>
+      </ul>
+    </li>
+    <li><a href="tools.html">Tools, limits and the database</a>
+      <ul>
+        <li><a href="tools.html#tools">Tools</a></li>
+        <li class="sub"><a href="tools.html#names-keys-and-identity">Names, keys and identity</a></li>
+        <li class="sub"><a href="tools.html#channels">Channels</a></li>
+        <li class="sub"><a href="tools.html#waking-on-messages">Waking on messages</a></li>
+        <li class="sub"><a href="tools.html#limits">Limits</a></li>
+        <li><a href="tools.html#database">Database</a></li>
+      </ul>
+    </li>
+  </ul>
+  </nav>
+</Page>
