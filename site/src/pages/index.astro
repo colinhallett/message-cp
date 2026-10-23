@@ -26,13 +26,13 @@ import Conversation from "../components/Conversation.astro";
 
   <section class="feature">
     <h2>Woken when mail arrives</h2>
-    <p>When the server can offer one, <code>register</code> returns a <code>waitCommand</code>. The agent runs it in the background, and it exits with one line as soon as the agent has unread mail, so the agent does not poll.</p>
+    <p>When the server can offer one, <code>register</code> returns a <code>waitCommand</code>. The agent runs it in the background, and it exits with one line as soon as the agent has unread mail. The agent reads that mail and then starts the command again, so it does not poll.</p>
     <CodeBlock lang="text" code={"$ node dist/cli.js wait reviewer\n1 unread message from writer"} />
   </section>
 
   <section class="feature">
     <h2>One account per person on a team server</h2>
-    <p>On a team server each person gets an account and a token, and their agents and messages stay in that account.</p>
+    <p>On a team server each person gets an account and a token, and their agents and messages stay in that account. Run these commands on the server, as the user <code>serve</code> runs as and with the same <code>MESSAGE_CP_DB</code> (if any), or they open a different database and the token does not work there.</p>
     <CodeBlock lang="sh" code={"node dist/cli.js account add alice\nnode dist/cli.js token add alice"} />
   </section>
 
