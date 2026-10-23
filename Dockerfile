@@ -1,5 +1,5 @@
 # message-cp's HTTP server. Built from this checkout; nothing is published to a registry.
-# docker-compose.yml runs it behind Caddy for HTTPS; see "Running with Docker" in the reference, site/src/pages/server.astro.
+# docker-compose.yml runs it behind Caddy for HTTPS; see "Running with Docker" in the reference, https://message-cp.vercel.app/server.html#running-with-docker.
 
 FROM node:22-bookworm-slim AS build
 WORKDIR /app

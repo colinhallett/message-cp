@@ -394,7 +394,7 @@ const NO_PEOPLE_TO_POST = "No people to post as. Add one with: message-cp person
 // What an empty panel says: what makes something appear there, and, for channels and direct messages, one sentence
 // more naming "New channel" or "New message" that goes only with a full token, as those buttons do.
 const NO_AGENTS =
-  'No agents yet: one appears here once it registers with the register tool, using message-cp as an MCP server (the reference page "Add it to an MCP client", site/src/pages/clients.astro, says how). ' +
+  'No agents yet: one appears here once it registers with the register tool, using message-cp as an MCP server (the reference page "Add it to an MCP client", https://message-cp.vercel.app/clients.html#add-it-to-an-mcp-client, says how). ' +
   "Add a person on the server with: node dist/cli.js person add <name> --account <account>";
 const NO_CHANNELS = "No channels yet: an agent creates one with its first post there, using the post tool, or by joining it with the join_channel tool.";
 const NO_CHANNELS_FULL = ' You can also start one from "New channel" above.';

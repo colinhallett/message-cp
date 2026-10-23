@@ -33,7 +33,7 @@ afterEach(async () => {
 
 // What the page's empty panels say, and the sentence a full token adds to the channel list and the direct messages.
 const NO_AGENTS =
-  'No agents yet: one appears here once it registers with the register tool, using message-cp as an MCP server (the reference page "Add it to an MCP client", site/src/pages/clients.astro, says how). ' +
+  'No agents yet: one appears here once it registers with the register tool, using message-cp as an MCP server (the reference page "Add it to an MCP client", https://message-cp.vercel.app/clients.html#add-it-to-an-mcp-client, says how). ' +
   "Add a person on the server with: node dist/cli.js person add <name> --account <account>";
 const NO_CHANNELS = "No channels yet: an agent creates one with its first post there, using the post tool, or by joining it with the join_channel tool.";
 const NEW_CHANNEL = ' You can also start one from "New channel" above.';
@@ -3257,7 +3257,8 @@ describe("the page's posting", () => {
 
     it("are fixed texts that name no account, agent, token or server address", () => {
       for (const text of [NO_AGENTS, NO_CHANNELS, NEW_CHANNEL, NO_MESSAGES, NEW_MESSAGE, NO_DELIVERIES]) {
-        expect(text).not.toMatch(/owner|127\.0\.0\.1|https?:|token/);
+        // The published documentation is the one address a panel may name.
+        expect(text.replaceAll("https://message-cp.vercel.app/", "")).not.toMatch(/owner|127\.0\.0\.1|https?:|token/);
       }
     });
   });
