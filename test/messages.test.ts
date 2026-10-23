@@ -131,7 +131,7 @@ describe("broadcasts", () => {
   it("treats a lone sender broadcast as delivered to nobody", async () => {
     const a = await connect("alice");
     const r = await call(a, "send_message", { to: "all", body: "anyone?" });
-    expect(r.json).toEqual({ delivered: 0, recipients: [] });
+    expect(r.json).toEqual({ delivered: 0, recipients: [], messages: [] });
     expect(messageCount()).toBe(0);
   });
 });

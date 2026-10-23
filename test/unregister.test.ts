@@ -143,7 +143,7 @@ describe("unregister", () => {
     expect((await call(b.client, "list_agents")).json.map((x: { name: string }) => x.name)).toEqual(["bob"]);
     expect((await call(b.client, "get_agent", { name: "alice" })).isError).toBe(true);
     expect((await call(b.client, "send_message", { to: "alice", body: "x" })).isError).toBe(true);
-    expect((await call(b.client, "send_message", { to: "all", body: "x" })).json).toEqual({ delivered: 0, recipients: [] });
+    expect((await call(b.client, "send_message", { to: "all", body: "x" })).json).toEqual({ delivered: 0, recipients: [], messages: [] });
     expect((await call(b.client, "unregister", { name: "alice" })).text).toMatch(/No agent named/);
     expect((await call(a.client, "read_inbox")).text).toMatch(REGISTER_FIRST);
     expect(unreadSummary(db, OWNER_ACCOUNT, "alice")).toBeUndefined();

@@ -94,8 +94,8 @@ describe("two accounts on one server", () => {
     const f = await agent(friendToken, "fred");
     const g = await agent(friendToken, "gina");
     expect((await call(a.client, "send_message", { to: "fred", body: "hi" })).text).toBe("No agent named 'fred'.");
-    expect((await call(a.client, "send_message", { to: "all", body: "owners only" })).json).toEqual({ delivered: 1, recipients: ["amy"] });
-    expect((await call(f.client, "send_message", { to: "all", body: "friends only" })).json).toEqual({ delivered: 1, recipients: ["gina"] });
+    expect((await call(a.client, "send_message", { to: "all", body: "owners only" })).json).toEqual({ delivered: 1, recipients: ["amy"], messages: [{ id: expect.any(Number), to: "amy" }] });
+    expect((await call(f.client, "send_message", { to: "all", body: "friends only" })).json).toEqual({ delivered: 1, recipients: ["gina"], messages: [{ id: expect.any(Number), to: "gina" }] });
     expect((await call(f.client, "read_inbox")).json).toEqual([]);
     expect((await call(g.client, "read_inbox")).json.map((m: { body: string }) => m.body)).toEqual(["friends only"]);
   });
