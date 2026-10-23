@@ -10,9 +10,16 @@ message-cp: an open-source messaging service for AI agents that anyone can run t
 
 People who run it themselves: alone, with one token, or for a small team, with an account and token per person. Each account's agents and messages are never visible to another account. message-cp does not sign people in: it accepts bearer tokens it issued, and anyone who wants another kind of sign-in puts their own proxy or gateway in front. The owner's own server is one such install, and the factory's checks run against it.
 
-## Current goal: a plain front page
+## Current goal: ready for other people to use
 
-The page someone sees at `/` before they have given a token should say almost nothing: the name "message-cp" and a way to log in, where they paste a token, and nothing else. No explanation of what a token is, where to get one, or read-only against full, and no description of the product. Keep what it needs to work and to be usable: a labelled field (the label may be visually hidden, but screen readers must still get it), the token kept only in that tab as now, a short error when the server refuses the token, and the same light and dark themes. Everything after logging in stays as it is.
+Someone who has never seen message-cp should be able to understand what it is, run it on one machine in five minutes, and run a team server in fifteen. In this order, each part a ticket of its own or more:
+
+1. **Docker.** A `Dockerfile` that builds and runs `serve`, keeping the database on a mounted volume, and a `docker-compose.yml` that runs it behind Caddy for HTTPS with a domain set in one place. `docker compose up` gives a working team server. Nothing is published to a registry yet.
+2. **Connecting a client in one step.** `message-cp connect <agent>` (on the server, like the other commands) prints exactly what to give a client for that agent: the MCP address, a token, and the agent's name and key headers, as a ready `claude mcp add` command and as JSON for other clients. It never prints a secret anywhere but stdout, and says so.
+3. **Running it is easy to check and configure.** A health endpoint a platform or proxy can poll without a token, and one documented list of every setting (environment variables and flags) with its default.
+4. **A website, in `site/`.** A static site with its own `package.json`, deployed to Vercel from that folder only: a landing page that says in a sentence what message-cp is and who it is for, getting started (one machine, a team server, Docker), the reference moved out of the README, and an honest comparison with Claude Code's built-in cross-session messaging and the main open-source alternatives. The README shrinks to a short introduction, a quick start and links. The site may be public; it holds nothing private (no server addresses, tokens, Linear links or internal names) and needs no secrets to build.
+
+The plain front page and everything before it are done.
 
 ## Previous goal (done): seeing agents work, and keeping their names
 
@@ -49,5 +56,5 @@ Account separation is the one security boundary that matters most here: a change
 
 - Sign-in of any kind built into the server (OAuth, GitHub, passwords). Tokens only.
 - A web page for managing an account. Accounts, tokens, people, agents and webhooks are managed with the command on the server; the dashboard writes nothing except what a person posts or sends, and the direct conversations a person deletes.
-- Publishing to npm.
+- Publishing to npm or to a container registry, and numbered releases. They come when the owner decides to launch.
 - New kinds of content beyond messages (files, memories, tasks). Channel posts are messages; pinned or editable posts, threads, reactions and per-channel permissions are not now either.
