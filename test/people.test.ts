@@ -113,7 +113,7 @@ describe("a person in the tools", () => {
     const direct = addWebhook(db, "owner", "https://example.com/", "agent:colin", true);
     const mention = addWebhook(db, "owner", "https://example.com/", "mention:colin", true);
     const { client } = await agent("alice");
-    expect((await call(client, "send_message", { to: "Colin", body: "hello" })).json).toEqual({ delivered: 1, recipients: ["colin"] });
+    expect((await call(client, "send_message", { to: "Colin", body: "hello" })).json).toEqual({ delivered: 1, recipients: ["colin"], messages: [{ id: expect.any(Number), to: "colin" }] });
     expect((await call(client, "post", { channel: "general", body: "@colin look" })).isError).toBe(false);
 
     const colin = getAgentId("colin", OWNER_ACCOUNT);
@@ -131,7 +131,11 @@ describe("a person in the tools", () => {
     addPerson(db, "owner", "colin");
     const { client } = await agent("alice");
     await agent("bob");
-    expect((await call(client, "send_message", { to: "all", body: "hi all" })).json).toEqual({ delivered: 2, recipients: ["bob", "colin"] });
+    expect((await call(client, "send_message", { to: "all", body: "hi all" })).json).toEqual({
+      delivered: 2,
+      recipients: ["bob", "colin"],
+      messages: [{ id: expect.any(Number), to: "bob" }, { id: expect.any(Number), to: "colin" }],
+    });
   });
 
   it("is in list_agents and get_agent with person true, and every agent has person false", async () => {
@@ -213,7 +217,7 @@ describe("a person in the tools", () => {
     const sent = await call(client, "send_message", { to: "colin", body: "hi" });
     expect(sent.isError).toBe(true);
     expect(sent.text).toBe("No agent named 'colin'.");
-    expect((await call(client, "send_message", { to: "all", body: "hi all" })).json).toEqual({ delivered: 0, recipients: [] });
+    expect((await call(client, "send_message", { to: "all", body: "hi all" })).json).toEqual({ delivered: 0, recipients: [], messages: [] });
     expect((await call(client, "post", { channel: "general", body: "@colin look" })).isError).toBe(false);
     expect(db.prepare("SELECT COUNT(*) AS n FROM messages").get()).toEqual({ n: 0 });
     expect(db.prepare("SELECT COUNT(*) AS n FROM mentions").get()).toEqual({ n: 0 });

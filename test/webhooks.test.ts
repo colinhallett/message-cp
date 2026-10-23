@@ -318,7 +318,7 @@ describe("queued deliveries", () => {
     member(OWNER_ACCOUNT, "bob");
     const hook = addWebhook(db, "owner", "https://example.com/", "agent:bob", true);
     addWebhook(db, "owner", "https://example.com/", "agent:alice", true);
-    expect(sendMessage(db, OWNER_ACCOUNT, "alice", "bob", "hello bob")).toEqual({ delivered: 1, recipients: ["bob"] });
+    expect(sendMessage(db, OWNER_ACCOUNT, "alice", "bob", "hello bob")).toEqual({ delivered: 1, recipients: ["bob"], messages: [{ id: expect.any(Number), to: "bob" }] });
     const sentAt = new Date((db.prepare("SELECT created_at FROM messages").get() as { created_at: number }).created_at).toISOString();
     expect(queued()).toEqual([{ webhook: hook.id, body: { event: "agent", recipient: "bob", sender: "alice", sentAt, text: "hello bob" } }]);
     expect(JSON.stringify(queued())).not.toContain(hook.secret);

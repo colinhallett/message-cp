@@ -79,6 +79,7 @@ describe("in_reply_to", () => {
     expect(await ok(bob, "send_message", { to: "alice", body: "answer two", in_reply_to: inbox[1].id })).toEqual({
       delivered: 1,
       recipients: ["alice"],
+      messages: [{ id: expect.any(Number), to: "alice" }],
     });
     await ok(bob, "send_message", { to: "alice", body: "answer one", in_reply_to: inbox[0].id });
     expect(await ok(alice, "read_inbox")).toEqual([
@@ -107,6 +108,7 @@ describe("in_reply_to", () => {
     expect(await ok(bob, "send_message", { to: "all", body: "yes, all", in_reply_to: question.id })).toEqual({
       delivered: 2,
       recipients: ["alice", "carol"],
+      messages: [{ id: expect.any(Number), to: "alice" }, { id: expect.any(Number), to: "carol" }],
     });
     expect(db.prepare("SELECT in_reply_to FROM messages WHERE body = 'yes, all'").pluck().all()).toEqual([question.id, question.id]);
   });
