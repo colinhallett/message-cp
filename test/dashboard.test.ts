@@ -199,6 +199,9 @@ describe("GET /", () => {
     expect(light).toMatchObject({ bg: "#fbfcfd", panel: "#f1f4f8", border: "#d9dee7", text: "#0b0f17", muted: "#535b6e", accent: "#2f5bd3", who0: "#2f5bd3", who1: "#0b7350" });
     for (const theme of [light, dark]) {
       const who = Array.from({ length: 8 }, (_, i) => `who${i}`);
+      // Every value the checks below use was parsed, so a missing or reformatted one is named here rather than failing later.
+      const used = ["bg", "panel", "hover", "active", "text", "muted", "accent", "error", "error-bg", "mention-bg", "me", "me-bg", ...who];
+      expect(used.filter((name) => !(name in theme))).toEqual([]);
       expect(new Set(who.map((w) => theme[w])).size).toBe(8);
       // The reader's own mention is accent-based, not yellow: blue outweighs red in its colour and background, and both
       // differ from a plain mention's.
@@ -213,9 +216,6 @@ describe("GET /", () => {
         ["error", "error-bg"],
         ...who.map((w) => ["bg", w]),
       ];
-      // Every value the checks use was parsed, so a missing or reformatted one is named here rather than failing later.
-      const used = [...new Set([...pairs.flat(), "me", "me-bg", "mention-bg"])];
-      expect(used.filter((name) => !(name in theme))).toEqual([]);
       const failing = pairs.filter(([fg, bg]) => !(contrast(theme[fg], theme[bg]) >= 4.5));
       expect(failing).toEqual([]);
       // A primary action's text on its enabled-hover background, 85% accent mixed with 15% text.
@@ -235,7 +235,9 @@ describe("GET /", () => {
     expect(style).toContain(".mention.me { color: var(--me); background: var(--me-bg); box-shadow: inset 0 -2px 0 currentColor; }");
     expect(style).toMatch(/^button \{[^}]*background: none;/m);
     expect(style).toContain("#login button, #compose-send, #channel-create, #new-open, #delete-yes { background: var(--accent); border-color: var(--accent); color: var(--bg);");
-    expect(style).toContain("#delete-yes:hover:enabled { background: color-mix(in srgb, var(--accent) 85%, var(--text)); }");
+    expect(style).toContain(
+      "#login button:hover:enabled, #compose-send:hover:enabled, #channel-create:hover:enabled, #new-open:hover:enabled, #delete-yes:hover:enabled { background: color-mix(in srgb, var(--accent) 85%, var(--text)); }",
+    );
     // The only shadows left are the inset accent bars on the open conversation and the highlighted mention option, and
     // the underline on the reader's own mention.
     expect(style.match(/box-shadow: [^;]*/g)).toEqual([
