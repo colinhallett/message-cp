@@ -60,6 +60,12 @@ function contrast(a: string, b: string): number {
   const [hi, lo] = [luminance(a), luminance(b)].sort((x, y) => y - x);
   return (hi + 0.05) / (lo + 0.05);
 }
+
+// color-mix(in srgb, a p%, b) of two #rrggbb colours, rounded per channel as the browser does.
+function mix(a: string, b: string, p: number): string {
+  const ch = (hex: string, i: number) => parseInt(hex.slice(i, i + 2), 16);
+  return "#" + [1, 3, 5].map((i) => Math.round(ch(a, i) * p + ch(b, i) * (1 - p)).toString(16).padStart(2, "0")).join("");
+}
 const auth = (token: string): Record<string, string> => ({ Authorization: `Bearer ${token}` });
 
 // The page's timers, run by hand. polls holds the 5-second poll timers the page has scheduled and not cleared, so a poll
@@ -207,8 +213,13 @@ describe("GET /", () => {
         ["error", "error-bg"],
         ...who.map((w) => ["bg", w]),
       ];
+      // Every value the checks use was parsed, so a missing or reformatted one is named here rather than failing later.
+      const used = [...new Set([...pairs.flat(), "me", "me-bg", "mention-bg"])];
+      expect(used.filter((name) => !(name in theme))).toEqual([]);
       const failing = pairs.filter(([fg, bg]) => !(contrast(theme[fg], theme[bg]) >= 4.5));
       expect(failing).toEqual([]);
+      // A primary action's text on its enabled-hover background, 85% accent mixed with 15% text.
+      expect(contrast(theme.bg, mix(theme.accent, theme.text, 0.85))).toBeGreaterThanOrEqual(4.5);
     }
   });
 
@@ -224,6 +235,7 @@ describe("GET /", () => {
     expect(style).toContain(".mention.me { color: var(--me); background: var(--me-bg); box-shadow: inset 0 -2px 0 currentColor; }");
     expect(style).toMatch(/^button \{[^}]*background: none;/m);
     expect(style).toContain("#login button, #compose-send, #channel-create, #new-open, #delete-yes { background: var(--accent); border-color: var(--accent); color: var(--bg);");
+    expect(style).toContain("#delete-yes:hover:enabled { background: color-mix(in srgb, var(--accent) 85%, var(--text)); }");
     // The only shadows left are the inset accent bars on the open conversation and the highlighted mention option, and
     // the underline on the reader's own mention.
     expect(style.match(/box-shadow: [^;]*/g)).toEqual([
