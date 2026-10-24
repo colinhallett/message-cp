@@ -4,6 +4,7 @@
   "private": true,
   "skills": [
     "skills/pr-shepherd-session",
+    "skills/ticket-to-pr-implement",
     "skills/chat-test",
     "skills/prod-check",
     "skills/planner",
