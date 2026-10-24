@@ -193,10 +193,14 @@ describe("GET /", () => {
     expect(light).toMatchObject({ bg: "#fbfcfd", panel: "#f1f4f8", border: "#d9dee7", text: "#0b0f17", muted: "#535b6e", accent: "#2f5bd3", who0: "#2f5bd3", who1: "#0b7350" });
     for (const theme of [light, dark]) {
       const who = Array.from({ length: 8 }, (_, i) => `who${i}`);
-      // Eight distinct agent colours, and no yellow left for the reader's own mention.
       expect(new Set(who.map((w) => theme[w])).size).toBe(8);
+      // The reader's own mention is accent-based, not yellow: blue outweighs red in its colour and background, and both
+      // differ from a plain mention's.
+      for (const name of ["me", "me-bg"]) expect(parseInt(theme[name].slice(5, 7), 16)).toBeGreaterThan(parseInt(theme[name].slice(1, 3), 16));
+      expect([theme.me, theme["me-bg"]]).not.toEqual([theme.accent, theme["mention-bg"]]);
       const pairs = [
         ...["text", "muted", "accent", "error", ...who].flatMap((fg) => [[fg, "bg"], [fg, "panel"]]),
+        ...["text", "muted"].flatMap((fg) => [[fg, "hover"], [fg, "active"]]),
         ["me", "me-bg"],
         ["accent", "mention-bg"],
         ["bg", "accent"],
@@ -217,6 +221,7 @@ describe("GET /", () => {
     expect(style).toContain(".mark .bubble { fill: var(--accent); }");
     expect(style).toContain(".mark .lines { fill: var(--bg); }");
     expect(html).not.toMatch(/<img|data:/);
+    expect(style).toContain(".mention.me { color: var(--me); background: var(--me-bg); box-shadow: inset 0 -2px 0 currentColor; }");
     expect(style).toMatch(/^button \{[^}]*background: none;/m);
     expect(style).toContain("#login button, #compose-send, #channel-create, #new-open, #delete-yes { background: var(--accent); border-color: var(--accent); color: var(--bg);");
     // The only shadows left are the inset accent bars on the open conversation and the highlighted mention option, and
