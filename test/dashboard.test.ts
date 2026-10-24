@@ -45,6 +45,27 @@ const NO_DELIVERIES =
   "No webhook deliveries yet: add a webhook on the server with message-cp webhook add --url <url> --on <#channel | mention:<agent> | agent:<agent>>, and its deliveries show here once it fires.";
 
 const base = () => `http://127.0.0.1:${http.port}`;
+
+// A :root block's colours by custom property name, without the leading "--".
+function themeOf(block: string): Record<string, string> {
+  return Object.fromEntries([...block.matchAll(/--([\w-]+): (#[0-9a-f]{6});/g)].map((m) => [m[1], m[2]]));
+}
+
+// The WCAG contrast ratio of two #rrggbb colours, from their relative luminance.
+function contrast(a: string, b: string): number {
+  const luminance = (hex: string) => {
+    const [r, g, bl] = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255).map((c) => (c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4));
+    return 0.2126 * r + 0.7152 * g + 0.0722 * bl;
+  };
+  const [hi, lo] = [luminance(a), luminance(b)].sort((x, y) => y - x);
+  return (hi + 0.05) / (lo + 0.05);
+}
+
+// color-mix(in srgb, a p%, b) of two #rrggbb colours, rounded per channel as the browser does.
+function mix(a: string, b: string, p: number): string {
+  const ch = (hex: string, i: number) => parseInt(hex.slice(i, i + 2), 16);
+  return "#" + [1, 3, 5].map((i) => Math.round(ch(a, i) * p + ch(b, i) * (1 - p)).toString(16).padStart(2, "0")).join("");
+}
 const auth = (token: string): Record<string, string> => ({ Authorization: `Bearer ${token}` });
 
 // The page's timers, run by hand. polls holds the 5-second poll timers the page has scheduled and not cleared, so a poll
@@ -165,6 +186,68 @@ describe("GET /", () => {
     }
     expect(directives.find((d) => d.startsWith("script-src"))).toMatch(/^script-src 'sha256-[A-Za-z0-9+/=]+'$/);
     expect(directives.find((d) => d.startsWith("style-src"))).toMatch(/^style-src 'sha256-[A-Za-z0-9+/=]+'$/);
+  });
+
+  it("uses the site's colours in both themes, and every text colour passes WCAG AA on its background", async () => {
+    const html = await (await fetch(`${base()}/`)).text();
+    const style = /<style>([\s\S]*?)<\/style>/.exec(html)![1];
+    const roots = [...style.matchAll(/:root \{([^}]*)\}/g)].map((m) => themeOf(m[1]));
+    expect(roots).toHaveLength(2);
+    const [light, dark] = roots;
+    expect(style).toMatch(/@media \(prefers-color-scheme: dark\) \{\s*:root \{/);
+    expect(dark).toMatchObject({ bg: "#0b0f17", panel: "#121826", border: "#1f2737", text: "#e7eaf0", muted: "#8b93a7", accent: "#7aa2ff", who0: "#7aa2ff", who1: "#5ee6b5" });
+    expect(light).toMatchObject({ bg: "#fbfcfd", panel: "#f1f4f8", border: "#d9dee7", text: "#0b0f17", muted: "#535b6e", accent: "#2f5bd3", who0: "#2f5bd3", who1: "#0b7350" });
+    for (const theme of [light, dark]) {
+      const who = Array.from({ length: 8 }, (_, i) => `who${i}`);
+      // Every value the checks below use was parsed, so a missing or reformatted one is named here rather than failing later.
+      const used = ["bg", "panel", "hover", "active", "text", "muted", "accent", "error", "error-bg", "mention-bg", "me", "me-bg", ...who];
+      expect(used.filter((name) => !(name in theme))).toEqual([]);
+      expect(new Set(who.map((w) => theme[w])).size).toBe(8);
+      // The reader's own mention is accent-based, not yellow: blue outweighs red in its colour and background, and both
+      // differ from a plain mention's.
+      for (const name of ["me", "me-bg"]) expect(parseInt(theme[name].slice(5, 7), 16)).toBeGreaterThan(parseInt(theme[name].slice(1, 3), 16));
+      expect([theme.me, theme["me-bg"]]).not.toEqual([theme.accent, theme["mention-bg"]]);
+      const pairs = [
+        ...["text", "muted", "accent", "error", ...who].flatMap((fg) => [[fg, "bg"], [fg, "panel"]]),
+        ...["text", "muted"].flatMap((fg) => [[fg, "hover"], [fg, "active"]]),
+        ["me", "me-bg"],
+        ["accent", "mention-bg"],
+        ["bg", "accent"],
+        ["error", "error-bg"],
+        ...who.map((w) => ["bg", w]),
+      ];
+      const failing = pairs.filter(([fg, bg]) => !(contrast(theme[fg], theme[bg]) >= 4.5));
+      expect(failing).toEqual([]);
+      // A primary action's text on its enabled-hover background, 85% accent mixed with 15% text.
+      expect(contrast(theme.bg, mix(theme.accent, theme.text, 0.85))).toBeGreaterThanOrEqual(4.5);
+    }
+  });
+
+  it("shows the site's mark beside the name, fills only the primary actions, and draws borders, not shadows", async () => {
+    const html = await (await fetch(`${base()}/`)).text();
+    const style = /<style>([\s\S]*?)<\/style>/.exec(html)![1];
+    const h1 = /<header class="bar">[\s\S]*?<h1>([\s\S]*?)<\/h1>/.exec(html)![1];
+    expect(h1).toMatch(/^<svg class="mark" viewBox="0 0 32 32" aria-hidden="true" focusable="false"><path class="bubble" d="[^"]+"\/><path class="lines" d="[^"]+"\/><\/svg>message-cp$/);
+    expect(h1).not.toMatch(/fill=|style=/);
+    expect(style).toContain(".mark .bubble { fill: var(--accent); }");
+    expect(style).toContain(".mark .lines { fill: var(--bg); }");
+    expect(html).not.toMatch(/<img|data:/);
+    expect(style).toContain(".mention.me { color: var(--me); background: var(--me-bg); box-shadow: inset 0 -2px 0 currentColor; }");
+    expect(style).toMatch(/^button \{[^}]*background: none;/m);
+    expect(style).toContain("#login button, #compose-send, #channel-create, #new-open, #delete-yes { background: var(--accent); border-color: var(--accent); color: var(--bg);");
+    expect(style).toContain(
+      "#login button:hover:enabled, #compose-send:hover:enabled, #channel-create:hover:enabled, #new-open:hover:enabled, #delete-yes:hover:enabled { background: color-mix(in srgb, var(--accent) 85%, var(--text)); }",
+    );
+    // The only shadows left are the inset accent bars on the open conversation and the highlighted mention option, and
+    // the underline on the reader's own mention.
+    expect(style.match(/box-shadow: [^;]*/g)).toEqual([
+      "box-shadow: inset 3px 0 0 var(--accent)",
+      "box-shadow: inset 0 -2px 0 currentColor",
+      "box-shadow: inset 3px 0 0 var(--accent)",
+    ]);
+    expect(style).toMatch(/#mentions \{[^}]*border: 1px solid var\(--border\);/);
+    expect(style).toContain("#sidebar { left: 0; transform: translateX(-100%); border-right: 1px solid var(--border); }");
+    expect(style).toContain("#agents { right: 0; transform: translateX(100%); border-left: 1px solid var(--border); }");
   });
 
   it("sets Instrument Sans for the page and JetBrains Mono for names, from its own origin, in sentence case", async () => {

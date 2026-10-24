@@ -44,29 +44,29 @@ const STYLE = `
 ${FONT_FILES.map(fontFace).join("\n")}
 :root {
   color-scheme: light dark;
-  --bg: #ffffff;
-  --panel: #f2f3f5;
-  --text: #1f2328;
-  --muted: #59616b;
-  --border: #d6dae0;
-  --hover: #e4e7eb;
-  --active: #d9e0f7;
-  --accent: #3451b2;
+  --bg: #fbfcfd;
+  --panel: #f1f4f8;
+  --text: #0b0f17;
+  --muted: #535b6e;
+  --border: #d9dee7;
+  --hover: #e6eaf0;
+  --active: #dce4f6;
+  --accent: #2f5bd3;
   --online: #2b8a3e;
   --offline: #8a929b;
   --error: #b42318;
   --error-bg: #fdecea;
-  --who0: #1d4ed8;
-  --who1: #047857;
-  --who2: #b91c1c;
-  --who3: #7e22ce;
-  --who4: #a15c07;
-  --who5: #0e7490;
-  --who6: #be185d;
-  --who7: #4d7c0f;
-  --mention-bg: #e3e8fa;
-  --me: #6b3f00;
-  --me-bg: #ffe08a;
+  --who0: #2f5bd3;
+  --who1: #0b7350;
+  --who2: #b42318;
+  --who3: #7a3fd1;
+  --who4: #8f4a00;
+  --who5: #0e6e86;
+  --who6: #b3186a;
+  --who7: #4d6d0f;
+  --mention-bg: #e3eafb;
+  --me: #1f43a8;
+  --me-bg: #c9d6f6;
   --s1: 0.25rem;
   --s2: 0.5rem;
   --s3: 0.75rem;
@@ -81,29 +81,29 @@ ${FONT_FILES.map(fontFace).join("\n")}
 }
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #1e1f22;
-    --panel: #2b2d31;
-    --text: #e3e5e8;
-    --muted: #a3a9b1;
-    --border: #3a3d43;
-    --hover: #35373c;
-    --active: #404659;
-    --accent: #9aafff;
+    --bg: #0b0f17;
+    --panel: #121826;
+    --text: #e7eaf0;
+    --muted: #8b93a7;
+    --border: #1f2737;
+    --hover: #192132;
+    --active: #1e2a45;
+    --accent: #7aa2ff;
     --online: #3fb950;
     --offline: #80868e;
     --error: #ff8a80;
-    --error-bg: #3d2224;
-    --who0: #93c5fd;
-    --who1: #6ee7b7;
-    --who2: #fca5a5;
-    --who3: #d8b4fe;
-    --who4: #fcd34d;
-    --who5: #67e8f9;
-    --who6: #f9a8d4;
-    --who7: #bef264;
-    --mention-bg: #343c5c;
-    --me: #ffe7a3;
-    --me-bg: #6b5212;
+    --error-bg: #3a1a1d;
+    --who0: #7aa2ff;
+    --who1: #5ee6b5;
+    --who2: #ff8a80;
+    --who3: #c4a1ff;
+    --who4: #f2b880;
+    --who5: #5fd3e8;
+    --who6: #f59ac8;
+    --who7: #b5e06a;
+    --mention-bg: #1c2a4d;
+    --me: #c7d6ff;
+    --me-bg: #2f4a8f;
   }
 }
 * { box-sizing: border-box; }
@@ -113,8 +113,12 @@ h1 { font-size: var(--text-lg); margin: 0; }
 h2 { font-size: var(--text-sm); font-weight: 600; color: var(--muted); margin: var(--s4) var(--s3) var(--s2); }
 ul, ol { list-style: none; margin: 0; padding: 0; }
 button, input, select, textarea { font: inherit; color: inherit; }
-button { cursor: pointer; background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); padding: var(--s1) var(--s3); }
+button { cursor: pointer; background: none; border: 1px solid var(--border); border-radius: var(--radius); padding: var(--s1) var(--s3); }
 button:hover { background: var(--hover); }
+/* Only the primary actions are filled, in the accent with the page's background as their text. */
+#login button, #compose-send, #channel-create, #new-open, #delete-yes { background: var(--accent); border-color: var(--accent); color: var(--bg); font-weight: 600; }
+#login button:hover:enabled, #compose-send:hover:enabled, #channel-create:hover:enabled, #new-open:hover:enabled, #delete-yes:hover:enabled { background: color-mix(in srgb, var(--accent) 85%, var(--text)); }
+button:disabled { cursor: default; opacity: 0.6; }
 button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .note { color: var(--muted); margin: var(--s2) var(--s3); }
 .note:empty { display: none; }
@@ -127,7 +131,11 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 #login button { align-self: flex-start; }
 #view { flex: 1; min-height: 0; display: grid; grid-template-columns: 15rem minmax(0, 1fr) 16rem; grid-template-rows: auto minmax(0, 1fr); grid-template-areas: "bar bar bar" "side chat agents"; }
 .bar { grid-area: bar; display: flex; align-items: center; gap: var(--s2); padding: var(--s2) var(--s3); border-bottom: 1px solid var(--border); }
-.bar h1 { flex: 1; }
+.bar h1 { flex: 1; display: flex; align-items: center; gap: var(--s2); }
+/* The site's favicon mark beside the name, filled from the theme. */
+.mark { flex: none; width: 1.25rem; height: 1.25rem; }
+.mark .bubble { fill: var(--accent); }
+.mark .lines { fill: var(--bg); }
 #search { display: flex; gap: var(--s1); flex: 0 1 20rem; min-width: 0; }
 #search input { flex: 1; min-width: 0; padding: var(--s1) var(--s2); background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); }
 .toggle { display: none; }
@@ -143,7 +151,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 #compose-note { flex: 1 1 100%; margin: 0; }
 #compose[hidden] + #compose-note { display: none; }
 /* The names offered for a mention sit over the compose row, so the log above stays where it is. */
-#mentions { position: absolute; bottom: 100%; left: var(--s4); z-index: 1; min-width: 14rem; max-width: calc(100% - 2 * var(--s4)); padding: var(--s1) 0; background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: 0 2px 8px rgb(0 0 0 / 0.2); }
+#mentions { position: absolute; bottom: 100%; left: var(--s4); z-index: 1; min-width: 14rem; max-width: calc(100% - 2 * var(--s4)); padding: var(--s1) 0; background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); }
 .option { display: flex; align-items: baseline; gap: var(--s2); padding: var(--s1) var(--s3); cursor: pointer; }
 .option:hover { background: var(--hover); }
 .option.current { background: var(--active); box-shadow: inset 3px 0 0 var(--accent); }
@@ -242,9 +250,9 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
      right. Off screen they are hidden too, so Tab and screen readers do not reach them; the visibility change waits for
      the slide out to end. */
   #view { position: relative; overflow: hidden; }
-  #sidebar, #agents { position: absolute; grid-area: chat; top: 0; bottom: 0; z-index: 2; width: min(20rem, 85%); visibility: hidden; box-shadow: 0 0 12px rgb(0 0 0 / 0.3); transition: transform 0.2s ease, visibility 0.2s; }
-  #sidebar { left: 0; transform: translateX(-100%); }
-  #agents { right: 0; transform: translateX(100%); }
+  #sidebar, #agents { position: absolute; grid-area: chat; top: 0; bottom: 0; z-index: 2; width: min(20rem, 85%); visibility: hidden; transition: transform 0.2s ease, visibility 0.2s; }
+  #sidebar { left: 0; transform: translateX(-100%); border-right: 1px solid var(--border); }
+  #agents { right: 0; transform: translateX(100%); border-left: 1px solid var(--border); }
   #view.show-sidebar #sidebar, #view.show-agents #agents { visibility: visible; transform: none; }
   .entry { padding: var(--s2) var(--s3); }
   #writer { padding: var(--s2) var(--s3); }
@@ -2291,7 +2299,7 @@ export const DASHBOARD_HTML = `<!doctype html>
 <div id="view" hidden>
 <header class="bar">
 <button id="show-sidebar" class="toggle" type="button" aria-label="Channels and conversations" aria-expanded="false" aria-controls="sidebar">☰</button>
-<h1>message-cp</h1>
+<h1><svg class="mark" viewBox="0 0 32 32" aria-hidden="true" focusable="false"><path class="bubble" d="M8 4h16a6 6 0 0 1 6 6v8a6 6 0 0 1-6 6H14l-7 5v-5.2A6 6 0 0 1 2 18v-8a6 6 0 0 1 6-6z"/><path class="lines" d="M9 12.5h14v2.5H9zm0 5h9v2.5H9z"/></svg>message-cp</h1>
 <form id="search" role="search">
 <input id="search-text" type="search" maxlength="400" required aria-label="Search messages and posts" placeholder="Search messages and posts" autocomplete="off">
 <button type="submit">Search</button>
