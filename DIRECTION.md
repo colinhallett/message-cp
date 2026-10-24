@@ -10,7 +10,19 @@ message-cp: an open-source messaging service for AI agents that anyone can run t
 
 People who run it themselves: alone, with one token, or for a small team, with an account and token per person. Each account's agents and messages are never visible to another account. message-cp does not sign people in: it accepts bearer tokens it issued, and anyone who wants another kind of sign-in puts their own proxy or gateway in front. The owner's own server is one such install, and the factory's checks run against it.
 
-## Current goal: agents hold a conversation without glue
+## Current goal: the dashboard looks like the site
+
+The dashboard is the first thing a person opens after setting up, and it looks like a different product from the site: a separate grey palette, the system font (which falls back to a serif where none is set, as in the screenshot on the landing page), all-caps section headings and a yellow mention highlight. After this goal it reads as the same product as the site. This is a restyle only: the layout (sidebar, conversation, agents column), every behaviour, keyboard use and accessibility stay as they are. Part 2 comes after part 1.
+
+1. **Restyle the dashboard.** It follows the site's design direction under "How the site looks and reads" below, applied to an app rather than a marketing page:
+   - *Type:* Instrument Sans for the interface; JetBrains Mono for agent names, message ids and code. The server serves the font files itself, from files that ship with the package, so the dashboard makes no request to another host and works with no internet access. One small type scale. Sentence case throughout: no all-caps headings or tags (today "CHANNELS", "DIRECT MESSAGES", "PERSON").
+   - *Colour:* the site's values, dark and light, each following the system setting as now: background #0B0F17, raised surfaces #121826, borders #1F2737, text #E7EAF0, muted #8B93A7, accent #7AA2FF, and the site's light values to match. Each agent keeps its own colour, as names do in a chat, retuned to sit on these backgrounds and starting from the site's agent colours (#7AA2FF and #5EE6B5). A mention, including one of the reader, is shown in the accent, not yellow. Final values pass WCAG AA contrast in both themes.
+   - *Chrome:* quiet. The header shows the site's favicon mark beside the name; buttons are plain until they are the primary action; no gradients, shadows or decoration the site does not have.
+   - *Every screen:* the token screen, empty states, search results, webhook deliveries, read receipts, errors, and the phone layout with its toggles.
+   - *Evidence:* the pull request includes before and after screenshots of the dashboard with a person and two agents in a channel and in a direct conversation, at phone and desktop width, in light and dark.
+2. **The landing page shows the new dashboard.** Retake `site/public/dashboard-dark.png` and `dashboard-light.png` from a local server with the restyled dashboard, the same made-up names and the same conversation, and keep the image's alt text true to what it shows.
+
+## Previous goal (done): agents hold a conversation without glue
 
 Today an agent that needs an answer from another sends a message, starts a background shell loop to be woken, reads its inbox, and works out by itself which message answers which. That glue is the main friction in using message-cp, and the factory's own agents hit it every day. After this goal, asking another agent something is one tool call, every MCP client can wait for mail without a shell, and replies say what they answer. Parts 1 and 3 touch different code and can be built at the same time; 2 and 4 build on 1, and 4 also on 3. Each part is a ticket of its own or more.
 
@@ -19,7 +31,7 @@ Today an agent that needs an answer from another sends a message, starts a backg
 3. **Waiting for mail without a shell.** A `wait_for_mail` tool holds the call open until the caller has unread mail, unread posts in a channel it joined, or an unread mention, or until a timeout the caller gives (capped, with a default), and then returns what the `wait` command prints, without reading or marking anything. A held call counts against a cap checked before the hold begins, like `/wait`, and gives its slot back when it ends. This is for clients that cannot run a background command (Cursor, Claude Desktop); the `wait` command stays for those that can.
 4. **Asking in one call.** An `ask` tool sends a direct message to one agent and waits, up to a timeout the caller gives (capped, with a default, and counted like part 3's hold), for that agent's reply to it (a message with `in_reply_to` set to the question's id). It returns the reply, or says plainly that none came in time and gives the question's id so the caller can look for the answer later. The reply is marked read when `ask` returns it, as `read_inbox` would. The tool descriptions tell a receiving agent to answer with `in_reply_to`, so that `ask` sees the answer.
 
-## Also current: ready for other people to use
+## Done: ready for other people to use
 
 Someone who has never seen message-cp should be able to understand what it is, run it on one machine in five minutes, and run a team server in fifteen. Each part is a ticket of its own or more. Parts 1 to 3 touch different files and can be built at the same time; part 4 comes after them, because the site documents them:
 
@@ -45,7 +57,7 @@ Someone who has never seen message-cp should be able to understand what it is, r
    - The landing page shows a screenshot of the dashboard with a person and two agents in one conversation, taken from a local server with made-up names, since people taking part is what sets message-cp apart.
    - Getting started has one block with a tab per client (Claude Code, Cursor, Claude Desktop, plain JSON), each holding exactly what to paste, as `message-cp connect` prints it.
 
-Parts 1 to 4 and the plain front page are done.
+All parts are done.
 
 ## Previous goal (done): seeing agents work, and keeping their names
 
@@ -83,4 +95,4 @@ Account separation is the one security boundary that matters most here: a change
 - Sign-in of any kind built into the server (OAuth, GitHub, passwords). Tokens only.
 - A web page for managing an account. Accounts, tokens, people, agents and webhooks are managed with the command on the server; the dashboard writes nothing except what a person posts or sends, and the direct conversations a person deletes.
 - Publishing to npm or to a container registry, and numbered releases. They come when the owner decides to launch.
-- New kinds of content beyond messages (files, memories, tasks). Channel posts are messages; pinned or editable posts, threads of channel posts, reactions and per-channel permissions are not now either. A direct message saying which message it answers (the current goal) is not a thread view: nothing groups or nests messages.
+- New kinds of content beyond messages (files, memories, tasks). Channel posts are messages; pinned or editable posts, threads of channel posts, reactions and per-channel permissions are not now either. A direct message saying which message it answers (done) is not a thread view: nothing groups or nests messages.
