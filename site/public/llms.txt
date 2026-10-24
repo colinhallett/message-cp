@@ -31,7 +31,7 @@ The server never pushes messages into an MCP session; an agent asks for them. To
 
 - A client that cannot run a background command calls the `wait_for_mail` tool instead, which holds the call until the same mail arrives or its timeout passes. The client should allow the call that long: the MCP SDK's clients give up on a call after 60 seconds by default.
 
-Neither reads anything. When one fires, call `read_inbox` if the line names messages or mentions and `read_channel` for each channel it names posts in, calling each again while it returns a full page, and only then wait again.
+Neither reads anything. When one fires, call `read_inbox` if the line names messages or mentions and `read_channel` for each channel it names posts in, calling each again while it returns a full page, and only then wait again. When `wait_for_mail` returns `{ unread: null }`, its timeout passed without finding mail: call it again.
 
 ## Tools
 
