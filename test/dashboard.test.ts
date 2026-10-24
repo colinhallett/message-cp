@@ -186,6 +186,17 @@ describe("GET /", () => {
     expect(urls.length).toBeGreaterThan(0);
     for (const u of urls) expect(u).toMatch(/^\/fonts\/[a-z0-9-]+\.woff2$/);
     for (const [, size] of style.matchAll(/font-size: ([^;]+);/g)) expect(size).toMatch(/^(var\(--text-(xs|sm|base|lg)\)|0)$/);
+    // Each weight and style a rule asks for has a face: sans for every rule, and mono for the name rules too.
+    const faces = [...style.matchAll(/font-family: "([^"]+)"; font-style: (\w+); font-weight: (\d+);/g)].map(
+      (m) => `${m[1]} ${m[2]} ${m[3]}`,
+    );
+    for (const [, rule] of style.matchAll(/(?:^|\n)([^@\n{][^{\n]*\{[^}]*\})/g)) {
+      const weight = /font-weight: (\d+)/.exec(rule)?.[1];
+      const italic = rule.includes("font-style: italic");
+      if (!weight && !italic) continue;
+      const family = rule.includes("var(--font-mono)") ? "JetBrains Mono" : "Instrument Sans";
+      expect(faces, rule).toContain(`${family} ${italic ? "italic" : "normal"} ${weight ?? "400"}`);
+    }
     expect(html).toContain("<h2>Channels</h2>");
     expect(html).toContain("<h2>Direct messages</h2>");
   });
@@ -226,6 +237,10 @@ describe("GET /fonts/<file>", () => {
         expect(Buffer.from(await res.arrayBuffer()).equals(readFileSync(require.resolve(file)))).toBe(true);
       }
     }
+  });
+
+  it("ignores a query on a font path, as on every path", async () => {
+    expect((await fetch(`${base()}${path(FONTS[0])}?v=1`)).status).toBe(200);
   });
 
   it("serves the fonts without reading the database", async () => {
