@@ -1,4 +1,6 @@
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { MAX_BODY_LENGTH } from "./messages.js";
 
 // The page served at GET / by `message-cp serve`. It holds no data and no token: it asks for a token, keeps it in
@@ -15,7 +17,31 @@ import { MAX_BODY_LENGTH } from "./messages.js";
 // read-only or agent token it only reads. It puts agent- and person-supplied text on the page with textContent, never
 // as HTML.
 
+// The faces the page's CSS uses, each served at /fonts/<file> by `message-cp serve` from the package that ships it, so the
+// page loads no font from another host. Read once here, never on a request.
+const FONT_FILES = [
+  "instrument-sans-latin-400-normal.woff2",
+  "instrument-sans-latin-400-italic.woff2",
+  "instrument-sans-latin-600-normal.woff2",
+  "instrument-sans-latin-700-normal.woff2",
+  "jetbrains-mono-latin-600-normal.woff2",
+];
+const resolve = createRequire(import.meta.url).resolve;
+const packageOf = (file: string) => (file.startsWith("jetbrains-mono-") ? "@fontsource/jetbrains-mono" : "@fontsource/instrument-sans");
+
+/** The font files GET /fonts/<file> answers with, by exact path; no other path under /fonts/ is served. */
+export const DASHBOARD_FONTS: ReadonlyMap<string, Buffer> = new Map(
+  FONT_FILES.map((file) => [`/fonts/${file}`, readFileSync(resolve(`${packageOf(file)}/files/${file}`))]),
+);
+
+const fontFace = (file: string) => {
+  const [, family, weight, style] = /^(.+)-latin-(\d+)-(normal|italic)\.woff2$/.exec(file)!;
+  const name = family === "jetbrains-mono" ? "JetBrains Mono" : "Instrument Sans";
+  return `@font-face { font-family: "${name}"; font-style: ${style}; font-weight: ${weight}; font-display: swap; src: url("/fonts/${file}") format("woff2"); }`;
+};
+
 const STYLE = `
+${FONT_FILES.map(fontFace).join("\n")}
 :root {
   color-scheme: light dark;
   --bg: #ffffff;
@@ -46,6 +72,12 @@ const STYLE = `
   --s3: 0.75rem;
   --s4: 1rem;
   --radius: 6px;
+  --font-sans: "Instrument Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  --text-xs: 0.7rem;
+  --text-sm: 0.8rem;
+  --text-base: 0.875rem;
+  --text-lg: 1rem;
 }
 @media (prefers-color-scheme: dark) {
   :root {
@@ -76,9 +108,9 @@ const STYLE = `
 }
 * { box-sizing: border-box; }
 html, body { height: 100%; }
-body { margin: 0; display: flex; flex-direction: column; font: 14px/1.45 system-ui, sans-serif; background: var(--bg); color: var(--text); }
-h1 { font-size: 1.1rem; margin: 0; }
-h2 { font-size: 0.75rem; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase; color: var(--muted); margin: var(--s4) var(--s3) var(--s2); }
+body { margin: 0; display: flex; flex-direction: column; font: var(--text-base)/1.45 var(--font-sans); background: var(--bg); color: var(--text); }
+h1 { font-size: var(--text-lg); margin: 0; }
+h2 { font-size: var(--text-sm); font-weight: 600; color: var(--muted); margin: var(--s4) var(--s3) var(--s2); }
 ul, ol { list-style: none; margin: 0; padding: 0; }
 button, input, select, textarea { font: inherit; color: inherit; }
 button { cursor: pointer; background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); padding: var(--s1) var(--s3); }
@@ -105,7 +137,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 #as { padding: var(--s1); background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); }
 #as-note { margin: 0; }
 #compose { flex: 1 1 20rem; min-width: 0; display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--s2); }
-#compose label { flex: 1 1 100%; font-size: 0.8rem; color: var(--muted); }
+#compose label { flex: 1 1 100%; font-size: var(--text-sm); color: var(--muted); }
 #compose textarea { flex: 1; min-width: 0; resize: none; overflow-y: auto; padding: var(--s2); background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); }
 /* The note sits under the row, outside the form, so the picker stays level with the box when it shows. */
 #compose-note { flex: 1 1 100%; margin: 0; }
@@ -115,12 +147,12 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .option { display: flex; align-items: baseline; gap: var(--s2); padding: var(--s1) var(--s3); cursor: pointer; }
 .option:hover { background: var(--hover); }
 .option.current { background: var(--active); box-shadow: inset 3px 0 0 var(--accent); }
-.option .name { font-weight: 600; overflow-wrap: anywhere; }
+.option .name { font-family: var(--font-mono); font-weight: 600; overflow-wrap: anywhere; }
 /* The "New channel" and "New message" buttons sit beside the "Channels" and "Direct messages" headings, and their forms
    under them. */
 .section-head { display: flex; align-items: center; gap: var(--s2); margin: var(--s4) var(--s3) var(--s2); }
 .section-head h2 { flex: 1; margin: 0; }
-#new-message, #new-channel { font-size: 0.8rem; padding: 0 var(--s2); }
+#new-message, #new-channel { font-size: var(--text-sm); padding: 0 var(--s2); }
 #new-form, #channel-form { display: flex; flex-direction: column; gap: var(--s1); margin: 0 var(--s3) var(--s2); padding: var(--s2); background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); }
 #new-form select, #channel-form select, #channel-form input, #channel-form textarea { padding: var(--s1); background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); }
 #channel-form textarea { resize: vertical; }
@@ -136,7 +168,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 /* The header bar of the open conversation and of the search results sits outside the rows, so it stays put while they
    scroll. */
 .log-head { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2); padding: var(--s2) var(--s4); background: var(--panel); border-bottom: 1px solid var(--border); }
-.log-head h2 { flex: 1; margin: 0; font-size: 1rem; letter-spacing: normal; text-transform: none; color: var(--text); overflow-wrap: anywhere; }
+.log-head h2 { flex: 1; margin: 0; font-size: var(--text-lg); color: var(--text); overflow-wrap: anywhere; }
 .log-head button { flex: none; }
 /* Deleting a direct conversation asks first, and says why it could not, on a line of its own under the name. */
 #delete-confirm, #delete-note { flex: 1 1 100%; order: 1; margin: 0; }
@@ -144,7 +176,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 #delete-text { flex: 1 1 12rem; }
 /* The name and, for a channel, its members stack; a long members line is cut with an ellipsis, the full list in its title. */
 .log-name { flex: 1; min-width: 0; }
-#log-members, #log-status { margin: 0; font-size: 0.8rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#log-members, #log-status { margin: 0; font-size: var(--text-sm); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .channel::before, .item .channel-name::before { content: "# "; color: var(--muted); }
 #post-rows, #result-rows { flex: 1; overflow-y: auto; padding: var(--s2) 0 var(--s4); }
 /* A short log sits at the bottom, above the compose box, by an auto margin: justifying the content to the end would
@@ -156,9 +188,9 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .entry.result { grid-template-columns: auto auto auto minmax(0, 1fr); grid-template-areas: "from where tag time" "body body body body"; }
 .where { grid-area: where; color: var(--muted); overflow-wrap: anywhere; }
 .entry:hover { background: var(--panel); }
-.from { grid-area: from; font-weight: 600; overflow-wrap: anywhere; }
-.time { grid-area: time; font-size: 0.8rem; color: var(--muted); }
-.tag { grid-area: tag; font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--accent); border: 1px solid currentColor; border-radius: var(--radius); padding: 0 var(--s1); }
+.from { grid-area: from; font-family: var(--font-mono); font-weight: 600; overflow-wrap: anywhere; }
+.time { grid-area: time; font-size: var(--text-sm); color: var(--muted); }
+.tag { grid-area: tag; font-size: var(--text-xs); color: var(--accent); border: 1px solid currentColor; border-radius: var(--radius); padding: 0 var(--s1); }
 .body { grid-area: body; white-space: pre-wrap; overflow-wrap: anywhere; }
 .mention { color: var(--accent); background: var(--mention-bg); border-radius: 3px; padding: 0 2px; font-weight: 600; }
 .body a { color: var(--accent); }
@@ -167,13 +199,13 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .entry.chat > :not(.avatar) { margin-left: var(--s2); }
 .entry.chat > .from { color: var(--who); }
 .entry.chat > .kind { grid-area: kind; }
-.avatar { grid-area: avatar; align-self: start; display: flex; align-items: center; justify-content: center; width: 2rem; height: 2rem; margin-top: 0.15rem; border-radius: 0.4rem; background: var(--who); color: var(--bg); font-size: 0.75rem; font-weight: 700; }
+.avatar { grid-area: avatar; align-self: start; display: flex; align-items: center; justify-content: center; width: 2rem; height: 2rem; margin-top: 0.15rem; border-radius: 0.4rem; background: var(--who); color: var(--bg); font-size: var(--text-sm); font-weight: 700; }
 .avatar.person { border-radius: 50%; }
 .entry.cont { grid-template-columns: 2.5rem minmax(0, 1fr) auto; grid-template-areas: "time body receipt"; padding-top: 1px; }
 .entry.cont > .avatar, .entry.cont > .from, .entry.cont > .kind, .entry.cont > .tag { display: none; }
-.entry.chat.cont > .time { margin-left: 0; font-size: 0.65rem; line-height: 1.2; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: center; align-self: center; visibility: hidden; }
+.entry.chat.cont > .time { margin-left: 0; font-size: var(--text-xs); line-height: 1.2; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: center; align-self: center; visibility: hidden; }
 .entry.cont:hover > .time { visibility: visible; }
-.receipt { grid-area: receipt; font-size: 0.75rem; color: var(--muted); white-space: nowrap; }
+.receipt { grid-area: receipt; font-size: var(--text-sm); color: var(--muted); white-space: nowrap; }
 .receipt.mentions { white-space: normal; overflow-wrap: anywhere; }
 .c0 { --who: var(--who0); }
 .c1 { --who: var(--who1); }
@@ -187,18 +219,18 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .item { display: flex; align-items: center; gap: var(--s2); text-align: left; background: none; border: 0; border-radius: var(--radius); padding: var(--s1) var(--s2); margin: 1px var(--s2); width: calc(100% - 2 * var(--s2)); }
 .item.current { background: var(--active); font-weight: 600; box-shadow: inset 3px 0 0 var(--accent); }
 .item .label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.count { font-size: 0.75rem; color: var(--muted); }
+.count { font-size: var(--text-sm); color: var(--muted); }
 /* A sidebar entry's unread badge: a filled pill in the accent colour, with the page's background as its text. */
-.badge { min-width: 1.25rem; padding: 0 var(--s1); border-radius: 999px; background: var(--accent); color: var(--bg); font-size: 0.7rem; font-weight: 600; line-height: 1.25rem; text-align: center; }
+.badge { min-width: 1.25rem; padding: 0 var(--s1); border-radius: 999px; background: var(--accent); color: var(--bg); font-size: var(--text-xs); font-weight: 600; line-height: 1.25rem; text-align: center; }
 /* An agents panel row: one line of mark, name and unread badge, a button that shows and hides the details under it. */
 .agent > button { display: flex; align-items: center; gap: var(--s2); text-align: left; background: none; border: 0; border-radius: var(--radius); padding: var(--s1) var(--s2); margin: 1px var(--s2); width: calc(100% - 2 * var(--s2)); }
 .agent > button:hover { background: var(--hover); }
-.kind { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--accent); }
-.agent .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+.kind { font-size: var(--text-xs); color: var(--accent); }
+.agent .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--font-mono); font-weight: 600; }
 /* An agent's status line after its name: muted, cut short like the name, and given up first when the row is narrow. */
-.agent > button .status { flex: 0 1 auto; min-width: 0; max-width: 50%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 0.8rem; color: var(--muted); }
+.agent > button .status { flex: 0 1 auto; min-width: 0; max-width: 50%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--text-sm); color: var(--muted); }
 .agent .details .status { font-style: italic; }
-.agent .details { display: flex; flex-direction: column; padding: 0 var(--s3) var(--s2) var(--s4); font-size: 0.8rem; color: var(--muted); overflow-wrap: anywhere; }
+.agent .details { display: flex; flex-direction: column; padding: 0 var(--s3) var(--s2) var(--s4); font-size: var(--text-sm); color: var(--muted); overflow-wrap: anywhere; }
 .dot { flex: none; width: 0.6rem; height: 0.6rem; border-radius: 50%; background: var(--offline); overflow: hidden; color: transparent; font-size: 0; }
 .dot.online { background: var(--online); }
 @media (max-width: 720px) {
@@ -2364,7 +2396,7 @@ export const DASHBOARD_HTML = `<!doctype html>
 </html>
 `;
 
-/** Headers for GET /: the inline style and script run by hash, every request stays on this origin, and nothing frames it. */
+/** Headers for GET /: the inline style and script run by hash, every request and font stays on this origin, and nothing frames it. */
 export const DASHBOARD_HEADERS: Record<string, string> = {
   "Content-Type": "text/html; charset=utf-8",
   "Content-Security-Policy": [
@@ -2372,6 +2404,7 @@ export const DASHBOARD_HEADERS: Record<string, string> = {
     `script-src ${hash(SCRIPT)}`,
     `style-src ${hash(STYLE)}`,
     "connect-src 'self'",
+    "font-src 'self'",
     "base-uri 'none'",
     "form-action 'none'",
     "frame-ancestors 'none'",
