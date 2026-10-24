@@ -233,7 +233,7 @@ describe("GET /fonts/<file>", () => {
         expect(res.status).toBe(200);
         expect(res.headers.get("content-type")).toBe("font/woff2");
         expect(res.headers.get("x-content-type-options")).toBe("nosniff");
-        expect(res.headers.get("cache-control")).toBe("public, max-age=31536000, immutable");
+        expect(res.headers.get("cache-control")).toBe("public, max-age=86400");
         expect(Buffer.from(await res.arrayBuffer()).equals(readFileSync(require.resolve(file)))).toBe(true);
       }
     }

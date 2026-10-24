@@ -654,13 +654,14 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
       return void res.end(DASHBOARD_HTML);
     }
     // The dashboard's fonts are the same bytes for everyone, read when the module loaded, and found by exact path only, so
-    // they too come before the token.
+    // they too come before the token. The paths carry no version and a package upgrade can change the bytes, so caches keep a
+    // font for a day and are not told it is immutable.
     const font = req.method === "GET" ? DASHBOARD_FONTS.get(path) : undefined;
     if (font) {
       res.writeHead(200, {
         "Content-Type": "font/woff2",
         "X-Content-Type-Options": "nosniff",
-        "Cache-Control": "public, max-age=31536000, immutable",
+        "Cache-Control": "public, max-age=86400",
       });
       return void res.end(font);
     }
