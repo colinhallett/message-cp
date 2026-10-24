@@ -8,7 +8,7 @@
   },
   "actions": {
     "implement": {
-      "skill": "colin/ticket-to-pr-implement",
+      "skill": "file:tessl-factory#ticket-to-pr-implement",
       "environment": "factory-message-cp-implement",
       "agent": "claude",
       "model": "claude-opus-5-5",
