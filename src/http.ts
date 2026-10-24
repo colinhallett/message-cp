@@ -13,7 +13,7 @@ import {
   readAccountChannel,
   type AccountChannelPage,
 } from "./channels.js";
-import { DASHBOARD_HEADERS, DASHBOARD_HTML } from "./dashboard.js";
+import { DASHBOARD_FONTS, DASHBOARD_HEADERS, DASHBOARD_HTML } from "./dashboard.js";
 import type { AccountId, Db } from "./db.js";
 import {
   DEFAULT_INBOX_LIMIT,
@@ -220,7 +220,7 @@ async function readBody(req: IncomingMessage, maxBytes = MAX_BODY_BYTES): Promis
 
 /**
  * Serves the MCP tools over streamable HTTP at /mcp, one `Session` per MCP session. Every request needs the token,
- * except GET / for the dashboard page.
+ * except GET / for the dashboard page, GET on each of the dashboard's font paths (`DASHBOARD_FONTS`) and /health.
  */
 export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServer> {
   if (!options.token) throw new Error("an HTTP token is required");
@@ -652,6 +652,17 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
     if (req.method === "GET" && path === "/") {
       res.writeHead(200, DASHBOARD_HEADERS);
       return void res.end(DASHBOARD_HTML);
+    }
+    // The dashboard's fonts are the same bytes for everyone, read when the module loaded, and found by exact path only, so
+    // they too come before the token.
+    const font = req.method === "GET" ? DASHBOARD_FONTS.get(path) : undefined;
+    if (font) {
+      res.writeHead(200, {
+        "Content-Type": "font/woff2",
+        "X-Content-Type-Options": "nosniff",
+        "Cache-Control": "public, max-age=31536000, immutable",
+      });
+      return void res.end(font);
     }
     // The health check is the same constant for everyone, reads nothing and touches no account, so it too comes before the token.
     if (path === "/health") {

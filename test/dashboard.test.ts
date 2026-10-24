@@ -2,6 +2,8 @@ import { createHash } from "node:crypto";
 import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { request } from "node:http";
+import { createRequire } from "node:module";
 import { runInNewContext } from "node:vm";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { addAccount, addToken, listAccounts, revokeToken } from "../src/accounts.js";
@@ -142,6 +144,112 @@ describe("GET /", () => {
     const style = /<style>([\s\S]*?)<\/style>/.exec(html)![1];
     expect(csp).toContain(`script-src ${sha(script)}`);
     expect(csp).toContain(`style-src ${sha(style)}`);
+  });
+
+  it("allows fonts from its own origin and changes nothing else in the policy", async () => {
+    const csp = (await fetch(`${base()}/`)).headers.get("content-security-policy") ?? "";
+    const directives = csp.split("; ");
+    expect(directives.map((d) => d.split(" ")[0])).toEqual([
+      "default-src",
+      "script-src",
+      "style-src",
+      "connect-src",
+      "font-src",
+      "base-uri",
+      "form-action",
+      "frame-ancestors",
+    ]);
+    expect(directives).toContain("font-src 'self'");
+    for (const d of ["default-src 'none'", "connect-src 'self'", "base-uri 'none'", "form-action 'none'", "frame-ancestors 'none'"]) {
+      expect(directives).toContain(d);
+    }
+    expect(directives.find((d) => d.startsWith("script-src"))).toMatch(/^script-src 'sha256-[A-Za-z0-9+/=]+'$/);
+    expect(directives.find((d) => d.startsWith("style-src"))).toMatch(/^style-src 'sha256-[A-Za-z0-9+/=]+'$/);
+  });
+
+  it("sets Instrument Sans for the page and JetBrains Mono for names, from its own origin, in sentence case", async () => {
+    const html = await (await fetch(`${base()}/`)).text();
+    const style = /<style>([\s\S]*?)<\/style>/.exec(html)![1];
+    expect(style).toContain('--font-sans: "Instrument Sans", ui-sans-serif, system-ui, sans-serif;');
+    expect(style).toContain('--font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;');
+    expect(style).toMatch(/body \{[^}]*font: var\(--text-base\)\/1\.45 var\(--font-sans\);/);
+    for (const rule of [".from", ".agent .name", ".option .name"]) {
+      expect(style).toMatch(new RegExp(`(^|\\n)${rule.replace(/\./g, "\\.")} \\{[^}]*font-family: var\\(--font-mono\\);`));
+    }
+    // The only serif named is the sans-serif fallback.
+    expect(style.replaceAll("sans-serif", "")).not.toContain("serif");
+    expect(style).not.toContain("uppercase");
+    expect(style).not.toContain("letter-spacing");
+    expect(style).not.toContain("@import");
+    // Every font is fetched from a path on this origin, and every font-size but the hidden dot's 0 comes from the scale.
+    const urls = [...style.matchAll(/url\("([^"]*)"\)/g)].map((m) => m[1]);
+    expect(urls.length).toBeGreaterThan(0);
+    for (const u of urls) expect(u).toMatch(/^\/fonts\/[a-z0-9-]+\.woff2$/);
+    for (const [, size] of style.matchAll(/font-size: ([^;]+);/g)) expect(size).toMatch(/^(var\(--text-(xs|sm|base|lg)\)|0)$/);
+    expect(html).toContain("<h2>Channels</h2>");
+    expect(html).toContain("<h2>Direct messages</h2>");
+  });
+});
+
+describe("GET /fonts/<file>", () => {
+  const FONTS = [
+    "@fontsource/instrument-sans/files/instrument-sans-latin-400-normal.woff2",
+    "@fontsource/instrument-sans/files/instrument-sans-latin-400-italic.woff2",
+    "@fontsource/instrument-sans/files/instrument-sans-latin-600-normal.woff2",
+    "@fontsource/instrument-sans/files/instrument-sans-latin-700-normal.woff2",
+    "@fontsource/jetbrains-mono/files/jetbrains-mono-latin-600-normal.woff2",
+  ];
+  const path = (file: string) => `/fonts/${file.split("/").pop()}`;
+  // A raw request, so the path reaches the server as written, `..` included.
+  const raw = (method: string, target: string) =>
+    new Promise<number>((done, fail) => {
+      const req = request({ host: "127.0.0.1", port: http.port, method, path: target }, (res) => {
+        res.resume();
+        done(res.statusCode!);
+      });
+      req.on("error", fail);
+      req.end();
+    });
+
+  it("serves each font the page's style names, the package's bytes, with or without a token", async () => {
+    const html = await (await fetch(`${base()}/`)).text();
+    const named = [...html.matchAll(/url\("(\/fonts\/[^"]*)"\)/g)].map((m) => m[1]);
+    expect(named.sort()).toEqual(FONTS.map(path).sort());
+    const require = createRequire(import.meta.url);
+    for (const file of FONTS) {
+      for (const headers of [{}, auth("wrong"), auth(viewer)]) {
+        const res = await fetch(`${base()}${path(file)}`, { headers });
+        expect(res.status).toBe(200);
+        expect(res.headers.get("content-type")).toBe("font/woff2");
+        expect(res.headers.get("x-content-type-options")).toBe("nosniff");
+        expect(res.headers.get("cache-control")).toBe("public, max-age=31536000, immutable");
+        expect(Buffer.from(await res.arrayBuffer()).equals(readFileSync(require.resolve(file)))).toBe(true);
+      }
+    }
+  });
+
+  it("serves the fonts without reading the database", async () => {
+    db.close();
+    expect((await fetch(`${base()}${path(FONTS[0])}`)).status).toBe(200);
+    db = openDb(join(mkdtempSync(join(tmpdir(), "message-cp-dashboard-")), "db.sqlite"));
+  });
+
+  it("puts every other path, a font another way or another method behind the token", async () => {
+    for (const target of [
+      "/fonts/nope.woff2",
+      "/fonts/",
+      "/fonts",
+      "/fonts/../package.json",
+      "/fonts/%2e%2e/package.json",
+      "/fonts/instrument-sans-latin-400-normal.woff2/",
+      "/fonts/INSTRUMENT-SANS-LATIN-400-NORMAL.WOFF2",
+      "/fonts/instrument-sans-latin-500-normal.woff2",
+      "/fonts/jetbrains-mono-latin-400-normal.woff2",
+      "//fonts/instrument-sans-latin-400-normal.woff2",
+    ]) {
+      expect(await raw("GET", target), target).toBe(401);
+    }
+    for (const method of ["POST", "DELETE", "HEAD"]) expect(await raw(method, path(FONTS[0])), method).toBe(401);
   });
 });
 
