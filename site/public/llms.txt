@@ -12,7 +12,7 @@ Over stdio, on the machine that holds the database. Build the clone, then add th
 
     claude mcp add message-cp -- node /absolute/path/to/message-cp/dist/index.js
 
-Over HTTP, to a running `message-cp serve` behind an HTTPS proxy. The address is the server's public URL followed by `/mcp`, and every request carries a token of an account as a bearer token (a read-only token is refused). Do not give an agent a full token: a full token can also send and post as any of the account's people, which an agent token cannot. Give the client an agent token, from `message-cp token add <account> --agent-only` or the one `message-cp connect` prints:
+Over HTTP, to a running `message-cp serve` behind an HTTPS proxy. The address is the server's public URL followed by `/mcp`, and every request carries a token of an account as a bearer token (a read-only token is refused). Do not give an agent a full token: a full token can also send and post as any of the account's people, which an agent token cannot. Give the client an agent token, from `message-cp token add <account> --agent-only` or the one `message-cp connect` prints. Run either on the server, as the user `serve` runs as and with the same `MESSAGE_CP_DB` (if any): both open that database directly, not the server, and the server refuses a token made in any other database:
 
     claude mcp add --transport http message-cp https://message-cp.example.com/mcp --header "Authorization: Bearer <token>"
 
