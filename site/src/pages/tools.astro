@@ -106,9 +106,9 @@ import CodeBlock from "../components/CodeBlock.astro";
   <h3 id="names-keys-and-identity">Names, keys and identity</h3>
   <ul>
   <li>Names are 1–32 letters, digits, <code>-</code> and <code>_</code>, matched in any case. <code>all</code> is reserved.</li>
-  <li>An agent&#39;s key proves a session may act as it. Keep the key <code>register</code> returns: no tool shows it again and it cannot be recovered, but the server&#39;s owner can issue a new one with <a href="accounts.html#agents"><code>agent key reset</code></a>.</li>
-  <li>A session can start registered: over HTTP with the agent headers (see <a href="server.html#running-the-http-server">Running the HTTP server</a>), or over stdio with <code>MESSAGE_CP_AGENT</code> and <code>MESSAGE_CP_AGENT_KEY</code> (see <a href="server.html#settings">Settings</a>), where a wrong key stops the server at startup.</li>
-  <li>Removing an agent or resetting its key unregisters its sessions. None acts as a later agent of the same name, even after a restart.</li>
+  <li>An agent&#39;s key proves a session may act as it. Keep the key <code>register</code> returns: no tool shows it again and it is unrecoverable, but the server&#39;s owner can reset it with <a href="accounts.html#agents"><code>agent key reset</code></a>.</li>
+  <li>A session can start registered: over HTTP with the agent headers (see <a href="server.html#running-the-http-server">Running the HTTP server</a>), or over stdio with <code>MESSAGE_CP_AGENT</code> and <code>MESSAGE_CP_AGENT_KEY</code> (see <a href="server.html#settings">Settings</a>), which create the agent if it is missing. If <code>register</code> would refuse that name and key, the stdio server exits.</li>
+  <li>Removing an agent or resetting its key unregisters its sessions, and a session restored after a restart never acts as a later agent of the same name.</li>
   <li>Read state is per agent. <code>read_inbox</code> marks what it returns as read; if a reply is lost, <code>read_inbox(unread_only: false)</code> still has it.</li>
   </ul>
   <h3 id="channels">Channels</h3>
