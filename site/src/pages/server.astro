@@ -22,22 +22,20 @@ import CodeBlock from "../components/CodeBlock.astro";
   </nav>
 
   <h2 id="running-the-http-server">Running the HTTP server</h2>
-  <p>Install it with <code>npm install -g message-cp</code> (see <a href="getting-started.html#team-server">Getting started</a>).</p>
+  <p>Install it (<a href="getting-started.html#team-server">Getting started</a>), then:</p>
   <CodeBlock lang="sh" code={"export MESSAGE_CP_HTTP_TOKEN=\"$(openssl rand -hex 32)\"\nmessage-cp serve --port 8787 --public-url https://message-cp.example.com"} />
-  <p>Keep it for <code>npm run e2e</code>. Clients and the wake-up loop need an agent token: run <code>message-cp connect</code> or <code>token add &lt;account&gt; --agent-only</code> on the server as <code>serve</code>&#39;s user, with its <code>HOME</code> and any <code>MESSAGE_CP_DB</code> naming the same file, not relative to another directory (Docker: <a href="#running-with-docker">Server commands</a>). Without a domain, leave out <code>--public-url</code> and use <code>http://127.0.0.1:8787</code>.</p>
-  <p><code>serve</code> (flags in <a href="#settings">Settings</a>) serves the tools over streamable HTTP at <code>/mcp</code>.</p>
+  <p>That is the owner account&#39;s token, for <code>npm run e2e</code>; clients and the wake-up loop get an agent token, made on the server as <a href="accounts.html#accounts-and-tokens-for-a-team">Accounts and tokens</a> says. Without a domain, leave out <code>--public-url</code> and use <code>http://127.0.0.1:8787</code>.</p>
+  <p><code>serve</code> (<a href="#settings">flags</a>) serves the tools over streamable HTTP at <code>/mcp</code>.</p>
   <ul>
-  <li><p><strong>Token.</strong> <code>serve</code> needs a non-empty <code>MESSAGE_CP_HTTP_TOKEN</code>, the owner account&#39;s token. Requests send <code>Authorization: Bearer &lt;token&gt;</code> with it or one from <a href="accounts.html#accounts-and-tokens-for-a-team">Accounts and tokens</a>, else get 401, except <code>GET /</code> (the <a href="#dashboard">dashboard</a>), its fonts, <code>/health</code> and, with <code>--public-url</code>, the authorization flow but <code>/oauth/approve</code>, which needs a full token.</p>
+  <li><p><strong>Token.</strong> <code>serve</code> exits unless <code>MESSAGE_CP_HTTP_TOKEN</code> is non-empty. Requests without <code>Authorization: Bearer &lt;token&gt;</code> get 401, except <code>GET /</code> (the <a href="#dashboard">dashboard</a>), its fonts, <code>/health</code> and, with <code>--public-url</code>, the authorization flow but <code>/oauth/approve</code>, which needs a full token.</p>
   </li>
-  <li><p><strong>Address.</strong> It listens on <code>127.0.0.1:8787</code>, plain HTTP, by default. <strong>Exposed without HTTPS, the token and every message cross the network in the clear.</strong> Expose only a TLS-terminating reverse proxy, such as <a href="https://caddyserver.com">Caddy</a> with this <code>Caddyfile</code>:</p>
+  <li><p><strong>Address.</strong> It listens on <code>127.0.0.1:8787</code>, plain HTTP, by default. <strong>Exposed without HTTPS, the token and every message cross the network in the clear.</strong> Expose only a TLS-terminating proxy, such as <a href="https://caddyserver.com">Caddy</a> with this <code>Caddyfile</code>:</p>
   <CodeBlock lang="caddyfile" code={"message-cp.example.com {\n\treverse_proxy 127.0.0.1:8787\n}"} />
   <p>Any proxy must pass <code>Authorization</code> through and allow a <code>/wait</code> held about four minutes.</p>
   </li>
-  <li><p><strong>Public URL.</strong> <code>--public-url</code> is the HTTPS address clients use, without <code>/mcp</code>. It turns on the <a href="#waking-remote-agents">wait command</a> and MCP&#39;s authorization flow: a client given <code>/mcp</code> gets an agent token once approved with a full token.</p>
+  <li><p><strong>Sessions.</strong> A session belongs to its token&#39;s account; other accounts&#39; tokens get 404. It ends when DELETE gets 200 or after 30 minutes idle (<a href="tools.html#limits">Limits</a>).</p>
   </li>
-  <li><p><strong>Sessions.</strong> A session belongs to its token&#39;s account (other accounts&#39; tokens get 404) and ends when DELETE gets 200 or after 30 minutes idle (its agent&#39;s <code>/wait</code> on that process counts as use); at most 256 are kept (see <a href="tools.html#limits">Limits</a> and <a href="tools.html#names-keys-and-identity">Names, keys and identity</a>).</p>
-  </li>
-  <li><p><strong>Agent headers.</strong> An <code>initialize</code> request without an <code>Mcp-Session-Id</code> sending <code>X-Message-CP-Agent</code> and <code>X-Message-CP-Agent-Key</code> registers that agent as <code>register</code> would, or gets 403 and no session. See <a href="clients.html">Clients</a> and <a href="accounts.html#agents">Agents</a>.</p>
+  <li><p><strong>Agent headers.</strong> A sessionless <code>initialize</code> sending <code>X-Message-CP-Agent</code> and <code>X-Message-CP-Agent-Key</code> registers that agent, as <code>register</code> would, or gets 403 and no session (<a href="clients.html">Clients</a>).</p>
   </li>
   <li><p><strong>Logging.</strong> <code>serve</code> does not log requests, tokens, agent headers or message bodies.</p>
   </li>
