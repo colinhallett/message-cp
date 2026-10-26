@@ -21,7 +21,7 @@ const USAGE = {
   person: "message-cp person add <name> [--account <name>] | message-cp person remove <name> [--account <name>] | message-cp person list [--account <name>]",
   agent: "message-cp agent list [--account <name>] | message-cp agent remove <name> [--account <name>] | message-cp agent key reset <name> [--account <name>]",
   connect: "message-cp connect <agent> --url <public url> [--account <name>] [--new-key]",
-  init: `message-cp init [--client <${CLIENT_IDS.join("|")}>] [--url <public url> --agent <name> | --from <file connect wrote>] (with --url, the token from MESSAGE_CP_HTTP_TOKEN and the key from MESSAGE_CP_AGENT_KEY)`,
+  init: `message-cp init [--client <${CLIENT_IDS.join("|")}>] [--url <public url> --agent <name> | --from <file connect wrote>] (with --url, the token from MESSAGE_CP_HTTP_TOKEN and, unless the token is bound to the agent, the key from MESSAGE_CP_AGENT_KEY)`,
 };
 
 const [command, ...rest] = process.argv.slice(2);
@@ -379,9 +379,10 @@ if (command === "serve") {
       process.exit(2);
     }
     const token = process.env.MESSAGE_CP_HTTP_TOKEN;
-    const key = process.env.MESSAGE_CP_AGENT_KEY;
-    if (!token || !key) {
-      console.error(`message-cp init: with --url, set ${!token ? "MESSAGE_CP_HTTP_TOKEN to the agent token" : "MESSAGE_CP_AGENT_KEY to the agent's key"} (both as \`message-cp connect\` printed them). Nothing was changed.`);
+    // Optional: a token bound to the agent needs no key, and `checkRemote` refuses an unbound one without it.
+    const key = process.env.MESSAGE_CP_AGENT_KEY || undefined;
+    if (!token) {
+      console.error("message-cp init: with --url, set MESSAGE_CP_HTTP_TOKEN to the agent token (as `message-cp connect` printed it). Nothing was changed.");
       console.error(`usage: ${USAGE.init}`);
       process.exit(2);
     }

@@ -133,7 +133,7 @@ describe("mergeServer", () => {
     expect(mergeServer(file, same)).toBe("present");
     chmodSync(file, 0o640);
     const before = readFileSync(file, "utf8");
-    expect(() => mergeServer(file, same)).toThrow(/holds the token and key, and other users of this machine can read it; .*chmod 600/);
+    expect(() => mergeServer(file, same)).toThrow(/holds the token, and other users of this machine can read it; .*chmod 600/);
     expect(readFileSync(file, "utf8")).toBe(before);
     expect(statSync(file).mode & 0o777).toBe(0o640);
   });
@@ -443,7 +443,7 @@ describe("message-cp init", () => {
     }
   });
 
-  it("takes --url and --agent only together, and the token and key only from the environment", () => {
+  it("takes --url and --agent only together, and the token and key only from the environment, the token required", () => {
     const env = { MESSAGE_CP_HTTP_TOKEN: TOKEN, MESSAGE_CP_AGENT_KEY: KEY };
     for (const args of [
       ["--url", "https://h.example"],
@@ -458,17 +458,14 @@ describe("message-cp init", () => {
       expect(r.stdout + r.stderr).not.toContain(TOKEN);
       expect(r.stdout + r.stderr).not.toContain(KEY);
     }
-    for (const [missing, name] of [
-      [{ MESSAGE_CP_AGENT_KEY: KEY, MESSAGE_CP_HTTP_TOKEN: "" }, "MESSAGE_CP_HTTP_TOKEN"],
-      [{ MESSAGE_CP_HTTP_TOKEN: TOKEN, MESSAGE_CP_AGENT_KEY: "" }, "MESSAGE_CP_AGENT_KEY"],
-    ] as const) {
-      mkdirSync(join(home, ".cursor"), { recursive: true });
-      const r = cli(missing, "--client", "cursor", "--url", "https://h.example", "--agent", "writer");
-      expect(r.status).toBe(2);
-      expect(r.stderr).toContain(`set ${name}`);
-      expect(r.stderr).toContain("Nothing was changed.");
-      expect(existsSync(join(home, ".cursor", "mcp.json"))).toBe(false);
-    }
+    // The key is optional here: a token bound to the agent needs none, and checkRemote refuses an unbound one without it.
+    mkdirSync(join(home, ".cursor"), { recursive: true });
+    const r = cli({ MESSAGE_CP_AGENT_KEY: KEY, MESSAGE_CP_HTTP_TOKEN: "" }, "--client", "cursor", "--url", "https://h.example", "--agent", "writer");
+    expect(r.status).toBe(2);
+    expect(r.stderr).toContain("set MESSAGE_CP_HTTP_TOKEN");
+    expect(r.stderr).toContain("Nothing was changed.");
+    expect(r.stderr).not.toContain(KEY);
+    expect(existsSync(join(home, ".cursor", "mcp.json"))).toBe(false);
   });
 
   it("refuses an unsafe --url before reading anything, changing nothing", () => {
@@ -488,11 +485,11 @@ describe("message-cp init", () => {
     const http = await startHttp(db, { token: "owner-token", port: 0 });
     try {
       const c = connectAgent(db, "owner", "writer", false);
-      const run = (token: string) =>
+      const run = (token: string, key = c.key, agent = "writer") =>
         new Promise<{ status: number | null; output: string }>((done) => {
           // Asynchronous, so this process can answer the server's requests meanwhile.
-          const child = spawn(process.execPath, [join(root, "node_modules/tsx/dist/cli.mjs"), join(root, "src/cli.ts"), "init", "--client", "cursor", "--url", `http://127.0.0.1:${http.port}`, "--agent", "writer"], {
-            env: { ...process.env, HOME: home, USERPROFILE: home, MESSAGE_CP_DB: join(home, "other.sqlite"), MESSAGE_CP_HTTP_TOKEN: token, MESSAGE_CP_AGENT_KEY: c.key },
+          const child = spawn(process.execPath, [join(root, "node_modules/tsx/dist/cli.mjs"), join(root, "src/cli.ts"), "init", "--client", "cursor", "--url", `http://127.0.0.1:${http.port}`, "--agent", agent], {
+            env: { ...process.env, HOME: home, USERPROFILE: home, MESSAGE_CP_DB: join(home, "other.sqlite"), MESSAGE_CP_HTTP_TOKEN: token, MESSAGE_CP_AGENT_KEY: key },
             stdio: ["ignore", "pipe", "pipe"],
           });
           let output = "";
@@ -505,15 +502,47 @@ describe("message-cp init", () => {
       expect(wrong.output).toContain("the server refused the token in MESSAGE_CP_HTTP_TOKEN (401). Nothing was changed.");
       expect(existsSync(join(home, ".cursor", "mcp.json"))).toBe(false);
 
-      const right = await run(c.token);
+      // The bound token connect made, with no key: Cursor gets only the Authorization header.
+      const right = await run(c.token, "");
+      expect(right.output).toContain("Server: http://127.0.0.1:");
+      expect(right.output).toContain("accepted the token, which is agent 'writer'.");
       expect(right.output).toContain("Check passed: as agent 'writer' on the server, sent itself a message");
       expect(right.status).toBe(0);
       expect(right.output).not.toContain(c.token);
       expect(right.output).not.toContain(c.key);
-      expect(readFileSync(join(home, ".cursor", "mcp.json"), "utf8")).toContain(c.key);
-      const again = await run(c.token);
-      expect(again.output).toContain("Cursor: already set up; nothing was changed.");
-      expect(listServerAgents(db).map((a) => a.name)).toEqual(["writer"]);
+      const written = readFileSync(join(home, ".cursor", "mcp.json"), "utf8");
+      expect(written).not.toContain(c.key);
+      expect(JSON.parse(written).mcpServers["message-cp"]).toEqual({ url: `http://127.0.0.1:${http.port}/mcp`, headers: { Authorization: `Bearer ${c.token}` } });
+      // Run again, with or without the key, it is already set up.
+      for (const key of ["", c.key]) {
+        const again = await run(c.token, key);
+        expect(again.output).toContain("Cursor: already set up; nothing was changed.");
+        expect(again.status).toBe(0);
+      }
+      // The bound token for another agent's setup is refused, naming its agent, and changes nothing.
+      connectAgent(db, "owner", "reader", false);
+      const other = await run(c.token, "", "reader");
+      expect(other.status).toBe(1);
+      expect(other.output).toContain("the token in MESSAGE_CP_HTTP_TOKEN is bound to agent 'writer', not 'reader'. Nothing was changed.");
+      expect(other.output).not.toContain(c.token);
+      // An unbound agent token without the key is refused, changing nothing.
+      rmSync(join(home, ".cursor", "mcp.json"));
+      const unbound = addToken(db, "owner", false, true).token;
+      const nokey = await run(unbound, "");
+      expect(nokey.status).toBe(1);
+      expect(nokey.output).toContain("is not bound to agent 'writer', so it needs the agent's key: set MESSAGE_CP_AGENT_KEY, or use the token message-cp connect printed. Nothing was changed.");
+      expect(nokey.output).not.toContain(unbound);
+      expect(existsSync(join(home, ".cursor", "mcp.json"))).toBe(false);
+      // With the key, the unbound token gets the three headers, as before.
+      const withKey = await run(unbound, c.key);
+      expect(withKey.status).toBe(0);
+      expect(withKey.output).toContain("accepted the token, and agent 'writer' with its key.");
+      expect(JSON.parse(readFileSync(join(home, ".cursor", "mcp.json"), "utf8")).mcpServers["message-cp"].headers).toEqual({
+        Authorization: `Bearer ${unbound}`,
+        "X-Message-CP-Agent": "writer",
+        "X-Message-CP-Agent-Key": c.key,
+      });
+      expect(listServerAgents(db).map((a) => a.name)).toEqual(["reader", "writer"]);
     } finally {
       await http.close();
       db.close();
@@ -605,6 +634,77 @@ describe("setUpClient with a team server", () => {
     expect(readFileSync(file, "utf8")).toBe(after);
   });
 
+  it("with a bound token, adds Claude Code with only the Authorization header, and takes an earlier three-header entry as the same", () => {
+    const { run, calls } = fakeRunner({ [CLAUDE_GET]: MISSING });
+    const s = setUpClient("claude-code", machine(), run, remote({ bound: true, key: undefined }));
+    expect(calls).toEqual([CLAUDE_GET, `claude mcp add --scope user --transport http message-cp https://message-cp.example.com/mcp --header Authorization: Bearer ${TOKEN}`]);
+    expect(s.changed).toBe("with `claude mcp add --scope user --transport http message-cp https://message-cp.example.com/mcp` and the token's Authorization header");
+    const oneHeader = `message-cp:\n  Scope: User config\n  Type: http\n  URL: https://message-cp.example.com/mcp\n  Headers:\n    Authorization: Bearer ${TOKEN}\n`;
+    for (const [stdout, over, state] of [
+      [oneHeader, {}, "present"],
+      [oneHeader, { key: undefined }, "present"],
+      [claudeGetHttp(), {}, "present"],
+      [claudeGetHttp().replace("X-Message-CP-Agent: writer", "X-Message-CP-Agent: Writer"), {}, "present"],
+      // Without the key there is nothing to check the entry's key against, so it is not called set up.
+      [claudeGetHttp(), { key: undefined }, "differs"],
+      [claudeGetHttp(undefined, "reader"), {}, "differs"],
+      [claudeGetHttp().replace(KEY, "old-key"), {}, "differs"],
+      [oneHeader.replace(TOKEN, "old-token"), {}, "differs"],
+      [oneHeader.replace("message-cp.example.com", "other.example"), {}, "differs"],
+      // Header names are case-insensitive: lowercase identity headers naming another agent or an old key are not absent.
+      [`${oneHeader}    x-message-cp-agent: reader\n    x-message-cp-agent-key: ${KEY}\n`, {}, "differs"],
+      [`${oneHeader}    x-message-cp-agent: writer\n    x-message-cp-agent-key: old-key\n`, {}, "differs"],
+      [`${oneHeader}    x-message-cp-agent: writer\n    x-message-cp-agent-key: ${KEY}\n`, {}, "present"],
+      [`${claudeGetHttp()}    x-message-cp-agent: reader\n`, {}, "differs"],
+    ] as const) {
+      const got = fakeRunner({ [CLAUDE_GET]: { status: 0, stdout } });
+      expect(setUpClient("claude-code", machine(), got.run, remote({ bound: true, ...over })).state, stdout).toBe(state);
+      expect(got.calls).toEqual([CLAUDE_GET]);
+    }
+  });
+
+  it("with a bound token, writes Cursor's url and only the Authorization header, never the key", () => {
+    mkdirSync(join(home, ".cursor"));
+    const file = join(home, ".cursor", "mcp.json");
+    expect(setUpClient("cursor", machine(), fakeRunner().run, remote({ bound: true })).state).toBe("added");
+    expect(readFileSync(file, "utf8")).not.toContain(KEY);
+    expect(JSON.parse(readFileSync(file, "utf8")).mcpServers["message-cp"]).toEqual({
+      url: "https://message-cp.example.com/mcp",
+      headers: { Authorization: `Bearer ${TOKEN}` },
+    });
+    if (process.platform !== "win32") expect(statSync(file).mode & 0o777).toBe(0o600);
+    const after = readFileSync(file, "utf8");
+    expect(setUpClient("cursor", machine(), fakeRunner().run, remote({ bound: true, key: undefined })).state).toBe("present");
+    expect(setUpClient("cursor", machine(), fakeRunner().run, remote({ bound: true, token: "new-token" })).state).toBe("differs");
+    // An unbound token's setup is not this one-header entry.
+    expect(setUpClient("cursor", machine(), fakeRunner().run, remote()).state).toBe("differs");
+    expect(readFileSync(file, "utf8")).toBe(after);
+
+    // The three-header entry an earlier init wrote is still the same for the bound token, if it names this agent and key.
+    const three = { url: "https://message-cp.example.com/mcp", headers: { Authorization: `Bearer ${TOKEN}`, "X-Message-CP-Agent": "writer", "X-Message-CP-Agent-Key": KEY } };
+    writeFileSync(file, JSON.stringify({ mcpServers: { "message-cp": three } }), { mode: 0o600 });
+    expect(setUpClient("cursor", machine(), fakeRunner().run, remote({ bound: true })).state).toBe("present");
+    expect(setUpClient("cursor", machine(), fakeRunner().run, remote({ bound: true, key: undefined })).state).toBe("differs");
+    expect(setUpClient("cursor", machine(), fakeRunner().run, remote({ bound: true, key: "other-key" })).state).toBe("differs");
+    expect(setUpClient("cursor", machine(), fakeRunner().run, remote({ bound: true, agent: "reader" })).state).toBe("differs");
+
+    // Header names are case-insensitive, so lowercase identity headers count, and a name given in two cases is not the same.
+    const headers = (h: Record<string, string>) =>
+      writeFileSync(file, JSON.stringify({ mcpServers: { "message-cp": { url: three.url, headers: { Authorization: `Bearer ${TOKEN}`, ...h } } } }), { mode: 0o600 });
+    headers({ "x-message-cp-agent": "reader", "x-message-cp-agent-key": KEY });
+    expect(setUpClient("cursor", machine(), fakeRunner().run, remote({ bound: true })).state).toBe("differs");
+    headers({ "x-message-cp-agent": "writer", "x-message-cp-agent-key": "old-key" });
+    expect(setUpClient("cursor", machine(), fakeRunner().run, remote({ bound: true })).state).toBe("differs");
+    headers({ "x-message-cp-agent": "writer", "x-message-cp-agent-key": KEY });
+    expect(setUpClient("cursor", machine(), fakeRunner().run, remote({ bound: true })).state).toBe("present");
+    headers({ "X-Message-CP-Agent": "writer", "X-Message-CP-Agent-Key": KEY, "x-message-cp-agent": "reader" });
+    expect(setUpClient("cursor", machine(), fakeRunner().run, remote({ bound: true })).state).toBe("differs");
+    writeFileSync(file, JSON.stringify({ mcpServers: { "message-cp": { url: three.url, headers: { authorization: `Bearer ${TOKEN}` } } } }), { mode: 0o600 });
+    expect(setUpClient("cursor", machine(), fakeRunner().run, remote({ bound: true })).state).toBe("present");
+    writeFileSync(file, JSON.stringify({ mcpServers: { "message-cp": { url: three.url, headers: { Authorization: `Bearer ${TOKEN}`, authorization: "Bearer old-token" } } } }), { mode: 0o600 });
+    expect(setUpClient("cursor", machine(), fakeRunner().run, remote({ bound: true })).state).toBe("differs");
+  });
+
   it("calls the stdio entry in Cursor different from the team server", () => {
     mkdirSync(join(home, ".cursor"));
     setUpClient("cursor", machine(), fakeRunner().run);
@@ -672,6 +772,36 @@ describe("runInit with a team server", () => {
       "Check passed: registered a test agent on the server, sent it a message, read it back and removed it.",
       "To undo: claude mcp remove --scope user message-cp",
     ]);
+    expect(all(t)).not.toContain(TOKEN);
+    expect(all(t)).not.toContain(KEY);
+  });
+
+  it("with a bound token, adds Claude Code with only the token, and says the server took the token as the agent", async () => {
+    fakeCommand("claude");
+    for (const [over, server] of [
+      [{ key: undefined }, "Server: https://message-cp.example.com/mcp accepted the token, which is agent 'writer'."],
+      [{}, "Server: https://message-cp.example.com/mcp accepted the token, which is agent 'writer', and its key."],
+    ] as const) {
+      const t = options({ remote: remote(over), check: async () => true });
+      expect(await runInit(t.o)).toBe(0);
+      expect(t.calls).toEqual([CLAUDE_GET, `claude mcp add --scope user --transport http message-cp https://message-cp.example.com/mcp --header Authorization: Bearer ${TOKEN}`]);
+      expect(t.out[1]).toBe(server);
+      expect(t.out[2]).toBe("Claude Code: added message-cp with `claude mcp add --scope user --transport http message-cp https://message-cp.example.com/mcp` and the token's Authorization header.");
+      expect(all(t)).not.toContain(TOKEN);
+      expect(all(t)).not.toContain(KEY);
+    }
+  });
+
+  it("with a bound token and no key, leaves an earlier three-header entry as it is, says why and how to remove it", async () => {
+    fakeCommand("claude");
+    const t = options({ remote: remote({ key: undefined }), check: async () => true, run: fakeRunner({ [CLAUDE_GET]: { status: 0, stdout: claudeGetHttp() } }).run });
+    expect(await runInit(t.o)).toBe(1);
+    expect(t.err).toEqual([
+      "message-cp init: Claude Code already has a server named message-cp that is not https://message-cp.example.com/mcp as agent 'writer' with this token; it was left as it is.",
+      "If it is an earlier init's entry with the agent's name and key, set MESSAGE_CP_AGENT_KEY so init can check that key, or remove it so init writes the token alone.",
+      "To remove it, then run message-cp init again: claude mcp remove --scope user message-cp",
+    ]);
+    expect(t.proved()).toBe(0);
     expect(all(t)).not.toContain(TOKEN);
     expect(all(t)).not.toContain(KEY);
   });
@@ -775,14 +905,55 @@ describe("checkRemote and proveRemote", () => {
   const failure = (p: Promise<void>) => p.then(() => undefined, (e: Error) => e);
 
   it("accepts the agent's token and key, and leaves only the agent", async () => {
-    await checkRemote(r());
+    expect(await checkRemote(r())).toBe(true);
     expect(names()).toEqual(["owner/writer"]);
+  });
+
+  it("finds a bound token, with or without its key, without registering, waking or marking anything read", async () => {
+    registerAgent(db, OWNER_ACCOUNT, "bob", "x");
+    sendMessage(db, OWNER_ACCOUNT, "bob", "writer", "waiting mail");
+    const before = () => [db.prepare("SELECT * FROM messages ORDER BY id").all(), db.prepare("SELECT name, removed_at FROM agents ORDER BY id").all()];
+    const was = before();
+    expect(await checkRemote(r({ key: undefined }))).toBe(true);
+    expect(await checkRemote(r())).toBe(true);
+    expect(before()).toEqual(was);
+    // A wrong key given with a bound token is still checked.
+    expect((await failure(checkRemote(r({ key: "wrong-key" }))))?.message).toMatch(/^the server refused agent 'writer' with the key in MESSAGE_CP_AGENT_KEY \(403\): /);
+  });
+
+  it("refuses a token bound to another agent, naming it, and changes nothing", async () => {
+    const reader = connectAgent(db, "owner", "reader", false);
+    const was = db.prepare("SELECT * FROM messages ORDER BY id").all();
+    for (const key of [undefined, agentKey]) {
+      const err = await failure(checkRemote(r({ token: reader.token, key })));
+      expect(err).toBeInstanceOf(InitError);
+      expect(err!.message).toBe("the token in MESSAGE_CP_HTTP_TOKEN is bound to agent 'reader', not 'writer'");
+    }
+    expect(db.prepare("SELECT * FROM messages ORDER BY id").all()).toEqual(was);
+    expect(names()).toEqual(["owner/reader", "owner/writer"]);
+  });
+
+  it("takes an unbound agent token as unbound: with the key it passes, without it it is refused; neither registers anything", async () => {
+    registerAgent(db, OWNER_ACCOUNT, "bob", "x");
+    sendMessage(db, OWNER_ACCOUNT, "bob", "writer", "waiting mail");
+    const unbound = addToken(db, "owner", false, true).token;
+    const was = db.prepare("SELECT * FROM messages ORDER BY id").all();
+    expect(await checkRemote(r({ token: unbound }))).toBe(false);
+    const err = await failure(checkRemote(r({ token: unbound, key: undefined })));
+    expect(err?.message).toBe(
+      "the token in MESSAGE_CP_HTTP_TOKEN is not bound to agent 'writer', so it needs the agent's key: set MESSAGE_CP_AGENT_KEY, or use the token message-cp connect printed",
+    );
+    expect(err?.message).not.toContain(unbound);
+    expect(db.prepare("SELECT * FROM messages ORDER BY id").all()).toEqual(was);
+    expect(names()).toEqual(["owner/bob", "owner/writer"]);
   });
 
   it("says which was refused: the token, a read-only token, the key, or an agent that is not there; and makes no agent", async () => {
     const readOnly = addToken(db, "owner", true).token;
+    const unbound = addToken(db, "owner", false, true).token;
     for (const [over, pattern] of [
       [{ token: "wrong" }, /^the server refused the token in MESSAGE_CP_HTTP_TOKEN \(401\)$/],
+      [{ token: unbound, key: "wrong-key" }, /^the server refused agent 'writer' with the key in MESSAGE_CP_AGENT_KEY \(403\): /],
       [{ token: readOnly }, /^the server refused the token in MESSAGE_CP_HTTP_TOKEN \(403\): This token is read-only$/],
       [{ key: "wrong-key" }, /^the server refused agent 'writer' with the key in MESSAGE_CP_AGENT_KEY \(403\): /],
       [{ agent: "nobody" }, /^the server has no agent named 'nobody'/],
@@ -1138,8 +1309,9 @@ describe("message-cp init --from", () => {
       const config = JSON.parse(readFileSync(join(home, ".cursor", "mcp.json"), "utf8"));
       expect(config.mcpServers["message-cp"]).toEqual({
         url: `http://127.0.0.1:${http.port}/mcp`,
-        headers: { Authorization: `Bearer ${c.token}`, "X-Message-CP-Agent": "writer", "X-Message-CP-Agent-Key": c.key },
+        headers: { Authorization: `Bearer ${c.token}` },
       });
+      expect(readFileSync(join(home, ".cursor", "mcp.json"), "utf8")).not.toContain(c.key);
       const tokenFile = join(home, ".message-cp", "http-token");
       expect(readFileSync(tokenFile, "utf8")).toBe(`${c.token}\n`);
       if (process.platform !== "win32") expect(statSync(tokenFile).mode & 0o777).toBe(0o600);
