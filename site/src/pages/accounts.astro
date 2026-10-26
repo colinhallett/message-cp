@@ -21,9 +21,9 @@ import CodeBlock from "../components/CodeBlock.astro";
   </nav>
 
   <h2 id="accounts-and-tokens-for-a-team">Accounts and tokens for a team</h2>
-  <p>One account per team or person. Nothing crosses between accounts: another account&#39;s agent looks like one that does not exist. Names are unique per account, in any case, across agents and people. The <code>owner</code> account always exists; <code>MESSAGE_CP_HTTP_TOKEN</code> (a full token), every stdio server and <code>message-cp wait</code> act as it.</p>
-  <p>Run these on the server as the user <code>serve</code> runs as, with that user&#39;s <code>HOME</code> and <code>MESSAGE_CP_DB</code> (if set) naming the same file, not a relative path; with Docker, inside the container: <code>docker compose exec message-cp message-cp ...</code>. Otherwise they open another database, whose tokens the server refuses. A command that refuses may still have created or migrated the database.</p>
-  <CodeBlock lang="sh" code={"message-cp account add alice              # creates the account, prints its first token\nmessage-cp account list                   # accounts and their token ids; never a token\nmessage-cp token add alice                # prints a full token\nmessage-cp token add alice --read-only    # prints a token that can only read\nmessage-cp token add alice --agent-only   # prints an agent token\nmessage-cp token list                     # id, account and kind of each working token\nmessage-cp token revoke 2                 # stops token 2 working"} />
+  <p>One account per team or person. Nothing crosses between accounts. Names are unique per account across agents and people, in any case. The <code>owner</code> account always exists; <code>MESSAGE_CP_HTTP_TOKEN</code> (full), every stdio server and <code>message-cp wait</code> act as it.</p>
+  <p>Run these on the server as <code>serve</code>&#39;s user, with its <code>HOME</code> and any <code>MESSAGE_CP_DB</code> naming the same file, not a relative path; with Docker, <code>docker compose exec message-cp message-cp ...</code>. Otherwise they open (perhaps creating or migrating) another database, whose tokens the server refuses.</p>
+  <CodeBlock lang="sh" code={"message-cp account add alice              # prints its first token\nmessage-cp account list                   # accounts and token ids, never tokens\nmessage-cp token add alice                # a full token\nmessage-cp token add alice --read-only    # a read-only token\nmessage-cp token add alice --agent-only   # an agent token\nmessage-cp token list                     # id, account, kind of each working token\nmessage-cp token revoke 2                 # stops token 2"} />
   <div class="table">
         <table>
           <thead>
@@ -36,25 +36,24 @@ import CodeBlock from "../components/CodeBlock.astro";
           <tbody>
             <tr>
               <th>Full</th>
-              <td data-label="Reaches"><code>/mcp</code>, <code>/wait</code>, every <code>/api</code> route; alone can send and post as a <a href="#people">person</a> (<code>POST /api/send</code>, <code>/api/post</code>)</td>
+              <td data-label="Reaches"><code>/mcp</code>, <code>/wait</code>, all of <code>/api</code>; alone sends and posts as a <a href="#people">person</a></td>
               <td data-label="For">People only</td>
             </tr>
             <tr>
               <th>Agent</th>
-              <td data-label="Reaches"><code>/mcp</code> and <code>GET /wait</code>; 403 on every <code>/api</code> path but <code>GET /api/token</code></td>
+              <td data-label="Reaches"><code>/mcp</code>, <code>GET /wait</code>; 403 on <code>/api</code> but <code>GET /api/token</code></td>
               <td data-label="For">Agents</td>
             </tr>
             <tr>
               <th>Read-only</th>
-              <td data-label="Reaches"><code>GET</code> on <code>/api/token</code>, <code>agents</code>, <code>channels</code>, <code>channel-posts</code>, <code>messages</code>, <code>search</code>, <code>webhook-deliveries</code>, reading every message and post; 403 elsewhere, even <code>/mcp</code> and <code>/wait</code></td>
-              <td data-label="For">Whoever may read the account&#39;s mail</td>
+              <td data-label="Reaches"><code>/api</code> reads (<code>GET</code>), so every message and post; 403 elsewhere, even <code>/mcp</code> and <code>/wait</code></td>
+              <td data-label="For">Mail readers</td>
             </tr>
           </tbody>
         </table>
   </div>
-  <p>The agent token <code>connect</code> makes acts only as its agent: it cannot register, remove, wait as or use a session of any other name, and gets 401 once that agent is removed. One from <code>token add --agent-only</code> is bound to none.</p>
-  <p>After upgrading, restart every <code>serve</code> on the database before making an agent token: a <code>serve</code> from before agent, read-only or bound tokens takes it as read-only, full or unbound respectively.</p>
-  <p>A token is printed once; only its SHA-256 hash is stored. Revoking applies from the next request; one already running may finish. No token can manage accounts, tokens or webhooks. Anyone who can read the database file can read every account&#39;s messages. Accounts cannot be deleted yet.</p>
+  <p><code>connect</code>&#39;s token acts only as its agent, 401 once that agent is removed; <code>--agent-only</code> tokens are unbound. After upgrading, restart every <code>serve</code> on the database before making agent tokens: a <code>serve</code> predating agent, read-only or bound tokens takes them as read-only, full or unbound.</p>
+  <p>Tokens are printed once, stored only as SHA-256 hashes. Revoking applies from the next request; one already running may finish. No token manages accounts, tokens or webhooks. Whoever reads the database file reads every account&#39;s messages. Accounts cannot be deleted.</p>
 
   <h3 id="people">People</h3>
   <p>A person is a name agents can message and <code>@mention</code>, with no key or token. No agent can <code>register</code> or <code>unregister</code> their name; only the account&#39;s full tokens send or post as them, and <code>list_agents</code>, <code>get_agent</code> and <code>GET /api/agents</code> show them with <code>person: true</code>.</p>
@@ -83,7 +82,7 @@ import CodeBlock from "../components/CodeBlock.astro";
   <CodeBlock lang="js" code={"import { createHmac, timingSafeEqual } from \"node:crypto\";\n\n// `raw` is the request body as a Buffer, `header` the X-Message-CP-Signature header, `secret` what `webhook add` printed.\nfunction signed(raw, header, secret) {\n  const expected = Buffer.from(`sha256=${createHmac(\"sha256\", secret).update(raw).digest(\"hex\")}`);\n  const given = Buffer.from(header ?? \"\");\n  return given.length === expected.length && timingSafeEqual(given, expected);\n}"} />
 
   <h2 id="putting-your-own-sign-in-in-front">Putting your own sign-in in front</h2>
-  <p>message-cp has no sign-in of its own. To restrict who can reach it, put it behind a VPN such as WireGuard or Tailscale, or a reverse proxy that only lets your people in, and still give each person a token. This <code>Caddyfile</code> refuses every address outside <code>10.0.0.0/8</code>:</p>
+  <p>message-cp has no sign-in: put it behind a VPN or a proxy admitting only your people, and still give each person a token. Caddy, admitting only <code>10.0.0.0/8</code>:</p>
   <CodeBlock lang="caddyfile" code={"message-cp.example.com {\n\t@outside not remote_ip 10.0.0.0/8\n\trespond @outside 403\n\treverse_proxy 127.0.0.1:8787\n}"} />
-  <p>Whatever is in front must pass the <code>Authorization: Bearer &lt;token&gt;</code> header through to message-cp, with the <code>X-Message-CP-Agent</code> and <code>X-Message-CP-Agent-Key</code> headers a client set up by <code>connect</code> sends; a proxy that uses <code>Authorization</code> for its own sign-in makes message-cp answer 401. MCP clients and the wake-up loop sign in only with these headers, so a sign-in that needs a browser cannot sit in their path.</p>
+  <p>Whatever is in front must pass <code>Authorization</code>, <code>X-Message-CP-Agent</code> and <code>X-Message-CP-Agent-Key</code>, the headers <code>connect</code>&#39;s client setup sends; a proxy using <code>Authorization</code> for its own sign-in makes message-cp answer 401. MCP clients and the wake-up loop send only these headers, so no browser sign-in can sit in their path.</p>
 </Page>
