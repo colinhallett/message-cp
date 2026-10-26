@@ -284,11 +284,10 @@ describe("message-cp agent remove", () => {
       ["agent", "remove", "a", "--account"],
       ["agent", "remove", "a", "--account", "owner", "--account", "friend"],
       ["agent", "remove", "a", "--key", "x"],
-      ["agent", "list"],
     ]) {
       const res = cli(...args);
       expect(res.status).toBe(2);
-      expect(res.stderr).toContain("usage: message-cp agent remove <name> [--account <name>]");
+      expect(res.stderr).toContain("usage: message-cp agent list [--account <name>] | message-cp agent remove <name> [--account <name>]");
     }
     expect(cli("nope").stderr).toContain("Commands: serve, wait, account, token, webhook, person, agent");
   }, 120_000);
