@@ -1,5 +1,6 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { StreamableHTTPClientTransport, StreamableHTTPError } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { spawnSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { accessSync, chmodSync, constants, existsSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -13,6 +14,8 @@ import { dbPath, openDb } from "./db.js";
 // `message-cp init`: adds the stdio server `npx -y message-cp` to one coding agent's user-level MCP configuration on
 // this machine, then proves the server works by registering a test agent, sending it a message and reading it back.
 // It never prints a token or key: the test agent's key is made here, stays in memory, and the agent is purged after.
+// With `--url` and `--agent` it adds a team server over HTTP instead, carrying the token from MESSAGE_CP_HTTP_TOKEN and
+// the agent's key from MESSAGE_CP_AGENT_KEY in its headers, and nothing it prints holds either of them.
 
 export class InitError extends Error {}
 
@@ -97,16 +100,30 @@ export function detectClients(m: Machine): ClientId[] {
 
 export type SetUpState = "added" | "present" | "differs";
 
+const isObject = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
+
+/** The `message-cp` entry `mergeServer` adds, and whether an entry already there counts as the same. */
+export interface JsonServer {
+  entry: Record<string, unknown>;
+  same: (entry: unknown) => boolean;
+}
+
+const STDIO_SERVER: JsonServer = {
+  entry: { command: SERVER_COMMAND, args: SERVER_ARGS },
+  same: (e) => isObject(e) && e.command === SERVER_COMMAND && JSON.stringify(e.args) === JSON.stringify(SERVER_ARGS),
+};
+
 /**
- * Adds `message-cp` to the `mcpServers` of the JSON file `file`, keeping every other key and server. The new JSON is
+ * Adds `server.entry` as `message-cp` to the `mcpServers` of the JSON file `file`, keeping every other key and server. The new JSON is
  * written to a temporary file beside the real one (through a symlink, beside its target) and renamed over it, so a
  * failed write leaves the old file whole; an existing file keeps its mode, and a new one is 0600. If the file changed
  * between the read and the rename, nothing is written and `init` says to run it again. A `message-cp` entry already
- * there is left as it is: "present" if it runs `npx -y message-cp`, "differs" otherwise. Refuses, changing nothing, a
+ * there is left as it is: "present" if `server.same` holds for it (by default, it runs `npx -y message-cp`), "differs"
+ * otherwise. Refuses, changing nothing, a
  * file that is not a JSON object or whose `mcpServers` is not one, and turns a file it cannot read or write into an
  * InitError giving the reason.
  */
-export function mergeServer(file: string): SetUpState {
+export function mergeServer(file: string, server: JsonServer = STDIO_SERVER): SetUpState {
   const reason = (err: unknown) => (err as { code?: string }).code ?? (err instanceof Error ? err.message : String(err));
   let config: Record<string, unknown> = {};
   let text: string | undefined;
@@ -123,17 +140,14 @@ export function mergeServer(file: string): SetUpState {
       throw new InitError(`${file} is not valid JSON; it was left unchanged. Fix or move it, then run message-cp init again.`);
     }
   }
-  const isObject = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
   if (!isObject(config)) throw new InitError(`${file} does not hold a JSON object; it was left unchanged.`);
   const servers = config.mcpServers ?? {};
   if (!isObject(servers)) throw new InitError(`${file} has an mcpServers that is not a JSON object; it was left unchanged.`);
   const entry = servers[SERVER_NAME];
   if (entry !== undefined) {
-    const same =
-      isObject(entry) && entry.command === SERVER_COMMAND && JSON.stringify(entry.args) === JSON.stringify(SERVER_ARGS);
-    return same ? "present" : "differs";
+    return server.same(entry) ? "present" : "differs";
   }
-  config.mcpServers = { ...servers, [SERVER_NAME]: { command: SERVER_COMMAND, args: SERVER_ARGS } };
+  config.mcpServers = { ...servers, [SERVER_NAME]: server.entry };
   let tmp: string | undefined;
   try {
     const target = text === undefined ? file : realpathSync(file);
@@ -170,6 +184,56 @@ export const cliCommands = {
   },
 };
 
+/** A team server for `init --url`: its `/mcp` endpoint, the agent to act as, and the token and key it sends. */
+export interface Remote {
+  endpoint: URL;
+  agent: string;
+  token: string;
+  key: string;
+}
+
+/** The three headers a client sends to act as the agent, the same three `clientSetup` in `src/connect.ts` prints. */
+export const remoteHeaders = (r: Remote): Record<string, string> => ({
+  Authorization: `Bearer ${r.token}`,
+  "X-Message-CP-Agent": r.agent,
+  "X-Message-CP-Agent-Key": r.key,
+});
+
+/** `text` with the token and key replaced by `<redacted>`, so no line `init` passes on holds either. */
+export function redact(text: string, r: Pick<Remote, "token" | "key"> | undefined): string {
+  if (r === undefined) return text;
+  for (const secret of [r.token, r.key]) if (secret) text = text.replaceAll(secret, "<redacted>");
+  return text;
+}
+
+/** The `claude mcp add` arguments for the team server, at user scope; the token and key are only in this array. */
+export const claudeRemoteAdd = (r: Remote): string[] => [
+  "mcp",
+  "add",
+  "--scope",
+  "user",
+  "--transport",
+  "http",
+  SERVER_NAME,
+  r.endpoint.href,
+  ...Object.entries(remoteHeaders(r)).flatMap(([k, v]) => ["--header", `${k}: ${v}`]),
+];
+
+/** The Cursor entry for the team server: `url` and `headers`, with no `type`, as Cursor documents a remote server. */
+export const cursorRemote = (r: Remote): JsonServer => ({
+  entry: { url: r.endpoint.href, headers: remoteHeaders(r) },
+  same: (e) => isObject(e) && e.url === r.endpoint.href && isObject(e.headers) && e.headers["X-Message-CP-Agent"] === r.agent,
+});
+
+/**
+ * Whether `claude mcp get`'s output describes the team server `r` acts as: `Type: http`, its `URL:` and its
+ * `X-Message-CP-Agent:` header line. The output also holds the token and key, so it is only matched, never printed.
+ */
+function sameRemote(stdout: string, r: Remote): boolean {
+  const field = (name: string) => new RegExp(`^\\s*${name}: (.*)$`, "m").exec(stdout)?.[1]?.trim();
+  return field("Type") === "http" && field("URL") === r.endpoint.href && field("X-Message-CP-Agent") === r.agent;
+}
+
 /** Whether `get`'s output describes a stdio server that runs `npx -y message-cp`. */
 function runsPackage(client: "claude-code" | "codex", stdout: string): boolean {
   if (client === "codex") {
@@ -184,8 +248,8 @@ function runsPackage(client: "claude-code" | "codex", stdout: string): boolean {
   return field("Type") === "stdio" && field("Command") === SERVER_COMMAND && field("Args") === SERVER_ARGS.join(" ");
 }
 
-const failed = (r: RunResult, what: string) => {
-  const detail = (r.stderr || r.stdout).trim().split("\n").pop();
+const failed = (r: RunResult, what: string, remote?: Remote) => {
+  const detail = redact((r.stderr || r.stdout).trim().split("\n").pop() ?? "", remote);
   return new InitError(`${what} failed (${r.status === null ? "no exit status" : `exit ${r.status}`})${detail ? `: ${detail}` : ""}.`);
 };
 
@@ -199,25 +263,51 @@ export interface SetUp {
 }
 
 /**
+ * Why `client` cannot be set up for the team server at `endpoint` on this machine, with what to do by hand, or undefined
+ * if it can. `codex mcp add` takes `--url` but no custom headers. Claude Desktop takes a team server only as a custom
+ * connector in its app. On Windows `claude` is a `.cmd` file that only a shell can start, and the token and key must
+ * not pass through a shell string.
+ */
+export function remoteRefusal(client: ClientId, m: Machine, endpoint: URL): string | undefined {
+  if (client === "codex") {
+    return "Codex cannot be set up for a team server: `codex mcp add` takes no custom headers, so it cannot send the agent's name and key.";
+  }
+  if (client === "claude-desktop") {
+    return `Claude Desktop takes a team server as a custom connector in its app: in Customize, Connectors, choose Add, then Add custom connector, give it a name and the URL ${endpoint.href}, choose No sign in, and add the three request headers.`;
+  }
+  if (client === "claude-code" && m.platform === "win32") {
+    return "on Windows, message-cp init cannot run `claude mcp add` without passing the token and key through a shell; run the `claude mcp add` command `message-cp connect` printed instead, or use --client cursor.";
+  }
+  return undefined;
+}
+
+/**
  * Adds the server to `client`'s user-level configuration, unless a `message-cp` entry is already there. Claude Code and
  * Codex go through their own `mcp get` (exit 1 when there is no such server) and `mcp add`; Cursor and Claude Desktop
- * through `mergeServer`.
+ * through `mergeServer`. With `remote`, the entry is the team server over HTTP instead, for Claude Code or Cursor only.
  */
-export function setUpClient(client: ClientId, m: Machine, run: Runner): SetUp {
+export function setUpClient(client: ClientId, m: Machine, run: Runner, remote?: Remote): SetUp {
+  const refused = remote === undefined ? undefined : remoteRefusal(client, m, remote.endpoint);
+  if (refused !== undefined) throw new InitError(`${refused} Nothing was changed.`);
   if (client === "cursor" || client === "claude-desktop") {
     const file = configFile(client, m);
-    const state = mergeServer(file);
+    const state = remote === undefined ? mergeServer(file) : mergeServer(file, cursorRemote(remote));
     return { client, state, changed: `in ${file}`, undo: `delete the "${SERVER_NAME}" entry under "mcpServers" in ${file}` };
   }
   const c = cliCommands[client];
   const undo = [c.command, ...c.remove].join(" ");
-  const target = [c.command, ...c.add].join(" ");
+  // With `remote`, what is shown leaves out the headers, which hold the token and key.
+  const add = remote === undefined ? c.add : claudeRemoteAdd(remote);
+  const target = remote === undefined ? [c.command, ...c.add].join(" ") : `${c.command} mcp add --scope user --transport http ${SERVER_NAME} ${remote.endpoint.href}`;
   const got = run(c.command, c.get);
-  const changed = `with \`${target}\``;
-  if (got.status === 0) return { client, state: runsPackage(client, got.stdout) ? "present" : "differs", changed, undo };
-  if (got.status !== 1) throw failed(got, [c.command, ...c.get].join(" "));
-  const added = run(c.command, c.add);
-  if (added.status !== 0) throw failed(added, target);
+  const changed = remote === undefined ? `with \`${target}\`` : `with \`${target}\` and the agent's three headers`;
+  if (got.status === 0) {
+    const same = remote === undefined ? runsPackage(client, got.stdout) : sameRemote(got.stdout, remote);
+    return { client, state: same ? "present" : "differs", changed, undo };
+  }
+  if (got.status !== 1) throw failed(got, [c.command, ...c.get].join(" "), remote);
+  const added = run(c.command, add);
+  if (added.status !== 0) throw failed(added, target, remote);
   return { client, state: "added", changed, undo };
 }
 
@@ -334,9 +424,147 @@ export async function proveServer(server: { command: string; args: string[] }, e
   }
 }
 
+/** A client of the team server `r`, sending `headers` on every request. */
+function remoteClient(r: Remote, headers: Record<string, string>) {
+  const client = new Client({ name: "message-cp-init", version: "1.0.0" });
+  const transport = new StreamableHTTPClientTransport(r.endpoint, { requestInit: { headers } });
+  return { client, transport };
+}
+
+/** Ends the session `transport` holds with DELETE /mcp, then closes the client; neither failure matters. */
+async function endSession(client: Client, transport: StreamableHTTPClientTransport): Promise<void> {
+  if (transport.sessionId !== undefined) await transport.terminateSession().catch(() => {});
+  await client.close().catch(() => {});
+}
+
+/** The server's own message from a refusal: the `error.message` of the JSON body the SDK quotes, if there is one. */
+function serverMessage(err: Error): string {
+  const json = /\{.*\}/s.exec(err.message)?.[0];
+  try {
+    const message = JSON.parse(json ?? "").error?.message;
+    if (typeof message === "string") return message.replace(/\.$/, "");
+  } catch {}
+  return err.message;
+}
+
+/** Calls `tool` and returns its parsed JSON result, throwing an Error with the tool's own text when it fails. */
+async function callTool(client: Client, tool: string, args: Record<string, unknown>) {
+  const result = (await client.callTool({ name: tool, arguments: args }, undefined, { timeout: CALL_TIMEOUT_MS })) as {
+    isError?: boolean;
+    content?: { text?: string }[];
+  };
+  const text = result.content?.[0]?.text ?? "";
+  if (result.isError) throw new Error(`${tool} returned an error: ${text.slice(0, 200)}`);
+  return JSON.parse(text);
+}
+
+/**
+ * Checks the token and the agent's key before anything is written. A session that sends only the token finds the agent
+ * with `get_agent`, since a session that names an agent registers it, and `init` makes no agent; then a session with
+ * the three headers the client will send, which acts as the agent from its first request. Both sessions are ended.
+ * Throws an InitError that says which was refused: the token (401, or 403 for a read-only one), the agent's name (not
+ * on the server) or its key (403), or that the server could not be reached. No message holds the token or key.
+ */
+export async function checkRemote(r: Remote): Promise<void> {
+  const refusal = (err: unknown, named: boolean): InitError => {
+    const why = err instanceof Error ? err : new Error(String(err));
+    const code = why instanceof StreamableHTTPError ? why.code : undefined;
+    const message = redact(serverMessage(why), r).slice(0, 300);
+    if (code === 401) return new InitError("the server refused the token in MESSAGE_CP_HTTP_TOKEN (401)");
+    if (code === 403 && !named) return new InitError(`the server refused the token in MESSAGE_CP_HTTP_TOKEN (403): ${message}`);
+    if (code === 403) return new InitError(`the server refused agent '${r.agent}' with the key in MESSAGE_CP_AGENT_KEY (403): ${message}`);
+    return new InitError(`could not open a session at ${r.endpoint.href}: ${message}`);
+  };
+  const plain = remoteClient(r, { Authorization: `Bearer ${r.token}` });
+  try {
+    try {
+      await plain.client.connect(plain.transport, { timeout: CALL_TIMEOUT_MS });
+    } catch (err) {
+      throw refusal(err, false);
+    }
+    let agent: { person?: boolean };
+    try {
+      agent = await callTool(plain.client, "get_agent", { name: r.agent });
+    } catch (err) {
+      const message = redact(err instanceof Error ? err.message : String(err), r);
+      if (/No agent named/.test(message)) {
+        throw new InitError(`the server has no agent named '${r.agent}'; make it on the server with: message-cp connect ${r.agent} --url <public url>`);
+      }
+      throw new InitError(`get_agent: ${message.slice(0, 300)}`);
+    }
+    if (agent.person) throw new InitError(`'${r.agent}' is a person on the server, not an agent`);
+  } finally {
+    await endSession(plain.client, plain.transport);
+  }
+  const named = remoteClient(r, remoteHeaders(r));
+  try {
+    await named.client.connect(named.transport, { timeout: CALL_TIMEOUT_MS });
+  } catch (err) {
+    throw refusal(err, true);
+  } finally {
+    await endSession(named.client, named.transport);
+  }
+}
+
+/**
+ * Proves the team server works as `proveServer` does over stdio, without touching the configured agent: on a session
+ * that sends only the token, registers a test agent with a random name and a key made here, sends it a message from
+ * itself, reads it back and unregisters it, then ends the session. If a step failed after `register`, it still tries to
+ * remove the test agent by name and key. Throws an InitError naming the failed step and any failed clean-up; no message
+ * holds the token or either key.
+ */
+export async function proveRemote(r: Remote): Promise<void> {
+  const name = `init-check-${randomBytes(10).toString("hex")}`;
+  const key = randomBytes(24).toString("hex");
+  const body = `message-cp init check ${name}`;
+  const { client, transport } = remoteClient(r, { Authorization: `Bearer ${r.token}` });
+  const say = (err: unknown) => redact(err instanceof Error ? err.message : String(err), r).replaceAll(key, "<redacted>").slice(0, 300);
+  let step = "opening a session";
+  let registered = false;
+  let failure: unknown;
+  let cleanup: unknown;
+  const call = (tool: string, args: Record<string, unknown>) => callTool(client, tool, args);
+  try {
+    await client.connect(transport, { timeout: CALL_TIMEOUT_MS });
+    step = "register";
+    // Counted as registered before the reply, which may be lost after the server has acted on it.
+    registered = true;
+    await call("register", { name, bio: "message-cp init check; removed when the check ends", key });
+    step = "send_message";
+    await call("send_message", { to: name, body });
+    step = "read_inbox";
+    const inbox = (await call("read_inbox", {})) as { from?: string; body?: string }[];
+    if (!inbox.some((m) => m.from === name && m.body === body)) throw new Error("read_inbox did not return the message just sent");
+    step = "unregister";
+    await call("unregister", {});
+    registered = false;
+  } catch (err) {
+    failure = err;
+  }
+  if (registered) {
+    try {
+      await call("unregister", { name, key });
+    } catch (err) {
+      // Never registered: nothing to remove.
+      if (!/No agent named/i.test(err instanceof Error ? err.message : "")) cleanup = err;
+    }
+  }
+  await endSession(client, transport);
+  if (failure !== undefined || cleanup !== undefined) {
+    const parts = [];
+    if (failure !== undefined) parts.push(`${step}: ${say(failure)}`);
+    if (cleanup !== undefined) parts.push(`could not remove the test agent '${name}' (${say(cleanup)}); remove it on the server with: message-cp agent remove ${name}`);
+    throw new InitError(parts.join("; "));
+  }
+}
+
 export interface InitOptions {
   /** From `--client`; without it, `init` sets up the one client found, or asks on a terminal. */
   client?: ClientId;
+  /** From `--url` and `--agent`, with the token and key from the environment: set up this team server instead. */
+  remote?: Remote;
+  /** Checks the remote's token and key before anything is written; `checkRemote` by default. */
+  check?: (r: Remote) => Promise<void>;
   machine: Machine;
   run: Runner;
   /** Whether stdin and stdout are a terminal, so `init` may ask which client. */
@@ -385,29 +613,60 @@ export async function runInit(o: InitOptions): Promise<number> {
     client = found[n - 1]!;
   }
 
+  const { remote } = o;
+  if (remote !== undefined) {
+    const refused = remoteRefusal(client, o.machine, remote.endpoint);
+    if (refused !== undefined) {
+      o.err(`message-cp init: ${refused} Nothing was changed.`);
+      return 1;
+    }
+    try {
+      await (o.check ?? checkRemote)(remote);
+    } catch (err) {
+      if (!(err instanceof InitError)) throw err;
+      o.err(`message-cp init: ${redact(err.message, remote)}. Nothing was changed.`);
+      return 1;
+    }
+    o.out(`Server: ${remote.endpoint.href} accepted the token, and agent '${remote.agent}' with its key.`);
+  }
+
   let setUp: SetUp;
   try {
-    setUp = setUpClient(client, o.machine, o.run);
+    setUp = setUpClient(client, o.machine, o.run, remote);
   } catch (err) {
     if (!(err instanceof InitError)) throw err;
-    o.err(`message-cp init: ${err.message}`);
+    o.err(`message-cp init: ${redact(err.message, remote)}`);
     return 1;
   }
   const label = CLIENT_NAMES[client];
   if (setUp.state === "differs") {
-    o.err(`message-cp init: ${label} already has a server named message-cp that does not run \`npx -y message-cp\`; it was left as it is.`);
+    o.err(
+      remote === undefined
+        ? `message-cp init: ${label} already has a server named message-cp that does not run \`npx -y message-cp\`; it was left as it is.`
+        : `message-cp init: ${label} already has a server named message-cp that is not ${remote.endpoint.href} as agent '${remote.agent}'; it was left as it is.`,
+    );
     o.err(`To remove it, then run message-cp init again: ${setUp.undo}`);
     return 1;
   }
   o.out(setUp.state === "added" ? `${label}: added message-cp ${setUp.changed}.` : `${label}: already set up; nothing was changed.`);
+  if (remote !== undefined && client === "cursor") {
+    const file = configFile("cursor", o.machine);
+    if (o.machine.platform !== "win32" && (statSync(file).mode & 0o044) !== 0) {
+      o.err(`Warning: ${file} holds the token and key, and other users of this machine can read it; to make it private: chmod 600 ${file}`);
+    }
+  }
   try {
     await o.prove();
   } catch (err) {
-    o.err(`Check failed: ${err instanceof Error ? err.message : String(err)}`);
+    o.err(`Check failed: ${redact(err instanceof Error ? err.message : String(err), remote)}`);
     o.err(`The ${label} configuration was kept. To undo it: ${setUp.undo}`);
     return 1;
   }
-  o.out("Check passed: started the stdio server, registered a test agent, sent it a message, read it back and removed it.");
+  o.out(
+    remote === undefined
+      ? "Check passed: started the stdio server, registered a test agent, sent it a message, read it back and removed it."
+      : "Check passed: registered a test agent on the server, sent it a message, read it back and removed it.",
+  );
   o.out(`To undo: ${setUp.undo}`);
   return 0;
 }
