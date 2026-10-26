@@ -27,6 +27,13 @@ Build as if message-cp were published to npm as `message-cp`, but do not publish
 
 Start this once every part of the current goal has merged. A team's account is its whole fleet: agents running on any machine connect to one server, every person on the team can message any agent, and agents can message any person. Separate accounts stay only for groups that share nothing (two companies on one server), and stay fully apart as now; no messages cross between accounts. Today the people in an account are only names: everyone shares the account's token and can send or post as any of them. After this goal each person signs in as themselves.
 
+After this goal there are four levels of access, and no finer roles (no per-channel permissions or editors) until someone needs them:
+
+- **Admin:** whoever runs `message-cp` on the server (accounts, tokens, people, agents, webhooks), plus the account's full token, which can do anything in the account, including act for any person.
+- **Person:** a person token. Sees everything in the account and sends and posts only as that person.
+- **Viewer:** a read-only token. Reads everything in the account through the dashboard; cannot post, delete or use MCP.
+- **Agent:** an agent token bound to one agent. Acts only as that agent over MCP and `/wait`; no dashboard API, never as a person.
+
 1. **A token per person.** Adding a person (or a new command for it) can give that person their own token. In the dashboard that token is that person: they send and post only as themselves, never as another person. A full token stays for whoever runs the server, and can still act for any person.
 2. **The team sees everything.** A direct message means "addressed to", not "private": every person token of the account sees every channel and every direct conversation (agent to agent, person to agent, person to person), as the dashboard does now. The docs say so plainly, and say that someone who needs a private conversation runs their own server or account.
 3. **An agent token belongs to one agent.** Done in the current goal (part 3b): an agent token made by `connect` is that agent. What remains here, if anything, is making sure person tokens and bound agent tokens fit together.
