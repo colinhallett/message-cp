@@ -194,6 +194,39 @@ CREATE TABLE IF NOT EXISTS http_sessions (
   ended INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS http_sessions_by_last_used ON http_sessions (last_used);
+
+-- MCP clients that registered themselves for \`serve --public-url\`'s authorization flow (src/oauth.ts). \`redirect_uris\` is
+-- a JSON array of the URIs as the client sent them. Belongs to no account. These names are not the removed GitHub
+-- sign-in's \`oauth_*\` tables, which DROP_REMOVED drops, and may not appear there.
+CREATE TABLE IF NOT EXISTS mcp_clients (
+  id INTEGER PRIMARY KEY,
+  client_id TEXT NOT NULL UNIQUE,
+  client_name TEXT,
+  redirect_uris TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+);
+
+-- One authorization request from showing its page until its code is exchanged or it expires. Only hashes are kept of the
+-- request handle, the client's \`state\` and the code. \`code_hash\`, \`account_id\` and \`agent_id\` are set when a person
+-- approves it, with a new \`expires_at\` for the code.
+CREATE TABLE IF NOT EXISTS mcp_authorizations (
+  id INTEGER PRIMARY KEY,
+  request_hash TEXT NOT NULL UNIQUE,
+  client_id INTEGER NOT NULL REFERENCES mcp_clients(id) ON DELETE CASCADE,
+  redirect_uri TEXT NOT NULL,
+  code_challenge TEXT NOT NULL,
+  resource TEXT,
+  state_hash TEXT,
+  expires_at INTEGER NOT NULL,
+  code_hash TEXT UNIQUE,
+  account_id INTEGER REFERENCES accounts(id),
+  agent_id INTEGER REFERENCES agents(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS mcp_authorizations_by_expiry ON mcp_authorizations (expires_at);
+-- Forgetting a client deletes its requests (ON DELETE CASCADE) through this, not by scanning the table.
+CREATE INDEX IF NOT EXISTS mcp_authorizations_by_client ON mcp_authorizations (client_id);
+-- The same for an agent's row, should one ever be deleted.
+CREATE INDEX IF NOT EXISTS mcp_authorizations_by_agent ON mcp_authorizations (agent_id);
 `;
 
 // CREATE TABLE IF NOT EXISTS leaves an existing table alone, so columns added later are added here, only when missing.
