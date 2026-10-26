@@ -312,18 +312,25 @@ export function writeTokenFile(home: string, token: string): TokenFileState {
     if ((err as { code?: string }).code !== "EEXIST") throw new InitError(`could not write ${file} (${reason(err)})`);
   }
   if (fd !== undefined) {
+    let failed: unknown;
     try {
       writeFileSync(fd, `${token}\n`);
-      return "written";
     } catch (err) {
-      // This run made the file, so a partial one is removed: a rerun then writes it instead of finding it "differs".
-      closeSync(fd);
-      fd = undefined;
-      rmSync(file, { force: true });
-      throw new InitError(`could not write ${file} (${reason(err)})`);
-    } finally {
-      if (fd !== undefined) closeSync(fd);
+      failed = err;
     }
+    try {
+      closeSync(fd);
+    } catch (err) {
+      failed ??= err;
+    }
+    if (failed === undefined) return "written";
+    // This run made the file, so a partial one is removed: a rerun then writes it instead of finding it "differs".
+    try {
+      rmSync(file, { force: true });
+    } catch (err) {
+      throw new InitError(`could not write ${file} (${reason(failed)}), nor remove what was written (${reason(err)}); delete it, then run message-cp init again`);
+    }
+    throw new InitError(`could not write ${file} (${reason(failed)})`);
   }
   try {
     // Non-blocking, so a FIFO there (or a symlink to one) is refused below instead of waiting for a writer.
@@ -334,7 +341,11 @@ export function writeTokenFile(home: string, token: string): TokenFileState {
     if (err instanceof InitError) throw err;
     throw new InitError(`${file} is already there but could not be read (${reason(err)}); it was left as it is`);
   } finally {
-    if (fd !== undefined) closeSync(fd);
+    try {
+      if (fd !== undefined) closeSync(fd);
+    } catch {
+      // Only read, so a failed close loses nothing.
+    }
   }
 }
 
