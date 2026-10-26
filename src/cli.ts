@@ -6,7 +6,7 @@ import { AgentListError, KeyResetError, PersonError, PurgeError, ToolError, addP
 import { AccountError, addAccount, addToken, listAccounts, listTokens, revokeToken, type NewToken } from "./accounts.js";
 import { ConnectError, clientSetup, connectAgent, mcpEndpoint, publicUrl as checkedPublicUrl } from "./connect.js";
 import { OWNER_ACCOUNT, openDb } from "./db.js";
-import { CLIENT_IDS, askOnTerminal, ownServer, proveRemote, proveServer, realRunner, runInit, type ClientId, type Remote } from "./init.js";
+import { CLIENT_IDS, InitError, askOnTerminal, ownServer, proveRemote, proveServer, readConnectFile, realRunner, runInit, type ClientId, type Remote } from "./init.js";
 import { hasUnread, unreadSummary } from "./messages.js";
 import { setting } from "./settings.js";
 import { formatUnread } from "./wait.js";
@@ -21,7 +21,7 @@ const USAGE = {
   person: "message-cp person add <name> [--account <name>] | message-cp person remove <name> [--account <name>] | message-cp person list [--account <name>]",
   agent: "message-cp agent list [--account <name>] | message-cp agent remove <name> [--account <name>] | message-cp agent key reset <name> [--account <name>]",
   connect: "message-cp connect <agent> --url <public url> [--account <name>] [--new-key]",
-  init: `message-cp init [--client <${CLIENT_IDS.join("|")}>] [--url <public url> --agent <name>] (with --url, the token from MESSAGE_CP_HTTP_TOKEN and the key from MESSAGE_CP_AGENT_KEY)`,
+  init: `message-cp init [--client <${CLIENT_IDS.join("|")}>] [--url <public url> --agent <name> | --from <file connect wrote>] (with --url, the token from MESSAGE_CP_HTTP_TOKEN and the key from MESSAGE_CP_AGENT_KEY)`,
 };
 
 const [command, ...rest] = process.argv.slice(2);
@@ -341,9 +341,10 @@ if (command === "serve") {
   }
   db.close();
 } else if (command === "init") {
-  // Run on the machine the coding agent runs on. Adds the stdio server, or with --url and --agent the team server, to
-  // one client's user-level configuration and checks it with a test agent that is removed afterwards; nothing it prints
-  // holds a token or key, which come only from the environment, never from a flag that shell history would keep.
+  // Run on the machine the coding agent runs on. Adds the stdio server, or with --from or --url and --agent the team
+  // server, to one client's user-level configuration and checks it with a test agent that is removed afterwards; nothing
+  // it prints holds a token or key, which come only from the environment or the file `connect` wrote, never from a flag
+  // that shell history would keep.
   const usage = () => {
     console.error(`usage: ${USAGE.init}`);
     process.exit(2);
@@ -352,14 +353,23 @@ if (command === "serve") {
   for (let i = 0; i < rest.length; i += 2) {
     const option = rest[i]!;
     const value = rest[i + 1];
-    if ((option !== "--client" && option !== "--url" && option !== "--agent") || opts.has(option) || !value || value.startsWith("--")) usage();
+    if (!["--client", "--url", "--agent", "--from"].includes(option) || opts.has(option) || !value || value.startsWith("--")) usage();
     if (option === "--client" && !CLIENT_IDS.includes(value as ClientId)) usage();
     opts.set(option, value!);
   }
   if (opts.has("--url") !== opts.has("--agent")) usage();
+  if (opts.has("--from") && opts.has("--url")) usage();
   const client = opts.get("--client") as ClientId | undefined;
   let remote: Remote | undefined;
-  if (opts.has("--url")) {
+  if (opts.has("--from")) {
+    try {
+      remote = readConnectFile(opts.get("--from")!);
+    } catch (err) {
+      if (!(err instanceof InitError)) throw err;
+      console.error(`message-cp init: ${err.message}`);
+      process.exit(1);
+    }
+  } else if (opts.has("--url")) {
     let endpoint: URL;
     try {
       endpoint = mcpEndpoint(opts.get("--url")!);
