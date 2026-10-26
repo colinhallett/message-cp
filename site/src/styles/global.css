@@ -248,13 +248,16 @@
   @media (min-width: 64rem) {
     .hero { grid-template-columns: minmax(0, 1fr) minmax(0, 1.05fr); gap: 3.5rem; padding: 5rem 0 4rem; }
   }
-  /* The start command: the clone address on a continued line of its own,
-     then one step per line, each starting with &&. On a phone the copy
-     button sits above the first line and the type is small enough for the
-     clone address and its trailing backslash to fit on one line at 360px. */
-  .hero .code:has(.copy:not([hidden])) pre { padding-right: 1rem; }
+  /* The prompt to give an agent, then the command to run by hand, each under
+     a short label. The prompt wraps in balanced lines, so the setup.md
+     address stays whole on a line of its own. On a phone the copy button
+     sits above the first line and the type is small enough for that address
+     to fit on one line at 360px. */
+  .hero-step { margin: 1.25rem 0 0; color: var(--color-muted); font-size: 0.9375rem; }
+  .hero .code { margin-top: 0.5rem; }
+  .hero .code pre { text-wrap: balance; }
   @media (max-width: 40rem) {
-    .hero .code pre, .hero .code:has(.copy:not([hidden])) pre { padding-inline: 0.5rem; font-size: 0.625rem; }
+    .hero .code pre, .hero .code:has(.copy:not([hidden])) pre { padding-inline: 0.625rem; font-size: 0.6875rem; }
     .hero .code:has(.copy:not([hidden])) pre { padding-top: 2.6rem; }
   }
   /* Balanced lines, at a size that fits the headline on three of them beside
