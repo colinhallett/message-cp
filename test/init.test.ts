@@ -894,11 +894,11 @@ describe("readConnectFile", () => {
     expect(refusal(home)).toBe(`${home} is not a file. Nothing was changed.`);
   });
 
-  it("refuses a file group or others can read, except on Windows", () => {
+  it("refuses a file whose mode gives group or others any access, except on Windows", () => {
     if (process.platform === "win32") return;
-    for (const mode of [0o640, 0o604, 0o644]) {
+    for (const mode of [0o640, 0o604, 0o644, 0o620, 0o601]) {
       const file = write(setup(), mode);
-      expect(refusal(file)).toContain(`other users of this machine can read it (mode 0${mode.toString(8)}); make it private with: chmod 600 ${file}`);
+      expect(refusal(file)).toContain(`its mode lets other users of this machine at it (mode 0${mode.toString(8)}); make it private with: chmod 600 ${file}`);
     }
     expect(readConnectFile(write(setup(), 0o644), "win32").token).toBe(TOKEN);
   });
@@ -1057,7 +1057,7 @@ describe("message-cp init --from", () => {
     chmodSync(file, 0o644);
     const r = await run(["--client", "cursor", "--from", file]);
     expect(r.status).toBe(1);
-    expect(r.output).toContain("other users of this machine can read it");
+    expect(r.output).toContain("its mode lets other users of this machine at it");
     expect(r.output).not.toContain(TOKEN);
     expect(existsSync(join(home, ".cursor", "mcp.json"))).toBe(false);
     expect(existsSync(join(home, ".message-cp"))).toBe(false);

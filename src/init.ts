@@ -234,8 +234,8 @@ const MAX_CONNECT_FILE = 64 * 1024;
  * The team server in the file `message-cp connect` wrote: the `mcpServers` JSON after its `claude mcp add` line, which
  * must name exactly one server with a `url` and the three headers `clientSetup` in `src/connect.ts` writes. The URL goes
  * through `mcpEndpoint`, the check `init --url` uses. Refuses a file it cannot read, one that is not a regular file or
- * is over 64 KiB, one group or others can read (except on Windows, which has no such modes), and one without exactly
- * one usable URL, agent, token and key. No message holds the file's contents.
+ * is over 64 KiB, one whose mode gives group or others any access (except on Windows, which has no such modes), and one
+ * without exactly one usable URL, agent, token and key. No message holds the file's contents.
  */
 export function readConnectFile(file: string, platform: NodeJS.Platform = process.platform): Remote {
   const refuse = (why: string) => new InitError(`${file} ${why}. Nothing was changed.`);
@@ -246,7 +246,7 @@ export function readConnectFile(file: string, platform: NodeJS.Platform = proces
     const st = fstatSync(fd);
     if (!st.isFile()) throw refuse("is not a file");
     if (platform !== "win32" && (st.mode & 0o077) !== 0) {
-      throw refuse(`holds a token and key, and other users of this machine can read it (mode ${(st.mode & 0o777).toString(8).padStart(4, "0")}); make it private with: chmod 600 ${file}, then run message-cp init again`);
+      throw refuse(`holds a token and key, and its mode lets other users of this machine at it (mode ${(st.mode & 0o777).toString(8).padStart(4, "0")}); make it private with: chmod 600 ${file}, then run message-cp init again`);
     }
     if (st.size > MAX_CONNECT_FILE) throw refuse("is too large to be what message-cp connect wrote");
     text = readFileSync(fd, "utf8");
@@ -835,7 +835,7 @@ export async function runInit(o: InitOptions): Promise<number> {
     state = writeTokenFile(o.machine.home, remote.token);
   } catch (err) {
     if (!(err instanceof InitError)) throw err;
-    o.err(`message-cp init: ${redact(err.message, remote)}. The wake-up command reads the token from that file.`);
+    o.err(`message-cp init: ${label} was set up and the check passed, but ${redact(err.message, remote)}; the wake-up command reads the token from that file.`);
     return 1;
   }
   if (state === "differs") {
