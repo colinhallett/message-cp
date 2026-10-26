@@ -41,10 +41,10 @@ To try it with no domain, set `MESSAGE_CP_DOMAIN=localhost` and use `https://loc
 
 1. Choose the agent's name (1 to 32 letters, digits, `-` or `_`, not `all`), such as `writer`. On the server, write its key and an agent token to a private file. Without Docker: `(umask 077 && message-cp connect writer --url https://message-cp.example.com > ~/.message-cp/connect-writer.txt)`. With Docker, from the clone: `mkdir -p ~/.message-cp && chmod 700 ~/.message-cp`, then `(umask 077 && docker compose exec -T message-cp message-cp connect writer --url https://message-cp.example.com > ~/.message-cp/connect-writer.txt)`. Add `--account <name>` for an account other than `owner`, and `--new-key` for an existing agent (ending its sessions).
 2. Copy the file privately (such as with `scp`) to the agent's machine and `chmod 600` it: outside Windows, `init` refuses wider modes.
-3. There, run `npx -y message-cp init --from <file>`, adding `--client <client>` if it finds several. It checks the token and key before changing anything, sets up the client, runs section 2's check, then writes the token to `~/.message-cp/http-token` for the wake-up command, or says why not.
+3. There, run `npx -y message-cp init --from <file>`, adding `--client <client>` if it finds several. It checks the token and key before changing anything, sets up the client, proves it works, then writes the token to `~/.message-cp/http-token` for the wake-up command, or says why not.
 4. After "Check failed", the client is set up: fix what it names and rerun `init`, or run the printed undo. If `init` stopped earlier, it changed nothing and says why:
    - A different message-cp server there: as in section 2, step 4.
-   - Codex cannot send the headers: offer Claude Code or Cursor.
+   - Codex cannot send the token: offer Claude Code or Cursor.
    - Claude Code on Windows: from the agent's project folder, run the `claude mcp add` command on the file's first line without printing it (it adds the server for that folder only). Then save the token unprinted: `mkdir -p ~/.message-cp && chmod 700 ~/.message-cp`, then `(umask 077 && sed -n 's/.*Bearer \([0-9a-f]*\)".*/\1/p' <file> > ~/.message-cp/http-token)`.
    - Claude Desktop: have the person open the file, unseen by you, and add a custom connector (Customize, Connectors, Add, Add custom connector, No sign in) with its URL and three headers.
    - Cursor, when others can read `~/.cursor/mcp.json`: run `chmod 600 ~/.cursor/mcp.json`, then rerun `init`.

@@ -24,17 +24,18 @@ import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { fileURLToPath } from "node:url";
-import { NAME_PATTERN, PurgeError, purgeAgent } from "./agents.js";
+import { NAME_PATTERN, NOT_REGISTERED, PurgeError, purgeAgent } from "./agents.js";
 import { ConnectError, mcpEndpoint } from "./connect.js";
 import { dbPath, openDb } from "./db.js";
 
 // `message-cp init`: adds the stdio server `npx -y message-cp` to one coding agent's user-level MCP configuration on
 // this machine, then proves the server works by registering a test agent, sending it a message and reading it back.
 // It never prints a token or key: the test agent's key is made here, stays in memory, and the agent is purged after.
-// With `--url` and `--agent` it adds a team server over HTTP instead, carrying the token from MESSAGE_CP_HTTP_TOKEN and
-// the agent's key from MESSAGE_CP_AGENT_KEY in its headers, and nothing it prints holds either of them. With `--from`
-// it reads the URL, agent, token and key from the file `message-cp connect` wrote instead, and once the check passes
-// also writes the token to ~/.message-cp/http-token for the wake-up command.
+// With `--url` and `--agent` it adds a team server over HTTP instead, carrying the token from MESSAGE_CP_HTTP_TOKEN in
+// its headers, with the agent's name and its key from MESSAGE_CP_AGENT_KEY unless the token is bound to the agent, and
+// nothing it prints holds the token or key. With `--from` it reads the URL, agent, token and key from the file
+// `message-cp connect` wrote instead, and once the check passes also writes the token to ~/.message-cp/http-token for
+// the wake-up command.
 
 export class InitError extends Error {}
 
@@ -169,7 +170,7 @@ export function mergeServer(file: string, server: JsonServer = STDIO_SERVER): Se
   if (entry !== undefined) {
     // A secret entry already there is "present" only while no other user can read it.
     if (server.same(entry) && readable(existsSync(file) ? statSync(file).mode : 0)) {
-      throw new InitError(`${file} holds the token and key, and other users of this machine can read it; it was left as it is. To make it private, run: chmod 600 ${file}, then run message-cp init again.`);
+      throw new InitError(`${file} holds the token, and other users of this machine can read it; it was left as it is. To make it private, run: chmod 600 ${file}, then run message-cp init again.`);
     }
     return server.same(entry) ? "present" : "differs";
   }
@@ -222,9 +223,12 @@ export interface Remote {
   endpoint: URL;
   agent: string;
   token: string;
-  key: string;
+  /** The agent's key, from the file or MESSAGE_CP_AGENT_KEY; a token bound to the agent does not need it. */
+  key?: string;
   /** With `--from`, the file the rest was read from; otherwise the token and key came from the environment. */
   from?: string;
+  /** The token is bound to the agent, as `checkRemote` found, so it alone acts as the agent and is the only header. */
+  bound?: boolean;
 }
 
 /** The most `readConnectFile` reads: `connect` writes well under 2 KiB. */
@@ -349,12 +353,28 @@ export function writeTokenFile(home: string, token: string): TokenFileState {
   }
 }
 
-/** The three headers a client sends to act as the agent, the same three `clientSetup` in `src/connect.ts` prints. */
-export const remoteHeaders = (r: Remote): Record<string, string> => ({
-  Authorization: `Bearer ${r.token}`,
-  "X-Message-CP-Agent": r.agent,
-  "X-Message-CP-Agent-Key": r.key,
-});
+/**
+ * The headers a client sends to act as the agent: only `Authorization` for a token bound to it, otherwise the same three
+ * `clientSetup` in `src/connect.ts` prints.
+ */
+export const remoteHeaders = (r: Remote): Record<string, string> =>
+  r.bound
+    ? { Authorization: `Bearer ${r.token}` }
+    : { Authorization: `Bearer ${r.token}`, "X-Message-CP-Agent": r.agent, "X-Message-CP-Agent-Key": r.key ?? "" };
+
+/**
+ * Whether the header values `get` reads from an existing entry are the ones `r` sends. For a bound token, the entry an
+ * earlier `init` wrote with the agent's name and key as well is the same too, since the server accepts a bound token
+ * with headers naming its own agent and its key: the name must be `r.agent`, and the key, when `r` has one, must be it.
+ */
+function sameHeaders(r: Remote, get: (name: string) => unknown): boolean {
+  if (get("Authorization") !== `Bearer ${r.token}`) return false;
+  if (!r.bound) return Object.entries(remoteHeaders(r)).every(([k, v]) => get(k) === v);
+  const agent = get("X-Message-CP-Agent");
+  const key = get("X-Message-CP-Agent-Key");
+  if (agent === undefined && key === undefined) return true;
+  return agent === r.agent && typeof key === "string" && (r.key === undefined || key === r.key);
+}
 
 /** `text` with the token and key replaced by `<redacted>`, so no line `init` passes on holds either. */
 export function redact(text: string, r: Pick<Remote, "token" | "key"> | undefined): string {
@@ -378,30 +398,22 @@ export const claudeRemoteAdd = (r: Remote): string[] => [
 
 /**
  * The Cursor entry for the team server: `url` and `headers`, with no `type`, as Cursor documents a remote server. An
- * entry is the same only with the same URL and all three headers, so one holding an old token or key is not.
+ * entry is the same only with the same URL and headers (`sameHeaders`), so one holding an old token or key is not.
  */
 export const cursorRemote = (r: Remote): JsonServer => ({
   entry: { url: r.endpoint.href, headers: remoteHeaders(r) },
   secret: true,
-  same: (e) =>
-    isObject(e) &&
-    e.url === r.endpoint.href &&
-    isObject(e.headers) &&
-    Object.entries(remoteHeaders(r)).every(([k, v]) => (e.headers as Record<string, unknown>)[k] === v),
+  same: (e) => isObject(e) && e.url === r.endpoint.href && isObject(e.headers) && sameHeaders(r, (k) => (e.headers as Record<string, unknown>)[k]),
 });
 
 /**
- * Whether `claude mcp get`'s output describes the team server `r` acts as: `Type: http`, its `URL:` and the three
- * header lines, so an entry holding an old token or key is not the same. The output holds the token and key, so it is
- * only matched, never printed.
+ * Whether `claude mcp get`'s output describes the team server `r` acts as: `Type: http`, its `URL:` and the header
+ * lines (`sameHeaders`), so an entry holding an old token or key is not the same. The output holds the token and key, so
+ * it is only matched, never printed.
  */
 function sameRemote(stdout: string, r: Remote): boolean {
   const field = (name: string) => new RegExp(`^\\s*${name}: (.*)$`, "m").exec(stdout)?.[1]?.trim();
-  return (
-    field("Type") === "http" &&
-    field("URL") === r.endpoint.href &&
-    Object.entries(remoteHeaders(r)).every(([k, v]) => field(k) === v)
-  );
+  return field("Type") === "http" && field("URL") === r.endpoint.href && sameHeaders(r, field);
 }
 
 /** Whether `get`'s output describes a stdio server that runs `npx -y message-cp`. */
@@ -434,23 +446,23 @@ export interface SetUp {
 
 /**
  * Why `client` cannot be set up for the team server at `endpoint` on this machine, with what to do by hand, or undefined
- * if it can. `codex mcp add` takes `--url` but no custom headers. Claude Desktop takes a team server only as a custom
- * connector in its app. On Windows `claude` is a `.cmd` file that only a shell can start, and the token and key must
- * not pass through a shell string. An existing Cursor file that group or others can read is refused, so the token and
+ * if it can. `codex mcp add` takes `--url` but no custom headers and no literal bearer token. Claude Desktop takes a team server only as a custom
+ * connector in its app. On Windows `claude` is a `.cmd` file that only a shell can start, and the token must not
+ * pass through a shell string. An existing Cursor file that group or others can read is refused, so the token and
  * key are never written where other users can read them; its mode is left as it is.
  */
 export function remoteRefusal(client: ClientId, m: Machine, endpoint: URL): string | undefined {
   if (client === "codex") {
-    return "Codex cannot be set up for a team server: `codex mcp add` takes no custom headers, so it cannot send the agent's name and key.";
+    return "Codex cannot be set up for a team server: `codex mcp add` takes no custom headers and no literal bearer token, only the name of an environment variable that holds one.";
   }
   if (client === "claude-desktop") {
     return `Claude Desktop takes a team server as a custom connector in its app: in Customize, Connectors, choose Add, then Add custom connector, give it a name and the URL ${endpoint.href}, choose No sign in, and add the three request headers.`;
   }
   if (client === "claude-code" && m.platform === "win32") {
-    return "on Windows, message-cp init cannot run `claude mcp add` without passing the token and key through a shell; run the `claude mcp add` command `message-cp connect` printed instead, or use --client cursor.";
+    return "on Windows, message-cp init cannot run `claude mcp add` without passing the token through a shell; run the `claude mcp add` command `message-cp connect` printed instead, or use --client cursor.";
   }
   if (client === "cursor" && m.platform !== "win32") {
-    // Checked before the token and key are written, not after: its mode is the user's to change, not init's.
+    // Checked before the token is written, not after: its mode is the user's to change, not init's.
     const file = configFile("cursor", m);
     let mode = 0;
     try {
@@ -459,7 +471,7 @@ export function remoteRefusal(client: ClientId, m: Machine, endpoint: URL): stri
       // Not there yet: mergeServer makes it 0600.
     }
     if ((mode & 0o044) !== 0) {
-      return `${file} would hold the token and key, and other users of this machine can read it; to make it private, run: chmod 600 ${file}, then run message-cp init again.`;
+      return `${file} would hold the token, and other users of this machine can read it; to make it private, run: chmod 600 ${file}, then run message-cp init again.`;
     }
   }
   return undefined;
@@ -480,11 +492,12 @@ export function setUpClient(client: ClientId, m: Machine, run: Runner, remote?: 
   }
   const c = cliCommands[client];
   const undo = [c.command, ...c.remove].join(" ");
-  // With `remote`, what is shown leaves out the headers, which hold the token and key.
+  // With `remote`, what is shown leaves out the headers, which hold the token (and key).
   const add = remote === undefined ? c.add : claudeRemoteAdd(remote);
   const target = remote === undefined ? [c.command, ...c.add].join(" ") : `${c.command} mcp add --scope user --transport http ${SERVER_NAME} ${remote.endpoint.href}`;
   const got = run(c.command, c.get);
-  const changed = remote === undefined ? `with \`${target}\`` : `with \`${target}\` and the agent's three headers`;
+  const headers = remote?.bound ? "the token's Authorization header" : "the agent's three headers";
+  const changed = remote === undefined ? `with \`${target}\`` : `with \`${target}\` and ${headers}`;
   if (got.status === 0) {
     const same = remote === undefined ? runsPackage(client, got.stdout) : sameRemote(got.stdout, remote);
     return { client, state: same ? "present" : "differs", changed, undo };
@@ -653,13 +666,17 @@ async function callTool(client: Client, tool: string, args: Record<string, unkno
 }
 
 /**
- * Checks the token and the agent's key before anything is written. A session that sends only the token finds the agent
- * with `get_agent`, since a session that names an agent registers it, and `init` makes no agent; then a session with
- * the three headers the client will send, which acts as the agent from its first request. Both sessions are ended.
- * Throws an InitError that says which was refused: the token (401, or 403 for a read-only one), the agent's name (not
- * on the server) or its key (403), or that the server could not be reached. No message holds the token or key.
+ * Checks the token, and the agent's key if there is one, before anything is written, and returns whether the token is
+ * bound to the agent. A session that sends only the token finds the agent with `get_agent`, since a session that names
+ * an agent registers it, and `init` makes no agent. On that session `read_conversation` (which marks nothing read) fails
+ * as not registered for an unbound token; for a bound one it succeeds, and `register` with a random name, refused before
+ * it does anything, says which agent the token is: one bound to another agent is refused. Then, with a key, a session
+ * with the three headers an unbound token's client sends, which acts as the agent from its first request. Every session
+ * is ended. Throws an InitError that says which was refused: the token (401, or 403 for a read-only one), the agent's
+ * name (not on the server, or not the bound token's agent) or its key (403, or none for an unbound token), or that the
+ * server could not be reached. No message holds the token or key.
  */
-export async function checkRemote(r: Remote): Promise<void> {
+export async function checkRemote(r: Remote): Promise<boolean> {
   const tokenIn = r.from === undefined ? "the token in MESSAGE_CP_HTTP_TOKEN" : `the token in ${r.from}`;
   const keyIn = r.from === undefined ? "the key in MESSAGE_CP_AGENT_KEY" : `the key in ${r.from}`;
   const refusal = (err: unknown, named: boolean): InitError => {
@@ -671,7 +688,9 @@ export async function checkRemote(r: Remote): Promise<void> {
     if (code === 403) return new InitError(`the server refused agent '${r.agent}' with ${keyIn} (403): ${message}`);
     return new InitError(`could not open a session at ${r.endpoint.href}: ${message}`);
   };
+  const said = (err: unknown) => redact(err instanceof Error ? err.message : String(err), r);
   const plain = remoteClient(r, { Authorization: `Bearer ${r.token}` });
+  let bound = false;
   try {
     try {
       await plain.client.connect(plain.transport, { timeout: CALL_TIMEOUT_MS });
@@ -682,17 +701,47 @@ export async function checkRemote(r: Remote): Promise<void> {
     try {
       agent = await callTool(plain.client, "get_agent", { name: r.agent });
     } catch (err) {
-      const message = redact(err instanceof Error ? err.message : String(err), r);
+      const message = said(err);
       if (/No agent named/.test(message)) {
         throw new InitError(`the server has no agent named '${r.agent}'; make it on the server with: message-cp connect ${r.agent} --url <public url>`);
       }
       throw new InitError(`get_agent: ${message.slice(0, 300)}`);
     }
     if (agent.person) throw new InitError(`'${r.agent}' is a person on the server, not an agent`);
+    try {
+      await callTool(plain.client, "read_conversation", { name: r.agent, limit: 1 });
+      bound = true;
+    } catch (err) {
+      const message = said(err);
+      if (!message.includes(NOT_REGISTERED)) throw new InitError(`read_conversation: ${message.slice(0, 300)}`);
+    }
+    if (bound) {
+      // Refused before it does anything, so nothing is registered: its message names the token's agent.
+      const name = `init-check-${randomBytes(10).toString("hex")}`;
+      let refused: RegExpExecArray | null = null;
+      try {
+        await callTool(plain.client, "register", { name, bio: "message-cp init check", key: randomBytes(24).toString("hex") });
+      } catch (err) {
+        refused = /This token is already agent '([^']*)'/.exec(err instanceof Error ? err.message : "");
+        if (!refused) throw new InitError(`register: ${said(err).slice(0, 300)}`);
+      }
+      if (!refused) throw new InitError(`register: the token could read as an agent but could also register '${name}'; remove it on the server with: message-cp agent remove ${name}`);
+      if (refused[1]!.toLowerCase() !== r.agent.toLowerCase()) {
+        throw new InitError(`${tokenIn} is bound to agent '${refused[1]}', not '${r.agent}'`);
+      }
+    }
   } finally {
     await endSession(plain.client, plain.transport);
   }
-  const named = remoteClient(r, remoteHeaders(r));
+  if (r.key === undefined) {
+    if (bound) return true;
+    throw new InitError(
+      r.from === undefined
+        ? `${tokenIn} is not bound to agent '${r.agent}', so it needs the agent's key: set MESSAGE_CP_AGENT_KEY, or use the token message-cp connect printed`
+        : `${tokenIn} is not bound to agent '${r.agent}', and there is no key to go with it`,
+    );
+  }
+  const named = remoteClient(r, { Authorization: `Bearer ${r.token}`, "X-Message-CP-Agent": r.agent, "X-Message-CP-Agent-Key": r.key });
   try {
     await named.client.connect(named.transport, { timeout: CALL_TIMEOUT_MS });
   } catch (err) {
@@ -700,6 +749,7 @@ export async function checkRemote(r: Remote): Promise<void> {
   } finally {
     await endSession(named.client, named.transport);
   }
+  return bound;
 }
 
 /**
@@ -790,8 +840,11 @@ export interface InitOptions {
    * instead. With `from`, the token is also written to `~/.message-cp/http-token` once the check passes.
    */
   remote?: Remote;
-  /** Checks the remote's token and key before anything is written; `checkRemote` by default. */
-  check?: (r: Remote) => Promise<void>;
+  /**
+   * Checks the remote's token and key before anything is written, and returns whether the token is bound to the agent
+   * (anything but true counts as unbound); `checkRemote` by default.
+   */
+  check?: (r: Remote) => Promise<boolean | void>;
   machine: Machine;
   run: Runner;
   /** Whether stdin and stdout are a terminal, so `init` may ask which client. */
@@ -841,7 +894,7 @@ export async function runInit(o: InitOptions): Promise<number> {
     client = found[n - 1]!;
   }
 
-  const { remote } = o;
+  const remote = o.remote === undefined ? undefined : { ...o.remote };
   if (remote !== undefined) {
     const refused = remoteRefusal(client, o.machine, remote.endpoint);
     if (refused !== undefined) {
@@ -849,13 +902,19 @@ export async function runInit(o: InitOptions): Promise<number> {
       return 1;
     }
     try {
-      await (o.check ?? checkRemote)(remote);
+      remote.bound = (await (o.check ?? checkRemote)(remote)) === true;
     } catch (err) {
       if (!(err instanceof InitError)) throw err;
       o.err(`message-cp init: ${redact(err.message, remote)}. Nothing was changed.`);
       return 1;
     }
-    o.out(`Server: ${remote.endpoint.href} accepted the token, and agent '${remote.agent}' with its key.`);
+    o.out(
+      remote.key === undefined
+        ? `Server: ${remote.endpoint.href} accepted the token, which is agent '${remote.agent}'.`
+        : remote.bound
+          ? `Server: ${remote.endpoint.href} accepted the token, which is agent '${remote.agent}', and its key.`
+          : `Server: ${remote.endpoint.href} accepted the token, and agent '${remote.agent}' with its key.`,
+    );
   }
 
   let setUp: SetUp;
@@ -871,7 +930,7 @@ export async function runInit(o: InitOptions): Promise<number> {
     o.err(
       remote === undefined
         ? `message-cp init: ${label} already has a server named message-cp that does not run \`npx -y message-cp\`; it was left as it is.`
-        : `message-cp init: ${label} already has a server named message-cp that is not ${remote.endpoint.href} as agent '${remote.agent}' with this token and key; it was left as it is.`,
+        : `message-cp init: ${label} already has a server named message-cp that is not ${remote.endpoint.href} as agent '${remote.agent}' with this ${remote.key === undefined ? "token" : "token and key"}; it was left as it is.`,
     );
     o.err(`To remove it, then run message-cp init again: ${setUp.undo}`);
     return 1;
