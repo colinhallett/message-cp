@@ -101,7 +101,13 @@ describe("connectAgent", () => {
       tokenId: expect.any(Number),
       token: expect.stringMatching(/^[0-9a-f]{64}$/),
     });
-    expect(accountForToken(db, c.token, TOKEN)).toEqual({ account: OWNER_ACCOUNT, readOnly: false, agentOnly: true });
+    const identity = identityOf(db, OWNER_ACCOUNT, "demo")!;
+    expect(accountForToken(db, c.token, TOKEN)).toEqual({
+      account: OWNER_ACCOUNT,
+      readOnly: false,
+      agentOnly: true,
+      agent: { ...identity, name: "Demo" },
+    });
     expect(listTokens(db).find((t) => t.id === c.tokenId)).toMatchObject({ account: "owner", kind: "agent" });
     expect(() => registerAgent(db, OWNER_ACCOUNT, "demo", undefined, c.key)).not.toThrow();
     // Neither the key nor the token is stored, only their hashes.
@@ -276,7 +282,12 @@ describe("message-cp connect", () => {
     expect(res.status).toBe(0);
     expect(res.stderr).toContain("agent 'demo' in account 'friend'");
     const token = parse(res.stdout).headers.Authorization!.replace(/^Bearer /, "");
-    expect(accountForToken(db, token, TOKEN)).toEqual({ account: friend, readOnly: false, agentOnly: true });
+    expect(accountForToken(db, token, TOKEN)).toEqual({
+      account: friend,
+      readOnly: false,
+      agentOnly: true,
+      agent: { ...identityOf(db, friend, "demo")!, name: "demo" },
+    });
     expect(identityOf(db, OWNER_ACCOUNT, "demo")).toBeUndefined();
   }, 60_000);
 

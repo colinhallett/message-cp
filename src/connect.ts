@@ -53,10 +53,11 @@ export interface Connection {
 
 /**
  * Makes the account's agent `name` with a new key, or, with `newKey`, gives its existing agent of that name (any case) a
- * new key as `resetAgentKey` does, ending its sessions; then makes an agent token for the account. One transaction:
+ * new key as `resetAgentKey` does, ending its sessions; then makes an agent token for the account bound to that agent. One transaction:
  * `registerWithIdentity`, `resetAgentKey` and `addToken` run inside it as savepoints, so a failure leaves no agent, key
  * or token behind. Refuses, changing nothing, an unknown account, an invalid name, a person's name, and an existing
- * agent without `newKey`, since its key is stored only as a hash and cannot be shown again.
+ * agent without `newKey`, since its key is stored only as a hash and cannot be shown again. The token is bound to the
+ * agent: it acts as that agent with no headers or `register`, and as no other name.
  */
 export const connectAgent = (db: Db, account: string, name: string, newKey: boolean): Connection =>
   db.transaction((): Connection => {
@@ -72,13 +73,14 @@ export const connectAgent = (db: Db, account: string, name: string, newKey: bool
         `Agent '${live.name}' of account '${acct.name}' already exists. Its key is stored only as a hash, so it cannot be shown again; pass --new-key to give it a new one, which ends its current sessions.`,
       );
     }
-    let agent: { name: string; key: string };
-    if (live) agent = resetAgentKey(db, acct.name, live.name);
+    let agent: { id: number; name: string; key: string };
+    if (live) agent = { ...resetAgentKey(db, acct.name, live.name), id: live.id };
     else {
-      const { result } = registerWithIdentity(db, acct.id, name);
-      agent = { name: result.name, key: result.key! };
+      const { result, identity } = registerWithIdentity(db, acct.id, name);
+      agent = { id: identity.id, name: result.name, key: result.key! };
     }
-    const token = addToken(db, acct.name, false, true);
+    // Bound to the agent, so the token alone acts as it, and as nothing else.
+    const token = addToken(db, acct.name, false, true, agent.id);
     return { name: agent.name, account: acct.name, reset: live !== undefined, key: agent.key, tokenId: token.id, token: token.token };
   }).immediate();
 

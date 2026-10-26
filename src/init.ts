@@ -703,13 +703,18 @@ export async function checkRemote(r: Remote): Promise<void> {
 }
 
 /**
- * Proves the team server works as `proveServer` does over stdio, without touching the configured agent: on a session
+ * Proves the team server works as `proveServer` does over stdio, without touching the configured agent (except with a
+ * bound token, below): on a session
  * that sends only the token, registers a test agent with a random name and a key made here, sends it a message from
  * itself, reads it back and unregisters it, then ends the session. If a step failed after `register`, it still tries to
- * remove the test agent by name and key. Throws an InitError naming the failed step and any failed clean-up; no message
- * holds the token or either key.
+ * remove the test agent by name and key. A token `connect` made is bound to its agent and cannot register another name,
+ * so with one the agent sends itself a message instead and finds it with `read_conversation`, which marks nothing read:
+ * the agent's own unread mail stays unread, and so does the check's message. A bound token whose agent is not `r.agent`
+ * fails at `register` before anything is sent.
+ * Returns what the check did, for `runInit` to print. Throws an InitError naming the failed step and any failed
+ * clean-up; no message holds the token or either key.
  */
-export async function proveRemote(r: Remote): Promise<void> {
+export async function proveRemote(r: Remote): Promise<string> {
   const name = `init-check-${randomBytes(10).toString("hex")}`;
   const key = randomBytes(24).toString("hex");
   const body = `message-cp init check ${name}`;
@@ -719,13 +724,35 @@ export async function proveRemote(r: Remote): Promise<void> {
   let registered = false;
   let failure: unknown;
   let cleanup: unknown;
+  let bound = false;
   const call = (tool: string, args: Record<string, unknown>) => callTool(client, tool, args);
   try {
     await client.connect(transport, { timeout: CALL_TIMEOUT_MS });
     step = "register";
     // Counted as registered before the reply, which may be lost after the server has acted on it.
     registered = true;
-    await call("register", { name, bio: "message-cp init check; removed when the check ends", key });
+    try {
+      await call("register", { name, bio: "message-cp init check; removed when the check ends", key });
+    } catch (err) {
+      const refused = /This token is already agent '([^']*)'/.exec(err instanceof Error ? err.message : "");
+      if (!refused) throw err;
+      // Refused, so nothing was registered: the token is the agent, which proves the server by itself, but only when it
+      // is the agent this setup names, so the check never messages another agent.
+      registered = false;
+      if (refused[1].toLowerCase() !== r.agent.toLowerCase())
+        throw new Error(`the token is agent '${refused[1]}', not '${r.agent}'`);
+      bound = true;
+    }
+    if (bound) {
+      step = "send_message";
+      const self = `message-cp init check ${randomBytes(10).toString("hex")}`;
+      await call("send_message", { to: r.agent, body: self });
+      step = "read_conversation";
+      const sent = (await call("read_conversation", { name: r.agent, limit: 5 })) as { from?: string; body?: string }[];
+      if (!sent.some((m) => m.body === self)) throw new Error("read_conversation did not return the message just sent");
+      await endSession(client, transport);
+      return `as agent '${r.agent}' on the server, sent itself a message and found it with read_conversation; it stays unread in the agent's inbox.`;
+    }
     step = "send_message";
     await call("send_message", { to: name, body });
     step = "read_inbox";
@@ -752,6 +779,7 @@ export async function proveRemote(r: Remote): Promise<void> {
     if (cleanup !== undefined) parts.push(`could not remove the test agent '${name}' (${say(cleanup)}); remove it on the server with: message-cp agent remove ${name}`);
     throw new InitError(parts.join("; "));
   }
+  return "registered a test agent on the server, sent it a message, read it back and removed it.";
 }
 
 export interface InitOptions {
@@ -769,7 +797,8 @@ export interface InitOptions {
   /** Whether stdin and stdout are a terminal, so `init` may ask which client. */
   interactive: boolean;
   ask: (question: string) => Promise<string>;
-  prove: () => Promise<void>;
+  /** Runs the check; what it returns, if anything, is what the "Check passed" line says it did. */
+  prove: () => Promise<string | void>;
   out: (line: string) => void;
   err: (line: string) => void;
 }
@@ -848,17 +877,20 @@ export async function runInit(o: InitOptions): Promise<number> {
     return 1;
   }
   o.out(setUp.state === "added" ? `${label}: added message-cp ${setUp.changed}.` : `${label}: already set up; nothing was changed.`);
+  let proved: string | void;
   try {
-    await o.prove();
+    proved = await o.prove();
   } catch (err) {
     o.err(`Check failed: ${redact(err instanceof Error ? err.message : String(err), remote)}`);
     o.err(`The ${label} configuration was kept. To undo it: ${setUp.undo}`);
     return 1;
   }
   o.out(
-    remote === undefined
-      ? "Check passed: started the stdio server, registered a test agent, sent it a message, read it back and removed it."
-      : "Check passed: registered a test agent on the server, sent it a message, read it back and removed it.",
+    proved
+      ? `Check passed: ${proved}`
+      : remote === undefined
+        ? "Check passed: started the stdio server, registered a test agent, sent it a message, read it back and removed it."
+        : "Check passed: registered a test agent on the server, sent it a message, read it back and removed it.",
   );
   o.out(`To undo: ${setUp.undo}`);
   if (remote?.from === undefined) return 0;

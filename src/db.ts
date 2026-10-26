@@ -354,6 +354,9 @@ function migrate(db: Db, path: string): void {
   // 1 for a token that cannot act as a person (`token add --agent-only`); tokens made before it existed keep their access.
   // Its row has read_only 1 as well, so a server from before this column sees it as read-only, not full.
   addColumn(db, "agent_only", "INTEGER NOT NULL DEFAULT 0", "tokens");
+  // The agent an agent token acts as (`message-cp connect`), null for every other token. Its row is agent-only, so a
+  // server from before this column takes it for an agent token that is not bound to one agent.
+  addColumn(db, "agent_id", "INTEGER REFERENCES agents(id)", "tokens");
   // Until when the request of the sender that last claimed the delivery may be in flight; no sender takes it before then.
   addColumn(db, "claimed_until", "INTEGER", "webhook_deliveries");
   // The one header a webhook's deliveries carry (`webhook add --header-stdin`); both null for a webhook without one.
