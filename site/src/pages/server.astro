@@ -121,7 +121,7 @@ import CodeBlock from "../components/CodeBlock.astro";
             <tr>
               <th><code>serve --public-url &lt;url&gt;</code></th>
               <td data-label="Default">none</td>
-              <td data-label="What reads it"><code>serve</code>: the <code>http://</code> or <code>https://</code> address clients use, without <code>/mcp</code>, so it can tell sessions how to be woken over HTTP (see <strong>Public URL</strong> under <a href="#running-the-http-server">Running the HTTP server</a>).</td>
+              <td data-label="What reads it"><code>serve</code>: the address clients use, without <code>/mcp</code>, so it can tell sessions how to be woken over HTTP: <code>https:</code>, or <code>http:</code> only to a literal loopback address (<code>127.x.x.x</code> or <code>[::1]</code>, not <code>localhost</code>), with no username, password, query or fragment (see <strong>Public URL</strong> under <a href="#running-the-http-server">Running the HTTP server</a>).</td>
             </tr>
           </tbody>
         </table>

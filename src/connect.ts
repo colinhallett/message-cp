@@ -9,11 +9,11 @@ import { shellQuote } from "./wait.js";
 export class ConnectError extends Error {}
 
 /**
- * The `/mcp` endpoint for the public URL `raw`, parsed with `new URL()`: https, or http only for a literal loopback
- * address (127.x.x.x or [::1], not `localhost`), with no username, password, query or fragment, since the printed
- * client sends a token to it. A trailing `/mcp` is the same as none.
+ * The public URL `raw` clients reach the server at, parsed with `new URL()`: https, or http only for a literal loopback
+ * address (127.x.x.x or [::1], not `localhost`), with no username, password, query or fragment, since a token is sent to
+ * it. `connect --url` and `serve --public-url` both check it here.
  */
-export function mcpEndpoint(raw: string): URL {
+export function publicUrl(raw: string): URL {
   let url: URL;
   try {
     url = new URL(raw);
@@ -28,6 +28,12 @@ export function mcpEndpoint(raw: string): URL {
   if (url.username || url.password || url.href.includes("?") || url.href.includes("#")) {
     throw new ConnectError("--url must not carry a username, password, query or fragment.");
   }
+  return url;
+}
+
+/** The `/mcp` endpoint for the public URL `raw`, checked by `publicUrl`. A trailing `/mcp` is the same as none. */
+export function mcpEndpoint(raw: string): URL {
+  const url = publicUrl(raw);
   const endpoint = new URL(url.href);
   // Set as the path, never resolved as a reference, so no path can change the host.
   endpoint.pathname = `${url.pathname.replace(/\/+$/, "").replace(/\/mcp$/, "")}/mcp`;

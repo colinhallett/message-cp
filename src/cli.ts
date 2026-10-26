@@ -4,7 +4,7 @@ import { homedir } from "node:os";
 import { DEFAULT_HTTP_HOST, DEFAULT_HTTP_PORT, startHttp } from "./http.js";
 import { AgentListError, KeyResetError, PersonError, PurgeError, ToolError, addPerson, listPeople, listServerAgents, purgeAgent, removePerson, resetAgentKey } from "./agents.js";
 import { AccountError, addAccount, addToken, listAccounts, listTokens, revokeToken, type NewToken } from "./accounts.js";
-import { ConnectError, clientSetup, connectAgent, mcpEndpoint } from "./connect.js";
+import { ConnectError, clientSetup, connectAgent, mcpEndpoint, publicUrl as checkedPublicUrl } from "./connect.js";
 import { OWNER_ACCOUNT, openDb } from "./db.js";
 import { CLIENT_IDS, askOnTerminal, ownServer, proveServer, realRunner, runInit, type ClientId } from "./init.js";
 import { hasUnread, unreadSummary } from "./messages.js";
@@ -47,7 +47,17 @@ if (command === "serve") {
   if (!Number.isInteger(port) || port < 0 || port > 65535) usage();
   const host = opts.get("--host") ?? DEFAULT_HTTP_HOST;
   const publicUrl = opts.get("--public-url");
-  if (publicUrl !== undefined && (!/^https?:\/\/[^\s'?#]+$/.test(publicUrl) || /\/mcp\/*$/.test(publicUrl))) usage();
+  if (publicUrl !== undefined) {
+    let url: URL;
+    try {
+      url = checkedPublicUrl(publicUrl);
+    } catch (err) {
+      if (!(err instanceof ConnectError)) throw err;
+      usage();
+    }
+    // The address without /mcp, which httpWaitCommand builds /wait on.
+    if (/\/mcp\/*$/.test(url!.pathname)) usage();
+  }
   const http = await startHttp(openDb(), { token, host, port, publicUrl });
   console.error(`message-cp serve: listening on http://${host}:${http.port}/mcp`);
   const shutdown = () => void http.close().then(() => process.exit(0));
