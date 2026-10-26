@@ -4,6 +4,7 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import Database from "better-sqlite3";
 import { mkdtempSync } from "node:fs";
 import { request } from "node:http";
+import { connect as connectSocket, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -337,6 +338,97 @@ describe("limits", () => {
     const statuses = (await Promise.all([1, 2, 3, 4, 5].map(() => post(auth)))).map((r) => r.status).sort();
     expect(statuses).toEqual([200, 200, 503, 503, 503]);
     expect(http.sessionCount()).toBe(2);
+  });
+
+  /**
+   * Opens a POST /mcp that declares a body of `declared` bytes and sends one, and answers with the socket and the
+   * response's status once one arrives (null while the server is still reading the body).
+   */
+  const slowPost = (headers: Record<string, string>, declared = 1_000_000) =>
+    new Promise<{ socket: Socket; status: () => number | null; closed: Promise<void> }>((resolve, reject) => {
+      let status: number | null = null;
+      const socket = connectSocket(http.port, "127.0.0.1", () => {
+        const lines = [
+          "POST /mcp HTTP/1.1",
+          `Host: 127.0.0.1:${http.port}`,
+          "Content-Type: application/json",
+          "Accept: application/json, text/event-stream",
+          `Content-Length: ${declared}`,
+          ...Object.entries(headers).map(([k, v]) => `${k}: ${v}`),
+        ];
+        socket.write(`${lines.join("\r\n")}\r\n\r\n{`);
+        resolve({ socket, status: () => status, closed });
+      });
+      const closed = new Promise<void>((done) => socket.on("close", () => done()));
+      socket.on("error", reject);
+      socket.on("data", (chunk) => {
+        status ??= Number(/^HTTP\/1\.1 (\d{3})/.exec(chunk.toString())?.[1] ?? 0);
+      });
+    });
+  const settle = () => new Promise((r) => setTimeout(r, 200));
+  const toolsList = (auth: Record<string, string>, sid: string) =>
+    fetch(url(), {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json, text/event-stream",
+        ...auth,
+        "mcp-session-id": sid,
+        "mcp-protocol-version": "2025-03-26",
+      },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/list" }),
+    });
+
+  it("reads at most maxSessions request bodies for existing sessions at once, and gives each slot back", async () => {
+    await http.close();
+    http = await startHttp(db, { token: TOKEN, port: 0, maxSessions: 1 });
+    const auth = { Authorization: `Bearer ${TOKEN}` };
+    const sid = (await post(auth)).headers.get("mcp-session-id")!;
+    const slow = [];
+    for (let i = 0; i < 8; i++) slow.push(await slowPost({ ...auth, "mcp-session-id": sid }));
+    await settle();
+    // The first is still being read; the other seven were refused before their bodies, with the connection closed.
+    expect(slow.map((s) => s.status())).toEqual([null, 503, 503, 503, 503, 503, 503, 503]);
+    await Promise.all(slow.slice(1).map((s) => s.closed));
+    // So is a normal request while the slot is held.
+    const refused = await toolsList(auth, sid);
+    expect(refused.status).toBe(503);
+    expect(refused.headers.get("connection")).toBe("close");
+    // A client that goes away mid-body gives its slot back.
+    slow[0].socket.destroy();
+    await slow[0].closed;
+    await settle();
+    expect((await toolsList(auth, sid)).status).toBe(200);
+    expect((await toolsList(auth, sid)).status).toBe(200);
+    expect(http.sessionCount()).toBe(1);
+  });
+
+  it("answers an unknown session, or another account's, with 404 before reading its body or taking a slot", async () => {
+    await http.close();
+    http = await startHttp(db, { token: TOKEN, port: 0, maxSessions: 1 });
+    const other = addAccount(db, "other").token;
+    const auth = { Authorization: `Bearer ${TOKEN}` };
+    const sid = (await post(auth)).headers.get("mcp-session-id")!;
+    const held = await slowPost({ ...auth, "mcp-session-id": sid });
+    const unknown = await slowPost({ ...auth, "mcp-session-id": "no-such-session" });
+    const foreign = await slowPost({ Authorization: `Bearer ${other}`, "mcp-session-id": sid });
+    await Promise.all([unknown.closed, foreign.closed]);
+    expect([held.status(), unknown.status(), foreign.status()]).toEqual([null, 404, 404]);
+    held.socket.destroy();
+    await held.closed;
+    await settle();
+    expect((await toolsList(auth, sid)).status).toBe(200);
+  });
+
+  it("gives the slot back once a session's body is read, so a held tool call does not keep it", async () => {
+    await http.close();
+    http = await startHttp(db, { token: TOKEN, port: 0, maxSessions: 1 });
+    const a = await connect();
+    await call(a, "register", { name: "ann", bio: "x" });
+    const waiting = call(a, "wait_for_mail", { timeout_seconds: 2 });
+    await settle();
+    expect((await call(a, "list_agents", {})).text).toContain("ann");
+    expect((await waiting).text).toContain("null");
   });
 
   it("accepts extra spaces after the Bearer scheme", async () => {
