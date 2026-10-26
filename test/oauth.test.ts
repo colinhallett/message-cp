@@ -172,6 +172,18 @@ describe("OAuth metadata", () => {
     expect(server.token_endpoint).toBe("https://h.example/team/oauth/token");
     const res = await fetch(`${base()}/mcp`, { method: "POST" });
     expect(res.headers.get("www-authenticate")).toBe('Bearer resource_metadata="https://h.example/team/.well-known/oauth-protected-resource/mcp"');
+    // Where RFC 8414 and RFC 9728 look for metadata of an issuer or resource with a path.
+    const discovered = (await (await fetch(`${base()}/.well-known/oauth-authorization-server/team`)).json()) as Record<string, unknown>;
+    expect(discovered).toEqual(server);
+    const described = (await (await fetch(`${base()}/.well-known/oauth-protected-resource/team/mcp`)).json()) as Record<string, unknown>;
+    expect(described).toEqual(resource);
+  });
+
+  it("has the approval page send its approval relative to the authorization endpoint, under a public URL's path", async () => {
+    const { html } = await pageFor(await registered(), pkce().challenge);
+    expect(html).toContain('fetch("approve"');
+    expect(html).not.toContain('fetch("/oauth/approve"');
+    expect(new URL("approve", "https://h.example/team/oauth/authorize?x=1").href).toBe("https://h.example/team/oauth/approve");
   });
 
   it("points a 401 at the protected resource metadata", async () => {
@@ -264,6 +276,30 @@ describe("client registration", () => {
     await registered();
     expect(db.prepare("SELECT count(*) FROM mcp_clients").pluck().get()).toBe(MAX_CLIENTS);
     expect(db.prepare("SELECT 1 FROM mcp_clients WHERE client_id = ?").get(first)).toBeUndefined();
+  });
+
+  it("never forgets a registration with a live request or code, so registering ends no other client's flow", async () => {
+    const pending = await registered();
+    const { request } = await pageFor(pending, pkce().challenge);
+    const approved = await registered();
+    const second = pkce();
+    const { request: approvedRequest } = await pageFor(approved, second.challenge);
+    const location = ((await (await approve(ownerFull, { request: approvedRequest, state: "s1", agent: "desk" })).json()) as { location: string })
+      .location;
+    const expired = await registered();
+    await pageFor(expired, pkce().challenge);
+    db.prepare("UPDATE mcp_authorizations SET expires_at = 0 WHERE client_id = (SELECT id FROM mcp_clients WHERE client_id = ?)").run(expired);
+    const insert = db.prepare("INSERT INTO mcp_clients (client_id, client_name, redirect_uris, created_at) VALUES (?, NULL, '[]', 0)");
+    for (let i = 0; i < MAX_CLIENTS; i++) insert.run(`filler-${i}`);
+    await registered();
+    const kept = (id: string) => db.prepare("SELECT 1 FROM mcp_clients WHERE client_id = ?").get(id) !== undefined;
+    expect([kept(pending), kept(approved), kept(expired)]).toEqual([true, true, false]);
+    expect(db.prepare("SELECT count(*) FROM mcp_clients").pluck().get()).toBe(MAX_CLIENTS + 2);
+    // Both flows still finish.
+    expect((await approve(ownerFull, { request, state: "s1", agent: "desk" })).status).toBe(200);
+    const code = new URL(location).searchParams.get("code")!;
+    const res = await exchange({ grant_type: "authorization_code", code, redirect_uri: REDIRECT, client_id: approved, code_verifier: second.verifier, resource: mcp() });
+    expect(res.status).toBe(200);
   });
 });
 

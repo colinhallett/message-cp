@@ -17,7 +17,10 @@ export class OAuthError extends Error {
   }
 }
 
-/** Client registrations kept at once; registering past this forgets the oldest, which has to register again. */
+/**
+ * Client registrations kept at once, besides those with an authorization request or code not yet used or expired;
+ * registering past this forgets the oldest of the rest, which has to register again.
+ */
 export const MAX_CLIENTS = 1000;
 /** Authorization requests and codes not yet used or expired, kept at once; past this a new request is refused. */
 export const MAX_AUTHORIZATIONS = 1000;
@@ -71,7 +74,9 @@ export interface Client {
 /**
  * Registers a public client from an RFC 7591 request body: `client_name` (optional) and `redirect_uris`, each checked by
  * `checkRedirectUri` as the client sent it. A bad request stores nothing. Past `MAX_CLIENTS` the oldest registrations
- * are forgotten, with their authorization requests and codes; tokens already issued are not affected.
+ * with no authorization request or code still live are forgotten, with their expired ones, so registering never ends
+ * another client's flow; tokens already issued are not affected. Those kept with a live one number at most
+ * `MAX_AUTHORIZATIONS`.
  */
 export const registerClient = (db: Db, body: unknown): Client =>
   db.transaction((): Client => {
@@ -93,8 +98,11 @@ export const registerClient = (db: Db, body: unknown): Client =>
       Date.now(),
     );
     db.prepare(
-      "DELETE FROM mcp_clients WHERE id IN (SELECT id FROM mcp_clients ORDER BY id DESC LIMIT -1 OFFSET ?)",
-    ).run(MAX_CLIENTS);
+      `DELETE FROM mcp_clients WHERE id IN (
+         SELECT id FROM mcp_clients
+         WHERE NOT EXISTS (SELECT 1 FROM mcp_authorizations WHERE client_id = mcp_clients.id AND expires_at > ?)
+         ORDER BY id DESC LIMIT -1 OFFSET ?)`,
+    ).run(Date.now(), MAX_CLIENTS);
     return { clientId, clientName: (name as string | undefined) ?? null, redirectUris };
   }).immediate();
 

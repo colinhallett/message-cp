@@ -47,7 +47,8 @@ form.addEventListener("submit", async (event) => {
   let res;
   let answer;
   try {
-    res = await fetch("/oauth/approve", {
+    // Relative to this page, /oauth/authorize under the public URL, so it stays under the public URL's path.
+    res = await fetch("approve", {
       method: "POST",
       headers: { Authorization: "Bearer " + token.value.trim(), "Content-Type": "application/json" },
       body: JSON.stringify({ request: form.dataset.request, state: form.dataset.state === undefined ? null : form.dataset.state, agent: agent.value.trim() }),

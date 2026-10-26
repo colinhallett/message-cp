@@ -241,12 +241,6 @@ function sendOAuthJson(res: ServerResponse, status: number, value: unknown): voi
   res.end(JSON.stringify(value));
 }
 
-const OAUTH_METADATA_PATHS = new Set([
-  "/.well-known/oauth-protected-resource",
-  "/.well-known/oauth-protected-resource/mcp",
-  "/.well-known/oauth-authorization-server",
-]);
-
 /**
  * What `serve --public-url` advertises for MCP's authorization flow: the protected resource metadata (RFC 9728) for
  * /mcp, the authorization server metadata (RFC 8414), and the 401's WWW-Authenticate challenge pointing at the first.
@@ -277,6 +271,14 @@ function oauthUrls(publicUrl: string) {
       token_endpoint_auth_methods_supported: ["none"],
     },
     challenge: `Bearer resource_metadata="${resourceMetadata}"`,
+    // Where each metadata document is asked for: at the root, and, for a public URL with a path, with that path after
+    // the well-known part, as RFC 8414 and RFC 9728 build it from an issuer or resource with a path.
+    resourcePaths: new Set([
+      "/.well-known/oauth-protected-resource",
+      "/.well-known/oauth-protected-resource/mcp",
+      `/.well-known/oauth-protected-resource${prefix}/mcp`,
+    ]),
+    serverPaths: new Set(["/.well-known/oauth-authorization-server", `/.well-known/oauth-authorization-server${prefix}`]),
   };
 }
 
@@ -875,9 +877,9 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
     }
     // The authorization flow's metadata, registration, authorization page and token endpoint are the same for everyone and
     // reveal no account, so they too come before the token; without a public URL none of them exists.
-    if (oauth && OAUTH_METADATA_PATHS.has(path)) {
+    if (oauth && (oauth.serverPaths.has(path) || oauth.resourcePaths.has(path))) {
       if (req.method !== "GET") return reply(res, 405, "Method not allowed", { Allow: "GET" });
-      return sendJson(res, path === "/.well-known/oauth-authorization-server" ? oauth.server : oauth.resource);
+      return sendJson(res, oauth.serverPaths.has(path) ? oauth.server : oauth.resource);
     }
     if (oauth && path === "/oauth/register") return oauthRegister(req, res);
     if (oauth && path === "/oauth/authorize") return oauthAuthorize(req, res, oauth.resource.resource);
