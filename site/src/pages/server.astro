@@ -24,18 +24,18 @@ import CodeBlock from "../components/CodeBlock.astro";
   <h2 id="running-the-http-server">Running the HTTP server</h2>
   <p>Install it (<a href="getting-started.html#team-server">Getting started</a>), then:</p>
   <CodeBlock lang="sh" code={"export MESSAGE_CP_HTTP_TOKEN=\"$(openssl rand -hex 32)\"\nmessage-cp serve --port 8787 --public-url https://message-cp.example.com"} />
-  <p>That is the owner account&#39;s token, for <code>npm run e2e</code>; clients and the wake-up loop get an agent token, made on the server as <a href="accounts.html#accounts-and-tokens-for-a-team">Accounts and tokens</a> says. Without a domain, leave out <code>--public-url</code> and use <code>http://127.0.0.1:8787</code>.</p>
-  <p><code>serve</code> (<a href="#settings">flags</a>) serves the tools over streamable HTTP at <code>/mcp</code>.</p>
+  <p><code>serve</code> exits without that owner token; keep it for <code>npm run e2e</code>. Clients and wake-up loops get agent tokens, made on the server as <a href="accounts.html#accounts-and-tokens-for-a-team">Accounts and tokens</a> says. <a href="#settings"><code>--public-url</code></a> enables the <a href="#waking-remote-agents">wait command</a> and MCP authorization: a full token approves a client&#39;s agent token. Without a domain, leave it out and use <code>http://127.0.0.1:8787</code>.</p>
+  <p>Tools are at <code>/mcp</code>, over streamable HTTP (<a href="#settings">flags</a>).</p>
   <ul>
-  <li><p><strong>Token.</strong> <code>serve</code> exits unless <code>MESSAGE_CP_HTTP_TOKEN</code> is non-empty. Requests without <code>Authorization: Bearer &lt;token&gt;</code> get 401, except <code>GET /</code> (the <a href="#dashboard">dashboard</a>), its fonts, <code>/health</code> and, with <code>--public-url</code>, the authorization flow but <code>/oauth/approve</code>, which needs a full token.</p>
+  <li><p><strong>Token.</strong> Requests without a valid <code>Authorization: Bearer &lt;token&gt;</code> get 401, except <code>GET /</code> (the <a href="#dashboard">dashboard</a>), its fonts, <code>/health</code> and authorization but <code>/oauth/approve</code>.</p>
   </li>
-  <li><p><strong>Address.</strong> It listens on <code>127.0.0.1:8787</code>, plain HTTP, by default. <strong>Exposed without HTTPS, the token and every message cross the network in the clear.</strong> Expose only a TLS-terminating proxy, such as <a href="https://caddyserver.com">Caddy</a> with this <code>Caddyfile</code>:</p>
+  <li><p><strong>Address.</strong> By default it listens on <code>127.0.0.1:8787</code>, plain HTTP. <strong>Exposed without HTTPS, the token and every message cross the network in the clear.</strong> Expose only a TLS proxy, such as <a href="https://caddyserver.com">Caddy</a> with this <code>Caddyfile</code>:</p>
   <CodeBlock lang="caddyfile" code={"message-cp.example.com {\n\treverse_proxy 127.0.0.1:8787\n}"} />
   <p>Any proxy must pass <code>Authorization</code> through and allow a <code>/wait</code> held about four minutes.</p>
   </li>
   <li><p><strong>Sessions.</strong> A session belongs to its token&#39;s account; other accounts&#39; tokens get 404. It ends when DELETE gets 200 or after 30 minutes idle (<a href="tools.html#limits">Limits</a>).</p>
   </li>
-  <li><p><strong>Agent headers.</strong> A sessionless <code>initialize</code> sending <code>X-Message-CP-Agent</code> and <code>X-Message-CP-Agent-Key</code> registers that agent, as <code>register</code> would, or gets 403 and no session (<a href="clients.html">Clients</a>).</p>
+  <li><p><strong>Agent headers.</strong> A sessionless <code>initialize</code> with <code>X-Message-CP-Agent</code> and <code>X-Message-CP-Agent-Key</code> registers that agent like <code>register</code>, or gets 403 and no session (<a href="clients.html">Clients</a>).</p>
   </li>
   <li><p><strong>Logging.</strong> <code>serve</code> does not log requests, tokens, agent headers or message bodies.</p>
   </li>
