@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer, request } from "node:http";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -8,7 +8,7 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { addAccount, addToken, listAccounts } from "../src/accounts.js";
 import { addPerson, listServerAgents, registerAgent } from "../src/agents.js";
-import { connectAgent, mcpEndpoint } from "../src/connect.js";
+import { clientSetup, connectAgent, mcpEndpoint } from "../src/connect.js";
 import { OWNER_ACCOUNT, openDb, type Db } from "../src/db.js";
 import { startHttp, type HttpServer } from "../src/http.js";
 import {
@@ -20,9 +20,11 @@ import {
   mergeServer,
   proveRemote,
   proveServer,
+  readConnectFile,
   redact,
   runInit,
   setUpClient,
+  writeTokenFile,
   type InitOptions,
   type Machine,
   type Remote,
@@ -451,7 +453,7 @@ describe("message-cp init", () => {
     ]) {
       const r = cli(env, ...args);
       expect(r.status, args.join(" ")).toBe(2);
-      expect(r.stderr).toContain("usage: message-cp init [--client <claude-code|codex|cursor|claude-desktop>] [--url <public url> --agent <name>]");
+      expect(r.stderr).toContain("usage: message-cp init [--client <claude-code|codex|cursor|claude-desktop>] [--url <public url> --agent <name> | --from <file connect wrote>]");
       expect(r.stdout + r.stderr).not.toContain(TOKEN);
       expect(r.stdout + r.stderr).not.toContain(KEY);
     }
@@ -858,4 +860,244 @@ describe("checkRemote and proveRemote", () => {
     expect(err?.message).toMatch(/^opening a session: /);
     expect(names()).toEqual(["owner/writer"]);
   });
+});
+
+// `message-cp init --from`: the URL, agent, token and key from the file `connect` wrote, and the token also written to
+// ~/.message-cp/http-token for the wake-up command.
+describe("readConnectFile", () => {
+  const setup = (url = "https://message-cp.example.com", agent = "writer") => clientSetup(mcpEndpoint(url), { name: agent, token: TOKEN, key: KEY });
+  const write = (text: string, mode = 0o600) => {
+    const file = join(home, "connect-writer.txt");
+    writeFileSync(file, text, { mode });
+    chmodSync(file, mode);
+    return file;
+  };
+  const refusal = (file: string) => {
+    try {
+      readConnectFile(file, "linux");
+    } catch (err) {
+      expect(err).toBeInstanceOf(InitError);
+      expect((err as Error).message).not.toContain(TOKEN);
+      expect((err as Error).message).not.toContain(KEY);
+      return (err as Error).message;
+    }
+    throw new Error("not refused");
+  };
+
+  it("reads the URL, agent, token and key from what connect printed", () => {
+    const file = write(setup());
+    expect(readConnectFile(file, "linux")).toEqual({ endpoint: new URL("https://message-cp.example.com/mcp"), agent: "writer", token: TOKEN, key: KEY, from: file });
+  });
+
+  it("refuses a file it cannot read, or one that is not a file", () => {
+    expect(refusal(join(home, "missing.txt"))).toBe(`could not read ${join(home, "missing.txt")} (ENOENT). Nothing was changed.`);
+    expect(refusal(home)).toBe(`${home} is not a file. Nothing was changed.`);
+  });
+
+  it("refuses a file group or others can read, except on Windows", () => {
+    if (process.platform === "win32") return;
+    for (const mode of [0o640, 0o604, 0o644]) {
+      const file = write(setup(), mode);
+      expect(refusal(file)).toContain(`other users of this machine can read it (mode 0${mode.toString(8)}); make it private with: chmod 600 ${file}`);
+    }
+    expect(readConnectFile(write(setup(), 0o644), "win32").token).toBe(TOKEN);
+  });
+
+  it("refuses a file without exactly one usable URL, agent, token and key", () => {
+    const json = (entry: unknown, more: Record<string, unknown> = {}) => `claude mcp add ...\n\n${JSON.stringify({ mcpServers: { "message-cp": entry, ...more } }, null, 2)}\n`;
+    const good = { type: "http", url: "https://h.example/mcp", headers: { Authorization: `Bearer ${TOKEN}`, "X-Message-CP-Agent": "writer", "X-Message-CP-Agent-Key": KEY } };
+    const h = (over: Record<string, unknown>) => ({ ...good, headers: { ...good.headers, ...over } });
+    for (const [text, why] of [
+      ["", "holds no mcpServers JSON"],
+      [setup().split("\n")[0]!, "holds no mcpServers JSON"],
+      [setup().slice(0, -10), "holds no mcpServers JSON"],
+      [json(good, { other: good }), "names 2 servers, not one"],
+      [`claude mcp add ...\n\n{\n  "mcpServers": {}\n}\n`, "names 0 servers, not one"],
+      [json({ ...good, url: undefined }), "has no server URL"],
+      [json(h({ Authorization: undefined })), "has no token"],
+      [json(h({ Authorization: TOKEN })), "has no token"],
+      [json(h({ Authorization: "Bearer " })), "has no token"],
+      [json(h({ Authorization: `Bearer ${TOKEN} x` })), "has no token"],
+      [json(h({ "X-Message-CP-Agent": undefined })), "has no usable agent name"],
+      [json(h({ "X-Message-CP-Agent": "all" })), "has no usable agent name"],
+      [json(h({ "X-Message-CP-Agent": "a b" })), "has no usable agent name"],
+      [json(h({ "X-Message-CP-Agent-Key": "" })), "has no agent key"],
+      [json(h({ "X-Message-CP-Agent-Key": 7 })), "has no agent key"],
+    ] as const) {
+      expect(refusal(write(text)), why).toMatch(new RegExp(`${why}; give the file message-cp connect wrote, unchanged\\. Nothing was changed\\.$`));
+    }
+  });
+
+  it("puts the URL through init --url's check", () => {
+    for (const url of ["http://localhost@evil/", "https://@/", "https://h/?x=/o/", "https://h/#/o/", "http://example.com", "not a url"]) {
+      const text = setup().replaceAll("https://message-cp.example.com/mcp", url);
+      expect(refusal(write(text)), url).toMatch(/has a server URL init refuses: /);
+    }
+  });
+});
+
+describe("writeTokenFile", () => {
+  const file = () => join(home, ".message-cp", "http-token");
+
+  it("writes a new file 0600 in a new directory 0700", () => {
+    expect(writeTokenFile(home, TOKEN)).toBe("written");
+    expect(readFileSync(file(), "utf8")).toBe(`${TOKEN}\n`);
+    if (process.platform === "win32") return;
+    expect(statSync(file()).mode & 0o777).toBe(0o600);
+    expect(statSync(join(home, ".message-cp")).mode & 0o777).toBe(0o700);
+  });
+
+  it("leaves a file already there as it is: present with the same token, differs with another", () => {
+    mkdirSync(join(home, ".message-cp"));
+    writeFileSync(file(), `${TOKEN}\n`);
+    expect(writeTokenFile(home, TOKEN)).toBe("present");
+    writeFileSync(file(), "other\n");
+    expect(writeTokenFile(home, TOKEN)).toBe("differs");
+    expect(readFileSync(file(), "utf8")).toBe("other\n");
+  });
+
+  it("does not write through a symlink left in its place", () => {
+    if (process.platform === "win32") return;
+    mkdirSync(join(home, ".message-cp"));
+    const target = join(home, "elsewhere");
+    symlinkSync(target, file());
+    expect(() => writeTokenFile(home, TOKEN)).toThrow(InitError);
+    expect(existsSync(target)).toBe(false);
+  });
+});
+
+describe("runInit with --from", () => {
+  const FROM = "/tmp/connect-writer.txt";
+  function options(over: Partial<InitOptions> = {}) {
+    const out: string[] = [];
+    const err: string[] = [];
+    const o: InitOptions = {
+      machine: machine(),
+      run: fakeRunner().run,
+      interactive: false,
+      ask: async () => "",
+      remote: remote({ from: FROM }),
+      check: async () => {},
+      prove: async () => {},
+      out: (l) => out.push(l),
+      err: (l) => err.push(l),
+      ...over,
+    };
+    return { o, out, err };
+  }
+  const tokenFile = () => join(home, ".message-cp", "http-token");
+
+  it("after the check passes, writes the wake-up token and says the file can be deleted, printing no secret", async () => {
+    mkdirSync(join(home, ".cursor"));
+    const t = options();
+    expect(await runInit(t.o)).toBe(0);
+    expect(t.out.slice(-2)).toEqual([`Wake-up token: wrote ${tokenFile()}.`, `${FROM} can now be deleted, and its copy on the server.`]);
+    expect(readFileSync(tokenFile(), "utf8")).toBe(`${TOKEN}\n`);
+    expect(readFileSync(join(home, ".cursor", "mcp.json"), "utf8")).toContain(KEY);
+    expect([...t.out, ...t.err].join("\n")).not.toMatch(new RegExp(`${TOKEN}|${KEY}`));
+
+    const again = options();
+    expect(await runInit(again.o)).toBe(0);
+    expect(again.out).toContain(`Wake-up token: ${tokenFile()} already holds this token.`);
+  });
+
+  it("leaves a different token in http-token as it is, says so and how to replace it", async () => {
+    mkdirSync(join(home, ".cursor"));
+    mkdirSync(join(home, ".message-cp"));
+    writeFileSync(tokenFile(), "other\n");
+    const t = options();
+    expect(await runInit(t.o)).toBe(0);
+    expect(t.err).toEqual([
+      `message-cp init: ${tokenFile()} already holds a different token, so it was left as it is; the wake-up command reads the token from it.`,
+      `To use this agent's token there instead, delete ${tokenFile()}, then run message-cp init --from ${FROM} again.`,
+    ]);
+    expect(readFileSync(tokenFile(), "utf8")).toBe("other\n");
+  });
+
+  it("writes no wake-up token when the check or the proof fails, or for init --url", async () => {
+    mkdirSync(join(home, ".cursor"));
+    expect(await runInit(options({ check: async () => Promise.reject(new InitError("refused")) }).o)).toBe(1);
+    expect(await runInit(options({ prove: async () => Promise.reject(new InitError("failed")) }).o)).toBe(1);
+    expect(existsSync(tokenFile())).toBe(false);
+    const url = options({ remote: remote() });
+    expect(await runInit(url.o)).toBe(0);
+    expect(existsSync(tokenFile())).toBe(false);
+    expect(url.out.join("\n")).not.toContain("Wake-up token");
+  });
+});
+
+describe("message-cp init --from", () => {
+  const root = resolve(import.meta.dirname, "..");
+  const run = (args: string[], env: Record<string, string> = {}) =>
+    new Promise<{ status: number | null; output: string }>((done) => {
+      // Asynchronous, so this process can answer the server's requests meanwhile.
+      const child = spawn(process.execPath, [join(root, "node_modules/tsx/dist/cli.mjs"), join(root, "src/cli.ts"), "init", ...args], {
+        env: { ...process.env, HOME: home, USERPROFILE: home, MESSAGE_CP_DB: join(home, "other.sqlite"), MESSAGE_CP_HTTP_TOKEN: "", MESSAGE_CP_AGENT_KEY: "", ...env },
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      let output = "";
+      child.stdout.on("data", (d) => (output += d));
+      child.stderr.on("data", (d) => (output += d));
+      child.on("close", (status) => done({ status, output }));
+    });
+
+  it("takes --from alone, not with --url or --agent", async () => {
+    for (const args of [["--from"], ["--from", "f", "--url", "https://h.example", "--agent", "writer"], ["--from", "f", "--from", "g"]]) {
+      const r = await run(args);
+      expect(r.status, args.join(" ")).toBe(2);
+      expect(r.output).toContain("usage: message-cp init");
+    }
+  });
+
+  it("refuses a file others can read, changing nothing", async () => {
+    if (process.platform === "win32") return;
+    mkdirSync(join(home, ".cursor"));
+    const file = join(home, "connect.txt");
+    writeFileSync(file, clientSetup(mcpEndpoint("https://h.example"), { name: "writer", token: TOKEN, key: KEY }), { mode: 0o644 });
+    chmodSync(file, 0o644);
+    const r = await run(["--client", "cursor", "--from", file]);
+    expect(r.status).toBe(1);
+    expect(r.output).toContain("other users of this machine can read it");
+    expect(r.output).not.toContain(TOKEN);
+    expect(existsSync(join(home, ".cursor", "mcp.json"))).toBe(false);
+    expect(existsSync(join(home, ".message-cp"))).toBe(false);
+  });
+
+  it("sets up Cursor from the file connect wrote, writes the wake-up token, and prints neither secret", async () => {
+    mkdirSync(join(home, ".cursor"));
+    const db = openDb(join(home, "db.sqlite"));
+    const http = await startHttp(db, { token: "owner-token", port: 0 });
+    try {
+      const c = connectAgent(db, "owner", "writer", false);
+      const file = join(home, "connect-writer.txt");
+      // As the CLI prints it: stdout is the client setup without its last newline.
+      writeFileSync(file, `${clientSetup(mcpEndpoint(`http://127.0.0.1:${http.port}`), c).replace(/\n$/, "")}\n`, { mode: 0o600 });
+      const r = await run(["--client", "cursor", "--from", file]);
+      expect(r.output).toContain("Check passed: registered a test agent on the server");
+      expect(r.output).toContain(`${file} can now be deleted`);
+      expect(r.status).toBe(0);
+      expect(r.output).not.toContain(c.token);
+      expect(r.output).not.toContain(c.key);
+      const config = JSON.parse(readFileSync(join(home, ".cursor", "mcp.json"), "utf8"));
+      expect(config.mcpServers["message-cp"]).toEqual({
+        url: `http://127.0.0.1:${http.port}/mcp`,
+        headers: { Authorization: `Bearer ${c.token}`, "X-Message-CP-Agent": "writer", "X-Message-CP-Agent-Key": c.key },
+      });
+      const tokenFile = join(home, ".message-cp", "http-token");
+      expect(readFileSync(tokenFile, "utf8")).toBe(`${c.token}\n`);
+      if (process.platform !== "win32") expect(statSync(tokenFile).mode & 0o777).toBe(0o600);
+
+      // A wrong key in the file changes nothing and names the file, not the environment.
+      rmSync(join(home, ".cursor", "mcp.json"));
+      writeFileSync(file, readFileSync(file, "utf8").replaceAll(c.key, "wrong-key"));
+      const wrong = await run(["--client", "cursor", "--from", file]);
+      expect(wrong.status).toBe(1);
+      expect(wrong.output).toContain(`the server refused agent 'writer' with the key in ${file} (403)`);
+      expect(existsSync(join(home, ".cursor", "mcp.json"))).toBe(false);
+      expect(listServerAgents(db).map((a) => a.name)).toEqual(["writer"]);
+    } finally {
+      await http.close();
+      db.close();
+    }
+  }, 60_000);
 });
