@@ -12,8 +12,8 @@ import { OWNER_ACCOUNT, openDb, type AccountId, type Db } from "../src/db.js";
 import { startHttp, type HttpServer } from "../src/http.js";
 import { sendMessage } from "../src/messages.js";
 
-// Agent tokens (`token add --agent-only`): everything a full token of the account reaches but POST /api/send and
-// /api/post, on a server with the owner's account and a friend's.
+// Agent tokens (`token add --agent-only`): /mcp, /wait and GET /api/token as a full token of the account reaches them,
+// and 403 on every other /api path, on a server with the owner's account and a friend's.
 const OWNER_TOKEN = "owner-token";
 let db: Db;
 let http: HttpServer;
@@ -67,8 +67,56 @@ const answer = async (path: string, token: string) => {
 };
 
 describe("agent tokens", () => {
-  it("answer every GET /api endpoint but /api/token exactly as a full token of the account does", async () => {
+  // Every /api path the server routes, one it does not, and each with every method.
+  const API_PATHS = [
+    "/api/token",
+    "/api/agents",
+    "/api/channels",
+    "/api/channel-posts?channel=general",
+    "/api/messages",
+    "/api/search?text=hello",
+    "/api/webhook-deliveries",
+    "/api/conversation?a=bob&b=carol",
+    "/api/send",
+    "/api/post",
+    "/api/nothing-here",
+    "/api",
+  ];
+  const METHODS = ["GET", "POST", "PUT", "DELETE"];
+
+  it("get 403 on every /api path and method but GET /api/token, and change nothing", async () => {
+    const before = stored();
+    for (const path of API_PATHS) {
+      for (const method of METHODS) {
+        if (path === "/api/token" && method === "GET") continue;
+        const res = await fetch(`${base()}${path}`, {
+          method,
+          headers: { ...auth(ownerAgent), "Content-Type": "application/json" },
+          body: method === "GET" ? undefined : JSON.stringify({ as: "colin", to: "bob", channel: "general", body: "hi" }),
+        });
+        expect(res.status, `${method} ${path}`).toBe(403);
+        const text = await res.text();
+        expect(JSON.parse(text).error.message).toBe("Agent tokens cannot use the dashboard API");
+        expect(text, `${method} ${path}`).not.toContain("hello");
+      }
+    }
+    // Nothing was sent, posted or deleted: bob's message to carol is still there.
+    expect(stored()).toBe(before);
+    expect(db.prepare("SELECT body FROM messages").all()).toEqual([{ body: "hello carol" }]);
+  });
+
+  it("are told by GET /api/token that they are agent tokens, in their own account too", async () => {
+    for (const token of [ownerAgent, friendAgent]) {
+      const res = await get("/api/token", token);
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ readOnly: false, agentOnly: true });
+    }
+  });
+
+  it("leave full and read-only tokens of the account as they were on every /api path", async () => {
+    const viewer = addToken(db, "owner", true).token;
     for (const path of [
+      "/api/token",
       "/api/agents",
       "/api/channels",
       "/api/channel-posts?channel=general",
@@ -76,17 +124,31 @@ describe("agent tokens", () => {
       "/api/search?text=hello",
       "/api/webhook-deliveries",
     ]) {
-      const full = await answer(path, ownerFull);
-      expect(full.status, path).toBe(200);
-      expect(await answer(path, ownerAgent), path).toEqual(full);
+      for (const token of [ownerFull, viewer]) expect((await get(path, token)).status, path).toBe(200);
     }
-  });
-
-  it("see only their own account's agents and messages", async () => {
-    registerAgent(db, friend, "fred", "x");
-    const names = (await (await get("/api/agents", friendAgent)).json()) as { name: string }[];
-    expect(names.map((a) => a.name)).toEqual(["fred"]);
-    expect(await (await get("/api/messages", friendAgent)).json()).toEqual([]);
+    expect(await (await get("/api/messages", viewer)).text()).toContain("hello carol");
+    // A read-only token is still refused where it was, and a full token still sends, posts and deletes.
+    for (const [path, method] of [
+      ["/api/conversation?a=bob&b=carol", "DELETE"],
+      ["/api/send", "POST"],
+      ["/api/post", "POST"],
+    ]) {
+      expect((await get(path, viewer, method)).status, path).toBe(403);
+    }
+    for (const [path, target] of [
+      ["/api/send", { to: "bob" }],
+      ["/api/post", { channel: "general" }],
+    ] as const) {
+      const full = await fetch(`${base()}${path}`, {
+        method: "POST",
+        headers: { ...auth(ownerFull), "Content-Type": "application/json" },
+        body: JSON.stringify({ as: "colin", ...target, body: "from a person" }),
+      });
+      expect(full.status, path).toBe(200);
+    }
+    const res = await get("/api/conversation?a=bob&b=carol", ownerFull, "DELETE");
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ deleted: 1 });
   });
 
   it("use /mcp as an agent of their own account does", async () => {
@@ -104,43 +166,16 @@ describe("agent tokens", () => {
     ).toEqual([{ account_id: friend, sender: "fred" }]);
   });
 
-  it("hold /wait and delete a conversation as a full token does", async () => {
-    expect((await get("/wait?agent=carol", ownerAgent)).status).toBe(200);
-    expect((await get("/wait?agent=nobody", ownerAgent)).status).toBe(404);
-    const res = await get("/api/conversation?a=bob&b=carol", ownerAgent, "DELETE");
+  it("hold /wait as a full token does", async () => {
+    const res = await get("/wait?agent=carol", ownerAgent);
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ deleted: 1 });
+    expect(await res.text()).toBe(await (await get("/wait?agent=carol", ownerFull)).text());
+    expect((await get("/wait?agent=nobody", ownerAgent)).status).toBe(404);
+    // Nor does an agent token reach another account's agents.
+    expect((await get("/wait?agent=carol", friendAgent)).status).toBe(404);
   });
 
-  it("get 403 on POST /api/send and /api/post, whatever the method, and store nothing", async () => {
-    const before = stored();
-    for (const [path, target] of [
-      ["/api/send", { to: "bob" }],
-      ["/api/post", { channel: "general" }],
-    ] as const) {
-      for (const method of ["POST", "GET", "PUT", "DELETE"]) {
-        const res = await fetch(`${base()}${path}`, {
-          method,
-          headers: { ...auth(ownerAgent), "Content-Type": "application/json" },
-          body: method === "GET" ? undefined : JSON.stringify({ as: "colin", ...target, body: "hi" }),
-        });
-        expect(res.status, `${method} ${path}`).toBe(403);
-        expect(((await res.json()) as { error: { message: string } }).error.message).toBe("This token cannot act as a person");
-      }
-      // The full token of the same account still can.
-      const full = await fetch(`${base()}${path}`, {
-        method: "POST",
-        headers: { ...auth(ownerFull), "Content-Type": "application/json" },
-        body: JSON.stringify({ as: "colin", ...target, body: "from a person" }),
-      });
-      expect(full.status).toBe(200);
-    }
-    expect(JSON.stringify(db.prepare("SELECT * FROM messages WHERE body = 'hi'").all())).toBe("[]");
-    expect(JSON.stringify(db.prepare("SELECT * FROM channel_posts WHERE body = 'hi'").all())).toBe("[]");
-    expect(stored()).not.toBe(before);
-  });
-
-  it("get the 403 before a send or post slot is taken or the body read", async () => {
+  it("get the 403 before a send or post slot is taken or the body read, on every path that reads a body", async () => {
     await http.close();
     await start({ maxSessions: 1 });
     // A full token's request whose body has not arrived yet holds the only slot.
@@ -159,7 +194,7 @@ describe("agent tokens", () => {
     await new Promise((r) => setTimeout(r, 200));
     expect((await fetch(`${base()}/api/send`, { method: "POST", headers: auth(OWNER_TOKEN), body: "{}" })).status).toBe(503);
     const before = stored();
-    for (const path of ["/api/send", "/api/post"]) {
+    for (const path of ["/api/send", "/api/post", "/api/token", "/api/agents"]) {
       // An agent token's request is refused at once, with its body never read: none is ever sent.
       const refused = await new Promise<number>((resolve, reject) => {
         const r = request(`${base()}${path}`, {

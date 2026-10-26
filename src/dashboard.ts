@@ -14,7 +14,8 @@ import { MAX_BODY_LENGTH } from "./messages.js";
 // with POST /api/post and reply in an open direct conversation of theirs, or start one with anyone in the account from
 // "New message", with POST /api/send, or create a channel from "New channel" by its first post, with POST /api/post, and
 // delete an open direct conversation, after confirming, with DELETE /api/conversation; that is all it ever writes. With a
-// read-only or agent token it only reads. It puts agent- and person-supplied text on the page with textContent, never
+// read-only token it only reads. An agent token, which the server refuses on every /api path but GET /api/token, it
+// forgets, saying that agent tokens cannot use it. It puts agent- and person-supplied text on the page with textContent, never
 // as HTML.
 
 // The faces the page's CSS uses, each served at /fonts/<file> by `message-cp serve` from the package that ships it, so the
@@ -359,7 +360,7 @@ let deliveryCount;
 let searchGeneration = 0;
 let searchController;
 // Whether GET /api/token said this token is a full one, which alone shows the person picker and the compose box; the
-// server's 403 is still what keeps a read-only or agent token from posting. tokenGeneration drops an answer to GET /api/token,
+// server's 403 is still what keeps a read-only token from posting. tokenGeneration drops an answer to GET /api/token,
 // or to a send, that comes after the token was forgotten.
 let canPost = false;
 let tokenGeneration = 0;
@@ -848,8 +849,9 @@ function start() {
 }
 
 // Asks GET /api/token once whether this token is read-only or agent-only. Only an answer of readOnly and agentOnly
-// both false shows the picker; a read-only or agent token, a failure or an answer this page cannot read leaves the page
-// read-only.
+// both false shows the picker; a read-only token, a failure or an answer this page cannot read leaves the page
+// read-only. An agent token, which the server refuses on every other /api path, is forgotten and another asked for.
+const AGENT_TOKEN = "That is an agent token, and agent tokens cannot use the dashboard. Enter a full or read-only token.";
 async function checkToken() {
   const token = sessionStorage.getItem(KEY);
   if (!token) return;
@@ -859,6 +861,7 @@ async function checkToken() {
   const deadline = setTimeout(() => ac.abort(), TIMEOUT_MS);
   let full = false;
   let refused = false;
+  let agent = false;
   try {
     const res = await fetch("/api/token", {
       headers: { Authorization: "Bearer " + token },
@@ -871,6 +874,7 @@ async function checkToken() {
     if (res.ok) {
       const answer = await res.json();
       full = answer.readOnly === false && answer.agentOnly === false;
+      agent = answer.agentOnly === true;
     }
   } catch {
     full = false;
@@ -879,6 +883,7 @@ async function checkToken() {
   }
   if (gen !== tokenGeneration) return;
   if (refused) return ask("The server refused that token. Enter another.");
+  if (agent) return ask(AGENT_TOKEN);
   canPost = full;
   showPicker();
   showNewButton();

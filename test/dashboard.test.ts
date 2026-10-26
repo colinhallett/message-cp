@@ -542,6 +542,25 @@ describe("the page's channels and messages", () => {
     return { elements, urls, store, documentOn, doc, until, poll: timers.poll, scheduled: timers.scheduled };
   }
 
+  it("with an agent token, forgets it and says agent tokens cannot use the dashboard, showing nothing of the account", async () => {
+    registerAgent(db, OWNER_ACCOUNT, "bob", "x");
+    sendMessage(db, OWNER_ACCOUNT, "bob", "bob", "private <b>note</b>");
+    const page = await load(agentToken);
+    const said = "That is an agent token, and agent tokens cannot use the dashboard. Enter a full or read-only token.";
+    await page.until(() => page.elements["status-line"].textContent === said);
+    expect(page.store.size).toBe(0);
+    expect(page.elements["login"].hidden).toBe(false);
+    expect(page.elements["view"].hidden).toBe(true);
+    expect(page.elements["rows"].children).toHaveLength(0);
+    expect(page.elements["pair-rows"].children).toHaveLength(0);
+    // No poll is left to run, so the page asks the server nothing more with it.
+    const asked = page.urls.length;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(page.scheduled()).toBe(false);
+    expect(page.urls.length).toBe(asked);
+    expect(db.prepare("SELECT body FROM messages").all()).toEqual([{ body: "private <b>note</b>" }]);
+  });
+
   it("lists the channels with a read-only token and shows a chosen channel's posts oldest first", async () => {
     for (const name of ["alice", "bob"]) registerAgent(db, OWNER_ACCOUNT, name, "x");
     const member = (name: string) => ({ ...identityOf(db, OWNER_ACCOUNT, name)!, name });
@@ -3323,11 +3342,10 @@ describe("the page's posting", () => {
     expect(page.elements["as-box"].hidden).toBe(true);
   });
 
-  it("with a read-only or agent token, or an answer it cannot read, shows no picker or compose box and never posts", async () => {
+  it("with a read-only token, or an answer it cannot read, shows no picker or compose box and never posts", async () => {
     seed();
     for (const [token, answer] of [
       [viewer, () => undefined],
-      [agentToken, () => undefined],
       [OWNER_TOKEN, (url: string) => (url === "/api/token" ? { status: 200, body: '{"readOnly":false}' } : undefined)],
       [OWNER_TOKEN, (url: string) => (url === "/api/token" ? { status: 200, body: "not json" } : undefined)],
       [OWNER_TOKEN, (url: string) => (url === "/api/token" ? { status: 200, body: "{}" } : undefined)],
@@ -3499,11 +3517,10 @@ describe("the page's posting", () => {
       expect(csp).not.toContain("unsafe-inline");
     });
 
-    it("shows the button only with a full token, not with a read-only or agent token or an answer it cannot read", async () => {
+    it("shows the button only with a full token, not with a read-only token or an answer it cannot read", async () => {
       seed();
       for (const [token, answer] of [
         [viewer, () => undefined],
-        [agentToken, () => undefined],
         [OWNER_TOKEN, (url: string) => (url === "/api/token" ? { status: 200, body: "not json" } : undefined)],
         [OWNER_TOKEN, (url: string) => (url === "/api/token" ? { status: 503 } : undefined)],
       ] as const) {
@@ -3790,11 +3807,10 @@ describe("the page's posting", () => {
       expect(csp).not.toContain("unsafe-inline");
     });
 
-    it("shows the button and form only with a full token, not with a read-only or agent token or an answer it cannot read", async () => {
+    it("shows the button and form only with a full token, not with a read-only token or an answer it cannot read", async () => {
       seed();
       for (const [token, answer] of [
         [viewer, () => undefined],
-        [agentToken, () => undefined],
         [OWNER_TOKEN, (url: string) => (url === "/api/token" ? { status: 200, body: "not json" } : undefined)],
         [OWNER_TOKEN, (url: string) => (url === "/api/token" ? { status: 503 } : undefined)],
       ] as const) {
@@ -4601,8 +4617,8 @@ describe("the page's posting", () => {
 
     it("shows Delete only with a full token and an open pair that has messages", async () => {
       seedPairs();
-      // A read-only or agent token never sees it, and a click by hand sends nothing.
-      for (const token of [viewer, agentToken]) {
+      // A read-only token never sees it, and a click by hand sends nothing.
+      for (const token of [viewer]) {
         const reader = await load(token);
         await ready(reader);
         open(reader.elements["pair-rows"], "bob ↔ colin");
