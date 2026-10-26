@@ -60,11 +60,21 @@ import CodeBlock from "../components/CodeBlock.astro";
   <CodeBlock lang="sh" code={"mkdir -p ~/.message-cp && chmod 700 ~/.message-cp\n(umask 077 && printf '%s\\n' '<token>' > ~/.message-cp/http-token)"} />
   <p>The loop hands the token to <code>curl</code> on stdin, so it never appears in the agent&#39;s instructions, a tool result or the process list. A 401 or 404 ends the loop with an error, since asking again cannot help.</p>
   <h3 id="checking-a-server-end-to-end">Checking a server end to end</h3>
-  <CodeBlock lang="sh" code={"npm run e2e"} />
-  <p>starts <code>dist/cli.js serve</code> on a free port with a temporary database and a generated token, and checks it the way remote agents use it: no token or a wrong token gets 401; two clients register; <code>/wait</code> reports no mail, then answers soon after one agent messages the other; <code>read_inbox</code> returns the message; <code>message_status</code> then shows the sender that message as read; one agent <code>ask</code>s the other a question, the other learns of it from <code>wait_for_mail</code>, answers it with <code>send_message</code> and <code>in_reply_to</code>, and the <code>ask</code> returns that answer; both agents unregister. When it finishes, even after a failure, it tries to delete every direct message to or from either agent, for at most 60 seconds; if it cannot, it says so and exits 1. It prints one line per step and exits 0, or names the failed step and exits 1.</p>
-  <p>To check a running server instead, give it the URL and a full token for any account (not a read-only or agent token: its cleanup reads and deletes the run&#39;s messages through <code>/api/messages</code> and <code>/api/conversation</code>):</p>
+  <p>Run it from a clone of the repository (the npm package lacks <code>scripts/</code>):</p>
+  <CodeBlock lang="sh" code={"npm ci --ignore-scripts && npm run build\nnpm run e2e"} />
+  <p>It starts <code>dist/cli.js serve</code> on a free port with a temporary database and token, then checks:</p>
+  <ul>
+    <li>a missing or wrong token gets 401</li>
+    <li>two clients register</li>
+    <li><code>/wait</code> reports no mail, then mail</li>
+    <li><code>read_inbox</code> and <code>message_status</code></li>
+    <li><code>wait_for_mail</code>, and <code>ask</code> with an <code>in_reply_to</code> answer</li>
+    <li>both agents unregister</li>
+  </ul>
+  <p>It prints a line per step and exits 0, or names the failed step and exits 1.</p>
+  <p>For a running server, pass its URL (<code>https</code>, or <code>http</code> for <code>127.x.x.x</code> or <code>[::1]</code>) and a full token, not read-only or agent: cleanup uses <code>/api/messages</code> and <code>/api/conversation</code>.</p>
   <CodeBlock lang="sh" code={"MESSAGE_CP_HTTP_TOKEN=<token> npm run e2e -- --url https://message-cp.example.com"} />
-  <p>The URL must be <code>https</code> (plain <code>http</code> only for <code>127.x.x.x</code> or <code>[::1]</code>). It registers agents named <code>e2e-&lt;random&gt;-a</code> and <code>-b</code> in that token&#39;s account; before it exits, even after a failure, it tries to unregister them and delete every direct message to or from either name, and exits 1 if it cannot. It never prints the token.</p>
+  <p>It registers <code>e2e-&lt;random&gt;-a</code> and <code>-b</code> in the token&#39;s account. Even after a failure, it unregisters them and deletes their direct messages, within 60 seconds or it exits 1. It never prints the token.</p>
   <h2 id="running-with-docker">Running with Docker</h2>
   <p>The <code>Dockerfile</code> builds message-cp from your clone, not a registry, and <code>docker-compose.yml</code> runs <code>serve</code> behind <a href="https://caddyserver.com">Caddy</a> for HTTPS. You need Docker Compose and a domain pointing at the machine, with ports 80 and 443 open.</p>
   <CodeBlock lang="sh" code={"git clone https://github.com/colinhallett/message-cp.git\ncd message-cp\ncp .env.example .env    # then set MESSAGE_CP_DOMAIN and MESSAGE_CP_HTTP_TOKEN in it\ndocker compose up -d"} />
