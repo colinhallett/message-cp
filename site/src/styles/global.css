@@ -255,7 +255,7 @@
      that address to fit on one line at 360px. */
   .hero-step { margin: 1.25rem 0 0; color: var(--color-muted); font-size: 0.9375rem; }
   .hero .code { margin-top: 0.5rem; }
-  .hero .code pre { overflow-wrap: break-word; text-wrap: balance; }
+  .hero .code pre { text-wrap: balance; }
   @media (max-width: 40rem) {
     .hero .code pre, .hero .code:has(.copy:not([hidden])) pre { padding-inline: 0.625rem; font-size: 0.6875rem; }
     .hero .code:has(.copy:not([hidden])) pre { padding-top: 2.6rem; }
