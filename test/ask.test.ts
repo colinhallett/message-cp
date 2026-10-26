@@ -285,8 +285,24 @@ describe("ask", () => {
     expect((await pending).json).toEqual({ id: question, reply: null });
   });
 
+  it("passes over a reply to its question's id from anyone but the agent asked", async () => {
+    const alice = await agent("alice");
+    registerAgent(db, OWNER_ACCOUNT, "carol", "answers");
+    const pending = call(alice, "ask", { to: "bob", body: "q", timeout_seconds: 3 });
+    const question = await questionTo("bob");
+    // No send can store this, since carol was never sent the question; written directly, as a reused id once allowed.
+    db.prepare("INSERT INTO messages (recipient_id, sender, body, broadcast, created_at, in_reply_to) VALUES (?, 'carol', 'not yours', 0, ?, ?)").run(
+      identityOf(db, OWNER_ACCOUNT, "alice")!.id,
+      Date.now(),
+      question,
+    );
+    await sleep(1200);
+    sendMessage(db, OWNER_ACCOUNT, "bob", "alice", "a", identityOf(db, OWNER_ACCOUNT, "bob"), question);
+    expect((await pending).json.reply).toMatchObject({ inReplyTo: question, from: "bob", body: "a" });
+  });
+
   it("finds a question's reply through messages_by_question, without scanning, sorting or reading replies to others", () => {
-    const plan = (db.prepare(`EXPLAIN QUERY PLAN ${TAKE_REPLY_SQL}`).all(1, 1) as { detail: string }[]).map((r) => r.detail);
+    const plan = (db.prepare(`EXPLAIN QUERY PLAN ${TAKE_REPLY_SQL}`).all(1, 1, "bob") as { detail: string }[]).map((r) => r.detail);
     expect(plan).toEqual(["SEARCH messages USING INDEX messages_by_question (in_reply_to=? AND recipient_id=?)"]);
   });
 });
@@ -366,5 +382,46 @@ describe("ask over HTTP", () => {
     await res;
     await sleep(1200);
     expect((await wait("alice")).status).toBe(204);
+  });
+});
+
+describe("ask over HTTP after a conversation is deleted", () => {
+  let http: HttpServer;
+
+  beforeEach(async () => {
+    http = await startHttp(db, { token: TOKEN, port: 0 });
+  });
+
+  afterEach(async () => {
+    for (const c of clients.splice(0)) await c.close().catch(() => {});
+    await http.close();
+  });
+
+  const base = () => `http://127.0.0.1:${http.port}`;
+
+  async function remote(name: string): Promise<Client> {
+    const client = new Client({ name: "test", version: "0" });
+    await client.connect(
+      new StreamableHTTPClientTransport(new URL("/mcp", base()), { requestInit: { headers: { Authorization: `Bearer ${TOKEN}` } } }),
+    );
+    clients.push(client);
+    expect((await call(client, "register", { name, bio: "x" })).isError).toBe(false);
+    return client;
+  }
+
+  it("never returns another agent's answer to a later question, and never hands the deleted question's id out again", async () => {
+    const alice = await remote("alice");
+    const carol = await remote("carol");
+    const pending = call(alice, "ask", { to: "bob", body: "for bob", timeout_seconds: 3 });
+    const question = await questionTo("bob");
+    const deleted = await fetch(`${base()}/api/conversation?a=alice&b=bob`, { method: "DELETE", headers: { Authorization: `Bearer ${TOKEN}` } });
+    expect(await deleted.json()).toEqual({ deleted: 1 });
+    const sent = await call(alice, "send_message", { to: "carol", body: "for carol" });
+    const second = sent.json.messages[0].id as number;
+    expect(second).toBeGreaterThan(question);
+    expect((await call(carol, "send_message", { to: "alice", body: "carol's answer", in_reply_to: second })).isError).toBe(false);
+    expect((await pending).json).toEqual({ id: question, reply: null });
+    // Carol's answer is left unread for alice's inbox.
+    expect((await call(alice, "read_inbox")).json).toMatchObject([{ from: "carol", body: "carol's answer", inReplyTo: second }]);
   });
 });
