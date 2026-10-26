@@ -100,6 +100,15 @@ describe("mergeServer", () => {
     expect(readFileSync(file(), "utf8")).toBe(before);
   });
 
+  it("says it cannot read a path that is a directory, rather than calling it invalid JSON", () => {
+    mkdirSync(file());
+    expect(() => mergeServer(file())).toThrow(/could not read .*mcp\.json \(EISDIR\)/);
+  });
+
+  it("says it cannot write where the directory is missing", () => {
+    expect(() => mergeServer(join(home, "missing", "mcp.json"))).toThrow(/could not write .*mcp\.json \(ENOENT\)/);
+  });
+
   it("refuses invalid JSON, a non-object and a non-object mcpServers, leaving the file unchanged", () => {
     for (const before of ["{ not json", "[1, 2]", '{"mcpServers": []}']) {
       writeFileSync(file(), before);
@@ -141,6 +150,9 @@ describe("setUpClient", () => {
 
   it("stops at a get that fails other than with exit 1, or an add that fails", () => {
     expect(() => setUpClient("claude-code", machine(), fakeRunner({ [CLAUDE_GET]: { status: 2, stderr: "boom" } }).run)).toThrow(/\(exit 2\): boom/);
+    expect(() => setUpClient("claude-code", machine(), fakeRunner({ [CLAUDE_GET]: { status: null, stderr: "spawnSync claude ETIMEDOUT" } }).run)).toThrow(
+      /\(no exit status\): spawnSync claude ETIMEDOUT/,
+    );
     const { run, calls } = fakeRunner({ [CODEX_GET]: MISSING, "codex mcp add message-cp -- npx -y message-cp": { status: 1, stderr: "nope" } });
     expect(() => setUpClient("codex", machine(), run)).toThrow(/\(exit 1\): nope/);
     expect(calls).toHaveLength(2);
@@ -224,9 +236,12 @@ describe("runInit", () => {
     expect(questions).toEqual(["Set up which? [1-2] "]);
     expect(t.calls).toEqual([CODEX_GET, "codex mcp add message-cp -- npx -y message-cp"]);
 
-    const bad = options({ interactive: true, ask: async () => "3" });
-    expect(await runInit(bad.o)).toBe(1);
-    expect(bad.calls).toEqual([]);
+    for (const answer of ["3", "x", ""]) {
+      const bad = options({ interactive: true, ask: async () => answer });
+      expect(await runInit(bad.o)).toBe(1);
+      expect(bad.err.join("\n")).toMatch(answer ? /is not one of 1-2/ : /no client was chosen/);
+      expect(bad.calls).toEqual([]);
+    }
   });
 
   it("with --client, never asks, and refuses a client that is not installed", async () => {
@@ -286,7 +301,33 @@ describe("proveServer", () => {
 
   it("fails with the step that failed when the server does not start", async () => {
     const dbFile = join(home, "db.sqlite");
-    await expect(proveServer({ command: join(home, "no-such-server"), args: [] }, { ...process.env, MESSAGE_CP_DB: dbFile })).rejects.toThrow(InitError);
+    await expect(proveServer({ command: join(home, "no-such-server"), args: [] }, { ...process.env, MESSAGE_CP_DB: dbFile })).rejects.toThrow(
+      /^starting the server: /,
+    );
+  }, 30_000);
+
+  it("names the failed tool and what the server wrote to stderr, never the key", async () => {
+    // A server that echoes each register call's arguments, key included, to stderr and as its error.
+    const fake = join(home, "echo-server.mjs");
+    writeFileSync(
+      fake,
+      `import { McpServer } from ${JSON.stringify(join(root, "node_modules/@modelcontextprotocol/sdk/dist/esm/server/mcp.js"))};
+import { StdioServerTransport } from ${JSON.stringify(join(root, "node_modules/@modelcontextprotocol/sdk/dist/esm/server/stdio.js"))};
+import { z } from ${JSON.stringify(join(root, "node_modules/zod/index.js"))};
+const server = new McpServer({ name: "echo", version: "1" });
+server.registerTool("register", { inputSchema: { name: z.string(), bio: z.string(), key: z.string() } }, async (args) => {
+  process.stderr.write("got " + JSON.stringify(args) + "\\n");
+  return { isError: true, content: [{ type: "text", text: "refused " + JSON.stringify(args) }] };
+});
+await server.connect(new StdioServerTransport());
+`,
+    );
+    const dbFile = join(home, "db.sqlite");
+    const err = await proveServer({ command: process.execPath, args: [fake] }, { ...process.env, MESSAGE_CP_DB: dbFile }).catch((e: Error) => e);
+    expect(err).toBeInstanceOf(InitError);
+    const message = (err as Error).message;
+    expect(message).toMatch(/^register: register returned an error: refused .*"key":"<redacted>".*\(server: got .*"key":"<redacted>"/);
+    expect(message).not.toMatch(/[0-9a-f]{48}/);
   }, 30_000);
 });
 

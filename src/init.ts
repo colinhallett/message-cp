@@ -49,7 +49,7 @@ export interface RunResult {
 /** Runs `command` with an argument array, never through a shell string. */
 export type Runner = (command: string, args: string[]) => RunResult;
 
-/** Whether an executable named `command` is in one of `path`'s directories (with a `PATHEXT` extension on Windows). */
+/** Whether an executable named `command` is in one of `path`'s directories (on Windows, also with .exe, .cmd or .bat). */
 export function onPath(command: string, path: string, platform: NodeJS.Platform = process.platform): boolean {
   const exts = platform === "win32" ? ["", ".exe", ".cmd", ".bat"] : [""];
   return path
@@ -101,13 +101,20 @@ export type SetUpState = "added" | "present" | "differs";
  * Adds `message-cp` to the `mcpServers` of the JSON file `file`, keeping every other key and server, and writes it back
  * in place (a new file is created 0600). A `message-cp` entry already there is left as it is: "present" if it runs
  * `npx -y message-cp`, "differs" otherwise. Refuses, changing nothing, a file that is not a JSON object or whose
- * `mcpServers` is not one.
+ * `mcpServers` is not one, and turns a file it cannot read or write into an InitError giving the reason.
  */
 export function mergeServer(file: string): SetUpState {
+  const reason = (err: unknown) => (err as { code?: string }).code ?? (err instanceof Error ? err.message : String(err));
   let config: Record<string, unknown> = {};
   if (existsSync(file)) {
+    let text: string;
     try {
-      config = JSON.parse(readFileSync(file, "utf8"));
+      text = readFileSync(file, "utf8");
+    } catch (err) {
+      throw new InitError(`could not read ${file} (${reason(err)}); nothing was changed.`);
+    }
+    try {
+      config = JSON.parse(text);
     } catch {
       throw new InitError(`${file} is not valid JSON; it was left unchanged. Fix or move it, then run message-cp init again.`);
     }
@@ -123,7 +130,11 @@ export function mergeServer(file: string): SetUpState {
     return same ? "present" : "differs";
   }
   config.mcpServers = { ...servers, [SERVER_NAME]: { command: SERVER_COMMAND, args: SERVER_ARGS } };
-  writeFileSync(file, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 });
+  try {
+    writeFileSync(file, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 });
+  } catch (err) {
+    throw new InitError(`could not write ${file} (${reason(err)}).`);
+  }
   return "added";
 }
 
@@ -159,7 +170,7 @@ function runsPackage(client: "claude-code" | "codex", stdout: string): boolean {
 
 const failed = (r: RunResult, what: string) => {
   const detail = (r.stderr || r.stdout).trim().split("\n").pop();
-  return new InitError(`${what} failed${r.status === null ? " to start" : ` (exit ${r.status})`}${detail ? `: ${detail}` : ""}.`);
+  return new InitError(`${what} failed (${r.status === null ? "no exit status" : `exit ${r.status}`})${detail ? `: ${detail}` : ""}.`);
 };
 
 /** What `init` did for one client: the file or command it changed, and how to undo it. */
@@ -203,13 +214,18 @@ export const realRunner: Runner = (command, args) => {
   try {
     // `claude` and `codex` are `.cmd` files on Windows, which only a shell can start; the arguments are fixed words.
     const r = spawnSync(command, args, { cwd, encoding: "utf8", shell: process.platform === "win32", timeout: 60_000 });
-    return { status: r.error ? null : r.status, stdout: r.stdout ?? "", stderr: r.stderr || (r.error?.message ?? "") };
+    // Not started, timed out or killed: no exit status, and the reason in place of empty stderr.
+    const why = r.error?.message ?? (r.signal ? `killed by ${r.signal}` : "");
+    return { status: r.error ? null : r.status, stdout: r.stdout ?? "", stderr: r.stderr || why };
   } finally {
     rmSync(cwd, { recursive: true, force: true });
   }
 };
 
-/** The stdio server of the package running `init`: `npx -y message-cp` resolves only once the package is published. */
+/**
+ * The stdio server of the package running `init`: `npx -y message-cp` resolves only once the package is published.
+ * This is the built `dist/index.js` next to `dist/init.js`; run from `src/` with tsx, there is no `src/index.js`.
+ */
 export const ownServer = (): { command: string; args: string[] } => ({
   command: process.execPath,
   args: [fileURLToPath(new URL("./index.js", import.meta.url))],
@@ -220,8 +236,9 @@ const CALL_TIMEOUT_MS = 15_000;
 /**
  * Starts `server` over stdio with `env` and the database `dbPath(env)`, registers a test agent with a random name in the
  * owner account, sends it a message from itself and reads it back. The test agent and its messages are then purged with
- * `purgeAgent` from the same database, even when a step failed. Throws an error naming the failed step; no message
- * carries the agent's key.
+ * `purgeAgent` from the same database, even when a step failed. Throws an InitError that names the step that failed
+ * (with the last line the server wrote to stderr, if it wrote any) and any failed clean-up; no message carries the
+ * agent's key.
  */
 export async function proveServer(server: { command: string; args: string[] }, env: NodeJS.ProcessEnv = process.env): Promise<void> {
   const db = dbPath(env);
@@ -236,9 +253,16 @@ export async function proveServer(server: { command: string; args: string[] }, e
 
   const client = new Client({ name: "message-cp-init", version: "1.0.0" });
   let failure: unknown;
+  let step = "starting the server";
+  let stderr = "";
   try {
-    await client.connect(new StdioClientTransport({ ...server, env: childEnv, stderr: "pipe" }), { timeout: CALL_TIMEOUT_MS });
+    const transport = new StdioClientTransport({ ...server, env: childEnv, stderr: "pipe" });
+    transport.stderr?.on("data", (chunk: Buffer) => {
+      stderr = (stderr + chunk.toString("utf8")).slice(-4000);
+    });
+    await client.connect(transport, { timeout: CALL_TIMEOUT_MS });
     const call = async (tool: string, args: Record<string, unknown>) => {
+      step = tool;
       const result = (await client.callTool({ name: tool, arguments: args }, undefined, { timeout: CALL_TIMEOUT_MS })) as {
         isError?: boolean;
         content?: { text?: string }[];
@@ -273,7 +297,10 @@ export async function proveServer(server: { command: string; args: string[] }, e
   const say = (err: unknown) => (err instanceof Error ? err.message : String(err)).replaceAll(key, "<redacted>");
   if (failure !== undefined || cleanup !== undefined) {
     const parts = [];
-    if (failure !== undefined) parts.push(say(failure));
+    if (failure !== undefined) {
+      const last = stderr.trim().split("\n").pop()?.trim();
+      parts.push(`${step}: ${say(failure)}${last ? ` (server: ${say(last).slice(0, 300)})` : ""}`);
+    }
     if (cleanup !== undefined) parts.push(`could not remove the test agent '${name}' (${say(cleanup)}); remove it with: message-cp agent remove ${name}`);
     throw new InitError(parts.join("; "));
   }
@@ -318,6 +345,10 @@ export async function runInit(o: InitOptions): Promise<number> {
   } else {
     found.forEach((c, i) => o.out(`  ${i + 1}) ${CLIENT_NAMES[c]}`));
     const answer = (await o.ask(`Set up which? [1-${found.length}] `)).trim();
+    if (answer === "") {
+      o.err("message-cp init: no client was chosen. Nothing was changed.");
+      return 1;
+    }
     const n = Number(answer);
     if (!/^[0-9]+$/.test(answer) || n < 1 || n > found.length) {
       o.err(`message-cp init: '${answer}' is not one of 1-${found.length}. Nothing was changed.`);
@@ -357,8 +388,9 @@ export async function runInit(o: InitOptions): Promise<number> {
 export async function askOnTerminal(question: string): Promise<string> {
   const rl = createInterface({ input: process.stdin, output: process.stdout });
   try {
+    // Ctrl-C or the end of input closes the interface without answering the question: no answer.
     return await new Promise<string>((resolve) => {
-      rl.on("close", () => resolve(""));
+      rl.once("close", () => resolve(""));
       rl.question(question).then(resolve, () => resolve(""));
     });
   } finally {
