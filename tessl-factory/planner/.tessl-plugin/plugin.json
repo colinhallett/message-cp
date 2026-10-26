@@ -1,0 +1,10 @@
+{
+  "name": "colin/message-cp-factory-planner",
+  "version": "0.1.0",
+  "description": "The planner and call-planner skills, connected to message-cp as the standing agent planner.",
+  "private": true,
+  "skills": [
+    "skills/planner",
+    "skills/on-call"
+  ]
+}
