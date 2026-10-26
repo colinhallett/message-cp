@@ -63,10 +63,15 @@ case $c in
 esac
 done`;
 
-/** The shell command that exits once `name` has unread mail on the server at `publicUrl`, over HTTP. */
+/**
+ * The shell command that exits once `name` has unread mail on the server at `publicUrl`, over HTTP. `publicUrl` is one
+ * `serve` checked with `publicUrl` in connect.ts; `/wait` is built from the parsed URL.
+ */
 export function httpWaitCommand(publicUrl: string, name: string): string {
-  const url = `${publicUrl.replace(/\/+$/, "")}/wait`;
-  return `sh -c '${CURL_LOOP}' sh ${shellQuote(url)} ${shellQuote(name)}`;
+  const url = new URL(publicUrl);
+  // Set as the path, never resolved as a reference, so no path can change the host.
+  url.pathname = `${url.pathname.replace(/\/+$/, "")}/wait`;
+  return `sh -c '${CURL_LOOP}' sh ${shellQuote(url.href)} ${shellQuote(name)}`;
 }
 
 /** What a connecting session is told about being woken by messages. */
