@@ -277,7 +277,7 @@ describe("message-cp agent key reset", () => {
       expect(res.status).toBe(2);
       expect(res.stdout).toBe("");
       expect(res.stderr).toContain(
-        "usage: message-cp agent remove <name> [--account <name>] | message-cp agent key reset <name> [--account <name>]",
+        "usage: message-cp agent list [--account <name>] | message-cp agent remove <name> [--account <name>] | message-cp agent key reset <name> [--account <name>]",
       );
     }
   }, 120_000);
