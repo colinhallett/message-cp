@@ -23,6 +23,11 @@ let ownerFull: string;
 let friendFull: string;
 let publicUrl: string;
 
+// Client ID Metadata Documents the server is given when it fetches their URL, in place of a network fetch.
+let documents: Map<string, unknown>;
+let fetchMetadata: (url: string) => Promise<unknown>;
+const fetched: string[] = [];
+
 const start = async (options: { publicUrl?: string | null; maxSessions?: number } = {}) => {
   // The public URL is the server's own address unless a test gives another, or none with null.
   http = await startHttp(db, { token: OWNER_TOKEN, port: 0, waitHoldMs: 0, ...options, publicUrl: undefined });
@@ -30,7 +35,14 @@ const start = async (options: { publicUrl?: string | null; maxSessions?: number 
   const port = http.port;
   await http.close();
   publicUrl = options.publicUrl ?? `http://127.0.0.1:${port}`;
-  http = await startHttp(db, { token: OWNER_TOKEN, port, waitHoldMs: 0, maxSessions: options.maxSessions, publicUrl });
+  http = await startHttp(db, {
+    token: OWNER_TOKEN,
+    port,
+    waitHoldMs: 0,
+    maxSessions: options.maxSessions,
+    publicUrl,
+    fetchClientMetadata: (url) => fetchMetadata(url),
+  });
 };
 
 beforeEach(async () => {
@@ -39,6 +51,13 @@ beforeEach(async () => {
   friend = listAccounts(db).find((a) => a.name === "friend")!.id;
   ownerFull = addToken(db, "owner").token;
   friendFull = addToken(db, "friend").token;
+  documents = new Map();
+  fetched.length = 0;
+  fetchMetadata = async (url) => {
+    fetched.push(url);
+    if (!documents.has(url)) throw new Error("no such document");
+    return documents.get(url);
+  };
   await start();
 });
 
@@ -160,6 +179,7 @@ describe("OAuth metadata", () => {
       grant_types_supported: ["authorization_code"],
       code_challenge_methods_supported: ["S256"],
       token_endpoint_auth_methods_supported: ["none"],
+      client_id_metadata_document_supported: true,
     });
   });
 
@@ -649,5 +669,222 @@ describe("caps", () => {
   it("answers 413 to a body over 16 KiB", async () => {
     const res = await register({ redirect_uris: [REDIRECT], client_name: "x".repeat(20 * 1024) });
     expect(res.status).toBe(413);
+  });
+});
+
+describe("Client ID Metadata Documents", () => {
+  const CLAUDE = "https://claude.ai/oauth/mcp-oauth-client-metadata";
+  const CALLBACK = "https://claude.ai/api/mcp/auth_callback";
+  const claude = { client_id: CLAUDE, client_name: "Claude", redirect_uris: [CALLBACK], token_endpoint_auth_method: "none", grant_types: ["authorization_code", "refresh_token"] };
+  const params = (extra: Record<string, string> = {}) => ({
+    response_type: "code",
+    client_id: CLAUDE,
+    redirect_uri: CALLBACK,
+    code_challenge_method: "S256",
+    state: "s1",
+    resource: mcp(),
+    ...extra,
+  });
+
+  /** Runs the flow for the metadata client up to the code, approved with `token` as `agent`. */
+  const metadataCode = async (token = ownerFull, agent = "claude") => {
+    documents.set(CLAUDE, claude);
+    const { verifier, challenge } = pkce();
+    const res = await authorize(params({ code_challenge: challenge }));
+    expect(res.status).toBe(200);
+    const request = /data-request="([0-9a-f]+)"/.exec(await res.text())![1];
+    const approved = await approve(token, { request, state: "s1", agent });
+    expect(approved.status).toBe(200);
+    const location = new URL(((await approved.json()) as { location: string }).location);
+    expect(`${location.origin}${location.pathname}`).toBe(CALLBACK);
+    const code = location.searchParams.get("code")!;
+    return { grant_type: "authorization_code", code, redirect_uri: CALLBACK, client_id: CLAUDE, code_verifier: verifier, resource: mcp() };
+  };
+
+  it("walks the whole flow with the URL as client_id, to a list_agents call with only the issued token", async () => {
+    registerAgent(db, OWNER_ACCOUNT, "already-here", "");
+    const form = await metadataCode(ownerFull, "claude");
+    expect(fetched).toEqual([CLAUDE]);
+    const token = await accessToken(form);
+    expect((await listAgents(token)).map((a) => a.name).sort()).toEqual(["already-here", "claude"]);
+    expect(listTokens(db).at(-1)).toMatchObject({ account: "owner", kind: "agent" });
+  });
+
+  it("names the client and its metadata URL's host on the approval page, HTML-escaped, with the redirect host", async () => {
+    documents.set(CLAUDE, { ...claude, client_name: "<b>Claude</b>" });
+    const res = await authorize(params({ code_challenge: pkce().challenge }));
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toContain('<span class="client">&lt;b&gt;Claude&lt;/b&gt;</span>, from <span class="client">claude.ai</span>, asks');
+    expect(html).toContain("this server has checked only that its description is at claude.ai");
+    expect(html).not.toContain('class="warn"');
+    expect(html).not.toContain(CLAUDE);
+  });
+
+  it("warns of a loopback redirect the document lists, as for a registered client", async () => {
+    const vscode = "https://vscode.dev/oauth/client-metadata.json";
+    documents.set(vscode, { client_id: vscode, client_name: "Visual Studio Code", redirect_uris: ["http://127.0.0.1:33418/", "https://vscode.dev/redirect"] });
+    const res = await authorize(params({ client_id: vscode, redirect_uri: "http://127.0.0.1:33418/", code_challenge: pkce().challenge }));
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toContain("Visual Studio Code</span>, from <span class=\"client\">vscode.dev</span>");
+    expect(html).toContain('class="warn"');
+  });
+
+  it("shows the error page, never a redirect, for a redirect URI the document does not list", async () => {
+    documents.set(CLAUDE, claude);
+    for (const redirect of ["https://evil.example/cb", `${CALLBACK}/`, "https://claude.ai/api/mcp/auth_callback?x=1", ""]) {
+      const res = await authorize(params({ redirect_uri: redirect, code_challenge: pkce().challenge }));
+      expect(res.status, redirect).toBe(400);
+      expect(res.headers.get("location")).toBeNull();
+    }
+    expect(db.prepare("SELECT count(*) FROM mcp_authorizations").pluck().get()).toBe(0);
+  });
+
+  it("shows the error page with a fixed reason, never a redirect or the document, when the fetch fails or the document is bad", async () => {
+    const secret = "do-not-echo-this";
+    for (const doc of [
+      undefined,
+      { ...claude, client_id: `${CLAUDE}-other`, client_name: secret },
+      { ...claude, redirect_uris: [`https://${secret}.example/cb?x`] },
+      { ...claude, client_secret: secret },
+      { ...claude, token_endpoint_auth_method: secret },
+      [secret],
+    ]) {
+      documents.clear();
+      if (doc !== undefined) documents.set(CLAUDE, doc);
+      const res = await authorize(params({ code_challenge: pkce().challenge }));
+      expect(res.status).toBe(400);
+      expect(res.headers.get("location")).toBeNull();
+      const html = await res.text();
+      expect(html).not.toContain(secret);
+      expect(html).not.toContain("claude.ai");
+    }
+    expect(db.prepare("SELECT count(*) FROM mcp_clients").pluck().get()).toBe(0);
+    expect(db.prepare("SELECT count(*) FROM mcp_authorizations").pluck().get()).toBe(0);
+  });
+
+  it("refuses a bad metadata URL with the error page, fetching nothing", async () => {
+    for (const id of [
+      "https://localhost@evil/",
+      "https://@/",
+      "https://h/?x=/o/",
+      "https://h/#/o/",
+      "https://claude.ai/",
+      "https://claude.ai/a/../oauth",
+      `https://claude.ai/${"x".repeat(2000)}`,
+    ]) {
+      const res = await authorize(params({ client_id: id, code_challenge: pkce().challenge }));
+      expect(res.status, id).toBe(400);
+      expect(res.headers.get("location")).toBeNull();
+    }
+    // An http URL is not taken for a metadata URL, and is looked up as a registration, which it is not.
+    const http = await authorize(params({ client_id: "http://localhost@evil/", code_challenge: pkce().challenge }));
+    expect(http.status).toBe(400);
+    expect(fetched).toEqual([]);
+  });
+
+  it("refuses an exchange with another client_id, and keeps a registered client's flow unchanged alongside", async () => {
+    const form = await metadataCode();
+    const { form: registeredForm } = await codeFor(ownerFull, "desk");
+    expect((await exchange({ ...form, client_id: `${CLAUDE}/` })).status).toBe(400);
+    expect((await exchange({ ...registeredForm, client_id: CLAUDE })).status).toBe(400);
+    const { form: again } = await codeFor(ownerFull, "desk");
+    await accessToken(again);
+  });
+
+  it("stores the client keyed by its URL, replaced by each fetch, under the registrations' pruning", async () => {
+    documents.set(CLAUDE, claude);
+    await pageFor(CLAUDE, pkce().challenge, { redirect_uri: CALLBACK });
+    documents.set(CLAUDE, { ...claude, client_name: "Claude 2", redirect_uris: [CALLBACK, "https://claude.ai/other"] });
+    await pageFor(CLAUDE, pkce().challenge, { redirect_uri: "https://claude.ai/other" });
+    const rows = db.prepare("SELECT client_id, client_name, redirect_uris FROM mcp_clients").all();
+    expect(rows).toEqual([{ client_id: CLAUDE, client_name: "Claude 2", redirect_uris: JSON.stringify([CALLBACK, "https://claude.ai/other"]) }]);
+    expect(db.prepare("SELECT count(*) FROM mcp_authorizations").pluck().get()).toBe(2);
+    db.prepare("UPDATE mcp_authorizations SET expires_at = 0").run();
+    for (let i = 0; i < MAX_CLIENTS; i++) await registered();
+    expect(db.prepare("SELECT count(*) FROM mcp_clients WHERE client_id = ?").pluck().get(CLAUDE)).toBe(0);
+  });
+
+  it("a code approved with account A's token yields a token of A only", async () => {
+    registerAgent(db, OWNER_ACCOUNT, "claude", "owner's claude");
+    const token = await accessToken(await metadataCode(friendFull, "claude"));
+    expect(listTokens(db).at(-1)).toMatchObject({ account: "friend", kind: "agent" });
+    expect((await listAgents(token)).map((a) => a.name)).toEqual(["claude"]);
+    expect(db.prepare("SELECT bio FROM agents WHERE account_id = ? AND name = 'claude'").pluck().get(OWNER_ACCOUNT)).toBe("owner's claude");
+    expect(db.prepare("SELECT count(*) FROM agents WHERE account_id = ? AND name = 'claude'").pluck().get(friend)).toBe(1);
+  });
+
+  it("answers 503 with Retry-After to a fetch past the cap, checked before fetching, and gives the slot back", async () => {
+    await http.close();
+    await start({ maxSessions: 1 });
+    documents.set(CLAUDE, claude);
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const original = fetchMetadata;
+    fetchMetadata = async (url) => {
+      await gate;
+      return original(url);
+    };
+    const held = authorize(params({ code_challenge: pkce().challenge }));
+    await new Promise((r) => setTimeout(r, 100));
+    const past = await authorize(params({ code_challenge: pkce().challenge }));
+    expect(past.status).toBe(503);
+    expect(past.headers.get("retry-after")).toBe("5");
+    expect(past.headers.get("location")).toBeNull();
+    expect(fetched).toEqual([]);
+    // A registered client fetches nothing and is not held back by the cap.
+    expect((await pageFor(await registered(), pkce().challenge)).request).toBeTruthy();
+    release();
+    expect((await held).status).toBe(200);
+    expect((await authorize(params({ code_challenge: pkce().challenge }))).status).toBe(200);
+    // A failed fetch gives its slot back too.
+    fetchMetadata = async () => {
+      throw new Error("down");
+    };
+    expect((await authorize(params({ code_challenge: pkce().challenge }))).status).toBe(400);
+    fetchMetadata = original;
+    expect((await authorize(params({ code_challenge: pkce().challenge }))).status).toBe(200);
+  });
+
+  it("connects through the MCP SDK's client with its clientMetadataUrl", async () => {
+    documents.set(CLAUDE, claude);
+    let authorizationUrl: URL | undefined;
+    let verifier = "";
+    let tokens: { access_token: string } | undefined;
+    let info: { client_id: string } | undefined;
+    const provider = {
+      redirectUrl: CALLBACK,
+      clientMetadataUrl: CLAUDE,
+      clientMetadata: { redirect_uris: [CALLBACK], client_name: "Claude" },
+      clientInformation: () => info,
+      saveClientInformation: (i: { client_id: string }) => {
+        info = i;
+      },
+      tokens: () => tokens,
+      saveTokens: (t: { access_token: string }) => {
+        tokens = t;
+      },
+      redirectToAuthorization: (url: URL) => {
+        authorizationUrl = url;
+      },
+      saveCodeVerifier: (v: string) => {
+        verifier = v;
+      },
+      codeVerifier: () => verifier,
+    };
+    const { auth } = await import("@modelcontextprotocol/sdk/client/auth.js");
+    // The SDK reads the metadata at the public URL, which is this server's own address.
+    expect(await auth(provider as never, { serverUrl: mcp() })).toBe("REDIRECT");
+    expect(authorizationUrl!.searchParams.get("client_id")).toBe(CLAUDE);
+    const page = await fetch(authorizationUrl!, { redirect: "manual" });
+    expect(page.status).toBe(200);
+    const html = await page.text();
+    const request = /data-request="([0-9a-f]+)"/.exec(html)![1];
+    const state = authorizationUrl!.searchParams.get("state");
+    const approved = await approve(ownerFull, { request, state, agent: "sdk-claude" });
+    const code = new URL(((await approved.json()) as { location: string }).location).searchParams.get("code")!;
+    expect(await auth(provider as never, { serverUrl: mcp(), authorizationCode: code })).toBe("AUTHORIZED");
+    expect((await listAgents(tokens!.access_token)).map((a) => a.name)).toContain("sdk-claude");
   });
 });

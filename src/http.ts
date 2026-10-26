@@ -31,7 +31,19 @@ import {
   type SearchFilters,
   type Unread,
 } from "./messages.js";
-import { OAuthError, approveAuthorization, exchangeCode, redirectTo, registerClient, startAuthorization } from "./oauth.js";
+import { fetchClientMetadata } from "./client-metadata.js";
+import {
+  OAuthError,
+  approveAuthorization,
+  checkMetadataUrl,
+  clientFromMetadata,
+  exchangeCode,
+  isMetadataUrl,
+  redirectTo,
+  registerClient,
+  startAuthorization,
+  type Client,
+} from "./oauth.js";
 import { DEFAULT_MAX_SESSIONS, Session, createServer, type ServerOptions } from "./server.js";
 import { endSession, forgetIdleSessions, restorableSession, saveSession, sessionEnded, touchSession } from "./sessions.js";
 import { DEFAULT_WAIT_HOLD_MS, formatUnread } from "./wait.js";
@@ -69,6 +81,11 @@ export interface HttpOptions {
   webhookIntervalMs?: number;
   /** Passed to `sendPending`, so tests can shorten the timeout. */
   webhookOptions?: Omit<SendOptions, "signal">;
+  /**
+   * Fetches a Client ID Metadata Document, so tests can serve one from a loopback server; `fetchClientMetadata` by
+   * default. `serve` never passes it: src/cli.ts passes only `token`, `host`, `port` and `publicUrl`.
+   */
+  fetchClientMetadata?: (url: string) => Promise<unknown>;
 }
 
 export interface HttpServer {
@@ -269,6 +286,7 @@ function oauthUrls(publicUrl: string) {
       grant_types_supported: ["authorization_code"],
       code_challenge_methods_supported: ["S256"],
       token_endpoint_auth_methods_supported: ["none"],
+      client_id_metadata_document_supported: true,
     },
     challenge: `Bearer resource_metadata="${resourceMetadata}"`,
     // Where each metadata document is asked for: at the root, and, for a public URL with a path, with that path after
@@ -727,6 +745,9 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
   const oauth = options.publicUrl === undefined ? undefined : oauthUrls(options.publicUrl);
   // POST /oauth/register, /oauth/approve and /oauth/token requests between taking a slot and answering.
   let authorizing = 0;
+  // GET /oauth/authorize requests fetching a client's metadata document, from before the fetch begins until it ends.
+  let fetchingMetadata = 0;
+  const fetchMetadata = options.fetchClientMetadata ?? ((url: string) => fetchClientMetadata(url));
 
   /**
    * Takes a slot for an OAuth request with a body, before it is read, and answers what `act` does with the body's text
@@ -780,23 +801,58 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
       }
     });
 
+  const showError = (res: ServerResponse, message: string) => {
+    res.writeHead(400, APPROVE_HEADERS);
+    res.end(errorPage(message));
+  };
+
   /**
    * GET /oauth/authorize: checks the request, then shows the approval page, an error page for a client or redirect URI
-   * that is not registered, or redirects back with the error for anything else.
+   * that is not registered, or redirects back with the error for anything else. A `client_id` that starts with https://
+   * is the URL of the client's metadata document: once the URL is checked, a slot is taken and the document fetched,
+   * outside any transaction and with nothing of this request; a URL, fetch or document refused gets the error page with
+   * a fixed reason, never a redirect.
    */
-  const oauthAuthorize = (req: IncomingMessage, res: ServerResponse, resource: string) => {
+  const oauthAuthorize = async (req: IncomingMessage, res: ServerResponse, resource: string) => {
     if (req.method !== "GET") return reply(res, 405, "Method not allowed", { Allow: "GET" });
     const query = new URL(req.url ?? "", "http://x").searchParams;
-    const outcome = unlessBusy(res, () => startAuthorization(db, query, resource));
+    const ids = query.getAll("client_id");
+    let fetched: Client | undefined;
+    if (ids.length === 1 && isMetadataUrl(ids[0])) {
+      let url: string;
+      try {
+        url = checkMetadataUrl(ids[0]);
+      } catch (err) {
+        if (err instanceof OAuthError) return showError(res, err.message);
+        throw err;
+      }
+      if (fetchingMetadata >= maxSessions) {
+        res.writeHead(503, { ...APPROVE_HEADERS, "Retry-After": "5" });
+        return void res.end(errorPage("Too many clients are connecting at once. Try again in a moment."));
+      }
+      fetchingMetadata++;
+      let doc: unknown;
+      try {
+        doc = await fetchMetadata(url);
+      } catch {
+        return showError(res, "This server could not fetch the client's description. Start connecting again from the client.");
+      } finally {
+        fetchingMetadata--;
+      }
+      try {
+        fetched = clientFromMetadata(url, doc);
+      } catch (err) {
+        if (err instanceof OAuthError) return showError(res, err.message);
+        throw err;
+      }
+    }
+    const outcome = unlessBusy(res, () => startAuthorization(db, query, resource, fetched));
     if (outcome === undefined) return;
     if (outcome.page === "redirect") {
       res.writeHead(302, { Location: outcome.location, "Cache-Control": "no-store", "Referrer-Policy": "no-referrer" });
       return void res.end();
     }
-    if (outcome.page === "error") {
-      res.writeHead(400, APPROVE_HEADERS);
-      return void res.end(errorPage(outcome.message));
-    }
+    if (outcome.page === "error") return showError(res, outcome.message);
     const { authorization: a } = outcome;
     res.writeHead(200, APPROVE_HEADERS);
     res.end(approvePage(a, redirectTo(a.redirectUri, { error: "access_denied" }, a.state)));

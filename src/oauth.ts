@@ -3,7 +3,8 @@ import { AccountError, addToken } from "./accounts.js";
 import { ToolError, registerWithIdentity, validateName } from "./agents.js";
 import type { AccountId, Db } from "./db.js";
 
-// MCP's authorization flow for `serve --public-url`: a client registers itself (RFC 7591), a person approves it in the
+// MCP's authorization flow for `serve --public-url`: a client registers itself (RFC 7591) or names the URL of its Client
+// ID Metadata Document as its `client_id`, which the authorization endpoint fetches, a person approves it in the
 // browser with a full token of their account, and the client exchanges the code it is sent back with for an agent token
 // bound to the approved agent (OAuth 2.1 authorization code with PKCE). Authorization requests and codes are stored only
 // as hashes, as is the client's `state`; nothing here logs anything.
@@ -71,6 +72,74 @@ export interface Client {
   redirectUris: string[];
 }
 
+/** Whether `clientId` names a Client ID Metadata Document by its URL, rather than a registration: it starts with https://. */
+export const isMetadataUrl = (clientId: string) => clientId.startsWith("https://");
+
+/**
+ * Checks a `client_id` that `isMetadataUrl` takes for a metadata document's URL before anything is fetched, parsed with
+ * `new URL()`: https, a path other than /, no username, password, query or fragment, at most MAX_URI_LENGTH characters,
+ * and its own canonical form, so no dot segments and nothing `new URL()` would rewrite. The address it names is checked
+ * when it is fetched (client-metadata.ts). Throws `OAuthError` with fixed text.
+ */
+export function checkMetadataUrl(raw: string): string {
+  const bad = () => new OAuthError("invalid_client", "This client's address is not one this server fetches a description from.");
+  if (raw.length > MAX_URI_LENGTH) throw bad();
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    throw bad();
+  }
+  // `href` keeps an empty `?` or `#`, which `search` and `hash` report as "".
+  if (url.protocol !== "https:" || url.pathname === "/" || url.username || url.password || url.href.includes("?") || url.href.includes("#")) throw bad();
+  if (url.href !== raw) throw bad();
+  return raw;
+}
+
+/**
+ * The client a fetched Client ID Metadata Document describes, for the metadata URL `url`: a JSON object whose `client_id`
+ * is `url` exactly, with 1-MAX_REDIRECT_URIS `redirect_uris`, each passing `checkRedirectUri`, an optional `client_name`
+ * of at most MAX_CLIENT_NAME_LENGTH characters, `token_endpoint_auth_method` absent or "none", and no `client_secret`.
+ * Other fields are ignored. Throws `OAuthError` with fixed text that never quotes the document.
+ */
+export function clientFromMetadata(url: string, doc: unknown): Client {
+  const bad = (why: string) => new OAuthError("invalid_client_metadata", `This client's description ${why}`);
+  if (typeof doc !== "object" || doc === null || Array.isArray(doc)) throw bad("is not a JSON object.");
+  const input = doc as Record<string, unknown>;
+  if (input.client_id !== url) throw bad("names another client_id than its own address.");
+  const uris = input.redirect_uris;
+  if (!Array.isArray(uris) || uris.length === 0 || uris.length > MAX_REDIRECT_URIS) {
+    throw bad(`must list 1-${MAX_REDIRECT_URIS} redirect URIs.`);
+  }
+  let redirectUris: string[];
+  try {
+    redirectUris = uris.map(checkRedirectUri);
+  } catch {
+    throw bad("lists a redirect URI this server does not accept.");
+  }
+  const name = input.client_name;
+  if (name !== undefined && (typeof name !== "string" || name.length > MAX_CLIENT_NAME_LENGTH)) {
+    throw bad(`has a client_name that is not a string of at most ${MAX_CLIENT_NAME_LENGTH} characters.`);
+  }
+  if ((input.token_endpoint_auth_method !== undefined && input.token_endpoint_auth_method !== "none") || "client_secret" in input) {
+    throw bad("is not for a public client.");
+  }
+  return { clientId: url, clientName: (name as string | undefined) ?? null, redirectUris };
+}
+
+/**
+ * Forgets the oldest client rows past MAX_CLIENTS that have no authorization request or code still live, with their
+ * expired ones. Run inside the transaction that added a row.
+ */
+function pruneClients(db: Db): void {
+  db.prepare(
+    `DELETE FROM mcp_clients WHERE id IN (
+       SELECT id FROM mcp_clients
+       WHERE NOT EXISTS (SELECT 1 FROM mcp_authorizations WHERE client_id = mcp_clients.id AND expires_at > ?)
+       ORDER BY id DESC LIMIT -1 OFFSET ?)`,
+  ).run(Date.now(), MAX_CLIENTS);
+}
+
 /**
  * Registers a public client from an RFC 7591 request body: `client_name` (optional) and `redirect_uris`, each checked by
  * `checkRedirectUri` as the client sent it. A bad request stores nothing. Past `MAX_CLIENTS` the oldest registrations
@@ -97,12 +166,7 @@ export const registerClient = (db: Db, body: unknown): Client =>
       JSON.stringify(redirectUris),
       Date.now(),
     );
-    db.prepare(
-      `DELETE FROM mcp_clients WHERE id IN (
-         SELECT id FROM mcp_clients
-         WHERE NOT EXISTS (SELECT 1 FROM mcp_authorizations WHERE client_id = mcp_clients.id AND expires_at > ?)
-         ORDER BY id DESC LIMIT -1 OFFSET ?)`,
-    ).run(Date.now(), MAX_CLIENTS);
+    pruneClients(db);
     return { clientId, clientName: (name as string | undefined) ?? null, redirectUris };
   }).immediate();
 
@@ -142,17 +206,37 @@ export function redirectTo(redirectUri: string, params: Record<string, string>, 
 }
 
 /**
- * Checks an authorization request's query and, if it may go ahead, stores it hashed with an expiry. `resource` is the
- * server's `/mcp` address, the only resource it accepts. A parameter given twice counts as bad.
+ * Stores the client a metadata document describes, keyed by its URL: the existing row's name and redirect URIs replaced,
+ * keeping its id so requests and codes already made for it stay, or a new row, after which the oldest past MAX_CLIENTS
+ * are forgotten as for a registration. Shared by every account, as a registration is.
  */
-export const startAuthorization = (db: Db, query: URLSearchParams, resource: string): AuthorizeOutcome =>
+function storeMetadataClient(db: Db, client: Client): Client & { id: number } {
+  const known = findClient(db, client.clientId);
+  if (known) {
+    db.prepare("UPDATE mcp_clients SET client_name = ?, redirect_uris = ? WHERE id = ?").run(client.clientName, JSON.stringify(client.redirectUris), known.id);
+    return { ...client, id: known.id };
+  }
+  const id = db
+    .prepare("INSERT INTO mcp_clients (client_id, client_name, redirect_uris, created_at) VALUES (?, ?, ?, ?)")
+    .run(client.clientId, client.clientName, JSON.stringify(client.redirectUris), Date.now()).lastInsertRowid as number;
+  pruneClients(db);
+  return { ...client, id };
+}
+
+/**
+ * Checks an authorization request's query and, if it may go ahead, stores it hashed with an expiry. `resource` is the
+ * server's `/mcp` address, the only resource it accepts. A parameter given twice counts as bad. `fetched` is the client
+ * a metadata document described, for a `client_id` that is its URL (see `clientFromMetadata`); it is stored in the same
+ * transaction, in place of looking up a registration.
+ */
+export const startAuthorization = (db: Db, query: URLSearchParams, resource: string, fetched?: Client): AuthorizeOutcome =>
   db.transaction((): AuthorizeOutcome => {
     const one = (key: string): string | null | undefined => {
       const values = query.getAll(key);
       return values.length === 0 ? null : values.length === 1 ? values[0] : undefined;
     };
     const clientId = one("client_id");
-    const client = clientId ? findClient(db, clientId) : undefined;
+    const client = !clientId ? undefined : fetched ? (fetched.clientId === clientId ? storeMetadataClient(db, fetched) : undefined) : findClient(db, clientId);
     if (!client) return { page: "error", message: "This client is not registered with this server. Start connecting again from the client." };
     const redirectUri = one("redirect_uri");
     if (!redirectUri || !client.redirectUris.includes(redirectUri)) {

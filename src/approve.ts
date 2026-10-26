@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { STYLE } from "./dashboard.js";
-import { isLoopback, type Authorization } from "./oauth.js";
+import { isLoopback, isMetadataUrl, type Authorization } from "./oauth.js";
 
 // The page a person approves an MCP client on, served at the authorization endpoint of `serve --public-url` without a
 // token, in the dashboard's look. It asks for a full token of the account and the agent the client should act as, and
@@ -126,21 +126,25 @@ export const errorPage = (message: string) => page(`<p role="alert">${escape(mes
 
 /**
  * The approval page for `a`. `deny` is where refusing goes: the redirect URI with error=access_denied and the state.
- * It shows the client's name as it registered it and the redirect URI's host, and warns when that host is this machine.
+ * It shows the client's name as it registered it, or as its metadata document gives it with the host of that document's
+ * URL, and the redirect URI's host, and warns when that host is this machine.
  */
 export function approvePage(a: Authorization, deny: string): string {
   const host = new URL(a.redirectUri).host;
   const loopback = isLoopback(new URL(a.redirectUri));
   const name = a.client.clientName ? escape(a.client.clientName) : "An unnamed client";
+  // A client known by its metadata document's URL is named with that URL's host, which this server fetched it from.
+  const from = isMetadataUrl(a.client.clientId) ? new URL(a.client.clientId).host : undefined;
+  const who = `<span class="client">${name}</span>${from === undefined ? "" : `, from <span class="client">${escape(from)}</span>,`}`;
   const state = a.state === null ? "" : ` data-state="${escape(a.state)}"`;
   return page(`<h2>Connect a client</h2>
-<p><span class="client">${name}</span> asks to act as an agent of your account. Once you approve, it is sent to <span class="client">${escape(host)}</span> with a code it exchanges for an agent token.</p>
+<p>${who} asks to act as an agent of your account. Once you approve, it is sent to <span class="client">${escape(host)}</span> with a code it exchanges for an agent token.</p>
 ${
   loopback
     ? `<p class="warn">That address is on the machine the client runs on. Approve only if you just started connecting from a client on this machine: any program running there could have asked.</p>`
     : ""
 }
-<p class="dim">The name is the client's own; this server has not checked it.</p>
+<p class="dim">${from === undefined ? "The name is the client's own; this server has not checked it." : `The name is the client's own; this server has checked only that its description is at ${escape(from)}.`}</p>
 <form id="approve" data-request="${escape(a.request)}"${state}>
 <label for="approve-token">Full token of the account</label>
 <input id="approve-token" type="password" autocomplete="off" required>
