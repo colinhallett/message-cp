@@ -415,7 +415,7 @@ describe("message-cp token add", () => {
     }
   }, 30_000);
 
-  it("prints an agent token with --agent-only, which reaches /mcp but not POST /api/send", async () => {
+  it("prints an agent token with --agent-only, which reaches /mcp but not the dashboard API", async () => {
     const agent = cli("token", "add", "friend", "--agent-only");
     expect(agent.status).toBe(0);
     expect(agent.stderr).toContain("agent token");
@@ -423,7 +423,7 @@ describe("message-cp token add", () => {
     const token = agent.stdout.trim();
     expect(token).toMatch(/^[0-9a-f]{64}$/);
     expect(await initialize(token)).toHaveProperty("status", 200);
-    expect((await agents(token)).status).toBe(200);
+    expect((await agents(token)).status).toBe(403);
     const send = await fetch(`${base()}/api/send`, { method: "POST", headers: auth(token), body: "{}" });
     expect(send.status).toBe(403);
   }, 30_000);
