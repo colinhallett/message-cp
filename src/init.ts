@@ -114,14 +114,13 @@ const STDIO_SERVER: JsonServer = {
 };
 
 /**
- * Adds `server.entry` as `message-cp` to the `mcpServers` of the JSON file `file`, keeping every other key and server. The new JSON is
- * written to a temporary file beside the real one (through a symlink, beside its target) and renamed over it, so a
- * failed write leaves the old file whole; an existing file keeps its mode, and a new one is 0600. If the file changed
- * between the read and the rename, nothing is written and `init` says to run it again. A `message-cp` entry already
- * there is left as it is: "present" if `server.same` holds for it (by default, it runs `npx -y message-cp`), "differs"
- * otherwise. Refuses, changing nothing, a
- * file that is not a JSON object or whose `mcpServers` is not one, and turns a file it cannot read or write into an
- * InitError giving the reason.
+ * Adds `server.entry` as `message-cp` to the `mcpServers` of the JSON file `file`, keeping every other key and server.
+ * The new JSON is written to a temporary file beside the real one (through a symlink, beside its target) and renamed
+ * over it, so a failed write leaves the old file whole; an existing file keeps its mode, and a new one is 0600. If the
+ * file changed between the read and the rename, nothing is written and `init` says to run it again. A `message-cp`
+ * entry already there is left as it is: "present" if `server.same` holds for it (by default, if it runs
+ * `npx -y message-cp`), "differs" otherwise. Refuses, changing nothing, a file that is not a JSON object or whose
+ * `mcpServers` is not one, and turns a file it cannot read or write into an InitError giving the reason.
  */
 export function mergeServer(file: string, server: JsonServer = STDIO_SERVER): SetUpState {
   const reason = (err: unknown) => (err as { code?: string }).code ?? (err instanceof Error ? err.message : String(err));
@@ -219,19 +218,31 @@ export const claudeRemoteAdd = (r: Remote): string[] => [
   ...Object.entries(remoteHeaders(r)).flatMap(([k, v]) => ["--header", `${k}: ${v}`]),
 ];
 
-/** The Cursor entry for the team server: `url` and `headers`, with no `type`, as Cursor documents a remote server. */
+/**
+ * The Cursor entry for the team server: `url` and `headers`, with no `type`, as Cursor documents a remote server. An
+ * entry is the same only with the same URL and all three headers, so one holding an old token or key is not.
+ */
 export const cursorRemote = (r: Remote): JsonServer => ({
   entry: { url: r.endpoint.href, headers: remoteHeaders(r) },
-  same: (e) => isObject(e) && e.url === r.endpoint.href && isObject(e.headers) && e.headers["X-Message-CP-Agent"] === r.agent,
+  same: (e) =>
+    isObject(e) &&
+    e.url === r.endpoint.href &&
+    isObject(e.headers) &&
+    Object.entries(remoteHeaders(r)).every(([k, v]) => (e.headers as Record<string, unknown>)[k] === v),
 });
 
 /**
- * Whether `claude mcp get`'s output describes the team server `r` acts as: `Type: http`, its `URL:` and its
- * `X-Message-CP-Agent:` header line. The output also holds the token and key, so it is only matched, never printed.
+ * Whether `claude mcp get`'s output describes the team server `r` acts as: `Type: http`, its `URL:` and the three
+ * header lines, so an entry holding an old token or key is not the same. The output holds the token and key, so it is
+ * only matched, never printed.
  */
 function sameRemote(stdout: string, r: Remote): boolean {
   const field = (name: string) => new RegExp(`^\\s*${name}: (.*)$`, "m").exec(stdout)?.[1]?.trim();
-  return field("Type") === "http" && field("URL") === r.endpoint.href && field("X-Message-CP-Agent") === r.agent;
+  return (
+    field("Type") === "http" &&
+    field("URL") === r.endpoint.href &&
+    Object.entries(remoteHeaders(r)).every(([k, v]) => field(k) === v)
+  );
 }
 
 /** Whether `get`'s output describes a stdio server that runs `npx -y message-cp`. */
@@ -643,7 +654,7 @@ export async function runInit(o: InitOptions): Promise<number> {
     o.err(
       remote === undefined
         ? `message-cp init: ${label} already has a server named message-cp that does not run \`npx -y message-cp\`; it was left as it is.`
-        : `message-cp init: ${label} already has a server named message-cp that is not ${remote.endpoint.href} as agent '${remote.agent}'; it was left as it is.`,
+        : `message-cp init: ${label} already has a server named message-cp that is not ${remote.endpoint.href} as agent '${remote.agent}' with this token and key; it was left as it is.`,
     );
     o.err(`To remove it, then run message-cp init again: ${setUp.undo}`);
     return 1;
@@ -651,7 +662,13 @@ export async function runInit(o: InitOptions): Promise<number> {
   o.out(setUp.state === "added" ? `${label}: added message-cp ${setUp.changed}.` : `${label}: already set up; nothing was changed.`);
   if (remote !== undefined && client === "cursor") {
     const file = configFile("cursor", o.machine);
-    if (o.machine.platform !== "win32" && (statSync(file).mode & 0o044) !== 0) {
+    let mode = 0;
+    try {
+      mode = statSync(file).mode;
+    } catch {
+      // Gone since it was written: there is nothing to warn about.
+    }
+    if (o.machine.platform !== "win32" && (mode & 0o044) !== 0) {
       o.err(`Warning: ${file} holds the token and key, and other users of this machine can read it; to make it private: chmod 600 ${file}`);
     }
   }

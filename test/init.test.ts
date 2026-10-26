@@ -528,6 +528,8 @@ describe("setUpClient with a team server", () => {
       [claudeGetHttp(), "present"],
       [claudeGetHttp("https://other.example/mcp"), "differs"],
       [claudeGetHttp(undefined, "reader"), "differs"],
+      [claudeGetHttp().replace(KEY, "old-key"), "differs"],
+      [claudeGetHttp().replace(TOKEN, "old-token"), "differs"],
       ["message-cp:\n  Type: stdio\n  Command: npx\n  Args: -y message-cp\n", "differs"],
     ] as const) {
       const { run, calls } = fakeRunner({ [CLAUDE_GET]: { status: 0, stdout } });
@@ -565,6 +567,9 @@ describe("setUpClient with a team server", () => {
     const after = readFileSync(file, "utf8");
     expect(setUpClient("cursor", machine(), fakeRunner().run, remote()).state).toBe("present");
     expect(setUpClient("cursor", machine(), fakeRunner().run, remote({ agent: "reader" })).state).toBe("differs");
+    // An entry holding an old token or key is not the same, so a rotated one is not called set up.
+    expect(setUpClient("cursor", machine(), fakeRunner().run, remote({ key: "new-key" })).state).toBe("differs");
+    expect(setUpClient("cursor", machine(), fakeRunner().run, remote({ token: "new-token" })).state).toBe("differs");
     expect(setUpClient("cursor", machine(), fakeRunner().run).state).toBe("differs");
     expect(readFileSync(file, "utf8")).toBe(after);
   });
@@ -677,7 +682,7 @@ describe("runInit with a team server", () => {
     fakeCommand("claude");
     const t = options({ run: fakeRunner({ [CLAUDE_GET]: { status: 0, stdout: "  Type: stdio\n  Command: npx\n  Args: -y message-cp\n" } }).run });
     expect(await runInit(t.o)).toBe(1);
-    expect(t.err.join("\n")).toContain("already has a server named message-cp that is not https://message-cp.example.com/mcp as agent 'writer'");
+    expect(t.err.join("\n")).toContain("already has a server named message-cp that is not https://message-cp.example.com/mcp as agent 'writer' with this token and key");
     expect(t.err.join("\n")).toContain("claude mcp remove --scope user message-cp");
     expect(t.proved()).toBe(0);
   });
