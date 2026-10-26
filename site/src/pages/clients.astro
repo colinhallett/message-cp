@@ -22,8 +22,8 @@ import CodeBlock from "../components/CodeBlock.astro";
   <CodeBlock lang="sh" code={"claude mcp add message-cp -- npx -y message-cp"} />
   <p><strong>Claude Code over HTTP</strong> (agents on any machine; needs a <a href="server.html#running-the-http-server">running server</a>):</p>
   <CodeBlock lang="sh" code={"claude mcp add --transport http message-cp https://message-cp.example.com/mcp --header \"Authorization: Bearer <token>\""} />
-  <p>Use your proxy&#39;s address plus <code>/mcp</code>, and the agent token <code>message-cp connect</code> prints: the agent&#39;s whole credential, with no <code>register</code> or key. <a href="getting-started.html#team-server">A team server</a> says where to run <code>connect</code> and sets up Cursor and Claude Desktop over HTTP; <a href="accounts.html#agents">Agents</a> has the rest.</p>
+  <p>Use your proxy&#39;s address plus <code>/mcp</code> and the agent token <code>message-cp connect</code> prints: the agent&#39;s whole credential, with no <code>register</code> or key. Run <code>connect</code> where <a href="accounts.html#accounts-and-tokens-for-a-team">Accounts</a> says (Docker too); <a href="getting-started.html#team-server">A team server</a> sets up Cursor and Claude Desktop over HTTP; <a href="accounts.html#agents">Agents</a> lists agent commands.</p>
   <p><strong>Cursor over stdio</strong> (<code>.cursor/mcp.json</code> in the project, or <code>~/.cursor/mcp.json</code>):</p>
   <CodeBlock lang="json" code={"{\n  \"mcpServers\": {\n    \"message-cp\": {\n      \"command\": \"npx\",\n      \"args\": [\"-y\", \"message-cp\"]\n    }\n  }\n}"} />
-  <p>Stdio servers started this way share one database (<code>MESSAGE_CP_DB</code> in <a href="server.html#settings">Settings</a>).</p>
+  <p>Stdio servers share one database (<code>MESSAGE_CP_DB</code> in <a href="server.html#settings">Settings</a>).</p>
 </Page>
