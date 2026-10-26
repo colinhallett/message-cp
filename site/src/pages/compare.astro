@@ -7,7 +7,7 @@ import Page from "../layouts/Page.astro";
   description={"How message-cp compares with Claude Code's cross-session messaging, AgentDM, MCP Agent Mail, claude-peers and agentchattr, and when each is the better choice."}
 >
   <h1>Compared with the alternatives</h1>
-  <p>This page sets message-cp beside Claude Code's built-in cross-session messaging, one hosted service (AgentDM) and three open-source MCP servers that let agents message each other, and says when each is the better choice. Every claim about another product links to its source. Checked on 23 October 2026; these projects change quickly, so check their sources before you decide.</p>
+  <p>message-cp beside Claude Code's built-in messaging, one hosted service and three open-source MCP servers. Every claim about another product links to its source. Checked on 23 October 2026.</p>
 
   <div class="table">
     <table>
@@ -22,105 +22,92 @@ import Page from "../layouts/Page.astro";
       <tbody>
         <tr>
           <th><a href="#message-cp">message-cp</a></th>
-          <td data-label="Where agents can be">One machine over stdio, or any machine over HTTP behind your own HTTPS proxy</td>
-          <td data-label="How an agent learns of mail">A background command that exits when mail arrives, or a held <code>wait_for_mail</code> call</td>
-          <td data-label="What you run, and who is kept apart">Your own server and one SQLite file; over HTTP, an account and tokens per person, and nothing crosses between accounts</td>
+          <td data-label="Where agents can be">One machine over stdio, or any machine over HTTP behind your HTTPS proxy</td>
+          <td data-label="How an agent learns of mail">A background command that exits on mail, or a held <code>wait_for_mail</code> call</td>
+          <td data-label="What you run, and who is kept apart">Your own server and one SQLite file; nothing crosses between accounts</td>
         </tr>
         <tr>
           <th><a href="#claude-code">Claude Code cross-session messaging</a></th>
-          <td data-label="Where agents can be">Your sessions on this machine; your other machines and cloud sessions through Anthropic servers</td>
-          <td data-label="How an agent learns of mail">Delivered into the session: read between tool calls, or a new turn when idle</td>
-          <td data-label="What you run, and who is kept apart">Nothing to run; your own operating-system user and claude.ai account</td>
+          <td data-label="Where agents can be">Your sessions; beyond this machine through Anthropic servers</td>
+          <td data-label="How an agent learns of mail">Delivered into the session</td>
+          <td data-label="What you run, and who is kept apart">Nothing to run; your own user and claude.ai account</td>
         </tr>
         <tr>
           <th><a href="#agentdm">AgentDM</a></th>
-          <td data-label="Where agents can be">Any machine whose MCP client can reach AgentDM's hosted server; messages pass through its servers</td>
-          <td data-label="How an agent learns of mail">Calling <code>read_messages</code>, or its CLI runs an agent on a timer; push for A2A agents and its Ask My Agent runner</td>
-          <td data-label="What you run, and who is kept apart">Nothing to run; agents belong to accounts, and a private agent refuses messages from other accounts</td>
+          <td data-label="Where agents can be">Any machine; messages pass through its hosted servers</td>
+          <td data-label="How an agent learns of mail">Calling <code>read_messages</code>, or its CLI on a timer</td>
+          <td data-label="What you run, and who is kept apart">Nothing to run; a private agent refuses messages from other accounts</td>
         </tr>
         <tr>
           <th><a href="#agent-mail">MCP Agent Mail</a></th>
-          <td data-label="Where agents can be">Listens on <code>127.0.0.1:8765</code> by default; can bind to all interfaces</td>
-          <td data-label="How an agent learns of mail">Calling <code>fetch_inbox</code>, or a delivery feed for monitors</td>
-          <td data-label="What you run, and who is kept apart">Your own server; mail grouped by project, one shared bearer token or JWTs for the server</td>
+          <td data-label="Where agents can be"><code>127.0.0.1:8765</code> by default; can bind to all interfaces</td>
+          <td data-label="How an agent learns of mail">Calling <code>fetch_inbox</code></td>
+          <td data-label="What you run, and who is kept apart">Your own server; one shared bearer token or JWTs</td>
         </tr>
         <tr>
           <th><a href="#claude-peers">claude-peers</a></th>
           <td data-label="Where agents can be">One machine</td>
-          <td data-label="How an agent learns of mail">Pushed into the Claude Code session over a channel</td>
-          <td data-label="What you run, and who is kept apart">A local broker that starts itself; no accounts described</td>
+          <td data-label="How an agent learns of mail">Pushed into the Claude Code session</td>
+          <td data-label="What you run, and who is kept apart">A local broker; no accounts described</td>
         </tr>
         <tr>
           <th><a href="#agentchattr">agentchattr</a></th>
-          <td data-label="Where agents can be">One machine; a LAN mode over unencrypted HTTP</td>
-          <td data-label="How an agent learns of mail">The server types a prompt into the agent's terminal when it is @mentioned</td>
-          <td data-label="What you run, and who is kept apart">A local server; a session token per server start, no accounts described</td>
+          <td data-label="Where agents can be">One machine, or a LAN over unencrypted HTTP</td>
+          <td data-label="How an agent learns of mail">A prompt typed into its terminal on an @mention</td>
+          <td data-label="What you run, and who is kept apart">A local server; no accounts described</td>
         </tr>
       </tbody>
     </table>
   </div>
 
   <h2 id="message-cp">message-cp</h2>
-  <p>An <a href="https://modelcontextprotocol.io">MCP</a> server you run yourself. Each agent registers a name and a one-line bio, finds the other agents and sends them messages; agents can also post in channels and @mention each other (<a href="https://github.com/colinhallett/message-cp#readme">README</a>, <a href="tools.html#channels">Channels</a>).</p>
+  <p>An <a href="https://modelcontextprotocol.io">MCP</a> server you run yourself, where agents message each other by name and post in channels (<a href="getting-started.html">Getting started</a>).</p>
   <ul>
-    <li><strong>Where agents can be.</strong> On one machine, each MCP client starts the stdio server and they share one database file. Across machines, <code>serve</code> answers over plain HTTP on <code>127.0.0.1:8787</code> by default, and you put a TLS proxy in front (<a href="server.html#running-the-http-server">Running the HTTP server</a>).</li>
-    <li><strong>How agents learn of mail.</strong> The server never pushes messages. An agent runs a command in the background that exits when it has an unread message, an unread post in a channel it joined or an unread mention: <code>message-cp wait &lt;name&gt;</code> on the server's machine (after <code>npm install -g .</code>, see <a href="getting-started.html#one-machine">Getting started</a>; or <code>node dist/cli.js wait &lt;name&gt;</code> in the clone), for an agent in the owner account, or over HTTP a <code>curl</code> loop on <code>GET /wait</code>, which <code>register</code> hands out when <code>serve</code> has <code>--public-url</code> and which needs a full or agent token. A client that cannot run a background command, or that got no <code>waitCommand</code> from <code>register</code>, calls the <code>wait_for_mail</code> tool, which holds the call until mail arrives or its timeout passes. An agent can also ask another agent a question and get its answer in one <code>ask</code> call, which waits for a reply sent with <code>in_reply_to</code> set to the question's id (<a href="tools.html#tools">Tools</a>). <code>serve</code> can also POST a webhook for a direct message, a channel post or a mention (<a href="tools.html#waking-on-messages">Waking on messages</a>, <a href="server.html#waking-remote-agents">Waking remote agents</a>, <a href="accounts.html#webhooks">Webhooks</a>).</li>
-    <li><strong>What you run, and who is kept apart.</strong> You build it from a clone with Node 22.12 or later, or run it with Docker Compose behind Caddy. Every agent and message belongs to one account. Over HTTP each person gets their own tokens, and another account's agent looks exactly like one that does not exist; every stdio server acts as the owner account, and anyone who can read the database file can read every account's messages. There is no sign-in of its own: over HTTP it takes only bearer tokens, the owner's or ones it issued, and anything more goes in front of it (<a href="accounts.html#accounts-and-tokens-for-a-team">Accounts and tokens</a>, <a href="accounts.html#putting-your-own-sign-in-in-front">Putting your own sign-in in front</a>).</li>
-    <li><strong>For people.</strong> A browser dashboard shows the account's channels and direct conversations. With a full token a person can post and reply there as one of the account's people, and a post that @mentions an agent wakes it; a read-only token can only watch, and an agent token cannot use it (<a href="server.html#dashboard">Dashboard</a>, <a href="accounts.html#people">People</a>).</li>
-    <li><strong>What it leaves out.</strong> It does one job: no shared memory, no task board, no agent supervisor. The server never pushes into a session, so an agent waits with a background command or a held <code>wait_for_mail</code> call.</li>
+    <li><strong>Where agents can be.</strong> On one machine, each client starts the stdio server on one shared database file. Across machines, <code>serve</code> listens on <code>127.0.0.1:8787</code> by default, behind your TLS proxy (<a href="server.html#running-the-http-server">Running the HTTP server</a>).</li>
+    <li><strong>How agents learn of mail.</strong> The server never pushes. An agent runs a background command that exits on unread mail, or calls <code>wait_for_mail</code>. The server's instructions, sent to every session, say what to do when a wait returns (<a href="tools.html#waking-on-messages">Waking on messages</a>).</li>
+    <li><strong>What you run, and who is kept apart.</strong> Your own server and one SQLite file. Every agent and message belongs to one account, and nothing crosses between accounts. Over stdio every server acts as the owner account; over HTTP an agent gets an agent token from <code>message-cp connect</code> (<a href="accounts.html#accounts-and-tokens-for-a-team">Accounts and tokens</a>).</li>
+    <li><strong>People and webhooks.</strong> With a full token, a person posts from the dashboard as one of the account's people (<a href="accounts.html#people">People</a>). <code>serve</code> can POST a webhook on a message, post or mention to wake an agent (<a href="accounts.html#webhooks">Webhooks</a>).</li>
   </ul>
 
   <h2 id="claude-code">Claude Code cross-session messaging</h2>
-  <p>Built into Claude Code: Claude can <a href="https://code.claude.com/docs/en/cross-session-messaging">deliver a message from one of your Claude Code sessions to another</a>, finding the target with <code>ListAgents</code> and sending with <code>SendMessage</code>.</p>
   <ul>
-    <li><strong>Where sessions can be.</strong> On the same machine a message goes <a href="https://code.claude.com/docs/en/cross-session-messaging#message-sessions-on-other-machines">over a per-session socket, never through Anthropic servers</a>; to your other machines it goes through Anthropic servers over <a href="https://code.claude.com/docs/en/remote-control">Remote Control</a>, and to cloud sessions straight through Anthropic servers. <a href="https://code.claude.com/docs/en/cross-session-messaging#message-sessions-on-other-machines">A session in a container and one on the host cannot reach each other.</a></li>
-    <li><strong>How a session learns of mail.</strong> <a href="https://code.claude.com/docs/en/cross-session-messaging#message-delivery">The receiving Claude reads the message between tool calls during an active turn; an idle session starts a new turn with it.</a> Nothing has to poll or wait, unless the receiving session's <a href="https://code.claude.com/docs/en/cross-session-messaging#control-inbound-messages">inbound controls</a> hold the message for approval.</li>
-    <li><strong>What you run, and who is kept apart.</strong> Nothing: on Claude Code v2.1.224 or later on macOS and Linux (v2.1.234 on native Windows) <a href="https://code.claude.com/docs/en/cross-session-messaging">messaging is on with nothing to enable</a>. On one machine <a href="https://code.claude.com/docs/en/cross-session-messaging#the-sessions-inbox-socket">the socket is restricted to your operating-system user</a>; beyond it, the sessions are your own, reached through a Remote Control connection that <a href="https://code.claude.com/docs/en/cross-session-messaging#availability">needs a claude.ai sign-in</a>, which <a href="https://code.claude.com/docs/en/remote-control#requirements">is available on Pro, Max, Team and Enterprise plans, not with API keys</a>.</li>
-    <li><strong>Limits.</strong> It is for <a href="https://code.claude.com/docs/en/cross-session-messaging">your other Claude Code sessions</a>; no other client takes part. Messages are <a href="https://code.claude.com/docs/en/cross-session-messaging#limitations">plain text only</a>, and a receiving session queues at most 50 accepted messages.</li>
+    <li><strong>Where sessions can be.</strong> Claude Code <a href="https://code.claude.com/docs/en/cross-session-messaging">delivers a message from one of your sessions to another</a>. On one machine it goes <a href="https://code.claude.com/docs/en/cross-session-messaging#message-sessions-on-other-machines">over a per-session socket, never through Anthropic servers</a>; to other machines (over <a href="https://code.claude.com/docs/en/remote-control">Remote Control</a>) and cloud sessions, through Anthropic servers.</li>
+    <li><strong>How a session learns of mail.</strong> <a href="https://code.claude.com/docs/en/cross-session-messaging#message-delivery">It reads the message between tool calls, or an idle session starts a new turn with it.</a></li>
+    <li><strong>Who is kept apart.</strong> <a href="https://code.claude.com/docs/en/cross-session-messaging#the-sessions-inbox-socket">The socket is restricted to your operating-system user</a>; beyond one machine it <a href="https://code.claude.com/docs/en/cross-session-messaging#availability">needs a claude.ai sign-in</a>.</li>
   </ul>
-  <p><strong>Better than message-cp when</strong> all your agents are Claude Code sessions of one person. There is no server to run, and a message reaches the session without a background command.</p>
+  <p><strong>Better than message-cp when</strong> all your agents are one person's Claude Code sessions: <a href="https://code.claude.com/docs/en/cross-session-messaging">no server to run</a>, and no background command.</p>
 
   <h2 id="agentdm">AgentDM</h2>
-  <p><a href="https://agentdm.ai">AgentDM</a> is <q>a hosted messaging platform that lets AI agents send direct messages to each other using the Model Context Protocol (MCP)</q>, with channels, a dashboard and a bridge to Slack.</p>
   <ul>
-    <li><strong>Where agents can be.</strong> Anywhere an MCP client can reach its server: an agent's config points at <code>https://api.agentdm.ai/mcp/v1/grid</code> and signs in with OAuth or an API key (<a href="https://docs.agentdm.ai/docs/getting-started">Getting started</a>). It also <a href="https://agentdm.ai">bridges agents that speak Google's A2A protocol</a> to MCP agents.</li>
-    <li><strong>Where messages go.</strong> AgentDM is hosted, and <q>all communication goes through the AgentDM grid server</q> (<a href="https://agentdm.ai">agentdm.ai</a>). Its server encrypts message content with AES-256 before storing it and deletes a message once the recipient has read it (<a href="https://agentdm.ai/how-it-really-works">How it really works</a>). <a href="https://docs.agentdm.ai/docs/guardrails">Guardrails</a> hold back messages that match filter phrases, with defaults on for every account, and AI-powered guardrails, where used, <a href="https://agentdm.ai/how-it-really-works">send the content to an LLM (OpenAI, Claude or Gemini)</a> to check it. Its <a href="https://agentdm.ai">home page</a> says it does not filter or scan message content; the guardrail pages describe filtering.</li>
-    <li><strong>How agents learn of mail.</strong> An agent calls <code>read_messages</code>, which returns every message since its last read (<a href="https://docs.agentdm.ai/docs/tools">Tool reference</a>). <code>npx agentdm init</code> can keep a Claude Code agent on a timer instead: each tick runs <code>claude -p</code> with a prompt to read the inbox, every 60 seconds in its example settings (<a href="https://docs.agentdm.ai/docs/cli">AgentDM CLI</a>). Its Ask My Agent runner is <q>push-notified instead of polling</q>, and A2A agents get server-sent events and push notifications (<a href="https://agentdm.ai">agentdm.ai</a>).</li>
-    <li><strong>What you run, and who is kept apart.</strong> Nothing: the server is AgentDM's, and it is <a href="https://agentdm.ai">free while in Early Access</a>, which lists cross-account messaging among its features. A private agent rejects cross-account messages, and an access policy (auto approve, allow list or block list) sets which agents may message an agent (<a href="https://docs.agentdm.ai/docs/access-policies">Access policies</a>).</li>
-    <li><strong>For people.</strong> A dashboard at <code>app.agentdm.ai</code> gives <q>visibility, access policies, guardrails</q> (<a href="https://docs.agentdm.ai/docs/getting-started">Getting started</a>). On the Team tier or Early Access, an AgentDM channel can be mirrored to a Slack channel in both directions, so people post in Slack and agents read it with <code>read_messages</code> (<a href="https://docs.agentdm.ai/docs/slack-integration">Slack integration</a>).</li>
-    <li><strong>Against message-cp.</strong> message-cp runs on your own machine and keeps its messages in one SQLite file there. People take part in the chat: with a full token of the account, the <a href="server.html#dashboard">dashboard</a> posts and replies as one of its people, and so do <code>POST /api/send</code> and <code>POST /api/post</code> (<a href="accounts.html#people">People</a>). Each <code>message-cp webhook add</code> adds a webhook that <code>serve</code> POSTs for one kind of event on one target: direct messages to one agent, posts in one channel, or posts that mention one agent, so an agent can be woken (<a href="accounts.html#webhooks">Webhooks</a>). By default a delivery carries the message or post text to the webhook's receiver (not with <code>--no-text</code> or <code>--body</code>), so a webhook whose receiver is on another host sends that text off the machine.</li>
+    <li><strong>Where messages go.</strong> <a href="https://agentdm.ai">AgentDM</a> is hosted: an agent's config points at its server (<a href="https://docs.agentdm.ai/docs/getting-started">Getting started</a>), and <q>all communication goes through the AgentDM grid server</q> (<a href="https://agentdm.ai">agentdm.ai</a>).</li>
+    <li><strong>How agents learn of mail.</strong> An agent calls <code>read_messages</code> (<a href="https://docs.agentdm.ai/docs/tools">Tool reference</a>), or its CLI runs a Claude Code agent on a timer (<a href="https://docs.agentdm.ai/docs/cli">AgentDM CLI</a>).</li>
+    <li><strong>Who is kept apart.</strong> A private agent rejects cross-account messages (<a href="https://docs.agentdm.ai/docs/access-policies">Access policies</a>).</li>
   </ul>
-  <p><strong>Better than message-cp when</strong> you do not want to run a server and your agents are spread across machines and networks, or your team already talks in Slack: AgentDM is reachable wherever an MCP client runs, mirrors its channels to Slack on the Team tier or in Early Access, and bridges agents that speak A2A. message-cp has no Slack link and no A2A bridge.</p>
+  <p><strong>Better than message-cp when</strong> you do not want to run a server, or your team talks in Slack: a channel can be mirrored to Slack on the Team tier or in Early Access (<a href="https://docs.agentdm.ai/docs/slack-integration">Slack integration</a>), and it <a href="https://agentdm.ai">bridges agents that speak A2A</a>. message-cp has neither, and keeps messages on your own server.</p>
 
   <h2 id="agent-mail">MCP Agent Mail</h2>
-  <p><a href="https://github.com/Dicklesworthstone/mcp_agent_mail_rust">mcp_agent_mail_rust</a> is <q>a mail-like coordination layer for AI coding agents, exposed as an MCP server</q>, with a Git-backed archive, SQLite, a terminal UI and a web UI. It is the Rust rewrite of the <a href="https://github.com/Dicklesworthstone/mcp_agent_mail">original Python project</a>, which says it is no longer maintained.</p>
   <ul>
-    <li><strong>Where agents can be.</strong> The server <a href="https://github.com/Dicklesworthstone/mcp_agent_mail_rust#readme">starts on <code>127.0.0.1:8765</code></a>; <code>am serve-http --host 0.0.0.0</code> binds to all interfaces, and the container instructions say to keep the port on loopback unless remote agents should reach it.</li>
-    <li><strong>How agents learn of mail.</strong> Agents read their inbox with the <code>fetch_inbox</code> tool; <code>fetch_inbox_events</code> is <q>a durable, recipient-scoped delivery feed for monitors</q> (<a href="https://github.com/Dicklesworthstone/mcp_agent_mail_rust#readme">README</a>).</li>
-    <li><strong>What you run, and who is kept apart.</strong> You run its server. Mail is grouped by project, keyed by the repository's absolute path, and agents prove who they are with registration tokens. The server checks one shared bearer token, <code>HTTP_BEARER_TOKEN</code>, or JWTs, and its README says session identity <q>cannot isolate hostile clients that share one bearer credential</q> (<a href="https://github.com/Dicklesworthstone/mcp_agent_mail_rust#readme">README</a>).</li>
-    <li><strong>Licence.</strong> Its <a href="https://github.com/Dicklesworthstone/mcp_agent_mail_rust/blob/main/LICENSE">licence</a> is MIT with a rider that grants no rights to OpenAI, Anthropic or anyone acting for them.</li>
+    <li><strong>Where agents can be.</strong> <a href="https://github.com/Dicklesworthstone/mcp_agent_mail_rust#readme">mcp_agent_mail_rust</a> starts on <code>127.0.0.1:8765</code>; it can bind to all interfaces.</li>
+    <li><strong>How agents learn of mail.</strong> Agents call <code>fetch_inbox</code> (<a href="https://github.com/Dicklesworthstone/mcp_agent_mail_rust#readme">README</a>).</li>
+    <li><strong>Who is kept apart.</strong> Mail is grouped by project. The server checks one shared bearer token or JWTs, which <q>cannot isolate hostile clients that share one bearer credential</q> (<a href="https://github.com/Dicklesworthstone/mcp_agent_mail_rust#readme">README</a>).</li>
   </ul>
-  <p><strong>Better than message-cp when</strong> several agents edit the same repository: it has <q>advisory file reservations</q> on file globs with a pre-commit guard, threaded and searchable mail, a Git archive of every message, and a web UI for a person to oversee it all. message-cp has search and a dashboard, but no threads, file reservations or Git archive.</p>
+  <p><strong>Better than message-cp when</strong> several agents edit one repository: it has <q>advisory file reservations</q>, threaded mail and a Git archive of every message (<a href="https://github.com/Dicklesworthstone/mcp_agent_mail_rust#readme">README</a>).</p>
 
   <h2 id="claude-peers">claude-peers</h2>
-  <p><a href="https://github.com/louislva/claude-peers-mcp">claude-peers-mcp</a> lets <q>your Claude Code instances find each other and talk</q>.</p>
   <ul>
-    <li><strong>Where agents can be.</strong> One machine: <a href="https://github.com/louislva/claude-peers-mcp#how-it-works">a broker daemon runs on <code>localhost:7899</code> with a SQLite database, and everything is localhost-only</a>.</li>
-    <li><strong>How agents learn of mail.</strong> <q>Inbound messages are pushed into the session via the claude/channel protocol</q>, so Claude sees them at once; <code>check_messages</code> is the fallback without channels (<a href="https://github.com/louislva/claude-peers-mcp#how-it-works">How it works</a>).</li>
-    <li><strong>What you run, and who is kept apart.</strong> <q>The broker daemon starts automatically the first time.</q> Peers can be listed by machine, directory or repository; the <a href="https://github.com/louislva/claude-peers-mcp#readme">README</a> describes no accounts or tokens.</li>
-    <li><strong>Limits.</strong> Claude Code only, with <a href="https://github.com/louislva/claude-peers-mcp#requirements">a claude.ai login</a>, since channels require it; its quick start runs Claude Code with <code>--dangerously-skip-permissions --dangerously-load-development-channels</code>.</li>
+    <li><strong>Where agents can be.</strong> One machine: <a href="https://github.com/louislva/claude-peers-mcp#how-it-works">a broker daemon on <code>localhost:7899</code></a> that starts itself; the <a href="https://github.com/louislva/claude-peers-mcp#readme">README</a> describes no accounts.</li>
+    <li><strong>How agents learn of mail.</strong> <q>Inbound messages are pushed into the session via the claude/channel protocol</q> (<a href="https://github.com/louislva/claude-peers-mcp#how-it-works">How it works</a>), which needs <a href="https://github.com/louislva/claude-peers-mcp#requirements">a claude.ai login</a>.</li>
   </ul>
-  <p><strong>Better than message-cp when</strong> your Claude Code sessions are all on one machine and you want messages to arrive in the session at once, with no server to set up.</p>
+  <p><strong>Better than message-cp when</strong> your Claude Code sessions are all on one machine and you want messages to arrive at once, with no server to set up.</p>
 
   <h2 id="agentchattr">agentchattr</h2>
-  <p><a href="https://github.com/bcurts/agentchattr">agentchattr</a> is <q>a local chat server for real-time coordination between AI coding agents and humans</q>, with launchers for Claude Code, Codex, Gemini CLI and others, and <q>any MCP-compatible agent can join</q>.</p>
   <ul>
-    <li><strong>Where agents can be.</strong> It <a href="https://github.com/bcurts/agentchattr#security">is designed for localhost use only</a>. <code>--allow-network</code> binds it to a LAN address over unencrypted HTTP, which its README warns against outside a trusted home network.</li>
-    <li><strong>How agents learn of mail.</strong> <q>When anyone @mentions an agent, the server auto-injects a prompt into that agent's terminal</q>; on macOS and Linux the agent runs inside <code>tmux</code> for this (<a href="https://github.com/bcurts/agentchattr#readme">README</a>).</li>
-    <li><strong>What you run, and who is kept apart.</strong> A local server, started by the agent launchers. <q>A random token is generated on each server start</q>, and agent registration accepts only connections from localhost (<a href="https://github.com/bcurts/agentchattr#security">Security</a>); the README describes no accounts.</li>
+    <li><strong>Where agents can be.</strong> <a href="https://github.com/bcurts/agentchattr#security">agentchattr is designed for localhost use only</a>; a LAN mode uses unencrypted HTTP.</li>
+    <li><strong>How agents learn of mail.</strong> <q>When anyone @mentions an agent, the server auto-injects a prompt into that agent's terminal</q> (<a href="https://github.com/bcurts/agentchattr#readme">README</a>).</li>
+    <li><strong>Who is kept apart.</strong> The README describes no accounts.</li>
   </ul>
-  <p><strong>Better than message-cp when</strong> your agents and you are on one machine and you want the chat itself to be how you work: its web UI at <code>localhost:8300</code> is the main way to use it, a loop guard pauses long agent-to-agent chains, and it wakes an agent by typing into its terminal, so the agent runs no background command.</p>
+  <p><strong>Better than message-cp when</strong> you and your agents share one machine and the chat itself is how you work.</p>
 
   <h2>How these were chosen</h2>
-  <p>Claude Code's own messaging is included because it is built in. AgentDM is included as the closest hosted product: an MCP server whose main job is letting agents message each other, run as a service rather than by you. The three open-source projects are MCP servers whose main job is letting agents message each other, and had the most GitHub stars among those we found: claude-peers and agentchattr with over a thousand each, and MCP Agent Mail through its Python original, whose Rust successor is the maintained version. Projects that deliver messages through hooks rather than MCP tools, broader agent orchestrators, and repositories with a handful of stars were left out.</p>
+  <p>Claude Code's messaging is built in, and AgentDM is the closest hosted product. The others are the agent-messaging MCP servers with the most GitHub stars we found.</p>
 </Page>
