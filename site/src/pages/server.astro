@@ -77,7 +77,7 @@ import CodeBlock from "../components/CodeBlock.astro";
   </ul>
   <p>To try it without a domain, set <code>MESSAGE_CP_DOMAIN=localhost</code>. Caddy then signs with its own local authority, which clients, including the wake-up loop&#39;s <code>curl</code>, do not trust until you add it.</p>
   <h2 id="settings">Settings</h2>
-  <p>Every setting the stdio server, <code>serve</code>, the <code>message-cp</code> commands, <code>npm run e2e</code> and the <code>/wait</code> loop read, in one place. Besides these they read no <code>MESSAGE_CP_</code> variable and no config file. The deployment and backup scripts in <a href="https://github.com/colinhallett/message-cp/tree/main/ops"><code>ops/</code></a> have settings of their own (such as <code>MESSAGE_CP_BACKUP_URL_FILE</code> for <code>ops/backup.sh</code>, and <code>/etc/message-cp.env</code>, which <code>ops/message-cp.service</code> loads to run <code>serve</code>), described in <code>ops/README.md</code>, <code>ops/deploy.md</code> and the scripts themselves.</p>
+  <p>Every setting the stdio server, <code>serve</code>, the <code>message-cp</code> commands, <code>npm run e2e</code> and the <code>/wait</code> loop read; they read no other <code>MESSAGE_CP_</code> variable and no config file. The <a href="https://github.com/colinhallett/message-cp/tree/main/ops"><code>ops/</code></a> files document their own.</p>
   <div class="table">
         <table>
           <thead>
@@ -91,42 +91,47 @@ import CodeBlock from "../components/CodeBlock.astro";
             <tr>
               <th><code>MESSAGE_CP_HTTP_TOKEN</code></th>
               <td data-label="Default">none</td>
-              <td data-label="What reads it"><code>serve</code>, which refuses to start when it is unset or empty; the owner account&#39;s token (see <strong>Token</strong> under <a href="#running-the-http-server">Running the HTTP server</a>). Also <code>npm run e2e -- --url</code> (the token it checks the server with; without <code>--url</code> it makes its own), and the <a href="#waking-remote-agents"><code>/wait</code> loop</a>, which treats an empty value as unset.</td>
+              <td data-label="What reads it"><code>serve</code> (required: the owner account&#39;s token), <code>message-cp init --url</code> (an agent token), <code>npm run e2e -- --url</code> and the <code>/wait</code> loop; empty counts as unset.</td>
             </tr>
             <tr>
               <th><code>MESSAGE_CP_DB</code></th>
               <td data-label="Default"><code>~/.message-cp/db.sqlite</code></td>
-              <td data-label="What reads it">Every process that opens the <a href="tools.html#database">database</a>: the stdio server, <code>serve</code> and every <code>message-cp</code> command (<code>dbPath</code> in <code>src/db.ts</code>). An empty value means the default.</td>
+              <td data-label="What reads it">The stdio server, <code>serve</code> and every <code>message-cp</code> command that opens the database, so a command must name <code>serve</code>&#39;s file. Empty means the default.</td>
             </tr>
             <tr>
-              <th><code>MESSAGE_CP_AGENT</code>, <code>MESSAGE_CP_AGENT_KEY</code></th>
+              <th><code>MESSAGE_CP_AGENT</code></th>
               <td data-label="Default">none</td>
-              <td data-label="What reads it">The stdio server only, both or neither: it starts registered as that agent of the owner account (<code>registerFromEnv</code> in <code>src/agents.ts</code>; see <a href="tools.html#names-keys-and-identity">Names, keys and identity</a>). Only one set, or either empty, and it prints an error and exits.</td>
+              <td data-label="What reads it">The stdio server only: with <code>MESSAGE_CP_AGENT_KEY</code>, it starts as that owner-account agent. One alone, or either empty, prints an error and exits.</td>
+            </tr>
+            <tr>
+              <th><code>MESSAGE_CP_AGENT_KEY</code></th>
+              <td data-label="Default">none</td>
+              <td data-label="What reads it">The stdio server, as above, and <code>message-cp init --url</code> (the agent&#39;s key).</td>
             </tr>
             <tr>
               <th><code>~/.message-cp/http-token</code></th>
               <td data-label="Default">read if present</td>
-              <td data-label="What reads it">The <a href="#waking-remote-agents"><code>/wait</code> loop</a>, on the agent&#39;s machine, when <code>MESSAGE_CP_HTTP_TOKEN</code> is unset or empty (<code>CURL_LOOP</code> in <code>src/wait.ts</code>).</td>
+              <td data-label="What reads it">The <code>/wait</code> loop, on the agent&#39;s machine, when <code>MESSAGE_CP_HTTP_TOKEN</code> is unset or empty.</td>
             </tr>
             <tr>
               <th><code>serve --host &lt;address&gt;</code></th>
               <td data-label="Default"><code>127.0.0.1</code></td>
-              <td data-label="What reads it"><code>serve</code>: the address it listens on (see <strong>Address</strong> under <a href="#running-the-http-server">Running the HTTP server</a>).</td>
+              <td data-label="What reads it"><code>serve</code>: the address it listens on.</td>
             </tr>
             <tr>
               <th><code>serve --port &lt;port&gt;</code></th>
               <td data-label="Default"><code>8787</code></td>
-              <td data-label="What reads it"><code>serve</code>: the port it listens on, 0 to 65535.</td>
+              <td data-label="What reads it">0 to 65535.</td>
             </tr>
             <tr>
               <th><code>serve --public-url &lt;url&gt;</code></th>
               <td data-label="Default">none</td>
-              <td data-label="What reads it"><code>serve</code>: the address clients use, without <code>/mcp</code>, so it can tell sessions how to be woken over HTTP: <code>https:</code>, or <code>http:</code> only to a literal loopback address (<code>127.x.x.x</code> or <code>[::1]</code>, not <code>localhost</code>), with no username, password, query or fragment (see <strong>Public URL</strong> under <a href="#running-the-http-server">Running the HTTP server</a>).</td>
+              <td data-label="What reads it"><code>serve</code>: the address clients use, without <code>/mcp</code>, to build sessions&#39; wait command. <code>https:</code>, or <code>http:</code> only to <code>127.x.x.x</code> or <code>[::1]</code>; no username, password, query or fragment.</td>
             </tr>
           </tbody>
         </table>
       </div>
-  <p>A flag <code>serve</code> does not know, one given twice, or a bad <code>--port</code> or <code>--public-url</code> prints <code>serve</code>&#39;s usage line and exits 2.</p>
-  <p>With <a href="#running-with-docker">Docker</a>, the <code>Dockerfile</code> sets <code>MESSAGE_CP_DB=/data/db.sqlite</code> and runs <code>serve --host 0.0.0.0 --port 8787</code>, and <code>docker-compose.yml</code> runs the same <code>serve</code> with <code>--public-url https://&lt;MESSAGE_CP_DOMAIN&gt;</code> added and passes <code>MESSAGE_CP_HTTP_TOKEN</code> in. <code>MESSAGE_CP_DOMAIN</code> (no default; <code>docker compose up</code> refuses to start without it) is read by <code>docker-compose.yml</code> and the <code>Caddyfile</code>, not by message-cp. Compose reads <code>MESSAGE_CP_DOMAIN</code> and <code>MESSAGE_CP_HTTP_TOKEN</code> from <code>.env</code> (see <code>.env.example</code>) or the environment.</p>
-  <p><strong>Health check.</strong> <code>/health</code> answers without looking at the token, so every caller gets the same answer whether it sends a valid token, a wrong one or none: <code>GET</code> gets 200 with <code>&#123;&quot;ok&quot;:true&#125;</code>, and any other method 405 with <code>Allow: GET</code>. It reads no database and no account, so it shows only that the <code>serve</code> process is listening, not that its database works. Point a platform&#39;s, proxy&#39;s or container runtime&#39;s check at it instead of at <code>/mcp</code>.</p>
+  <p>An unknown, repeated or valueless flag, or a bad <code>--port</code> or <code>--public-url</code>, prints <code>serve</code>&#39;s usage line and exits 2.</p>
+  <p>With <a href="#running-with-docker">Docker</a>, the <code>Dockerfile</code> sets <code>MESSAGE_CP_DB=/data/db.sqlite</code> and runs <code>serve --host 0.0.0.0 --port 8787</code>; <code>docker-compose.yml</code> adds <code>--public-url https://&lt;MESSAGE_CP_DOMAIN&gt;</code>. Compose starts nothing unless <code>MESSAGE_CP_DOMAIN</code> (no default) and <code>MESSAGE_CP_HTTP_TOKEN</code> are set; the <code>Caddyfile</code> reads the domain too; message-cp never does.</p>
+  <p><strong>Health check.</strong> <code>/health</code> answers before any token check: <code>GET</code> gets 200 <code>&#123;&quot;ok&quot;:true&#125;</code>, other methods 405 with <code>Allow: GET</code>. It reads no database, so 200 shows only that <code>serve</code> is listening.</p>
 </Page>
