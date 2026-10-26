@@ -1,6 +1,6 @@
 # Set up message-cp
 
-You are a coding agent asked to set up message-cp, an MCP server that lets agents message each other. Follow these steps in order. Never print a token or key, put one in chat, or write one into a project file. It needs Node 22.12 or later.
+You are a coding agent asked to set up message-cp, an MCP server that lets agents message each other. Follow these steps in order. Never print a token or key, put one in chat, or write one into a file that may be committed: only the private files these steps make hold one. It needs Node 22.12 or later.
 
 ## 1. Ask the person
 
@@ -31,8 +31,8 @@ Ask no other questions unless a step below says to. Then go to section 2 for thi
 
 1. Run `git clone https://github.com/colinhallett/message-cp.git && cd message-cp`.
 2. Run `cp .env.example .env && chmod 600 .env`.
-3. Set the domain: `sed -i 's/^MESSAGE_CP_DOMAIN=.*/MESSAGE_CP_DOMAIN=message-cp.example.com/' .env`.
-4. Set the owner token without printing it: `sed -i "s/^MESSAGE_CP_HTTP_TOKEN=.*/MESSAGE_CP_HTTP_TOKEN=$(openssl rand -hex 32)/" .env`.
+3. Set the domain: `sed -i.bak 's/^MESSAGE_CP_DOMAIN=.*/MESSAGE_CP_DOMAIN=message-cp.example.com/' .env && rm .env.bak`.
+4. Set the owner token without printing it: `sed -i.bak "s/^MESSAGE_CP_HTTP_TOKEN=.*/MESSAGE_CP_HTTP_TOKEN=$(openssl rand -hex 32)/" .env && rm .env.bak`. `.env` is git-ignored and private.
 5. Run `docker compose up -d`. If either setting is empty, it stops and names it.
 6. Run every later server command inside the container, from the clone: `docker compose exec -T message-cp message-cp ...`, which opens `/data/db.sqlite` on the volume `data`.
 
@@ -52,7 +52,7 @@ To try it with no domain, set `MESSAGE_CP_DOMAIN=localhost` and use `https://loc
 
 4. Run `npx -y message-cp init --url https://message-cp.example.com --agent writer`, adding `--client <client>` if it found more than one client. It checks the token and key before changing anything, then sets up the client and runs section 2's check.
 5. Write the agent token where the wake-up command reads it: `mkdir -p ~/.message-cp && chmod 700 ~/.message-cp`, then `(umask 077 && printf '%s\n' "$MESSAGE_CP_HTTP_TOKEN" > ~/.message-cp/http-token)`.
-6. If `init` stopped, it says why and changed nothing:
+6. If it printed "Check failed", the client was set up and kept: fix what it names and run `init` again, or run the undo command it printed. If `init` stopped before that, it says why and changed nothing:
    - A different message-cp server already there: as in section 2, step 4.
    - Codex cannot send the agent's headers: offer Claude Code or Cursor.
    - Claude Code on Windows: from the project folder the agent works in, run the `claude mcp add` command on the file's first line without printing it. It adds the server for that folder only.
@@ -76,5 +76,5 @@ The server's instructions, sent to every session, explain how to be woken when m
 In a few lines, say:
 
 - What was set up: which client, and this machine or which server and agent.
-- How to undo it: the "To undo" line `init` printed. On a team server, run as in section 3: `message-cp token list`, then `message-cp token revoke <id>` stops the agent token, and `message-cp agent remove writer` removes the agent.
+- How to undo it: the "To undo" line `init` printed. On a team server, run as in section 3: `message-cp token list`, then `message-cp token revoke <id>` stops the agent token, and `message-cp agent remove writer`, with the same `--account <name>` given to `connect`, removes the agent.
 - How to add another agent: on one machine, each session registers its own name, and `init --client <client>` sets up another client; on a team server, repeat section 4 with a new name.
