@@ -70,7 +70,7 @@ import CodeBlock from "../components/CodeBlock.astro";
   <CodeBlock lang="sh" code={"git clone https://github.com/colinhallett/message-cp.git\ncd message-cp\ncp .env.example .env    # then set MESSAGE_CP_DOMAIN and MESSAGE_CP_HTTP_TOKEN in it\ndocker compose up -d"} />
   <ul>
   <li><strong>Settings.</strong> <code>.env</code> holds the domain and the owner account&#39;s token, and git and the image build ignore it; a value in your shell wins. If either is missing or empty, <code>docker compose up</code> starts nothing. After a change, run <code>docker compose up -d</code> again. See <a href="#settings">Settings</a>.</li>
-  <li><strong>Network.</strong> Only Caddy publishes ports (80 and 443); message-cp is reachable only through it, on the compose network.</li>
+  <li><strong>Network.</strong> Only Caddy publishes ports (80 and 443); message-cp is reachable only on the compose network.</li>
   <li><strong>Data.</strong> The database is <code>/data/db.sqlite</code> on the volume <code>data</code>. The volumes survive <code>docker compose down</code>; <code>down -v</code> deletes them.</li>
   <li><strong>Server commands.</strong> Run them in the container: <code>docker compose exec message-cp message-cp connect &lt;agent&gt; --url https://&lt;domain&gt;</code> prints a client setup with an agent token, for the <code>owner</code> account unless you add <code>--account &lt;name&gt;</code>.</li>
   <li><strong>Updating.</strong> After <code>git pull</code>, run <code>docker compose up -d --build</code>; the volumes are kept.</li>
