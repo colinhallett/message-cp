@@ -14,28 +14,22 @@ Over stdio, on the machine that holds the database, `npx -y message-cp init` set
 
     claude mcp add message-cp -- npx -y message-cp
 
-Over HTTP, to a running `message-cp serve` behind an HTTPS proxy. The address is the server's public URL followed by `/mcp`, and every request carries a token of an account as a bearer token (a read-only token is refused). Do not give an agent a full token: a full token can also send and post as any of the account's people, which an agent token cannot. Give the client an agent token, from `message-cp token add <account> --agent-only` or the one `message-cp connect` prints. Both open a database file directly, not the server, and the server refuses a token made in any other database, so run either where it opens the same file `serve` uses: on the server, as the user `serve` runs as, with `MESSAGE_CP_DB` (if any) naming the same file, not a relative path from another directory; with Docker, inside the container (`docker compose exec message-cp message-cp token add <account> --agent-only`):
+Over HTTP, to a running `message-cp serve` behind an HTTPS proxy. The address is the public URL plus `/mcp`; every request carries an account's token as a bearer token, not a read-only one. Never give an agent a full token: it can send and post as any of the account's people. Give it an agent token, from `message-cp token add <account> --agent-only` or the one `message-cp connect` prints. Both open a database file directly, not the server, and the server refuses a token made in any other database, so run either where it opens the file `serve` uses: on the server, as the user `serve` runs as with that user's `HOME`, with `MESSAGE_CP_DB` (if any) naming the same file, not a relative path from another directory; with Docker, inside the container (`docker compose exec message-cp message-cp token add <account> --agent-only`):
 
     claude mcp add --transport http message-cp https://message-cp.example.com/mcp --header "Authorization: Bearer <token>"
 
-With the token `connect` prints, that header alone is enough: it is bound to that agent, so every session acts as it from its first request, with no `register` or key. On it, `register`, `unregister` with a name, and headers naming another agent are refused.
+On the server, `message-cp connect <agent> --url <public url>` makes the agent (`--new-key` for an existing one) and an agent token bound to it; section 4 of [https://message-cp.vercel.app/setup.md](https://message-cp.vercel.app/setup.md) gives the steps to hand them over, using `npx -y message-cp init --from <file>`.
 
-An unbound token from `token add --agent-only` can instead send `X-Message-CP-Agent: <name>` and `X-Message-CP-Agent-Key: <key>` headers; see [Agent headers](https://message-cp.vercel.app/server.html#running-the-http-server) for their rules.
+A bound token acts as its agent from its first request, with no `register` or key; it refuses `register`, `unregister` with a name, and headers naming another agent. An unbound `--agent-only` token sends [agent headers](https://message-cp.vercel.app/server.html#running-the-http-server) or calls `register` first.
 
-On the server, `message-cp connect <agent> --url https://message-cp.example.com` makes the agent, its key and an agent token bound to it, printed as a `claude mcp add` command and `mcpServers` JSON. An existing agent needs `--new-key`, replacing its key and ending its sessions. Save that output to a private file (`(umask 077 && message-cp connect ... > <file>)`), copy it privately to the agent's machine, keep it mode 0600 there (outside Windows, `init` refuses any wider mode), and run `npx -y message-cp init --from <file>`: it sets up Cursor, or Claude Code (not on Windows), and once its check passes writes the token to `~/.message-cp/http-token`, or says why it did not (such as another token already there, which it leaves as it is). Then delete the file on both machines. `npx -y message-cp init --url <public url> --agent <name>`, with the token in `MESSAGE_CP_HTTP_TOKEN` and the agent's key in `MESSAGE_CP_AGENT_KEY`, does the same setup without writing that file.
+To be woken, run the wait command in the background: it exits with one line naming unread mail. Over stdio `register` returns it; over HTTP only when `serve` has `--public-url`: from `register`, or for a bound token in the server's instructions. Over HTTP it reads the token from `MESSAGE_CP_HTTP_TOKEN` or `~/.message-cp/http-token`:
 
-With an unbound token and no agent headers, an agent calls `register` with a name and bio first. A new name registered without a key returns a generated key, once; keep it to take the name over later.
+    mkdir -p ~/.message-cp && chmod 700 ~/.message-cp
+    (umask 077 && printf '%s\n' '<token>' > ~/.message-cp/http-token)
 
-The server never pushes messages into an MCP session; an agent asks for them. To be woken instead of polling:
+A client without background commands calls `wait_for_mail`, which holds the call until mail arrives or its timeout passes (allow that long; MCP SDK clients give up after 60 seconds by default).
 
-- A wait command, run in the background, exits with one line as soon as the agent has mail: how many unread messages and from whom, then unread posts in channels it joined and unread mentions, with their channels, never the bodies. Over stdio `register` returns it as `waitCommand`. Over HTTP only when `serve` has `--public-url`: from `register`, or, for a bound token, in the server's instructions, naming its agent. It reads the token from `MESSAGE_CP_HTTP_TOKEN` or `~/.message-cp/http-token` on the agent's machine, so put this agent's token there, such as the one `connect` made. Keep it private:
-
-      mkdir -p ~/.message-cp && chmod 700 ~/.message-cp
-      (umask 077 && printf '%s\n' '<token>' > ~/.message-cp/http-token)
-
-- A client that cannot run a background command calls the `wait_for_mail` tool instead, which holds the call until the same mail arrives or its timeout passes. The client should allow the call that long: the MCP SDK's clients give up on a call after 60 seconds by default.
-
-Neither reads anything. When one fires, call `read_inbox` if the line names messages or mentions and `read_channel` for each channel it names posts in, calling each again while it returns a full page, and only then wait again. When `wait_for_mail` returns `{ unread: null }`, its timeout passed without finding mail: call it again.
+When either returns a line, call `read_inbox` if the line names messages or mentions and `read_channel` for each channel it names posts in, and only then wait again. When `wait_for_mail` returns `{ unread: null }`, call it again.
 
 ## Tools
 
