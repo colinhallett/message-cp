@@ -3,18 +3,18 @@ import Page from "../layouts/Page.astro";
 import CodeBlock from "../components/CodeBlock.astro";
 import ClientTabs from "../components/ClientTabs.astro";
 
-// The URL, headers and command are what `message-cp connect` prints, from
-// `clientSetup` in src/connect.ts, with placeholders in place of the token and
-// key. The Cursor and Claude Desktop tabs reshape them as each client's docs ask.
+// What `message-cp connect` prints (`clientSetup` in src/connect.ts), without its
+// two agent headers, since the token it makes acts as the agent alone. Cursor and
+// Claude Desktop reshape it as their docs ask.
 const url = "https://message-cp.example.com/mcp";
-const headers = { Authorization: "Bearer <token>", "X-Message-CP-Agent": "writer", "X-Message-CP-Agent-Key": "<key>" };
+const headers = { Authorization: "Bearer <token>" };
 const command = [`claude mcp add --transport http message-cp ${url}`, ...Object.entries(headers).map(([k, v]) => `--header '${k}: ${v}'`)].join(" ");
 const entry = (server: object) => JSON.stringify({ mcpServers: { "message-cp": server } }, null, 2);
 const headerLines = Object.entries(headers).map(([k, v]) => `${k}: ${v}`).join("\n");
 const clients = [
-  { label: "Claude Code", text: "The command <code>connect</code> printed first:", code: command, lang: "sh" as const },
-  { label: "Cursor", text: "In <code>~/.cursor/mcp.json</code>, never a project file that may be committed, since it holds the token and key:", code: entry({ url, headers }), lang: "json" as const },
-  { label: "Claude Desktop", text: "In Customize, Connectors, choose Add, then Add custom connector, with this URL, No sign in, and these three headers. The server must be public. A Team or Enterprise admin's connector is shared: every member acts as this agent.", code: `${url}\n\n${headerLines}`, lang: "text" as const },
+  { label: "Claude Code", text: "The command <code>connect</code> printed, without its agent headers:", code: command, lang: "sh" as const },
+  { label: "Cursor", text: "In <code>~/.cursor/mcp.json</code>, never a project file that may be committed, since it holds the token:", code: entry({ url, headers }), lang: "json" as const },
+  { label: "Claude Desktop", text: "In Customize, Connectors, choose Add, then Add custom connector, with this URL, No sign in, and this header. The server must be public. A Team or Enterprise admin's connector is shared: every member acts as this agent.", code: `${url}\n\n${headerLines}`, lang: "text" as const },
   { label: "JSON", text: "For other clients that read an <code>mcpServers</code> entry:", code: entry({ type: "http", url, headers }), lang: "json" as const },
 ];
 ---
@@ -54,8 +54,8 @@ const clients = [
   <p><a href="accounts.html">Accounts</a> has every token command. <code>connect</code> creates <code>writer</code> and prints an agent token and key, once. Without <code>--account</code> it uses <code>owner</code>.</p>
 
   <h3>Set up the agent's machine</h3>
-  <CodeBlock lang="sh" code={"read -rs MESSAGE_CP_HTTP_TOKEN && export MESSAGE_CP_HTTP_TOKEN   # paste the token after Bearer\nread -rs MESSAGE_CP_AGENT_KEY && export MESSAGE_CP_AGENT_KEY     # paste X-Message-CP-Agent-Key\nnpx -y message-cp init --url https://message-cp.example.com --agent writer"} />
-  <p>Add <code>--client</code> if it finds several. It checks the token and key, then sets up Claude Code or Cursor. It changes nothing and refuses Codex (no custom headers) or, on Linux and macOS, a <code>~/.cursor/mcp.json</code> others can read (naming the <code>chmod</code>); on Windows it does not check who can read that file. For Claude Desktop or Claude Code on Windows, use what <code>connect</code> printed:</p>
+  <CodeBlock lang="sh" code={"read -rs MESSAGE_CP_HTTP_TOKEN && export MESSAGE_CP_HTTP_TOKEN   # paste the token after Bearer\nnpx -y message-cp init --url https://message-cp.example.com --agent writer"} />
+  <p>Add <code>--client</code> if it finds several. It checks the token, then sets up Claude Code or Cursor. It changes nothing and refuses Codex (no custom headers or literal bearer token) or, on Linux and macOS, a <code>~/.cursor/mcp.json</code> others can read (naming the <code>chmod</code>); on Windows it does not check who can read that file. A token from <code>token add &lt;account&gt; --agent-only</code> also needs <code>MESSAGE_CP_AGENT_KEY</code>. For Claude Desktop or Claude Code on Windows:</p>
   <ClientTabs id="connect" tabs={clients} />
   <p>To add a client by hand instead, give it an agent token (<code>token add &lt;account&gt; --agent-only</code>), never a full token, which can also send and post as the account's people. The agent then registers:</p>
   <CodeBlock lang="sh" code={"claude mcp add --transport http message-cp https://message-cp.example.com/mcp --header \"Authorization: Bearer <token>\""} />
