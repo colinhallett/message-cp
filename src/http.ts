@@ -236,6 +236,8 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
   const sessions = new Map<string, Live>();
   let initializing = 0;
   let waiting = 0;
+  // POST /mcp requests for an existing session whose body is being read, so a session cannot buffer bodies unbounded.
+  let reading = 0;
   // POST /api/send and /api/post requests between taking a slot and answering, so buffered bodies are bounded.
   let actingAsPerson = 0;
   // Held GET /wait requests per account and agent name (lower-cased, as names are unique regardless of case).
@@ -728,11 +730,26 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
     if (!id && sessions.size + initializing >= maxSessions) {
       return reply(res, 503, "Too many sessions", { Connection: "close" });
     }
+    // A request for a session takes a slot before its body is read, once the session is known to be the token's account's
+    // (another account's looks like one that does not exist), and gives it back as soon as the body has been read, so a
+    // tool call held open afterwards does not keep it.
+    if (id) {
+      const live = sessions.get(id);
+      if (!live || live.account !== account) return reply(res, 404, "Unknown session", { Connection: "close" });
+    }
+    let slot = !!id && req.method === "POST";
+    if (slot && reading >= maxSessions) return reply(res, 503, "Too many requests", { Connection: "close" });
+    if (slot) reading++;
+    const bodyRead = () => {
+      if (slot) reading--;
+      slot = false;
+    };
     const reserved = !id && req.method === "POST";
     if (reserved) initializing++;
     try {
-      await serve(req, res, id, account, named);
+      await serve(req, res, id, account, named, bodyRead);
     } finally {
+      bodyRead();
       if (reserved) initializing--;
     }
   };
@@ -743,6 +760,7 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
     id: string | undefined,
     account: AccountId,
     named?: AgentHeaders,
+    bodyRead?: () => void,
   ) => {
     let body: unknown;
     if (req.method === "POST") {
@@ -750,6 +768,8 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
         body = await readBody(req);
       } catch (err) {
         return err instanceof RangeError ? reply(res, 413, "Request body too large") : reply(res, 400, "Invalid JSON");
+      } finally {
+        bodyRead?.();
       }
     }
 
