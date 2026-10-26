@@ -397,13 +397,13 @@ export function createServer(db: Db, session = new Session(OWNER_ACCOUNT), optio
       const release = hold();
       if (!release) throw new ToolError(ASK_FULL);
       try {
-        const id = sendQuestion(db, account, own, to, body).messages[0].id;
+        const [{ id, to: asked }] = sendQuestion(db, account, own, to, body).messages;
         // Counted from once the question is stored, so time spent waiting for the write lock to send it is not taken
         // from the time the other agent has to answer.
         const deadline = Date.now() + (timeout_seconds ?? DEFAULT_WAIT_FOR_MAIL_SECONDS) * 1000;
         // Each check finds the caller by its registration, so a removed agent, or another that took its name, ends the call.
         const answer = () => {
-          const reply = check(() => takeReply(db, account, own, id), null);
+          const reply = check(() => takeReply(db, account, own, id, asked), null);
           if (reply === undefined) throw new ToolError(NOT_REGISTERED);
           // poll goes on while this returns undefined: no reply yet.
           return reply ?? undefined;
