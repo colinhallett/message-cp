@@ -14,6 +14,8 @@ import {
   readAccountChannel,
   type AccountChannelPage,
 } from "./channels.js";
+import { APPROVE_HEADERS, approvePage, errorPage } from "./approve.js";
+import { mcpEndpoint } from "./connect.js";
 import { DASHBOARD_FONTS, DASHBOARD_HEADERS, DASHBOARD_HTML } from "./dashboard.js";
 import type { AccountId, Db } from "./db.js";
 import {
@@ -29,6 +31,7 @@ import {
   type SearchFilters,
   type Unread,
 } from "./messages.js";
+import { OAuthError, approveAuthorization, exchangeCode, redirectTo, registerClient, startAuthorization } from "./oauth.js";
 import { DEFAULT_MAX_SESSIONS, Session, createServer, type ServerOptions } from "./server.js";
 import { endSession, forgetIdleSessions, restorableSession, saveSession, sessionEnded, touchSession } from "./sessions.js";
 import { DEFAULT_WAIT_HOLD_MS, formatUnread } from "./wait.js";
@@ -43,6 +46,8 @@ const MAX_BODY_BYTES = 4 * 1024 * 1024;
  * escaped astral character), so this fits any valid request, and a full cap of them buffers at most 16 MiB.
  */
 const MAX_PERSON_BODY_BYTES = 64 * 1024;
+/** The body limit for the OAuth registration, approval and token endpoints, which take a few short fields. */
+const MAX_OAUTH_BODY_BYTES = 16 * 1024;
 /** An agent seen this recently counts as online in GET /api/agents, as does one with a GET /wait held now. */
 export const ONLINE_WINDOW_MS = 5 * 60 * 1000;
 /** How often a pass over the webhook delivery queue is due; a tick while a pass is still running is skipped. */
@@ -212,7 +217,7 @@ function unlessBusy<T>(res: ServerResponse, work: () => T): T | undefined {
   }
 }
 
-async function readBody(req: IncomingMessage, maxBytes = MAX_BODY_BYTES): Promise<unknown> {
+async function readText(req: IncomingMessage, maxBytes: number): Promise<string> {
   const chunks: Buffer[] = [];
   let size = 0;
   for await (const chunk of req) {
@@ -220,12 +225,67 @@ async function readBody(req: IncomingMessage, maxBytes = MAX_BODY_BYTES): Promis
     if (size > maxBytes) throw new RangeError("body too large");
     chunks.push(chunk as Buffer);
   }
-  return JSON.parse(Buffer.concat(chunks).toString("utf8"));
+  return Buffer.concat(chunks).toString("utf8");
+}
+
+const readBody = async (req: IncomingMessage, maxBytes = MAX_BODY_BYTES): Promise<unknown> => JSON.parse(await readText(req, maxBytes));
+
+/** An OAuth error answer (RFC 6749 section 5.2), never cached. Its description never quotes the request. */
+function oauthError(res: ServerResponse, status: number, error: string, description: string, headers: Record<string, string> = {}): void {
+  res.writeHead(status, { "Content-Type": "application/json", "Cache-Control": "no-store", ...headers });
+  res.end(JSON.stringify({ error, error_description: description }));
+}
+
+function sendOAuthJson(res: ServerResponse, status: number, value: unknown): void {
+  res.writeHead(status, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+  res.end(JSON.stringify(value));
+}
+
+/**
+ * What `serve --public-url` advertises for MCP's authorization flow: the protected resource metadata (RFC 9728) for
+ * /mcp, the authorization server metadata (RFC 8414), and the 401's WWW-Authenticate challenge pointing at the first.
+ * `publicUrl` is one `serve` checked with `publicUrl` in connect.ts.
+ */
+function oauthUrls(publicUrl: string) {
+  const base = new URL(publicUrl);
+  const prefix = base.pathname.replace(/\/+$/, "");
+  const at = (path: string) => {
+    const url = new URL(base.href);
+    // Set as the path, never resolved as a reference, so no path can change the host.
+    url.pathname = `${prefix}${path}`;
+    return url.href;
+  };
+  // The public URL, without the slash a URL with no path gets, as an issuer is usually written.
+  const issuer = prefix ? at("") : base.origin;
+  const resourceMetadata = at("/.well-known/oauth-protected-resource/mcp");
+  return {
+    resource: { resource: mcpEndpoint(publicUrl).href, authorization_servers: [issuer], bearer_methods_supported: ["header"] },
+    server: {
+      issuer,
+      authorization_endpoint: at("/oauth/authorize"),
+      token_endpoint: at("/oauth/token"),
+      registration_endpoint: at("/oauth/register"),
+      response_types_supported: ["code"],
+      grant_types_supported: ["authorization_code"],
+      code_challenge_methods_supported: ["S256"],
+      token_endpoint_auth_methods_supported: ["none"],
+    },
+    challenge: `Bearer resource_metadata="${resourceMetadata}"`,
+    // Where each metadata document is asked for: at the root, and, for a public URL with a path, with that path after
+    // the well-known part, as RFC 8414 and RFC 9728 build it from an issuer or resource with a path.
+    resourcePaths: new Set([
+      "/.well-known/oauth-protected-resource",
+      "/.well-known/oauth-protected-resource/mcp",
+      `/.well-known/oauth-protected-resource${prefix}/mcp`,
+    ]),
+    serverPaths: new Set(["/.well-known/oauth-authorization-server", `/.well-known/oauth-authorization-server${prefix}`]),
+  };
 }
 
 /**
  * Serves the MCP tools over streamable HTTP at /mcp, one `Session` per MCP session. Every request needs the token,
- * except GET / for the dashboard page, GET on each of the dashboard's font paths (`DASHBOARD_FONTS`) and /health.
+ * except GET / for the dashboard page, GET on each of the dashboard's font paths (`DASHBOARD_FONTS`), /health and, with
+ * a public URL, the authorization flow's metadata, registration, authorization page and token endpoint.
  */
 export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServer> {
   if (!options.token) throw new Error("an HTTP token is required");
@@ -662,6 +722,135 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
   const apiPost = (req: IncomingMessage, res: ServerResponse, account: AccountId) =>
     asPerson(req, res, ["as", "channel", "body"], (m) => postAsPerson(db, account, m.as, m.channel, m.body));
 
+  // MCP's authorization flow, served only with a public URL, from which every address it advertises is built: as
+  // `mcpEndpoint` builds /mcp, each path is set on the parsed URL, never resolved as a reference.
+  const oauth = options.publicUrl === undefined ? undefined : oauthUrls(options.publicUrl);
+  // POST /oauth/register, /oauth/approve and /oauth/token requests between taking a slot and answering.
+  let authorizing = 0;
+
+  /**
+   * Takes a slot for an OAuth request with a body, before it is read, and answers what `act` does with the body's text
+   * (at most MAX_OAUTH_BODY_BYTES); the slot is given back at the end. A lock held past the busy timeout answers 503.
+   */
+  const withOAuthBody = async (req: IncomingMessage, res: ServerResponse, act: (text: string) => void) => {
+    if (req.method !== "POST") return reply(res, 405, "Method not allowed", { Allow: "POST" });
+    if (authorizing >= maxSessions) return oauthError(res, 503, "temporarily_unavailable", "Too many requests", { Connection: "close", "Retry-After": "5" });
+    authorizing++;
+    try {
+      let text: string;
+      try {
+        text = await readText(req, MAX_OAUTH_BODY_BYTES);
+      } catch (err) {
+        if (err instanceof RangeError) return oauthError(res, 413, "invalid_request", "Request body too large");
+        throw err;
+      }
+      try {
+        act(text);
+      } catch (err) {
+        if (!isBusy(err)) throw err;
+        oauthError(res, 503, "temporarily_unavailable", "Database busy", { "Retry-After": "1" });
+      }
+    } finally {
+      authorizing--;
+    }
+  };
+
+  /** POST /oauth/register: registers a public client (RFC 7591) from a JSON body, with no token. */
+  const oauthRegister = (req: IncomingMessage, res: ServerResponse) =>
+    withOAuthBody(req, res, (text) => {
+      let body: unknown;
+      try {
+        body = JSON.parse(text);
+      } catch {
+        return oauthError(res, 400, "invalid_client_metadata", "The body must be JSON.");
+      }
+      try {
+        const client = registerClient(db, body);
+        sendOAuthJson(res, 201, {
+          client_id: client.clientId,
+          ...(client.clientName === null ? {} : { client_name: client.clientName }),
+          redirect_uris: client.redirectUris,
+          grant_types: ["authorization_code"],
+          response_types: ["code"],
+          token_endpoint_auth_method: "none",
+        });
+      } catch (err) {
+        if (err instanceof OAuthError) return oauthError(res, 400, err.error, err.message);
+        throw err;
+      }
+    });
+
+  /**
+   * GET /oauth/authorize: checks the request, then shows the approval page, an error page for a client or redirect URI
+   * that is not registered, or redirects back with the error for anything else.
+   */
+  const oauthAuthorize = (req: IncomingMessage, res: ServerResponse, resource: string) => {
+    if (req.method !== "GET") return reply(res, 405, "Method not allowed", { Allow: "GET" });
+    const query = new URL(req.url ?? "", "http://x").searchParams;
+    const outcome = unlessBusy(res, () => startAuthorization(db, query, resource));
+    if (outcome === undefined) return;
+    if (outcome.page === "redirect") {
+      res.writeHead(302, { Location: outcome.location, "Cache-Control": "no-store", "Referrer-Policy": "no-referrer" });
+      return void res.end();
+    }
+    if (outcome.page === "error") {
+      res.writeHead(400, APPROVE_HEADERS);
+      return void res.end(errorPage(outcome.message));
+    }
+    const { authorization: a } = outcome;
+    res.writeHead(200, APPROVE_HEADERS);
+    res.end(approvePage(a, redirectTo(a.redirectUri, { error: "access_denied" }, a.state)));
+  };
+
+  /**
+   * POST /oauth/approve: `{ request, state, agent }` from the approval page, with a full token of the account the
+   * client's agent is made or found in. Answers `{ location }`, the redirect URI with the code, or 400 with the reason.
+   */
+  const oauthApprove = (req: IncomingMessage, res: ServerResponse, account: AccountId) =>
+    withOAuthBody(req, res, (text) => {
+      let input: Record<string, unknown> | undefined;
+      try {
+        input = JSON.parse(text) as Record<string, unknown>;
+      } catch {
+        input = undefined;
+      }
+      const state = input?.state;
+      if (typeof input?.request !== "string" || typeof input.agent !== "string" || (state !== null && typeof state !== "string")) {
+        return sendOAuthJson(res, 400, { message: "Give request, state and agent." });
+      }
+      try {
+        sendOAuthJson(res, 200, { location: approveAuthorization(db, account, input.request, state as string | null, input.agent) });
+      } catch (err) {
+        if (err instanceof OAuthError || err instanceof ToolError) return sendOAuthJson(res, 400, { message: err.message });
+        throw err;
+      }
+    });
+
+  /** POST /oauth/token: exchanges a code for an agent token, from a form-encoded body (`authorization_code` only). */
+  const oauthToken = (req: IncomingMessage, res: ServerResponse) =>
+    withOAuthBody(req, res, (text) => {
+      const form = new URLSearchParams(text);
+      const one = (key: string) => {
+        const values = form.getAll(key);
+        return values.length === 1 ? values[0] : undefined;
+      };
+      if (form.getAll("grant_type").length !== 1) return oauthError(res, 400, "invalid_request", "Give grant_type once.");
+      if (one("grant_type") !== "authorization_code") return oauthError(res, 400, "unsupported_grant_type", "Only authorization_code is supported.");
+      const [code, clientId, redirectUri, verifier] = ["code", "client_id", "redirect_uri", "code_verifier"].map(one);
+      const resources = form.getAll("resource");
+      if (!code || !clientId || !redirectUri || !verifier || resources.length > 1) {
+        return oauthError(res, 400, "invalid_request", "Give code, client_id, redirect_uri and code_verifier once each, and resource at most once.");
+      }
+      let token: string;
+      try {
+        token = exchangeCode(db, { code, clientId, redirectUri, verifier, resource: resources[0] ?? null });
+      } catch (err) {
+        if (err instanceof OAuthError) return oauthError(res, 400, err.error, err.message);
+        throw err;
+      }
+      sendOAuthJson(res, 200, { access_token: token, token_type: "Bearer" });
+    });
+
   const handle = async (req: IncomingMessage, res: ServerResponse) => {
     const path = (req.url ?? "").split("?")[0];
     // The dashboard page is the same constant for everyone and holds no data, so it comes before the token.
@@ -686,12 +875,26 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
       if (req.method !== "GET") return reply(res, 405, "Method not allowed", { Allow: "GET" });
       return sendJson(res, { ok: true });
     }
+    // The authorization flow's metadata, registration, authorization page and token endpoint are the same for everyone and
+    // reveal no account, so they too come before the token; without a public URL none of them exists.
+    if (oauth && (oauth.serverPaths.has(path) || oauth.resourcePaths.has(path))) {
+      if (req.method !== "GET") return reply(res, 405, "Method not allowed", { Allow: "GET" });
+      return sendJson(res, oauth.serverPaths.has(path) ? oauth.server : oauth.resource);
+    }
+    if (oauth && path === "/oauth/register") return oauthRegister(req, res);
+    if (oauth && path === "/oauth/authorize") return oauthAuthorize(req, res, oauth.resource.resource);
+    if (oauth && path === "/oauth/token") return oauthToken(req, res);
     // The token is the first thing any other request meets, and decides the account everything after it acts as.
     const access = accountOf(db, req.headers.authorization, options.token);
     if (access === undefined) {
-      return reply(res, 401, "Unauthorized", { "WWW-Authenticate": "Bearer" });
+      return reply(res, 401, "Unauthorized", { "WWW-Authenticate": oauth ? oauth.challenge : "Bearer" });
     }
     const { account } = access;
+    // Only a full token approves a client: an agent or read-only token is refused before a slot is taken or a body read.
+    if (oauth && path === "/oauth/approve") {
+      if (access.agentOnly || access.readOnly) return reply(res, 403, "Only a full token can approve a client", { Connection: "close" });
+      return oauthApprove(req, res, account);
+    }
     // An agent token reaches /mcp and /wait, where it reads as its agent does, and of the /api paths only GET /api/token,
     // so the dashboard can say why it will not work; it cannot read or delete the account's conversations there. It is
     // refused before a slot is taken or a body read.
