@@ -441,7 +441,7 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
 
   /**
    * GET /api/token: whether the request's token is read-only and whether it is agent-only, so the dashboard offers
-   * posting only to a full token. It gives nothing else about the token: no token, hash, id or account.
+   * posting only to a full token and tells an agent token that it cannot use the page. It gives nothing else about the token: no token, hash, id or account.
    */
   const apiToken = (req: IncomingMessage, res: ServerResponse, access: TokenAccess) => {
     if (req.method !== "GET") return reply(res, 405, "Method not allowed", { Allow: "GET" });
@@ -676,6 +676,12 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
       return reply(res, 401, "Unauthorized", { "WWW-Authenticate": "Bearer" });
     }
     const { account } = access;
+    // An agent token reaches /mcp and /wait, where it reads as its agent does, and of the /api paths only GET /api/token,
+    // so the dashboard can say why it will not work; it cannot read or delete the account's conversations there. It is
+    // refused before a slot is taken or a body read.
+    if (access.agentOnly && path.startsWith("/api/") && !(path === "/api/token" && req.method === "GET")) {
+      return reply(res, 403, "Agent tokens cannot use the dashboard API");
+    }
     if (path === "/api/token") return apiToken(req, res, access);
     if (path === "/api/agents") return apiAgents(req, res, account);
     if (path === "/api/channels") return apiChannels(req, res, account);
@@ -685,10 +691,6 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
     if (path === "/api/webhook-deliveries") return apiWebhookDeliveries(req, res, account);
     // A read-only token reaches the read-only endpoints above and nothing else: /mcp can write, and so can any path added later.
     if (access.readOnly) return reply(res, 403, "This token is read-only");
-    // An agent token does everything a full one does but act as a person; refused before a slot is taken or a body read.
-    if (access.agentOnly && (path === "/api/send" || path === "/api/post")) {
-      return reply(res, 403, "This token cannot act as a person");
-    }
     if (path === "/api/send") return apiSend(req, res, account);
     if (path === "/api/post") return apiPost(req, res, account);
     if (path === "/api/conversation") return apiConversation(req, res, account);

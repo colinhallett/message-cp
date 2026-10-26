@@ -56,7 +56,7 @@ const clients = [
   <h3>An account and a token per person</h3>
   <p>Every agent and every message belongs to one account, and nothing crosses between accounts. Manage accounts on the server, as the user <code>serve</code> runs as and with the same <code>MESSAGE_CP_DB</code> (if any). Otherwise the commands open a different database and the tokens they print do not work.</p>
   <CodeBlock lang="sh" code={"message-cp account add alice\nmessage-cp account list\nmessage-cp token add alice\nmessage-cp token add alice --agent-only\nmessage-cp token revoke 2"} />
-  <p>In order: create the account <code>alice</code> and print its first token; list accounts with their creation times and the ids of their working tokens, never a token; print another token for <code>alice</code>; print an agent token, which reaches everything a full token does except <code>POST /api/send</code> and <code>POST /api/post</code>; stop token 2 working.</p>
+  <p>In order: create the account <code>alice</code> and print its first token; list accounts with their creation times and the ids of their working tokens, never a token; print another token for <code>alice</code>; print an agent token, which reaches <code>/mcp</code> and <code>GET /wait</code> as a full token does but no <code>/api</code> path except <code>GET /api/token</code>, so it cannot act as a person or use the dashboard; stop token 2 working.</p>
   <p>Each token is printed once, when it is made. Hand each person their token over a private channel.</p>
 
   <h3>Set up a client with <code>connect</code></h3>
