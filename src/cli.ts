@@ -6,7 +6,7 @@ import { AgentListError, KeyResetError, PersonError, PurgeError, ToolError, addP
 import { AccountError, addAccount, addToken, listAccounts, listTokens, revokeToken, type NewToken } from "./accounts.js";
 import { ConnectError, clientSetup, connectAgent, mcpEndpoint, publicUrl as checkedPublicUrl } from "./connect.js";
 import { OWNER_ACCOUNT, openDb } from "./db.js";
-import { CLIENT_IDS, askOnTerminal, ownServer, proveServer, realRunner, runInit, type ClientId } from "./init.js";
+import { CLIENT_IDS, askOnTerminal, ownServer, proveRemote, proveServer, realRunner, runInit, type ClientId, type Remote } from "./init.js";
 import { hasUnread, unreadSummary } from "./messages.js";
 import { setting } from "./settings.js";
 import { formatUnread } from "./wait.js";
@@ -21,7 +21,7 @@ const USAGE = {
   person: "message-cp person add <name> [--account <name>] | message-cp person remove <name> [--account <name>] | message-cp person list [--account <name>]",
   agent: "message-cp agent list [--account <name>] | message-cp agent remove <name> [--account <name>] | message-cp agent key reset <name> [--account <name>]",
   connect: "message-cp connect <agent> --url <public url> [--account <name>] [--new-key]",
-  init: `message-cp init [--client <${CLIENT_IDS.join("|")}>]`,
+  init: `message-cp init [--client <${CLIENT_IDS.join("|")}>] [--url <public url> --agent <name>] (with --url, the token from MESSAGE_CP_HTTP_TOKEN and the key from MESSAGE_CP_AGENT_KEY)`,
 };
 
 const [command, ...rest] = process.argv.slice(2);
@@ -341,25 +341,50 @@ if (command === "serve") {
   }
   db.close();
 } else if (command === "init") {
-  // Run on the machine the coding agent runs on. Adds the stdio server to one client's user-level configuration and
-  // checks it with a test agent that is removed afterwards; nothing it prints holds a token or key.
+  // Run on the machine the coding agent runs on. Adds the stdio server, or with --url and --agent the team server, to
+  // one client's user-level configuration and checks it with a test agent that is removed afterwards; nothing it prints
+  // holds a token or key, which come only from the environment, never from a flag that shell history would keep.
   const usage = () => {
     console.error(`usage: ${USAGE.init}`);
     process.exit(2);
   };
-  let client: ClientId | undefined;
+  const opts = new Map<string, string>();
   for (let i = 0; i < rest.length; i += 2) {
+    const option = rest[i]!;
     const value = rest[i + 1];
-    if (rest[i] !== "--client" || client !== undefined || !CLIENT_IDS.includes(value as ClientId)) usage();
-    client = value as ClientId;
+    if ((option !== "--client" && option !== "--url" && option !== "--agent") || opts.has(option) || !value || value.startsWith("--")) usage();
+    if (option === "--client" && !CLIENT_IDS.includes(value as ClientId)) usage();
+    opts.set(option, value!);
+  }
+  if (opts.has("--url") !== opts.has("--agent")) usage();
+  const client = opts.get("--client") as ClientId | undefined;
+  let remote: Remote | undefined;
+  if (opts.has("--url")) {
+    let endpoint: URL;
+    try {
+      endpoint = mcpEndpoint(opts.get("--url")!);
+    } catch (err) {
+      if (!(err instanceof ConnectError)) throw err;
+      console.error(`message-cp init: ${err.message} Nothing was changed.`);
+      process.exit(2);
+    }
+    const token = process.env.MESSAGE_CP_HTTP_TOKEN;
+    const key = process.env.MESSAGE_CP_AGENT_KEY;
+    if (!token || !key) {
+      console.error(`message-cp init: with --url, set ${!token ? "MESSAGE_CP_HTTP_TOKEN to the agent token" : "MESSAGE_CP_AGENT_KEY to the agent's key"} (both as \`message-cp connect\` printed them). Nothing was changed.`);
+      console.error(`usage: ${USAGE.init}`);
+      process.exit(2);
+    }
+    remote = { endpoint, agent: opts.get("--agent")!, token, key };
   }
   process.exitCode = await runInit({
     client,
+    remote,
     machine: { home: homedir(), path: process.env.PATH ?? "", platform: process.platform, appData: process.env.APPDATA },
     run: realRunner,
     interactive: Boolean(process.stdin.isTTY && process.stdout.isTTY),
     ask: askOnTerminal,
-    prove: () => proveServer(ownServer()),
+    prove: () => (remote === undefined ? proveServer(ownServer()) : proveRemote(remote)),
     out: (line) => console.log(line),
     err: (line) => console.error(line),
   });
