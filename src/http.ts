@@ -890,7 +890,7 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
     const { account } = access;
     // Only a full token approves a client: an agent or read-only token is refused before a slot is taken or a body read.
     if (oauth && path === "/oauth/approve") {
-      if (access.agentOnly || access.readOnly) return reply(res, 403, "Only a full token can approve a client");
+      if (access.agentOnly || access.readOnly) return reply(res, 403, "Only a full token can approve a client", { Connection: "close" });
       return oauthApprove(req, res, account);
     }
     // An agent token reaches /mcp and /wait, where it reads as its agent does, and of the /api paths only GET /api/token,

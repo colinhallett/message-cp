@@ -426,7 +426,12 @@ describe("approval", () => {
     const readOnly = addToken(db, "owner", true).token;
     const bound = addToken(db, "owner", false, true, registerWithIdentity(db, OWNER_ACCOUNT, "b").identity.id).token;
     const after = stored();
-    for (const token of [agentOnly, readOnly, bound]) expect((await approve(token, { request, state: "s1", agent: "desk" })).status).toBe(403);
+    for (const token of [agentOnly, readOnly, bound]) {
+      const res = await approve(token, { request, state: "s1", agent: "desk" });
+      expect(res.status).toBe(403);
+      // Its body is left unread, so the connection is not kept for another request.
+      expect(res.headers.get("connection")).toBe("close");
+    }
     expect((await approve("wrong", { request, state: "s1", agent: "desk" })).status).toBe(401);
     expect(stored()).toBe(after);
     expect(before).not.toBe(after);
