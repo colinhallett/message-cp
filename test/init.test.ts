@@ -644,7 +644,9 @@ describe("setUpClient with a team server", () => {
       [oneHeader, {}, "present"],
       [oneHeader, { key: undefined }, "present"],
       [claudeGetHttp(), {}, "present"],
-      [claudeGetHttp(), { key: undefined }, "present"],
+      [claudeGetHttp().replace("X-Message-CP-Agent: writer", "X-Message-CP-Agent: Writer"), {}, "present"],
+      // Without the key there is nothing to check the entry's key against, so it is not called set up.
+      [claudeGetHttp(), { key: undefined }, "differs"],
       [claudeGetHttp(undefined, "reader"), {}, "differs"],
       [claudeGetHttp().replace(KEY, "old-key"), {}, "differs"],
       [oneHeader.replace(TOKEN, "old-token"), {}, "differs"],
@@ -677,7 +679,7 @@ describe("setUpClient with a team server", () => {
     const three = { url: "https://message-cp.example.com/mcp", headers: { Authorization: `Bearer ${TOKEN}`, "X-Message-CP-Agent": "writer", "X-Message-CP-Agent-Key": KEY } };
     writeFileSync(file, JSON.stringify({ mcpServers: { "message-cp": three } }), { mode: 0o600 });
     expect(setUpClient("cursor", machine(), fakeRunner().run, remote({ bound: true })).state).toBe("present");
-    expect(setUpClient("cursor", machine(), fakeRunner().run, remote({ bound: true, key: undefined })).state).toBe("present");
+    expect(setUpClient("cursor", machine(), fakeRunner().run, remote({ bound: true, key: undefined })).state).toBe("differs");
     expect(setUpClient("cursor", machine(), fakeRunner().run, remote({ bound: true, key: "other-key" })).state).toBe("differs");
     expect(setUpClient("cursor", machine(), fakeRunner().run, remote({ bound: true, agent: "reader" })).state).toBe("differs");
   });
@@ -767,6 +769,20 @@ describe("runInit with a team server", () => {
       expect(all(t)).not.toContain(TOKEN);
       expect(all(t)).not.toContain(KEY);
     }
+  });
+
+  it("with a bound token and no key, leaves an earlier three-header entry as it is, says why and how to remove it", async () => {
+    fakeCommand("claude");
+    const t = options({ remote: remote({ key: undefined }), check: async () => true, run: fakeRunner({ [CLAUDE_GET]: { status: 0, stdout: claudeGetHttp() } }).run });
+    expect(await runInit(t.o)).toBe(1);
+    expect(t.err).toEqual([
+      "message-cp init: Claude Code already has a server named message-cp that is not https://message-cp.example.com/mcp as agent 'writer' with this token; it was left as it is.",
+      "If it is an earlier init's entry with the agent's name and key, set MESSAGE_CP_AGENT_KEY so init can check that key, or remove it so init writes the token alone.",
+      "To remove it, then run message-cp init again: claude mcp remove --scope user message-cp",
+    ]);
+    expect(t.proved()).toBe(0);
+    expect(all(t)).not.toContain(TOKEN);
+    expect(all(t)).not.toContain(KEY);
   });
 
   it("run again, says already set up", async () => {

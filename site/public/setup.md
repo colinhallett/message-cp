@@ -44,7 +44,7 @@ To try it with no domain, set `MESSAGE_CP_DOMAIN=localhost` and use `https://loc
 3. There, run `npx -y message-cp init --from <file>`, adding `--client <client>` if it finds several. It checks the token and key before changing anything, sets up the client, proves it works, then writes the token to `~/.message-cp/http-token` for the wake-up command, or says why not.
 4. After "Check failed", the client is set up: fix what it names and rerun `init`, or run the printed undo. If `init` stopped earlier, it changed nothing and says why:
    - A different message-cp server there: as in section 2, step 4.
-   - Codex cannot send the token: offer Claude Code or Cursor.
+   - `init` cannot set up Codex: offer Claude Code or Cursor.
    - Claude Code on Windows: from the agent's project folder, run the `claude mcp add` command on the file's first line without printing it (it adds the server for that folder only). Then save the token unprinted: `mkdir -p ~/.message-cp && chmod 700 ~/.message-cp`, then `(umask 077 && sed -n 's/.*Bearer \([0-9a-f]*\)".*/\1/p' <file> > ~/.message-cp/http-token)`.
    - Claude Desktop: have the person open the file, unseen by you, and add a custom connector (Customize, Connectors, Add, Add custom connector, No sign in) with its URL and three headers.
    - Cursor, when others can read `~/.cursor/mcp.json`: run `chmod 600 ~/.cursor/mcp.json`, then rerun `init`.

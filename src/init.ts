@@ -365,7 +365,8 @@ export const remoteHeaders = (r: Remote): Record<string, string> =>
 /**
  * Whether the header values `get` reads from an existing entry are the ones `r` sends. For a bound token, the entry an
  * earlier `init` wrote with the agent's name and key as well is the same too, since the server accepts a bound token
- * with headers naming its own agent and its key: the name must be `r.agent`, and the key, when `r` has one, must be it.
+ * with headers naming its own agent (in any case) and its key, but only when `r` has the key to compare: without it, a
+ * key reset since would leave the client refused while `init` called it set up.
  */
 function sameHeaders(r: Remote, get: (name: string) => unknown): boolean {
   if (get("Authorization") !== `Bearer ${r.token}`) return false;
@@ -373,7 +374,7 @@ function sameHeaders(r: Remote, get: (name: string) => unknown): boolean {
   const agent = get("X-Message-CP-Agent");
   const key = get("X-Message-CP-Agent-Key");
   if (agent === undefined && key === undefined) return true;
-  return agent === r.agent && typeof key === "string" && (r.key === undefined || key === r.key);
+  return typeof agent === "string" && agent.toLowerCase() === r.agent.toLowerCase() && r.key !== undefined && key === r.key;
 }
 
 /** `text` with the token and key replaced by `<redacted>`, so no line `init` passes on holds either. */
@@ -932,6 +933,9 @@ export async function runInit(o: InitOptions): Promise<number> {
         ? `message-cp init: ${label} already has a server named message-cp that does not run \`npx -y message-cp\`; it was left as it is.`
         : `message-cp init: ${label} already has a server named message-cp that is not ${remote.endpoint.href} as agent '${remote.agent}' with this ${remote.key === undefined ? "token" : "token and key"}; it was left as it is.`,
     );
+    if (remote?.bound && remote.key === undefined) {
+      o.err("If it is an earlier init's entry with the agent's name and key, set MESSAGE_CP_AGENT_KEY so init can check that key, or remove it so init writes the token alone.");
+    }
     o.err(`To remove it, then run message-cp init again: ${setUp.undo}`);
     return 1;
   }
