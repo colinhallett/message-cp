@@ -41,7 +41,7 @@ const fontFace = (file: string) => {
   return `@font-face { font-family: "${name}"; font-style: ${style}; font-weight: ${weight}; font-display: swap; src: url("/fonts/${file}") format("woff2"); }`;
 };
 
-const STYLE = `
+export const STYLE = `
 ${FONT_FILES.map(fontFace).join("\n")}
 :root {
   color-scheme: light dark;
