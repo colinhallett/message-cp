@@ -963,6 +963,29 @@ describe("writeTokenFile", () => {
     expect(readFileSync(file(), "utf8")).toBe("other\n");
   });
 
+  it("compares the token as the wake-up command reads it: only trailing newlines are dropped", () => {
+    mkdirSync(join(home, ".message-cp"));
+    writeFileSync(file(), `${TOKEN}\n\n`);
+    expect(writeTokenFile(home, TOKEN)).toBe("present");
+    for (const text of [`\t${TOKEN}\n`, ` ${TOKEN}`, `${TOKEN} \n`, `${TOKEN}\r\n`]) {
+      writeFileSync(file(), text);
+      expect(writeTokenFile(home, TOKEN)).toBe("differs");
+    }
+  });
+
+  it("refuses a FIFO already there, or a symlink to one, instead of waiting for a writer", () => {
+    if (process.platform === "win32") return;
+    mkdirSync(join(home, ".message-cp"));
+    const fifo = join(home, "fifo");
+    spawnSync("mkfifo", [fifo]);
+    for (const make of [() => spawnSync("mkfifo", [file()]), () => symlinkSync(fifo, file())]) {
+      rmSync(file(), { force: true });
+      make();
+      expect(() => writeTokenFile(home, TOKEN)).toThrow(/is already there but is not a file; it was left as it is/);
+      expect(lstatSync(file())).toBeDefined();
+    }
+  });
+
   it("does not write through a symlink left in its place", () => {
     if (process.platform === "win32") return;
     mkdirSync(join(home, ".message-cp"));
@@ -1017,7 +1040,9 @@ describe("runInit with --from", () => {
     expect(t.err).toEqual([
       `message-cp init: ${tokenFile()} is already there and does not hold this token, so it was left as it is; the wake-up command reads the token from it when MESSAGE_CP_HTTP_TOKEN is not set.`,
       `To use this agent's token there instead, delete ${tokenFile()}, then run message-cp init --from ${FROM} again.`,
+      `Once that is done, or you keep the token already there, ${FROM} can be deleted, and its copy on the server.`,
     ]);
+    expect(t.out.join("\n")).not.toContain("can now be deleted");
     expect(readFileSync(tokenFile(), "utf8")).toBe("other\n");
   });
 

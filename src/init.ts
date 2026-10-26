@@ -295,25 +295,46 @@ export type TokenFileState = "written" | "present" | "differs";
 /**
  * Writes `token` to `~/.message-cp/http-token` under `home`, where the wake-up command reads it, as a new 0600 file in a
  * directory made 0700 if missing; an existing directory keeps its mode. A file already there is never replaced:
- * "present" if it holds `token`, "differs" if it holds anything else, even nothing. Throws an InitError, without the token, if it
- * cannot write or read the file.
+ * "present" if it holds `token` as the wake-up command reads it (`$(cat ...)`, which drops only trailing newlines),
+ * "differs" if it holds anything else, even nothing. Throws an InitError, without the token, if it cannot write the file
+ * (removing what it created), or if the one already there is not a regular file or cannot be read.
  */
 export function writeTokenFile(home: string, token: string): TokenFileState {
   const dir = join(home, ".message-cp");
   const file = join(dir, "http-token");
   const reason = (err: unknown) => (err as { code?: string }).code ?? (err instanceof Error ? err.message : String(err));
+  let fd: number | undefined;
   try {
     mkdirSync(dir, { mode: 0o700, recursive: true });
     // "wx": never through an existing file or symlink, so one made meanwhile is compared below, not overwritten.
-    writeFileSync(file, `${token}\n`, { mode: 0o600, flag: "wx" });
-    return "written";
+    fd = openSync(file, "wx", 0o600);
   } catch (err) {
     if ((err as { code?: string }).code !== "EEXIST") throw new InitError(`could not write ${file} (${reason(err)})`);
   }
+  if (fd !== undefined) {
+    try {
+      writeFileSync(fd, `${token}\n`);
+      return "written";
+    } catch (err) {
+      // This run made the file, so a partial one is removed: a rerun then writes it instead of finding it "differs".
+      closeSync(fd);
+      fd = undefined;
+      rmSync(file, { force: true });
+      throw new InitError(`could not write ${file} (${reason(err)})`);
+    } finally {
+      if (fd !== undefined) closeSync(fd);
+    }
+  }
   try {
-    return readFileSync(file, "utf8").trim() === token ? "present" : "differs";
+    // Non-blocking, so a FIFO there (or a symlink to one) is refused below instead of waiting for a writer.
+    fd = openSync(file, constants.O_RDONLY | (constants.O_NONBLOCK ?? 0));
+    if (!fstatSync(fd).isFile()) throw new InitError(`${file} is already there but is not a file; it was left as it is`);
+    return readFileSync(fd, "utf8").replace(/\n+$/, "") === token ? "present" : "differs";
   } catch (err) {
+    if (err instanceof InitError) throw err;
     throw new InitError(`${file} is already there but could not be read (${reason(err)}); it was left as it is`);
+  } finally {
+    if (fd !== undefined) closeSync(fd);
   }
 }
 
@@ -843,9 +864,11 @@ export async function runInit(o: InitOptions): Promise<number> {
     // Any token of the account wakes the agent, so a different one is not an error, but it is never replaced unasked.
     o.err(`message-cp init: ${tokenFile} is already there and does not hold this token, so it was left as it is; the wake-up command reads the token from it when MESSAGE_CP_HTTP_TOKEN is not set.`);
     o.err(`To use this agent's token there instead, delete ${tokenFile}, then run message-cp init --from ${remote.from} again.`);
-  } else {
-    o.out(state === "written" ? `Wake-up token: wrote ${tokenFile}.` : `Wake-up token: ${tokenFile} already holds this token.`);
+    // The rerun needs the file, so it is not called deletable yet.
+    o.err(`Once that is done, or you keep the token already there, ${remote.from} can be deleted, and its copy on the server.`);
+    return 0;
   }
+  o.out(state === "written" ? `Wake-up token: wrote ${tokenFile}.` : `Wake-up token: ${tokenFile} already holds this token.`);
   o.out(`${remote.from} can now be deleted, and its copy on the server.`);
   return 0;
 }
