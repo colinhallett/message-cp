@@ -1,10 +1,12 @@
 #!/usr/bin/env node
 import { readFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { DEFAULT_HTTP_HOST, DEFAULT_HTTP_PORT, startHttp } from "./http.js";
 import { AgentListError, KeyResetError, PersonError, PurgeError, ToolError, addPerson, listPeople, listServerAgents, purgeAgent, removePerson, resetAgentKey } from "./agents.js";
 import { AccountError, addAccount, addToken, listAccounts, listTokens, revokeToken, type NewToken } from "./accounts.js";
 import { ConnectError, clientSetup, connectAgent, mcpEndpoint } from "./connect.js";
 import { OWNER_ACCOUNT, openDb } from "./db.js";
+import { CLIENT_IDS, askOnTerminal, ownServer, proveServer, realRunner, runInit, type ClientId } from "./init.js";
 import { hasUnread, unreadSummary } from "./messages.js";
 import { setting } from "./settings.js";
 import { formatUnread } from "./wait.js";
@@ -19,6 +21,7 @@ const USAGE = {
   person: "message-cp person add <name> [--account <name>] | message-cp person remove <name> [--account <name>] | message-cp person list [--account <name>]",
   agent: "message-cp agent list [--account <name>] | message-cp agent remove <name> [--account <name>] | message-cp agent key reset <name> [--account <name>]",
   connect: "message-cp connect <agent> --url <public url> [--account <name>] [--new-key]",
+  init: `message-cp init [--client <${CLIENT_IDS.join("|")}>]`,
 };
 
 const [command, ...rest] = process.argv.slice(2);
@@ -327,6 +330,29 @@ if (command === "serve") {
     process.exit(1);
   }
   db.close();
+} else if (command === "init") {
+  // Run on the machine the coding agent runs on. Adds the stdio server to one client's user-level configuration and
+  // checks it with a test agent that is removed afterwards; nothing it prints holds a token or key.
+  const usage = () => {
+    console.error(`usage: ${USAGE.init}`);
+    process.exit(2);
+  };
+  let client: ClientId | undefined;
+  for (let i = 0; i < rest.length; i += 2) {
+    const value = rest[i + 1];
+    if (rest[i] !== "--client" || client !== undefined || !CLIENT_IDS.includes(value as ClientId)) usage();
+    client = value as ClientId;
+  }
+  process.exitCode = await runInit({
+    client,
+    machine: { home: homedir(), path: process.env.PATH ?? "", platform: process.platform, appData: process.env.APPDATA },
+    run: realRunner,
+    interactive: Boolean(process.stdin.isTTY && process.stdout.isTTY),
+    ask: askOnTerminal,
+    prove: () => proveServer(ownServer()),
+    out: (line) => console.log(line),
+    err: (line) => console.error(line),
+  });
 } else if (command === undefined) {
   await import("./index.js");
 } else if (command === "help" || command === "--help") {
@@ -335,6 +361,6 @@ if (command === "serve") {
     ["usage: message-cp              runs the stdio MCP server", ...Object.values(USAGE).flatMap((u) => u.split(" | message-cp ").map((line, i) => `       ${i ? "message-cp " : ""}${line}`))].join("\n"),
   );
 } else {
-  console.error(`message-cp: unknown command '${command}'. Commands: serve, wait, account, token, webhook, person, agent, connect, help`);
+  console.error(`message-cp: unknown command '${command}'. Commands: serve, wait, account, token, webhook, person, agent, connect, init, help`);
   process.exit(2);
 }
