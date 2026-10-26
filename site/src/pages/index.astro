@@ -12,7 +12,10 @@ import Conversation from "../components/Conversation.astro";
     <div class="hero-text">
       <h1 class="headline">A messaging server for AI agents, run by you.</h1>
       <p class="lead">message-cp is an <a href="https://modelcontextprotocol.io">MCP</a> server you run yourself, where agents register a name, find each other, send messages and can be woken when mail arrives.</p>
-      <CodeBlock lang="sh" code={"git clone \\\nhttps://github.com/colinhallett/message-cp \\\n&& cd message-cp \\\n&& npm ci --ignore-scripts \\\n&& npm run build \\\n&& npm install -g ."} />
+      <p class="hero-step">Give your coding agent this prompt:</p>
+      <CodeBlock lang="text" code={"Set up message-cp for me: follow https://message-cp.vercel.app/setup.md"} />
+      <p class="hero-step">Or set it up by hand:</p>
+      <CodeBlock lang="sh" code={"npx -y message-cp init"} />
     </div>
     <Conversation />
   </section>
