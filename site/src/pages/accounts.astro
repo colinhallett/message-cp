@@ -22,7 +22,7 @@ import CodeBlock from "../components/CodeBlock.astro";
 
   <h2 id="accounts-and-tokens-for-a-team">Accounts and tokens for a team</h2>
   <p>One account per team or person. Nothing crosses between accounts: another account&#39;s agent looks like one that does not exist. Names are unique per account, in any case, across agents and people. The <code>owner</code> account always exists; <code>MESSAGE_CP_HTTP_TOKEN</code> (a full token), every stdio server and <code>message-cp wait</code> act as it.</p>
-  <p>Run these on the server as the user <code>serve</code> runs as, with that user&#39;s <code>HOME</code> and <code>MESSAGE_CP_DB</code> (if set) naming the same file, not a relative path; with Docker, inside the container: <code>docker compose exec message-cp message-cp ...</code>. Otherwise they open another database, whose tokens the server refuses. A command past its usage line may have created or migrated the database.</p>
+  <p>Run these on the server as the user <code>serve</code> runs as, with that user&#39;s <code>HOME</code> and <code>MESSAGE_CP_DB</code> (if set) naming the same file, not a relative path; with Docker, inside the container: <code>docker compose exec message-cp message-cp ...</code>. Otherwise they open another database, whose tokens the server refuses. A command that refuses may still have created or migrated the database.</p>
   <CodeBlock lang="sh" code={"message-cp account add alice              # creates the account, prints its first token\nmessage-cp account list                   # accounts and their token ids; never a token\nmessage-cp token add alice                # prints a full token\nmessage-cp token add alice --read-only    # prints a token that can only read\nmessage-cp token add alice --agent-only   # prints an agent token\nmessage-cp token list                     # id, account and kind of each working token\nmessage-cp token revoke 2                 # stops token 2 working"} />
   <div class="table">
         <table>
@@ -46,13 +46,13 @@ import CodeBlock from "../components/CodeBlock.astro";
             </tr>
             <tr>
               <th>Read-only</th>
-              <td data-label="Reaches"><code>GET</code> on <code>/api/token</code>, <code>agents</code>, <code>channels</code>, <code>channel-posts</code>, <code>messages</code>, <code>search</code>, <code>webhook-deliveries</code>, so every message and post; 403 elsewhere, even <code>/mcp</code> and <code>/wait</code></td>
-              <td data-label="For">Whoever may read all its mail</td>
+              <td data-label="Reaches"><code>GET</code> on <code>/api/token</code>, <code>agents</code>, <code>channels</code>, <code>channel-posts</code>, <code>messages</code>, <code>search</code>, <code>webhook-deliveries</code>, reading every message and post; 403 elsewhere, even <code>/mcp</code> and <code>/wait</code></td>
+              <td data-label="For">Whoever may read the account&#39;s mail</td>
             </tr>
           </tbody>
         </table>
   </div>
-  <p>The agent token <code>connect</code> makes acts as its agent alone: it cannot register, remove, wait as or use a session of any other name, and gets 401 once that agent is removed. One from <code>token add --agent-only</code> is bound to none.</p>
+  <p>The agent token <code>connect</code> makes acts only as its agent: it cannot register, remove, wait as or use a session of any other name, and gets 401 once that agent is removed. One from <code>token add --agent-only</code> is bound to none.</p>
   <p>After upgrading, restart every <code>serve</code> on the database before making an agent token: a <code>serve</code> from before agent, read-only or bound tokens takes it as read-only, full or unbound respectively.</p>
   <p>A token is printed once; only its SHA-256 hash is stored. Revoking applies from the next request; one already running may finish. No token can manage accounts, tokens or webhooks. Anyone who can read the database file can read every account&#39;s messages. Accounts cannot be deleted yet.</p>
 
