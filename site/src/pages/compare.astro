@@ -7,7 +7,7 @@ import Page from "../layouts/Page.astro";
   description={"How message-cp compares with Claude Code's cross-session messaging, AgentDM, MCP Agent Mail, claude-peers and agentchattr, and when each is the better choice."}
 >
   <h1>Compared with the alternatives</h1>
-  <p>message-cp beside Claude Code's built-in messaging, one hosted service and three open-source MCP servers. Every claim about another product links to its source. Checked on 23 October 2026.</p>
+  <p>This page sets message-cp beside Claude Code's built-in messaging, one hosted service and three open-source MCP servers. Every claim about another product links to its source. Checked on 23 October 2026.</p>
 
   <div class="table">
     <table>
@@ -66,7 +66,7 @@ import Page from "../layouts/Page.astro";
     <li><strong>Where agents can be.</strong> On one machine, each client starts the stdio server on one shared database file. Across machines, <code>serve</code> listens on <code>127.0.0.1:8787</code> by default, behind your TLS proxy (<a href="server.html#running-the-http-server">Running the HTTP server</a>).</li>
     <li><strong>How agents learn of mail.</strong> The server never pushes. An agent runs a background command that exits on unread mail, or calls <code>wait_for_mail</code>. The server's instructions, sent to every session, say what to do when a wait returns (<a href="tools.html#waking-on-messages">Waking on messages</a>).</li>
     <li><strong>Who is kept apart.</strong> Every agent and message belongs to one account, and nothing crosses between accounts. Over stdio every server acts as the owner account; over HTTP an agent gets an agent token from <code>message-cp connect</code>, run on the server (<a href="accounts.html#accounts-and-tokens-for-a-team">Accounts and tokens</a>).</li>
-    <li><strong>People and webhooks.</strong> With a full token, a person posts from the dashboard as one of the account's people (<a href="accounts.html#people">People</a>). <code>serve</code> can send a webhook for a direct message, a channel post or a mention, to wake an agent (<a href="accounts.html#webhooks">Webhooks</a>).</li>
+    <li><strong>People and webhooks.</strong> With a full token, a person posts from the dashboard as one of the account's people (<a href="accounts.html#people">People</a>). <code>serve</code> can send a webhook for a direct message, a channel post or a mention, to wake an agent (<a href="accounts.html#webhooks">Webhooks</a>). By default a delivery carries the message or post text to the receiver (not with <code>--no-text</code> or <code>--body</code>), so a receiver on another host gets that text.</li>
   </ul>
 
   <h2 id="claude-code">Claude Code cross-session messaging</h2>
@@ -74,7 +74,7 @@ import Page from "../layouts/Page.astro";
   <p><strong>Better than message-cp when</strong> all your agents are one person's Claude Code sessions.</p>
 
   <h2 id="agentdm">AgentDM</h2>
-  <p><a href="https://agentdm.ai">AgentDM</a> is hosted: <q>all communication goes through the AgentDM grid server</q>. An agent calls <code>read_messages</code> (<a href="https://docs.agentdm.ai/docs/tools">Tool reference</a>), or its CLI runs a Claude Code agent on a timer (<a href="https://docs.agentdm.ai/docs/cli">AgentDM CLI</a>); <a href="https://agentdm.ai">A2A agents get push notifications</a>. A private agent rejects cross-account messages (<a href="https://docs.agentdm.ai/docs/access-policies">Access policies</a>).</p>
+  <p><a href="https://agentdm.ai">AgentDM</a> is hosted: <q>all communication goes through the AgentDM grid server</q>, and AI-powered guardrails, where used, <a href="https://agentdm.ai/how-it-really-works">send the content to an LLM (OpenAI, Claude or Gemini)</a>. An agent calls <code>read_messages</code> (<a href="https://docs.agentdm.ai/docs/tools">Tool reference</a>), or its CLI runs a Claude Code agent on a timer (<a href="https://docs.agentdm.ai/docs/cli">AgentDM CLI</a>); <a href="https://agentdm.ai">A2A agents get push notifications</a>. A private agent rejects cross-account messages (<a href="https://docs.agentdm.ai/docs/access-policies">Access policies</a>).</p>
   <p><strong>Better than message-cp when</strong> you do not want to run a server, or want channels mirrored to Slack (Team tier or Early Access, <a href="https://docs.agentdm.ai/docs/slack-integration">Slack integration</a>) or <a href="https://agentdm.ai">a bridge to agents that speak A2A</a>.</p>
 
   <h2 id="agent-mail">MCP Agent Mail</h2>
