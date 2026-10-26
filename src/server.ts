@@ -134,6 +134,8 @@ export interface ServerOptions {
    * is taken. Without it, the calls of this process are counted together against DEFAULT_MAX_SESSIONS.
    */
   hold?: () => (() => void) | undefined;
+  /** Over HTTP, the agent the session's token is bound to, which its instructions name. */
+  agent?: string;
   /** A signal that aborts once the response that would carry request `id` has closed, where the transport knows it. */
   closed?: (id: RequestId) => AbortSignal | undefined;
 }
@@ -190,13 +192,19 @@ export function createServer(db: Db, session = new Session(OWNER_ACCOUNT), optio
   const account = session.account;
   const server = new McpServer(
     { name: "message-cp", version: "0.1.0" },
-    { instructions: instructions(process.env, remote, options.publicUrl) },
+    { instructions: instructions(process.env, remote, options.publicUrl, options.agent) },
   );
 
   // Aborts when the call is cancelled or, where the transport knows it, the response that would carry its answer closes.
   const ended = (extra: Extra) => {
     const closed = options.closed?.(extra.requestId);
     return closed ? AbortSignal.any([extra.signal, closed]) : extra.signal;
+  };
+
+  // Over HTTP, a request whose token is bound to an agent carries that agent's name; such a token is that agent already.
+  const refuseBound = (extra: Extra) => {
+    const agent = extra.authInfo?.extra?.agent;
+    if (typeof agent === "string") throw new ToolError(`This token is already agent '${agent}'; it cannot register or remove another name.`);
   };
 
   // Wraps a tool: bumps last-seen for a registered session and turns ToolError into an error result.
@@ -219,14 +227,15 @@ export function createServer(db: Db, session = new Session(OWNER_ACCOUNT), optio
     "register",
     {
       description:
-        "Register this session as an agent with a name and short bio. A new name without a key you pass returns a generated key, once: keep it (if you pass your own key, nothing is returned). If the name exists (any case), this session takes that agent over and its bio is updated, but only with the agent's key; an agent registered before keys existed is claimed by the first call and gets a key. When the server can offer one, it returns waitCommand: run it in the background to be woken by unread messages, by unread posts in the channels you have joined and by unread @mentions of you; when it fires, call read_inbox if it names messages or mentions and read_channel for each channel it names posts in, and only then start it again. When it returns no waitCommand, or your client cannot run a background command, call wait_for_mail instead, and call it again whenever it returns unread null.",
+        "Register this session as an agent with a name and short bio. A new name without a key you pass returns a generated key, once: keep it (if you pass your own key, nothing is returned). If the name exists (any case), this session takes that agent over and its bio is updated, but only with the agent's key; an agent registered before keys existed is claimed by the first call and gets a key. When the server can offer one, it returns waitCommand: run it in the background to be woken by unread messages, by unread posts in the channels you have joined and by unread @mentions of you; when it fires, call read_inbox if it names messages or mentions and read_channel for each channel it names posts in, and only then start it again. When it returns no waitCommand, or your client cannot run a background command, call wait_for_mail instead, and call it again whenever it returns unread null. A session whose token is bound to one agent is that agent already, and register fails there.",
       inputSchema: {
         name: z.string().describe("1-32 characters: letters, digits, '-' and '_'. 'all' is reserved."),
         bio: z.string().describe("A short description of who you are and what you work on."),
         key: z.string().optional().describe("The agent's key, required to take over an existing agent that has one."),
       },
     },
-    tool(({ name, bio, key }: { name: string; bio: string; key?: string }) => {
+    tool(({ name, bio, key }: { name: string; bio: string; key?: string }, extra) => {
+      refuseBound(extra);
       const { result, identity } = registerWithIdentity(db, account, name, bio, key);
       session.bind(identity);
       if (!remote) return { ...result, waitCommand: waitCommand(result.name) };
@@ -238,13 +247,14 @@ export function createServer(db: Db, session = new Session(OWNER_ACCOUNT), optio
     "unregister",
     {
       description:
-        "Remove an agent from the directory and free its name. The messages addressed to it are kept in the database, until a full token deletes their conversation over HTTP, but no tool shows them again, not even to a new agent that registers the same name; keptMessages says how many. With no arguments it removes you, and this session is unregistered until it calls `register` again. With name and key it removes that agent, only if the key matches (an agent that has no key can be removed by name alone); name and key work even from a session that has not registered. Any other session still acting as the removed agent is unregistered too. A process started with MESSAGE_CP_AGENT registers that agent again when it starts.",
+        "Remove an agent from the directory and free its name. The messages addressed to it are kept in the database, until a full token deletes their conversation over HTTP, but no tool shows them again, not even to a new agent that registers the same name; keptMessages says how many. With no arguments it removes you, and this session is unregistered until it calls `register` again (with a token bound to one agent, that token stops working). With name and key it removes that agent, only if the key matches (an agent that has no key can be removed by name alone); name and key work even from a session that has not registered, but not with a token bound to one agent. Any other session still acting as the removed agent is unregistered too. A process started with MESSAGE_CP_AGENT registers that agent again when it starts.",
       inputSchema: {
         name: z.string().optional().describe("The agent to remove. Omit to remove yourself."),
         key: z.string().optional().describe("That agent's key, required if it has one."),
       },
     },
-    tool(({ name, key }: { name?: string; key?: string }) => {
+    tool(({ name, key }: { name?: string; key?: string }, extra) => {
+      if (name !== undefined) refuseBound(extra);
       if (name === undefined) {
         if (key !== undefined) throw new ToolError("Pass the name of the agent the key belongs to.");
         const self = session.require();
