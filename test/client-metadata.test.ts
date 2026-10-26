@@ -267,4 +267,27 @@ describe("fetch", () => {
     await expect(fetchFrom(URL_ID, 200)).rejects.toThrow("The document took too long.");
     expect(Date.now() - started).toBeLessThan(2000);
   });
+
+  it("cancels a lookup still running at its deadline, so none outlives the fetch", async () => {
+    const pending: string[] = [];
+    let cancelled = 0;
+    // A resolver that never answers until cancelled, as a slow name server would not.
+    const resolver = {
+      resolve4: (name: string) => void pending.push(`4 ${name}`),
+      resolve6: (name: string) => void pending.push(`6 ${name}`),
+      cancel: () => void cancelled++,
+    } as never;
+    await expect(fetchClientMetadata("https://public.example/x", { resolver, timeoutMs: 200 })).rejects.toThrow("The document took too long.");
+    expect(pending.sort()).toEqual(["4 public.example", "6 public.example"]);
+    expect(cancelled).toBe(1);
+  });
+
+  it("resolves through its own resolver and refuses a name with any address that is not public", async () => {
+    const resolver = {
+      resolve4: (_n: string, cb: (e: Error | null, a: string[]) => void) => cb(null, ["93.184.215.14"]),
+      resolve6: (_n: string, cb: (e: Error | null, a: string[]) => void) => cb(null, ["fd00::1"]),
+      cancel: () => {},
+    } as never;
+    await expect(fetchClientMetadata("https://public.example/x", { resolver })).rejects.toThrow("The address is not a public one.");
+  });
 });
