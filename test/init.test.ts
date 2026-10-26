@@ -11,6 +11,7 @@ import { addPerson, listServerAgents, registerAgent } from "../src/agents.js";
 import { clientSetup, connectAgent, mcpEndpoint } from "../src/connect.js";
 import { OWNER_ACCOUNT, openDb, type Db } from "../src/db.js";
 import { startHttp, type HttpServer } from "../src/http.js";
+import { sendMessage } from "../src/messages.js";
 import {
   InitError,
   checkRemote,
@@ -505,7 +506,7 @@ describe("message-cp init", () => {
       expect(existsSync(join(home, ".cursor", "mcp.json"))).toBe(false);
 
       const right = await run(c.token);
-      expect(right.output).toContain("Check passed: registered a test agent on the server");
+      expect(right.output).toContain("Check passed: as agent 'writer' on the server, sent itself a message");
       expect(right.status).toBe(0);
       expect(right.output).not.toContain(c.token);
       expect(right.output).not.toContain(c.key);
@@ -812,9 +813,24 @@ describe("checkRemote and proveRemote", () => {
     expect((await failure(checkRemote(r({ endpoint: closed }))))?.message).toMatch(/^could not open a session at http:\/\/127\.0\.0\.1:1\/mcp: /);
   });
 
+  it("with a bound token, proves the server as the agent itself: it sends itself a message and reads none of its mail", async () => {
+    registerAgent(db, OWNER_ACCOUNT, "bob", "x");
+    sendMessage(db, OWNER_ACCOUNT, "bob", "writer", "waiting mail");
+    expect(await proveRemote(r())).toBe(
+      "as agent 'writer' on the server, sent itself a message and found it with read_conversation; it stays unread in the agent's inbox.",
+    );
+    expect(names()).toEqual(["owner/bob", "owner/writer"]);
+    expect(db.prepare("SELECT sender, body, read_at FROM messages ORDER BY id").all()).toEqual([
+      { sender: "bob", body: "waiting mail", read_at: null },
+      { sender: "writer", body: expect.stringMatching(/^message-cp init check [0-9a-f]{20}$/), read_at: null },
+    ]);
+  });
+
   it("proves the server without touching the agent: a test agent sends itself a message and is removed", async () => {
+    // An unbound agent token can register the test agent.
+    agentToken = addToken(db, "owner", false, true).token;
     const before = db.prepare("SELECT last_seen FROM agents WHERE name = 'writer'").get();
-    await proveRemote(r());
+    expect(await proveRemote(r())).toBe("registered a test agent on the server, sent it a message, read it back and removed it.");
     expect(names()).toEqual(["owner/writer"]);
     expect(db.prepare("SELECT last_seen FROM agents WHERE name = 'writer'").get()).toEqual(before);
     // The test agent's message stays in the database, addressed to the removed agent, as unregister keeps it.
@@ -1105,7 +1121,7 @@ describe("message-cp init --from", () => {
       // As the CLI prints it: stdout is the client setup without its last newline.
       writeFileSync(file, `${clientSetup(mcpEndpoint(`http://127.0.0.1:${http.port}`), c).replace(/\n$/, "")}\n`, { mode: 0o600 });
       const r = await run(["--client", "cursor", "--from", file]);
-      expect(r.output).toContain("Check passed: registered a test agent on the server");
+      expect(r.output).toContain("Check passed: as agent 'writer' on the server, sent itself a message");
       expect(r.output).toContain(`${file} can now be deleted`);
       expect(r.status).toBe(0);
       expect(r.output).not.toContain(c.token);

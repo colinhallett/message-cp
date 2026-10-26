@@ -2,8 +2,9 @@ import { randomUUID } from "node:crypto";
 import { IncomingMessage, ServerResponse, createServer as createHttpServer, type Server } from "node:http";
 import { PassThrough } from "node:stream";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
 import { LATEST_PROTOCOL_VERSION, isInitializeRequest, isJSONRPCRequest, type RequestId } from "@modelcontextprotocol/sdk/types.js";
-import { accountForToken, type TokenAccess } from "./accounts.js";
+import { accountForToken, type BoundAgent, type TokenAccess } from "./accounts.js";
 import { DEFAULT_LIST_LIMIT, MAX_LIST_LIMIT, ToolError, registerWithIdentity, type Identity } from "./agents.js";
 import {
   DEFAULT_CHANNEL_LIMIT,
@@ -155,6 +156,10 @@ function agentHeaders(req: IncomingMessage): AgentHeaders | undefined | null {
   if (name?.length !== 1 || key?.length !== 1) return null;
   return { name: name[0], key: key[0] };
 }
+
+/** Whether `identity` is the registration `agent` holds now; false for none. */
+const isAgent = (identity: Identity | undefined, agent: BoundAgent) =>
+  identity !== undefined && identity.id === agent.id && identity.registeredAt === agent.registeredAt && identity.instance === agent.instance;
 
 /** The account the request's bearer token belongs to, checked afresh on every request so a revoked token stops at once. */
 function accountOf(db: Db, header: string | undefined, ownerToken: string): TokenAccess | undefined {
@@ -376,11 +381,14 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
   /**
    * Answers 200 with the unread summary as soon as the account's agent has mail or unread posts in a channel it has
    * joined, 204 after `waitHoldMs` without any.
-   * Another account's agent is answered like an unknown one.
+   * Another account's agent is answered like an unknown one. A token bound to an agent waits only for that agent: for it
+   * when `agent` is left out, and as for an unknown agent when `agent` names another.
    */
-  const wait = async (req: IncomingMessage, res: ServerResponse, account: AccountId) => {
+  const wait = async (req: IncomingMessage, res: ServerResponse, account: AccountId, bound?: BoundAgent) => {
     if (req.method !== "GET") return reply(res, 405, "Method not allowed", { Allow: "GET" });
-    const name = new URL(req.url ?? "", "http://x").searchParams.get("agent");
+    const asked = new URL(req.url ?? "", "http://x").searchParams.get("agent");
+    if (bound && asked && asked.toLowerCase() !== bound.name.toLowerCase()) return reply(res, 404, "No such agent");
+    const name = bound ? bound.name : asked;
     const first = name ? poll(account, name) : undefined;
     if (!first) return reply(res, 404, "No such agent");
     // Mail that is already there is answered at once, whatever the cap.
@@ -700,7 +708,7 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
     if (path === "/api/send") return apiSend(req, res, account);
     if (path === "/api/post") return apiPost(req, res, account);
     if (path === "/api/conversation") return apiConversation(req, res, account);
-    if (path === "/wait") return wait(req, res, account);
+    if (path === "/wait") return wait(req, res, account, access.agent);
     if (path !== "/mcp") return reply(res, 404, "Not found");
     if (req.method !== "POST" && req.method !== "GET" && req.method !== "DELETE") {
       return reply(res, 405, "Method not allowed", { Allow: "GET, POST, DELETE" });
@@ -713,7 +721,10 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
     if (id && !sessions.has(id)) {
       const identity = unlessBusy(res, () => restorableSession(db, id, account, Date.now() - idleTimeoutMs) ?? null);
       if (identity === undefined) return;
-      if (identity === null) return reply(res, 404, "Unknown session", { Connection: "close" });
+      // A token bound to an agent restores only a session of that agent; any other looks like one that does not exist.
+      if (identity === null || (access.agent && !isAgent(identity, access.agent))) {
+        return reply(res, 404, "Unknown session", { Connection: "close" });
+      }
       if (sessions.size + initializing >= maxSessions) return reply(res, 503, "Too many sessions", { Connection: "close" });
       restore(id, account, identity);
     }
@@ -725,6 +736,10 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
         Connection: "close",
       });
     }
+    // A token bound to an agent acts as it with no headers; headers naming another agent are refused before the cap.
+    if (named && access.agent && named.name.toLowerCase() !== access.agent.name.toLowerCase()) {
+      return reply(res, 403, `This token acts only as agent '${access.agent.name}'`, { Connection: "close" });
+    }
     // A request without a session can only start one. Refuse it at the cap, closing the connection so an unread
     // body cannot hold it open; otherwise take a slot now, before the body is buffered, and give it back at the end.
     if (!id && sessions.size + initializing >= maxSessions) {
@@ -735,7 +750,9 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
     // tool call held open afterwards does not keep it.
     if (id) {
       const live = sessions.get(id);
-      if (!live || live.account !== account) return reply(res, 404, "Unknown session", { Connection: "close" });
+      if (!live || live.account !== account || (access.agent && !isAgent(live.session?.registration, access.agent))) {
+        return reply(res, 404, "Unknown session", { Connection: "close" });
+      }
     }
     let slot = !!id && req.method === "POST";
     if (slot && reading >= maxSessions) return reply(res, 503, "Too many requests", { Connection: "close" });
@@ -747,7 +764,7 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
     const reserved = !id && req.method === "POST";
     if (reserved) initializing++;
     try {
-      await serve(req, res, id, account, named, bodyRead);
+      await serve(req, res, id, access, named, bodyRead);
     } finally {
       bodyRead();
       if (reserved) initializing--;
@@ -758,10 +775,13 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
     req: IncomingMessage,
     res: ServerResponse,
     id: string | undefined,
-    account: AccountId,
+    access: TokenAccess,
     named?: AgentHeaders,
     bodyRead?: () => void,
   ) => {
+    const { account, agent: bound } = access;
+    // Tools read the token's agent from here, so a bound token cannot `register` or remove another name on any session.
+    if (bound) (req as IncomingMessage & { auth?: AuthInfo }).auth = { token: "", clientId: "", scopes: [], extra: { agent: bound.name } };
     let body: unknown;
     if (req.method === "POST") {
       try {
@@ -775,8 +795,10 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
 
     if (id) {
       const live = sessions.get(id);
-      // Another account's session looks like one that does not exist.
-      if (!live || live.account !== account) return reply(res, 404, "Unknown session");
+      // Another account's session looks like one that does not exist, as does another agent's to a bound token.
+      if (!live || live.account !== account || (bound && !isAgent(live.session?.registration, bound))) {
+        return reply(res, 404, "Unknown session");
+      }
       await live.ready;
       // A client that went away while the session was restored is not listening, and its close has already fired, so
       // `track` would never see it.
@@ -814,6 +836,8 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
       }
       if (registered === undefined) return;
       identity = registered.identity;
+    } else if (bound) {
+      identity = { id: bound.id, registeredAt: bound.registeredAt, instance: bound.instance };
     }
     const live: Live = { lastUsed: Date.now(), transport: undefined as never, account, open: new Map() };
     const transport = new StreamableHTTPServerTransport({
@@ -874,15 +898,16 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
     transport.onclose = () => {
       if (sessions.get(id) === live) sessions.delete(id);
     };
+    // Its row is already there, so it is not recorded again: one another server deleted meanwhile stays deleted. The
+    // session is set at once, so a bound token's request on it meanwhile can check whose it is.
+    const session = new Session(account, (bound) => {
+      if (sessions.get(id) === live) recordSession(() => saveSession(db, id, account, bound));
+    });
+    session.restore(identity);
+    live.session = session;
     live.ready = (async () => {
       try {
-        const session = new Session(account, (bound) => {
-          if (sessions.get(id) === live) recordSession(() => saveSession(db, id, account, bound));
-        });
         await createServer(db, session, serverOptions(live)).connect(transport);
-        // Its row is already there, so it is not recorded again: one another server deleted meanwhile stays deleted.
-        session.restore(identity);
-        live.session = session;
         await prime(transport);
       } catch (err) {
         drop(id);
