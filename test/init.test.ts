@@ -111,6 +111,21 @@ describe("mergeServer", () => {
     expect(readFileSync(file(), "utf8")).toBe(before);
   });
 
+  it("never writes a secret entry into a file group or others can read, and leaves its mode as it is", () => {
+    if (process.platform === "win32") return;
+    const file = join(home, "mcp.json");
+    writeFileSync(file, "{}");
+    chmodSync(file, 0o644);
+    const secret = { entry: { url: "https://h/mcp", headers: { Authorization: "Bearer t" } }, same: () => false, secret: true };
+    expect(() => mergeServer(file, secret)).toThrow(/became readable by other users of this machine .*chmod 600/);
+    expect(readFileSync(file, "utf8")).toBe("{}");
+    expect(statSync(file).mode & 0o777).toBe(0o644);
+    expect(readdirSync(home).filter((f) => f.endsWith(".tmp"))).toEqual([]);
+    chmodSync(file, 0o600);
+    expect(mergeServer(file, secret)).toBe("added");
+    expect(statSync(file).mode & 0o777).toBe(0o600);
+  });
+
   it("says it cannot read a path that is a directory, rather than calling it invalid JSON", () => {
     mkdirSync(file());
     expect(() => mergeServer(file())).toThrow(/could not read .*mcp\.json \(EISDIR\)/);

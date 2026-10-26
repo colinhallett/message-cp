@@ -106,6 +106,8 @@ const isObject = (v: unknown): v is Record<string, unknown> => typeof v === "obj
 export interface JsonServer {
   entry: Record<string, unknown>;
   same: (entry: unknown) => boolean;
+  /** The entry holds a token or key, so it is never written with a mode group or others can read. */
+  secret?: boolean;
 }
 
 const STDIO_SERVER: JsonServer = {
@@ -120,7 +122,8 @@ const STDIO_SERVER: JsonServer = {
  * file changed between the read and the rename, nothing is written and `init` says to run it again. A `message-cp`
  * entry already there is left as it is: "present" if `server.same` holds for it (by default, if it runs
  * `npx -y message-cp`), "differs" otherwise. Refuses, changing nothing, a file that is not a JSON object or whose
- * `mcpServers` is not one, and turns a file it cannot read or write into an InitError giving the reason.
+ * `mcpServers` is not one, or, for a `secret` entry, a file group or others can read, and turns a file it cannot read
+ * or write into an InitError giving the reason.
  */
 export function mergeServer(file: string, server: JsonServer = STDIO_SERVER): SetUpState {
   const reason = (err: unknown) => (err as { code?: string }).code ?? (err instanceof Error ? err.message : String(err));
@@ -152,7 +155,14 @@ export function mergeServer(file: string, server: JsonServer = STDIO_SERVER): Se
     const target = text === undefined ? file : realpathSync(file);
     tmp = join(dirname(target), `.${SERVER_NAME}-init-${randomBytes(6).toString("hex")}.tmp`);
     writeFileSync(tmp, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600, flag: "wx" });
-    if (text !== undefined) chmodSync(tmp, statSync(target).mode & 0o777);
+    if (text !== undefined) {
+      // The mode the new file is given, checked here as well as in remoteRefusal, since it may have changed since.
+      const mode = statSync(target).mode & 0o777;
+      if (server.secret && process.platform !== "win32" && (mode & 0o044) !== 0) {
+        throw new InitError(`${file} became readable by other users of this machine while message-cp init was running; it was left as it is. To make it private, run: chmod 600 ${file}, then run message-cp init again.`);
+      }
+      chmodSync(tmp, mode);
+    }
     if (current() !== text) {
       throw new InitError(`${file} changed while message-cp init was running; it was left as it is. Run message-cp init again.`);
     }
@@ -224,6 +234,7 @@ export const claudeRemoteAdd = (r: Remote): string[] => [
  */
 export const cursorRemote = (r: Remote): JsonServer => ({
   entry: { url: r.endpoint.href, headers: remoteHeaders(r) },
+  secret: true,
   same: (e) =>
     isObject(e) &&
     e.url === r.endpoint.href &&
