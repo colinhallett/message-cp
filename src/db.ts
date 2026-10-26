@@ -61,6 +61,14 @@ CREATE INDEX IF NOT EXISTS messages_by_sender ON messages (recipient_id, sender 
 -- read_conversation reads a pair's messages newest first, so a page stops after its rows instead of sorting the pair's history.
 CREATE INDEX IF NOT EXISTS messages_by_pair ON messages (recipient_id, sender COLLATE NOCASE, created_at, id);`;
 
+// These need `in_reply_to`, which `migrate` adds to an older table, so `migrate` creates them rather than SCHEMA.
+// rebuildMessages() creates them too, in its transaction, so the rebuilt table is never committed without them.
+const MESSAGES_REPLY_INDEXES = `
+-- Deleting a message finds the replies to it (ON DELETE SET NULL) through this, not by scanning the table.
+CREATE INDEX IF NOT EXISTS messages_by_reply ON messages (in_reply_to);
+-- \`ask\` finds the replies to one question sent to the asker through this, in id order, not by walking every reply to it.
+CREATE INDEX IF NOT EXISTS messages_by_question ON messages (in_reply_to, recipient_id);`;
+
 // Every table lives here so later changes add to one place.
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS accounts (
@@ -319,6 +327,7 @@ function rebuildMessages(db: Db): void {
       db.exec("DROP TABLE messages");
       db.exec("ALTER TABLE messages_autoincrement RENAME TO messages");
       db.exec(MESSAGES_INDEXES);
+      db.exec(MESSAGES_REPLY_INDEXES);
       if ((db.pragma("foreign_key_check") as unknown[]).length > 0) throw new Error("messages migration broke a foreign key");
     }).immediate();
   } finally {
@@ -363,10 +372,7 @@ function migrate(db: Db, path: string): void {
   // it to null. Added here before rebuildMessages() copies it.
   addColumn(db, "in_reply_to", "INTEGER REFERENCES messages(id) ON DELETE SET NULL", "messages");
   rebuildMessages(db);
-  // Deleting a message finds the replies to it (ON DELETE SET NULL) through this, not by scanning the table.
-  db.exec("CREATE INDEX IF NOT EXISTS messages_by_reply ON messages (in_reply_to)");
-  // `ask` finds the replies to one question sent to the asker through this, in id order, not by walking every reply to it.
-  db.exec("CREATE INDEX IF NOT EXISTS messages_by_question ON messages (in_reply_to, recipient_id)");
+  db.exec(MESSAGES_REPLY_INDEXES);
   db.exec(DROP_REMOVED);
   db.prepare("INSERT OR IGNORE INTO accounts (id, name, created_at) VALUES (?, 'owner', ?)").run(OWNER_ACCOUNT, Date.now());
   addAccounts(db, path);
