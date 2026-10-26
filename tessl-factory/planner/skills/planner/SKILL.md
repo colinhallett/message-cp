@@ -114,7 +114,8 @@ daily schedule, by hand, by the `pr-merged` trigger after a factory pull
 request merges, or by the `direction-changed` trigger after `DIRECTION.md`
 changes on main, so look at every planner run, not only the schedule's: read
 `tessl launch list --workspace colin --json --limit 50` and keep the runs
-whose `attributes.config.skillRef` is `file:tessl-factory#planner` and whose
+whose `attributes.config.skillRef` is `file:tessl-factory/planner#planner`
+(or `file:tessl-factory#planner`, the path before the skill moved) and whose
 `attributes.config.repoUrl` is `https://github.com/colinhallett/message-cp`.
 Another run is in progress when its `id` is not `$TESSL_LAUNCH_RUN_ID` and its
 `attributes.status` is `pending` or `running`. If one is in progress and its

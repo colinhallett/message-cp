@@ -1,0 +1,9 @@
+{
+  "name": "colin/message-cp-factory-status",
+  "version": "0.1.0",
+  "description": "The call-status skill, connected to message-cp as the standing agent status.",
+  "private": true,
+  "skills": [
+    "skills/on-call"
+  ]
+}
