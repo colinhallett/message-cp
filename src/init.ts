@@ -3,19 +3,38 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { StreamableHTTPClientTransport, StreamableHTTPError } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { spawnSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import { accessSync, chmodSync, constants, existsSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+  accessSync,
+  chmodSync,
+  closeSync,
+  constants,
+  existsSync,
+  fstatSync,
+  mkdirSync,
+  mkdtempSync,
+  openSync,
+  readFileSync,
+  realpathSync,
+  renameSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { fileURLToPath } from "node:url";
-import { PurgeError, purgeAgent } from "./agents.js";
+import { NAME_PATTERN, PurgeError, purgeAgent } from "./agents.js";
+import { ConnectError, mcpEndpoint } from "./connect.js";
 import { dbPath, openDb } from "./db.js";
 
 // `message-cp init`: adds the stdio server `npx -y message-cp` to one coding agent's user-level MCP configuration on
 // this machine, then proves the server works by registering a test agent, sending it a message and reading it back.
 // It never prints a token or key: the test agent's key is made here, stays in memory, and the agent is purged after.
 // With `--url` and `--agent` it adds a team server over HTTP instead, carrying the token from MESSAGE_CP_HTTP_TOKEN and
-// the agent's key from MESSAGE_CP_AGENT_KEY in its headers, and nothing it prints holds either of them.
+// the agent's key from MESSAGE_CP_AGENT_KEY in its headers, and nothing it prints holds either of them. With `--from`
+// it reads the URL, agent, token and key from the file `message-cp connect` wrote instead, and once the check passes
+// also writes the token to ~/.message-cp/http-token for the wake-up command.
 
 export class InitError extends Error {}
 
@@ -204,6 +223,130 @@ export interface Remote {
   agent: string;
   token: string;
   key: string;
+  /** With `--from`, the file the rest was read from; otherwise the token and key came from the environment. */
+  from?: string;
+}
+
+/** The most `readConnectFile` reads: `connect` writes well under 2 KiB. */
+const MAX_CONNECT_FILE = 64 * 1024;
+
+/**
+ * The team server in the file `message-cp connect` wrote: the `mcpServers` JSON after its `claude mcp add` line, which
+ * must name exactly one server with a `url` and the three headers `clientSetup` in `src/connect.ts` writes. The URL goes
+ * through `mcpEndpoint`, the check `init --url` uses. Refuses a file it cannot read, one that is not a regular file or
+ * is over 64 KiB, one whose mode is wider than 0600 (except on Windows, which has no such modes), and one without
+ * exactly one usable URL, agent, token and key. No message holds the file's contents.
+ */
+export function readConnectFile(file: string, platform: NodeJS.Platform = process.platform): Remote {
+  const refuse = (why: string) => new InitError(`${file} ${why}. Nothing was changed.`);
+  let text: string;
+  let fd: number | undefined;
+  try {
+    // Non-blocking, so a FIFO named by mistake is refused below instead of waiting for a writer.
+    fd = openSync(file, constants.O_RDONLY | (constants.O_NONBLOCK ?? 0));
+    const st = fstatSync(fd);
+    if (!st.isFile()) throw refuse("is not a file");
+    if (platform !== "win32" && (st.mode & 0o177) !== 0) {
+      throw refuse(`holds a token and key, and its mode ${(st.mode & 0o777).toString(8).padStart(4, "0")} is wider than 0600; make it private with: chmod 600 ${file}, then run message-cp init again`);
+    }
+    if (st.size > MAX_CONNECT_FILE) throw refuse("is too large to be what message-cp connect wrote");
+    text = readFileSync(fd, "utf8");
+  } catch (err) {
+    if (err instanceof InitError) throw err;
+    throw new InitError(`could not read ${file} (${(err as { code?: string }).code ?? (err instanceof Error ? err.message : String(err))}). Nothing was changed.`);
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
+  const notConnect = (what: string) => refuse(`${what}; give the file message-cp connect wrote, unchanged`);
+  // The JSON starts at the first line that is only "{"; a parse error is never quoted, since it may quote the token.
+  const start = /^\{[ \t\r]*$/m.exec(text)?.index;
+  let config: unknown;
+  try {
+    config = start === undefined ? undefined : JSON.parse(text.slice(start));
+  } catch {}
+  if (!isObject(config) || !isObject(config.mcpServers)) throw notConnect("holds no mcpServers JSON");
+  const servers = Object.values(config.mcpServers);
+  if (servers.length !== 1) throw notConnect(`names ${servers.length} servers, not one`);
+  const entry = servers[0];
+  const headers = isObject(entry) && isObject(entry.headers) ? entry.headers : {};
+  const url = isObject(entry) ? entry.url : undefined;
+  const auth = headers.Authorization;
+  const token = typeof auth === "string" ? /^Bearer (.*)$/.exec(auth)?.[1] : undefined;
+  const agent = headers["X-Message-CP-Agent"];
+  const key = headers["X-Message-CP-Agent-Key"];
+  if (typeof url !== "string") throw notConnect("has no server URL");
+  // Printable ASCII with no spaces, so each is a valid header value.
+  const word = (v: unknown): v is string => typeof v === "string" && /^[\x21-\x7e]+$/.test(v);
+  if (!word(token)) throw notConnect("has no token");
+  if (typeof agent !== "string" || !NAME_PATTERN.test(agent) || agent.toLowerCase() === "all") throw notConnect("has no usable agent name");
+  if (!word(key)) throw notConnect("has no agent key");
+  let endpoint: URL;
+  try {
+    endpoint = mcpEndpoint(url);
+  } catch (err) {
+    if (!(err instanceof ConnectError)) throw err;
+    throw refuse(`has a server URL init refuses: ${err.message.replace(/^--url /, "it ")}`);
+  }
+  return { endpoint, agent, token, key, from: file };
+}
+
+export type TokenFileState = "written" | "present" | "differs";
+
+/**
+ * Writes `token` to `~/.message-cp/http-token` under `home`, where the wake-up command reads it, as a new 0600 file in a
+ * directory made 0700 if missing; an existing directory keeps its mode. A file already there is never replaced:
+ * "present" if it holds `token` as the wake-up command reads it (`$(cat ...)`, which drops only trailing newlines),
+ * "differs" if it holds anything else, even nothing. Throws an InitError, without the token, if it cannot write the file
+ * (removing what it created), or if the one already there is not a regular file or cannot be read.
+ */
+export function writeTokenFile(home: string, token: string): TokenFileState {
+  const dir = join(home, ".message-cp");
+  const file = join(dir, "http-token");
+  const reason = (err: unknown) => (err as { code?: string }).code ?? (err instanceof Error ? err.message : String(err));
+  let fd: number | undefined;
+  try {
+    mkdirSync(dir, { mode: 0o700, recursive: true });
+    // "wx": never through an existing file or symlink, so one made meanwhile is compared below, not overwritten.
+    fd = openSync(file, "wx", 0o600);
+  } catch (err) {
+    if ((err as { code?: string }).code !== "EEXIST") throw new InitError(`could not write ${file} (${reason(err)})`);
+  }
+  if (fd !== undefined) {
+    let failed: unknown;
+    try {
+      writeFileSync(fd, `${token}\n`);
+    } catch (err) {
+      failed = err;
+    }
+    try {
+      closeSync(fd);
+    } catch (err) {
+      failed ??= err;
+    }
+    if (failed === undefined) return "written";
+    // This run made the file, so a partial one is removed: a rerun then writes it instead of finding it "differs".
+    try {
+      rmSync(file, { force: true });
+    } catch (err) {
+      throw new InitError(`could not write ${file} (${reason(failed)}), nor remove what was written (${reason(err)}); delete it, then run message-cp init again`);
+    }
+    throw new InitError(`could not write ${file} (${reason(failed)})`);
+  }
+  try {
+    // Non-blocking, so a FIFO there (or a symlink to one) is refused below instead of waiting for a writer.
+    fd = openSync(file, constants.O_RDONLY | (constants.O_NONBLOCK ?? 0));
+    if (!fstatSync(fd).isFile()) throw new InitError(`${file} is already there but is not a file; it was left as it is`);
+    return readFileSync(fd, "utf8").replace(/\n+$/, "") === token ? "present" : "differs";
+  } catch (err) {
+    if (err instanceof InitError) throw err;
+    throw new InitError(`${file} is already there but could not be read (${reason(err)}); it was left as it is`);
+  } finally {
+    try {
+      if (fd !== undefined) closeSync(fd);
+    } catch {
+      // Only read, so a failed close loses nothing.
+    }
+  }
 }
 
 /** The three headers a client sends to act as the agent, the same three `clientSetup` in `src/connect.ts` prints. */
@@ -517,13 +660,15 @@ async function callTool(client: Client, tool: string, args: Record<string, unkno
  * on the server) or its key (403), or that the server could not be reached. No message holds the token or key.
  */
 export async function checkRemote(r: Remote): Promise<void> {
+  const tokenIn = r.from === undefined ? "the token in MESSAGE_CP_HTTP_TOKEN" : `the token in ${r.from}`;
+  const keyIn = r.from === undefined ? "the key in MESSAGE_CP_AGENT_KEY" : `the key in ${r.from}`;
   const refusal = (err: unknown, named: boolean): InitError => {
     const why = err instanceof Error ? err : new Error(String(err));
     const code = why instanceof StreamableHTTPError ? why.code : undefined;
     const message = redact(serverMessage(why), r).slice(0, 300);
-    if (code === 401) return new InitError("the server refused the token in MESSAGE_CP_HTTP_TOKEN (401)");
-    if (code === 403 && !named) return new InitError(`the server refused the token in MESSAGE_CP_HTTP_TOKEN (403): ${message}`);
-    if (code === 403) return new InitError(`the server refused agent '${r.agent}' with the key in MESSAGE_CP_AGENT_KEY (403): ${message}`);
+    if (code === 401) return new InitError(`the server refused ${tokenIn} (401)`);
+    if (code === 403 && !named) return new InitError(`the server refused ${tokenIn} (403): ${message}`);
+    if (code === 403) return new InitError(`the server refused agent '${r.agent}' with ${keyIn} (403): ${message}`);
     return new InitError(`could not open a session at ${r.endpoint.href}: ${message}`);
   };
   const plain = remoteClient(r, { Authorization: `Bearer ${r.token}` });
@@ -612,7 +757,10 @@ export async function proveRemote(r: Remote): Promise<void> {
 export interface InitOptions {
   /** From `--client`; without it, `init` sets up the one client found, or asks on a terminal. */
   client?: ClientId;
-  /** From `--url` and `--agent`, with the token and key from the environment: set up this team server instead. */
+  /**
+   * From `--url` and `--agent`, with the token and key from the environment, or from `--from`: set up this team server
+   * instead. With `from`, the token is also written to `~/.message-cp/http-token` once the check passes.
+   */
   remote?: Remote;
   /** Checks the remote's token and key before anything is written; `checkRemote` by default. */
   check?: (r: Remote) => Promise<void>;
@@ -713,6 +861,26 @@ export async function runInit(o: InitOptions): Promise<number> {
       : "Check passed: registered a test agent on the server, sent it a message, read it back and removed it.",
   );
   o.out(`To undo: ${setUp.undo}`);
+  if (remote?.from === undefined) return 0;
+  const tokenFile = join(o.machine.home, ".message-cp", "http-token");
+  let state: TokenFileState;
+  try {
+    state = writeTokenFile(o.machine.home, remote.token);
+  } catch (err) {
+    if (!(err instanceof InitError)) throw err;
+    o.err(`message-cp init: ${label} was set up and the check passed, but ${redact(err.message, remote)}; the wake-up command reads the token from that file when MESSAGE_CP_HTTP_TOKEN is not set.`);
+    return 1;
+  }
+  if (state === "differs") {
+    // Any token of the account wakes the agent, so a different one is not an error, but it is never replaced unasked.
+    o.err(`message-cp init: ${tokenFile} is already there and does not hold this token, so it was left as it is; the wake-up command reads the token from it when MESSAGE_CP_HTTP_TOKEN is not set.`);
+    o.err(`To use this agent's token there instead, delete ${tokenFile}, then run message-cp init --from ${remote.from} again.`);
+    // The rerun needs the file, so it is not called deletable yet.
+    o.err(`Once that is done, or you keep the token already there, ${remote.from} can be deleted, and its copy on the server.`);
+    return 0;
+  }
+  o.out(state === "written" ? `Wake-up token: wrote ${tokenFile}.` : `Wake-up token: ${tokenFile} already holds this token.`);
+  o.out(`${remote.from} can now be deleted, and its copy on the server.`);
   return 0;
 }
 
