@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { beforeEach, describe, expect, it } from "vitest";
@@ -107,6 +107,33 @@ describe("mergeServer", () => {
 
   it("says it cannot write where the directory is missing", () => {
     expect(() => mergeServer(join(home, "missing", "mcp.json"))).toThrow(/could not write .*mcp\.json \(ENOENT\)/);
+  });
+
+  it("replaces the file by rename, keeping its mode and a symlink to it, and leaves no temporary file", () => {
+    if (process.platform === "win32") return;
+    const real = join(home, "real.json");
+    writeFileSync(real, JSON.stringify({ mcpServers: { other: { command: "other" } } }), { mode: 0o640 });
+    symlinkSync(real, file());
+    expect(mergeServer(file())).toBe("added");
+    expect(lstatSync(file()).isSymbolicLink()).toBe(true);
+    expect(statSync(real).mode & 0o777).toBe(0o640);
+    expect(Object.keys(JSON.parse(readFileSync(real, "utf8")).mcpServers)).toEqual(["other", "message-cp"]);
+    expect(readdirSync(home).filter((f) => f.endsWith(".tmp"))).toEqual([]);
+  });
+
+  it("leaves the old file whole when the new one cannot be written", () => {
+    if (process.platform === "win32" || process.getuid?.() === 0) return;
+    const dir = join(home, "locked");
+    mkdirSync(dir);
+    const before = JSON.stringify({ mcpServers: { other: { command: "other" } } });
+    writeFileSync(join(dir, "mcp.json"), before);
+    chmodSync(dir, 0o555);
+    try {
+      expect(() => mergeServer(join(dir, "mcp.json"))).toThrow(/could not write .*mcp\.json \(EACCES\); it was left as it was/);
+      expect(readFileSync(join(dir, "mcp.json"), "utf8")).toBe(before);
+    } finally {
+      chmodSync(dir, 0o755);
+    }
   });
 
   it("refuses invalid JSON, a non-object and a non-object mcpServers, leaving the file unchanged", () => {
@@ -328,6 +355,36 @@ await server.connect(new StdioServerTransport());
     const message = (err as Error).message;
     expect(message).toMatch(/^register: register returned an error: refused .*"key":"<redacted>".*\(server: got .*"key":"<redacted>"/);
     expect(message).not.toMatch(/[0-9a-f]{48}/);
+  }, 30_000);
+
+  it("does not purge an agent that already had the test agent's name", async () => {
+    // A server whose register finds the name already taken: it registers the name with another key, then refuses.
+    const fake = join(home, "taken-server.mts");
+    writeFileSync(
+      fake,
+      `import { McpServer } from ${JSON.stringify(join(root, "node_modules/@modelcontextprotocol/sdk/dist/esm/server/mcp.js"))};
+import { StdioServerTransport } from ${JSON.stringify(join(root, "node_modules/@modelcontextprotocol/sdk/dist/esm/server/stdio.js"))};
+import { z } from ${JSON.stringify(join(root, "node_modules/zod/index.js"))};
+import { registerAgent } from ${JSON.stringify(join(root, "src/agents.ts"))};
+import { OWNER_ACCOUNT, openDb } from ${JSON.stringify(join(root, "src/db.ts"))};
+const server = new McpServer({ name: "taken", version: "1" });
+server.registerTool("register", { inputSchema: { name: z.string(), bio: z.string(), key: z.string() } }, async (args) => {
+  const db = openDb(process.env.MESSAGE_CP_DB);
+  registerAgent(db, OWNER_ACCOUNT, args.name);
+  db.close();
+  return { isError: true, content: [{ type: "text", text: "Wrong key" }] };
+});
+await server.connect(new StdioServerTransport());
+`,
+    );
+    const dbFile = join(home, "db.sqlite");
+    const err = await proveServer({ command: process.execPath, args: [join(root, "node_modules/tsx/dist/cli.mjs"), fake] }, { ...process.env, MESSAGE_CP_DB: dbFile }).catch(
+      (e: Error) => e,
+    );
+    expect((err as Error).message).toMatch(/^register: /);
+    const after = openDb(dbFile);
+    expect(listServerAgents(after).map((a) => a.name)).toEqual([expect.stringMatching(/^init-check-[0-9a-f]{20}$/)]);
+    after.close();
   }, 30_000);
 });
 

@@ -1,10 +1,10 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { spawnSync } from "node:child_process";
-import { randomBytes } from "node:crypto";
-import { accessSync, constants, existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { createHash, randomBytes } from "node:crypto";
+import { accessSync, chmodSync, constants, existsSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { delimiter, join } from "node:path";
+import { delimiter, dirname, join } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { fileURLToPath } from "node:url";
 import { PurgeError, purgeAgent } from "./agents.js";
@@ -98,16 +98,20 @@ export function detectClients(m: Machine): ClientId[] {
 export type SetUpState = "added" | "present" | "differs";
 
 /**
- * Adds `message-cp` to the `mcpServers` of the JSON file `file`, keeping every other key and server, and writes it back
- * in place (a new file is created 0600). A `message-cp` entry already there is left as it is: "present" if it runs
- * `npx -y message-cp`, "differs" otherwise. Refuses, changing nothing, a file that is not a JSON object or whose
- * `mcpServers` is not one, and turns a file it cannot read or write into an InitError giving the reason.
+ * Adds `message-cp` to the `mcpServers` of the JSON file `file`, keeping every other key and server. The new JSON is
+ * written to a temporary file beside the real one (through a symlink, beside its target) and renamed over it, so a
+ * failed write leaves the old file whole; an existing file keeps its mode, and a new one is 0600. If the file changed
+ * between the read and the rename, nothing is written and `init` says to run it again. A `message-cp` entry already
+ * there is left as it is: "present" if it runs `npx -y message-cp`, "differs" otherwise. Refuses, changing nothing, a
+ * file that is not a JSON object or whose `mcpServers` is not one, and turns a file it cannot read or write into an
+ * InitError giving the reason.
  */
 export function mergeServer(file: string): SetUpState {
   const reason = (err: unknown) => (err as { code?: string }).code ?? (err instanceof Error ? err.message : String(err));
   let config: Record<string, unknown> = {};
+  let text: string | undefined;
+  const current = () => (existsSync(file) ? readFileSync(file, "utf8") : undefined);
   if (existsSync(file)) {
-    let text: string;
     try {
       text = readFileSync(file, "utf8");
     } catch (err) {
@@ -130,10 +134,22 @@ export function mergeServer(file: string): SetUpState {
     return same ? "present" : "differs";
   }
   config.mcpServers = { ...servers, [SERVER_NAME]: { command: SERVER_COMMAND, args: SERVER_ARGS } };
+  let tmp: string | undefined;
   try {
-    writeFileSync(file, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 });
+    const target = text === undefined ? file : realpathSync(file);
+    tmp = join(dirname(target), `.${SERVER_NAME}-init-${randomBytes(6).toString("hex")}.tmp`);
+    writeFileSync(tmp, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600, flag: "wx" });
+    if (text !== undefined) chmodSync(tmp, statSync(target).mode & 0o777);
+    if (current() !== text) {
+      throw new InitError(`${file} changed while message-cp init was running; it was left as it is. Run message-cp init again.`);
+    }
+    renameSync(tmp, target);
+    tmp = undefined;
   } catch (err) {
-    throw new InitError(`could not write ${file} (${reason(err)}).`);
+    if (err instanceof InitError) throw err;
+    throw new InitError(`could not write ${file} (${reason(err)}); it was left as it was.`);
+  } finally {
+    if (tmp !== undefined) rmSync(tmp, { force: true });
   }
   return "added";
 }
@@ -242,7 +258,7 @@ const CALL_TIMEOUT_MS = 15_000;
  */
 export async function proveServer(server: { command: string; args: string[] }, env: NodeJS.ProcessEnv = process.env): Promise<void> {
   const db = dbPath(env);
-  const name = `init-check-${randomBytes(4).toString("hex")}`;
+  const name = `init-check-${randomBytes(10).toString("hex")}`;
   // Made here, so register returns no key, and the agent can be removed even if register's reply was lost.
   const key = randomBytes(24).toString("hex");
   const body = `message-cp init check ${name}`;
@@ -284,7 +300,19 @@ export async function proveServer(server: { command: string; args: string[] }, e
   try {
     const conn = openDb(db);
     try {
-      purgeAgent(conn, "owner", name);
+      // Only the registration this check made, the live agent holding its key: if register met an agent that already
+      // had the name, or the name has since been taken over, that agent is not this check's to remove.
+      const keyHash = createHash("sha256").update(key).digest("hex");
+      conn
+        .transaction(() => {
+          const live = conn
+            .prepare(
+              "SELECT key_hash FROM agents WHERE account_id = (SELECT id FROM accounts WHERE name = 'owner') AND name = ? AND removed_at IS NULL",
+            )
+            .get(name) as { key_hash: string | null } | undefined;
+          if (live?.key_hash === keyHash) purgeAgent(conn, "owner", name);
+        })
+        .immediate();
     } catch (err) {
       // Not registered: there is nothing to remove.
       if (!(err instanceof PurgeError)) throw err;
