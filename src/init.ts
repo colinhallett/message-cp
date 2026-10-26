@@ -461,14 +461,16 @@ export interface SetUp {
 
 /**
  * Why `client` cannot be set up for the team server at `endpoint` on this machine, with what to do by hand, or undefined
- * if it can. `codex mcp add` takes `--url` but no custom headers and no literal bearer token. Claude Desktop takes a team server only as a custom
- * connector in its app. On Windows `claude` is a `.cmd` file that only a shell can start, and the token must not
- * pass through a shell string. An existing Cursor file that group or others can read is refused, so the token and
- * key are never written where other users can read them; its mode is left as it is.
+ * if it can. `codex mcp add` takes `--url` but no custom headers and no literal bearer token, so Codex joins through the
+ * server's OAuth flow instead, which init does not run: `codex mcp login`, approved in a browser by a person with a full
+ * token of the account. Claude Desktop takes a team server only as a custom connector in its app. On Windows `claude`
+ * is a `.cmd` file that only a shell can start, and the token must not pass through a shell string. An existing Cursor
+ * file that group or others can read is refused, so the token and key are never written where other users can read
+ * them; its mode is left as it is.
  */
 export function remoteRefusal(client: ClientId, m: Machine, endpoint: URL): string | undefined {
   if (client === "codex") {
-    return "Codex cannot be set up for a team server: `codex mcp add` takes no custom headers and no literal bearer token, only the name of an environment variable that holds one.";
+    return `Codex joins a team server through the server's OAuth flow (\`serve --public-url\`), which init does not run: run \`codex mcp add message-cp --url ${endpoint.href}\`, then \`codex mcp login message-cp\` if add did not start the login, and have a person with a full token of the account approve it at the address Codex prints.`;
   }
   if (client === "claude-desktop") {
     return `Claude Desktop takes a team server as a custom connector in its app: in Customize, Connectors, choose Add, then Add custom connector, give it a name and the URL ${endpoint.href}, choose No sign in, and add the three request headers.`;

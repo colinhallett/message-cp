@@ -834,7 +834,7 @@ describe("runInit with a team server", () => {
     fakeCommand("codex");
     const t = options();
     expect(await runInit(t.o)).toBe(1);
-    expect(t.err.join("\n")).toMatch(/Codex cannot be set up for a team server: .*Nothing was changed\./);
+    expect(t.err.join("\n")).toMatch(/Codex joins a team server through the server's OAuth flow \(`serve --public-url`\), which init does not run: run `codex mcp add message-cp --url https:\/\/message-cp\.example\.com\/mcp`, then `codex mcp login message-cp`.* approve it at the address Codex prints\. Nothing was changed\./);
     expect(t.checked()).toBe(0);
     expect(t.calls).toEqual([]);
   });

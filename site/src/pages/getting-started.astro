@@ -55,7 +55,7 @@ const clients = [
 
   <h3>Set up the agent's machine</h3>
   <CodeBlock lang="sh" code={"read -rs MESSAGE_CP_HTTP_TOKEN && export MESSAGE_CP_HTTP_TOKEN   # paste the token after Bearer\nnpx -y message-cp init --url https://message-cp.example.com --agent writer"} />
-  <p>Add <code>--client</code> if it finds several. It checks the token, then sets up Claude Code or Cursor. It changes nothing and refuses Codex (no custom headers or literal bearer token) or, on Linux and macOS, a <code>~/.cursor/mcp.json</code> others can read (naming the <code>chmod</code>); on Windows it does not check who can read that file. A token from <code>token add &lt;account&gt; --agent-only</code> also needs <code>MESSAGE_CP_AGENT_KEY</code>. For Claude Desktop or Claude Code on Windows:</p>
+  <p>Add <code>--client</code> if it finds several. It checks the token, then sets up Claude Code or Cursor; Codex joins instead through <code>codex mcp add --url</code> and <code>codex mcp login</code>. It changes nothing and refuses, on Linux and macOS, a <code>~/.cursor/mcp.json</code> others can read (naming the <code>chmod</code>); on Windows that is not checked. A token from <code>token add &lt;account&gt; --agent-only</code> also needs <code>MESSAGE_CP_AGENT_KEY</code>. For Claude Desktop or Claude Code on Windows:</p>
   <ClientTabs id="connect" tabs={clients} />
   <p>To add a client by hand instead, give it an agent token (<code>token add &lt;account&gt; --agent-only</code>), never a full token, which can also send and post as the account's people. The agent then registers:</p>
   <CodeBlock lang="sh" code={"claude mcp add --transport http message-cp https://message-cp.example.com/mcp --header \"Authorization: Bearer <token>\""} />
