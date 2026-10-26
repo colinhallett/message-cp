@@ -45,4 +45,15 @@ describe("package", () => {
     expect(pkg.name).toBe("message-cp");
     expect(pkg.bin).toEqual({ "message-cp": "dist/cli.js" });
   });
+
+  it("packs only package.json, README.md, LICENSE and the built dist/", async () => {
+    const { execFileSync } = await import("node:child_process");
+    // prepack builds dist/ first, so the list does not depend on an earlier build.
+    const out = execFileSync("npm", ["pack", "--dry-run", "--json"], { cwd: join(import.meta.dirname, ".."), encoding: "utf8" });
+    const paths: string[] = JSON.parse(out.slice(out.indexOf("[")))[0].files.map((f: { path: string }) => f.path);
+    expect(paths).toContain("dist/cli.js");
+    expect(paths).toContain("dist/index.js");
+    expect(paths.filter((p) => !p.startsWith("dist/")).sort()).toEqual(["LICENSE", "README.md", "package.json"]);
+    expect(paths.every((p) => !/\.test\.|\.ts$/.test(p))).toBe(true);
+  }, 60_000);
 });
