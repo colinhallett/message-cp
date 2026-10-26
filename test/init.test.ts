@@ -892,13 +892,17 @@ describe("readConnectFile", () => {
   it("refuses a file it cannot read, or one that is not a file", () => {
     expect(refusal(join(home, "missing.txt"))).toBe(`could not read ${join(home, "missing.txt")} (ENOENT). Nothing was changed.`);
     expect(refusal(home)).toBe(`${home} is not a file. Nothing was changed.`);
+    if (process.platform === "win32") return;
+    const fifo = join(home, "fifo");
+    spawnSync("mkfifo", [fifo]);
+    expect(refusal(fifo)).toBe(`${fifo} is not a file. Nothing was changed.`);
   });
 
-  it("refuses a file whose mode gives group or others any access, except on Windows", () => {
+  it("refuses a file whose mode is wider than 0600, except on Windows", () => {
     if (process.platform === "win32") return;
-    for (const mode of [0o640, 0o604, 0o644, 0o620, 0o601]) {
+    for (const mode of [0o640, 0o604, 0o644, 0o620, 0o601, 0o700]) {
       const file = write(setup(), mode);
-      expect(refusal(file)).toContain(`its mode lets other users of this machine at it (mode 0${mode.toString(8)}); make it private with: chmod 600 ${file}`);
+      expect(refusal(file)).toContain(`its mode 0${mode.toString(8)} is wider than 0600; make it private with: chmod 600 ${file}`);
     }
     expect(readConnectFile(write(setup(), 0o644), "win32").token).toBe(TOKEN);
   });
@@ -953,6 +957,9 @@ describe("writeTokenFile", () => {
     expect(writeTokenFile(home, TOKEN)).toBe("present");
     writeFileSync(file(), "other\n");
     expect(writeTokenFile(home, TOKEN)).toBe("differs");
+    writeFileSync(file(), "");
+    expect(writeTokenFile(home, TOKEN)).toBe("differs");
+    writeFileSync(file(), "other\n");
     expect(readFileSync(file(), "utf8")).toBe("other\n");
   });
 
@@ -1008,7 +1015,7 @@ describe("runInit with --from", () => {
     const t = options();
     expect(await runInit(t.o)).toBe(0);
     expect(t.err).toEqual([
-      `message-cp init: ${tokenFile()} already holds a different token, so it was left as it is; the wake-up command reads the token from it.`,
+      `message-cp init: ${tokenFile()} is already there and does not hold this token, so it was left as it is; the wake-up command reads the token from it when MESSAGE_CP_HTTP_TOKEN is not set.`,
       `To use this agent's token there instead, delete ${tokenFile()}, then run message-cp init --from ${FROM} again.`,
     ]);
     expect(readFileSync(tokenFile(), "utf8")).toBe("other\n");
@@ -1057,7 +1064,7 @@ describe("message-cp init --from", () => {
     chmodSync(file, 0o644);
     const r = await run(["--client", "cursor", "--from", file]);
     expect(r.status).toBe(1);
-    expect(r.output).toContain("its mode lets other users of this machine at it");
+    expect(r.output).toContain("its mode 0644 is wider than 0600");
     expect(r.output).not.toContain(TOKEN);
     expect(existsSync(join(home, ".cursor", "mcp.json"))).toBe(false);
     expect(existsSync(join(home, ".message-cp"))).toBe(false);
