@@ -249,10 +249,10 @@
     .hero { grid-template-columns: minmax(0, 1fr) minmax(0, 1.05fr); gap: 3.5rem; padding: 5rem 0 4rem; }
   }
   /* The prompt to give an agent, then the command to run by hand, each under
-     a short label. The prompt wraps only at its spaces, in balanced lines, so
-     the setup.md address stays whole on a line of its own. On a phone the
-     copy button sits above the first line and the type is small enough for
-     that address to fit on one line at 360px. */
+     a short label. The prompt wraps in balanced lines, so the setup.md
+     address stays whole on a line of its own. On a phone the copy button
+     sits above the first line and the type is small enough for that address
+     to fit on one line at 360px. */
   .hero-step { margin: 1.25rem 0 0; color: var(--color-muted); font-size: 0.9375rem; }
   .hero .code { margin-top: 0.5rem; }
   .hero .code pre { text-wrap: balance; }
