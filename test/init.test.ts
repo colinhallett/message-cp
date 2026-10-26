@@ -651,6 +651,11 @@ describe("setUpClient with a team server", () => {
       [claudeGetHttp().replace(KEY, "old-key"), {}, "differs"],
       [oneHeader.replace(TOKEN, "old-token"), {}, "differs"],
       [oneHeader.replace("message-cp.example.com", "other.example"), {}, "differs"],
+      // Header names are case-insensitive: lowercase identity headers naming another agent or an old key are not absent.
+      [`${oneHeader}    x-message-cp-agent: reader\n    x-message-cp-agent-key: ${KEY}\n`, {}, "differs"],
+      [`${oneHeader}    x-message-cp-agent: writer\n    x-message-cp-agent-key: old-key\n`, {}, "differs"],
+      [`${oneHeader}    x-message-cp-agent: writer\n    x-message-cp-agent-key: ${KEY}\n`, {}, "present"],
+      [`${claudeGetHttp()}    x-message-cp-agent: reader\n`, {}, "differs"],
     ] as const) {
       const got = fakeRunner({ [CLAUDE_GET]: { status: 0, stdout } });
       expect(setUpClient("claude-code", machine(), got.run, remote({ bound: true, ...over })).state, stdout).toBe(state);
@@ -682,6 +687,22 @@ describe("setUpClient with a team server", () => {
     expect(setUpClient("cursor", machine(), fakeRunner().run, remote({ bound: true, key: undefined })).state).toBe("differs");
     expect(setUpClient("cursor", machine(), fakeRunner().run, remote({ bound: true, key: "other-key" })).state).toBe("differs");
     expect(setUpClient("cursor", machine(), fakeRunner().run, remote({ bound: true, agent: "reader" })).state).toBe("differs");
+
+    // Header names are case-insensitive, so lowercase identity headers count, and a name given in two cases is not the same.
+    const headers = (h: Record<string, string>) =>
+      writeFileSync(file, JSON.stringify({ mcpServers: { "message-cp": { url: three.url, headers: { Authorization: `Bearer ${TOKEN}`, ...h } } } }), { mode: 0o600 });
+    headers({ "x-message-cp-agent": "reader", "x-message-cp-agent-key": KEY });
+    expect(setUpClient("cursor", machine(), fakeRunner().run, remote({ bound: true })).state).toBe("differs");
+    headers({ "x-message-cp-agent": "writer", "x-message-cp-agent-key": "old-key" });
+    expect(setUpClient("cursor", machine(), fakeRunner().run, remote({ bound: true })).state).toBe("differs");
+    headers({ "x-message-cp-agent": "writer", "x-message-cp-agent-key": KEY });
+    expect(setUpClient("cursor", machine(), fakeRunner().run, remote({ bound: true })).state).toBe("present");
+    headers({ "X-Message-CP-Agent": "writer", "X-Message-CP-Agent-Key": KEY, "x-message-cp-agent": "reader" });
+    expect(setUpClient("cursor", machine(), fakeRunner().run, remote({ bound: true })).state).toBe("differs");
+    writeFileSync(file, JSON.stringify({ mcpServers: { "message-cp": { url: three.url, headers: { authorization: `Bearer ${TOKEN}` } } } }), { mode: 0o600 });
+    expect(setUpClient("cursor", machine(), fakeRunner().run, remote({ bound: true })).state).toBe("present");
+    writeFileSync(file, JSON.stringify({ mcpServers: { "message-cp": { url: three.url, headers: { Authorization: `Bearer ${TOKEN}`, authorization: "Bearer old-token" } } } }), { mode: 0o600 });
+    expect(setUpClient("cursor", machine(), fakeRunner().run, remote({ bound: true })).state).toBe("differs");
   });
 
   it("calls the stdio entry in Cursor different from the team server", () => {

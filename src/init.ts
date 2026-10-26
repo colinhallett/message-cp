@@ -363,18 +363,23 @@ export const remoteHeaders = (r: Remote): Record<string, string> =>
     : { Authorization: `Bearer ${r.token}`, "X-Message-CP-Agent": r.agent, "X-Message-CP-Agent-Key": r.key ?? "" };
 
 /**
- * Whether the header values `get` reads from an existing entry are the ones `r` sends. For a bound token, the entry an
- * earlier `init` wrote with the agent's name and key as well is the same too, since the server accepts a bound token
- * with headers naming its own agent (in any case) and its key, but only when `r` has the key to compare: without it, a
- * key reset since would leave the client refused while `init` called it set up.
+ * Whether the header values `get` reads from an existing entry are the ones `r` sends. `get` returns every value under
+ * the name in any case, since header names are case-insensitive and the server reads them in lowercase; a header given
+ * twice is not the same, since the client may send either. For a bound token, the entry an earlier `init` wrote with the
+ * agent's name and key as well is the same too, since the server accepts a bound token with headers naming its own
+ * agent (in any case) and its key, but only when `r` has the key to compare: without it, a key reset since would leave
+ * the client refused while `init` called it set up.
  */
-function sameHeaders(r: Remote, get: (name: string) => unknown): boolean {
-  if (get("Authorization") !== `Bearer ${r.token}`) return false;
-  if (!r.bound) return Object.entries(remoteHeaders(r)).every(([k, v]) => get(k) === v);
-  const agent = get("X-Message-CP-Agent");
-  const key = get("X-Message-CP-Agent-Key");
-  if (agent === undefined && key === undefined) return true;
-  return typeof agent === "string" && agent.toLowerCase() === r.agent.toLowerCase() && r.key !== undefined && key === r.key;
+function sameHeaders(r: Remote, get: (name: string) => unknown[]): boolean {
+  const one = (name: string) => {
+    const values = get(name);
+    return values.length === 1 ? values[0] : undefined;
+  };
+  if (one("Authorization") !== `Bearer ${r.token}`) return false;
+  if (!r.bound) return Object.entries(remoteHeaders(r)).every(([k, v]) => one(k) === v);
+  if (get("X-Message-CP-Agent").length === 0 && get("X-Message-CP-Agent-Key").length === 0) return true;
+  const agent = one("X-Message-CP-Agent");
+  return typeof agent === "string" && agent.toLowerCase() === r.agent.toLowerCase() && r.key !== undefined && one("X-Message-CP-Agent-Key") === r.key;
 }
 
 /** `text` with the token and key replaced by `<redacted>`, so no line `init` passes on holds either. */
@@ -404,7 +409,15 @@ export const claudeRemoteAdd = (r: Remote): string[] => [
 export const cursorRemote = (r: Remote): JsonServer => ({
   entry: { url: r.endpoint.href, headers: remoteHeaders(r) },
   secret: true,
-  same: (e) => isObject(e) && e.url === r.endpoint.href && isObject(e.headers) && sameHeaders(r, (k) => (e.headers as Record<string, unknown>)[k]),
+  same: (e) =>
+    isObject(e) &&
+    e.url === r.endpoint.href &&
+    isObject(e.headers) &&
+    sameHeaders(r, (name) =>
+      Object.entries(e.headers as Record<string, unknown>)
+        .filter(([k]) => k.toLowerCase() === name.toLowerCase())
+        .map(([, v]) => v),
+    ),
 });
 
 /**
@@ -414,7 +427,8 @@ export const cursorRemote = (r: Remote): JsonServer => ({
  */
 function sameRemote(stdout: string, r: Remote): boolean {
   const field = (name: string) => new RegExp(`^\\s*${name}: (.*)$`, "m").exec(stdout)?.[1]?.trim();
-  return field("Type") === "http" && field("URL") === r.endpoint.href && sameHeaders(r, field);
+  const header = (name: string) => [...stdout.matchAll(new RegExp(`^\\s*${name}: (.*)$`, "gim"))].map((m) => m[1].trim());
+  return field("Type") === "http" && field("URL") === r.endpoint.href && sameHeaders(r, header);
 }
 
 /** Whether `get`'s output describes a stdio server that runs `npx -y message-cp`. */
