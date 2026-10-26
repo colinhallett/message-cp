@@ -19,7 +19,7 @@ anything yourself: you change no file, push nothing and open no pull request.
 ## Environment
 
 - `LINEAR_API_URL` and `LINEAR_TOKEN`, used exactly as
-  `tessl-factory/skills/planner/SKILL.md` "Environment" says.
+  `tessl-factory/planner/skills/planner/SKILL.md` "Environment" says.
 - `tessl`, authenticated. Findings: `tessl finding list --project <id>
   --state <state> --json --limit 100`, `tessl finding view <id> --json`,
   `tessl finding update <id> --file -` with a JSON object of the fields to

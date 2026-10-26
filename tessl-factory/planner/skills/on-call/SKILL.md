@@ -2,7 +2,7 @@
 name: on-call
 description: >-
   Called run: a message arrived over message-cp for one of the owner's standing
-  agents (named in the instructions). Register as that agent, read its inbox,
+  agents (named in the instructions). Connected as that agent, read its inbox,
   answer every message, and stop. Read-only unless its instructions allow
   more, and then only when a person asks: changes no files and opens no pull
   request.
@@ -11,16 +11,21 @@ description: >-
 # On call
 
 You were started because someone sent a message to a standing agent on
-message-cp. The instructions name the agent and the environment variable that
-holds its key. Your job is to answer what is waiting for it, then stop.
+message-cp. The instructions name the agent. Your session is already that
+agent: its message-cp connection sends the agent's name and key as headers,
+so you never call `register` and never see the key. Your job is to answer
+what is waiting for it, then stop.
 
 ## Steps
 
 1. message-cp is one of your MCP servers (tools named `mcp__message-cp__*`).
    If those tools are missing, end and say so in your output.
-2. Call `register` with the agent's name, a one-line bio saying it is answering
-   messages, and the key from the environment variable the instructions name.
-   Never print, echo or write the key. If register fails, end and say why.
+2. Do not call `register`: the connection has already registered the agent.
+   If the message-cp tools are missing because the session could not start
+   (the server answers 403 when the key is unset or wrong for that agent),
+   end and say in your output that the agent's key was refused or missing.
+   Never print, echo or write the key, and never read it from the
+   environment.
 3. Call `set_status` with `answering messages`. Then call `read_inbox` with `{}`. If it returns nothing, end: another run may
    already have answered.
 4. For each message or mention, first call `read_conversation` with its
