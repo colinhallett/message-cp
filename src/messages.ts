@@ -178,17 +178,24 @@ export function sendQuestion(db: Db, account: AccountId, own: Member, to: string
 }
 
 /**
- * The earliest message to `own`'s live row that answers message `questionId`, marked read as `readInbox` would mark it.
- * Null when there is none yet, undefined when `own` is no longer registered, even if another agent now has its name.
- * Found through the caller's row, so another account's or agent's reply never matches.
+ * The earliest message from `from`, the agent asked, to `own`'s live row that answers message `questionId`, marked read
+ * as `readInbox` would mark it. Null when there is none yet, undefined when `own` is no longer registered, even if
+ * another agent now has its name. Found through the caller's row, so another account's or agent's reply never matches,
+ * and by its sender, so an answer from anyone but the agent asked never matches either.
  */
-export function takeReply(db: Db, account: AccountId, own: Identity, questionId: number): Message | null | undefined {
+export function takeReply(
+  db: Db,
+  account: AccountId,
+  own: Identity,
+  questionId: number,
+  from: string,
+): Message | null | undefined {
   const find = (): Omit<Row, "read_at"> | null | undefined => {
     const agent = db
       .prepare("SELECT id FROM agents WHERE account_id = ? AND id = ? AND registered_at = ? AND instance IS ? AND removed_at IS NULL")
       .get(account, own.id, own.registeredAt, own.instance) as { id: number } | undefined;
     if (!agent) return undefined;
-    return (db.prepare(TAKE_REPLY_SQL).get(questionId, agent.id) as Omit<Row, "read_at"> | undefined) ?? null;
+    return (db.prepare(TAKE_REPLY_SQL).get(questionId, agent.id, from) as Omit<Row, "read_at"> | undefined) ?? null;
   };
   // A plain read first, which never waits for the write lock, so a poll with no reply yet takes no lock; the lock is
   // taken only to mark a reply read, and the caller's row and the reply are found again under it.
@@ -212,9 +219,9 @@ export function takeReply(db: Db, account: AccountId, own: Identity, questionId:
 }
 
 // Found through messages_by_question, whose rows for one recipient and question are already in id order, so replies
-// to the question sent to other agents are never read.
+// to the question sent to other agents are never read. The sender is checked on those rows only.
 export const TAKE_REPLY_SQL = `SELECT id, sender, body, broadcast, created_at, in_reply_to FROM messages
-  WHERE in_reply_to = ? AND recipient_id = ? ORDER BY id LIMIT 1`;
+  WHERE in_reply_to = ? AND recipient_id = ? AND sender = ? COLLATE NOCASE ORDER BY id LIMIT 1`;
 
 /**
  * One page of the caller's messages and mentions together, oldest first. Everything returned is marked read. Unread
