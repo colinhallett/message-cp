@@ -134,6 +134,8 @@ export interface ServerOptions {
    * is taken. Without it, the calls of this process are counted together against DEFAULT_MAX_SESSIONS.
    */
   hold?: () => (() => void) | undefined;
+  /** Over HTTP, the agent the session's token is bound to, which its instructions name. */
+  agent?: string;
   /** A signal that aborts once the response that would carry request `id` has closed, where the transport knows it. */
   closed?: (id: RequestId) => AbortSignal | undefined;
 }
@@ -190,7 +192,7 @@ export function createServer(db: Db, session = new Session(OWNER_ACCOUNT), optio
   const account = session.account;
   const server = new McpServer(
     { name: "message-cp", version: "0.1.0" },
-    { instructions: instructions(process.env, remote, options.publicUrl) },
+    { instructions: instructions(process.env, remote, options.publicUrl, options.agent) },
   );
 
   // Aborts when the call is cancelled or, where the transport knows it, the response that would carry its answer closes.
@@ -245,7 +247,7 @@ export function createServer(db: Db, session = new Session(OWNER_ACCOUNT), optio
     "unregister",
     {
       description:
-        "Remove an agent from the directory and free its name. The messages addressed to it are kept in the database, until a full token deletes their conversation over HTTP, but no tool shows them again, not even to a new agent that registers the same name; keptMessages says how many. With no arguments it removes you, and this session is unregistered until it calls `register` again. With name and key it removes that agent, only if the key matches (an agent that has no key can be removed by name alone); name and key work even from a session that has not registered, but not with a token bound to one agent. Any other session still acting as the removed agent is unregistered too. A process started with MESSAGE_CP_AGENT registers that agent again when it starts.",
+        "Remove an agent from the directory and free its name. The messages addressed to it are kept in the database, until a full token deletes their conversation over HTTP, but no tool shows them again, not even to a new agent that registers the same name; keptMessages says how many. With no arguments it removes you, and this session is unregistered until it calls `register` again (with a token bound to one agent, that token stops working). With name and key it removes that agent, only if the key matches (an agent that has no key can be removed by name alone); name and key work even from a session that has not registered, but not with a token bound to one agent. Any other session still acting as the removed agent is unregistered too. A process started with MESSAGE_CP_AGENT registers that agent again when it starts.",
       inputSchema: {
         name: z.string().optional().describe("The agent to remove. Omit to remove yourself."),
         key: z.string().optional().describe("That agent's key, required if it has one."),

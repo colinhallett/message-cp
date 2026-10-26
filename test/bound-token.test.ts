@@ -165,6 +165,16 @@ describe("a session with only a bound token", () => {
     expect(JSON.parse(asked.text).reply).toMatchObject({ from: "bob", body: "yes" });
   }, 30_000);
 
+  it("is told a wait command that names its agent, and not to register", async () => {
+    await http.close();
+    http = await startHttp(db, { token: TOKEN, port: 0, publicUrl: "https://h.example" });
+    const told = (await open()).getInstructions()!;
+    expect(told).toContain("as agent 'writer', which this session already is, run this");
+    expect(told).toContain("sh https://h.example/wait writer");
+    expect(told).not.toContain("<your-name>");
+    expect(await (await open(auth(TOKEN))).getInstructions()).toContain("register and then run this");
+  });
+
   it("works the same with connect's headers naming its own agent and key", async () => {
     const client = await open({ ...auth(), "X-Message-CP-Agent": "WRITER", "X-Message-CP-Agent-Key": writer.key });
     expect((await call(client, "set_status", { text: "here" })).isError).toBe(false);

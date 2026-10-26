@@ -703,7 +703,8 @@ export async function checkRemote(r: Remote): Promise<void> {
 }
 
 /**
- * Proves the team server works as `proveServer` does over stdio, without touching the configured agent: on a session
+ * Proves the team server works as `proveServer` does over stdio, without touching the configured agent (except with a
+ * bound token, below): on a session
  * that sends only the token, registers a test agent with a random name and a key made here, sends it a message from
  * itself, reads it back and unregisters it, then ends the session. If a step failed after `register`, it still tries to
  * remove the test agent by name and key. A token `connect` made is bound to its agent and cannot register another name,

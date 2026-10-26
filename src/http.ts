@@ -860,7 +860,7 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
       if (sessions.get(sid) === live) recordSession(() => saveSession(db, sid, account, identity));
     });
     live.session = session;
-    await createServer(db, session, serverOptions(live)).connect(transport);
+    await createServer(db, session, { ...serverOptions(live), agent: bound?.name }).connect(transport);
     await transport.handleRequest(req, res, body);
   };
 
