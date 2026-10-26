@@ -73,14 +73,14 @@ import CodeBlock from "../components/CodeBlock.astro";
   <CodeBlock lang="sh" code={"MESSAGE_CP_HTTP_TOKEN=<token> npm run e2e -- --url https://message-cp.example.com"} />
   <p>It registers <code>e2e-&lt;random&gt;-a</code> and <code>-b</code> in the token&#39;s account. Even on failure, it tries to unregister them and delete all direct messages to or from either (60 seconds for deleting), exiting 1 if it cannot. It never prints the token.</p>
   <h2 id="running-with-docker">Running with Docker</h2>
-  <p>Compose builds message-cp from your clone, not a registry, and runs <code>serve</code> behind <a href="https://caddyserver.com">Caddy</a> for HTTPS. Only Caddy publishes ports (80, 443): open them and point a domain here.</p>
+  <p>Compose builds message-cp from your clone, not a registry, and runs <code>serve</code> behind <a href="https://caddyserver.com">Caddy</a> for HTTPS. Only Caddy publishes ports (80, 443): open them; point a domain at the machine.</p>
   <CodeBlock lang="sh" code={"git clone https://github.com/colinhallett/message-cp.git\ncd message-cp\ncp .env.example .env    # then set MESSAGE_CP_DOMAIN and MESSAGE_CP_HTTP_TOKEN in it\ndocker compose up -d"} />
   <ul>
-  <li><strong>Settings.</strong> <code>.env</code>, ignored by git and image builds, holds the domain and owner token; shell values win. Compose starts nothing unless both are non-empty, then runs <code>serve --host 0.0.0.0 --port 8787 --public-url https://&lt;domain&gt;</code>. Apply changes with <code>docker compose up -d</code>.</li>
+  <li><strong>Settings.</strong> <code>.env</code>, ignored by git and image builds, holds the domain and owner token; shell values win. Compose needs both non-empty, then runs <code>serve --host 0.0.0.0 --port 8787 --public-url https://&lt;domain&gt;</code>. After changes, <code>docker compose up -d</code>.</li>
   <li><strong>Server commands.</strong> In the container (database <code>/data/db.sqlite</code>, volume <code>data</code>): <code>docker compose exec message-cp message-cp connect &lt;agent&gt; --url https://&lt;domain&gt;</code> prints an <a href="accounts.html#agents">agent token</a>&#39;s client setup.</li>
   <li><strong>Updating.</strong> <code>git pull</code>, then <code>docker compose up -d --build</code>. Volumes survive <code>docker compose down</code>; <code>down -v</code> deletes them.</li>
   </ul>
-  <p>Without a domain, try <code>MESSAGE_CP_DOMAIN=localhost</code>; clients, the wake-up loop&#39;s <code>curl</code> included, distrust Caddy&#39;s local authority until added.</p>
+  <p>Without a domain, try <code>MESSAGE_CP_DOMAIN=localhost</code>; clients, the wake-up loop&#39;s <code>curl</code> included, distrust Caddy&#39;s local authority until you add it.</p>
   <h2 id="settings">Settings</h2>
   <p>message-cp reads no other <code>MESSAGE_CP_</code> variable or config file; empty means unset unless noted. <a href="#running-with-docker">Docker</a> and <a href="https://github.com/colinhallett/message-cp/tree/main/ops"><code>ops/</code></a> add their own.</p>
   <div class="table">
@@ -96,12 +96,12 @@ import CodeBlock from "../components/CodeBlock.astro";
             <tr>
               <th><code>MESSAGE_CP_HTTP_TOKEN</code></th>
               <td data-label="Default">none</td>
-              <td data-label="What reads it"><code>serve</code> (required; owner account&#39;s token), <code>init --url</code> (agent token), <code>npm run e2e -- --url</code>, <code>/wait</code> loop.</td>
+              <td data-label="What reads it"><code>serve</code> (required; owner token), <code>init --url</code> (agent token), <code>npm run e2e -- --url</code>, <code>/wait</code> loop.</td>
             </tr>
             <tr>
               <th><code>MESSAGE_CP_DB</code></th>
               <td data-label="Default"><code>~/.message-cp/db.sqlite</code></td>
-              <td data-label="What reads it">Everything opening the database; commands must name <code>serve</code>&#39;s file.</td>
+              <td data-label="What reads it">Everything opening the database; commands must reach <a href="#running-the-http-server"><code>serve</code>&#39;s file</a>.</td>
             </tr>
             <tr>
               <th><code>MESSAGE_CP_AGENT</code></th>
@@ -116,7 +116,7 @@ import CodeBlock from "../components/CodeBlock.astro";
             <tr>
               <th><code>~/.message-cp/http-token</code></th>
               <td data-label="Default">read if present</td>
-              <td data-label="What reads it"><code>/wait</code> loop, if <code>MESSAGE_CP_HTTP_TOKEN</code> is unset.</td>
+              <td data-label="What reads it"><code>/wait</code> loop (agent&#39;s machine), if <code>MESSAGE_CP_HTTP_TOKEN</code> is unset.</td>
             </tr>
             <tr>
               <th><code>serve --host &lt;address&gt;</code></th>
@@ -131,11 +131,11 @@ import CodeBlock from "../components/CodeBlock.astro";
             <tr>
               <th><code>serve --public-url &lt;url&gt;</code></th>
               <td data-label="Default">none</td>
-              <td data-label="What reads it">Clients&#39; URL, without <code>/mcp</code>; enables <a href="#running-the-http-server">sessions&#39; wait command and MCP authorization</a>. <code>https:</code>, or <code>http:</code> to <code>127.x.x.x</code> or <code>[::1]</code>; no credentials, query or fragment.</td>
+              <td data-label="What reads it">Clients&#39; URL, without <code>/mcp</code>; enables <a href="#running-the-http-server">wait commands and MCP authorization</a>. <code>https:</code>, or <code>http:</code> to <code>127.x.x.x</code> or <code>[::1]</code>; no credentials, query or fragment.</td>
             </tr>
           </tbody>
         </table>
       </div>
-  <p>An unknown, repeated, valueless or bad flag exits 2 with usage.</p>
+  <p>An unknown, repeated or valueless flag, or bad <code>--port</code> or <code>--public-url</code>, prints usage and exits 2.</p>
   <p><strong>Health check.</strong> <code>/health</code> skips token checks and the database: <code>GET</code> gets 200 <code>&#123;&quot;ok&quot;:true&#125;</code>, others 405 with <code>Allow: GET</code>.</p>
 </Page>
