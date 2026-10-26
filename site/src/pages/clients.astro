@@ -17,15 +17,13 @@ import CodeBlock from "../components/CodeBlock.astro";
   </nav>
 
   <h2 id="add-it-to-an-mcp-client">Add it to an MCP client</h2>
-  <p><a href="getting-started.html#one-machine"><code>npx -y message-cp init</code></a> adds the entry below unless a <code>message-cp</code> entry exists.</p>
+  <p><a href="getting-started.html#one-machine"><code>npx -y message-cp init</code></a> adds the stdio entry unless a <code>message-cp</code> entry exists.</p>
   <p><strong>Claude Code over stdio</strong> (agents on this machine):</p>
   <CodeBlock lang="sh" code={"claude mcp add message-cp -- npx -y message-cp"} />
-  <p><strong>Claude Code over HTTP</strong> (agents on any machine; needs a running server, see <a href="server.html#running-the-http-server">Running the HTTP server</a>):</p>
+  <p><strong>Claude Code over HTTP</strong> (agents on any machine; needs a <a href="server.html#running-the-http-server">running server</a>):</p>
   <CodeBlock lang="sh" code={"claude mcp add --transport http message-cp https://message-cp.example.com/mcp --header \"Authorization: Bearer <token>\""} />
-  <p>The URL is your proxy&#39;s public address followed by <code>/mcp</code>. To try it on the server&#39;s own machine without a proxy, use <code>http://127.0.0.1:8787/mcp</code>.</p>
-  <p><a href="accounts.html#agents"><code>message-cp connect &lt;name&gt; --url https://message-cp.example.com</code></a> creates the agent and its token, and prints a <code>claude mcp add</code> command and a JSON <code>mcpServers</code> entry; its agent headers are optional. Run it on the server as the user <code>serve</code> runs as, with that user&#39;s <code>HOME</code> and <code>MESSAGE_CP_DB</code> (if set) naming <code>serve</code>&#39;s database, or with Docker as <code>docker compose exec message-cp message-cp connect ...</code>; a token made in another database is refused.</p>
-  <p>With the token <code>connect</code> prints, each session acts as its agent from the first request, with no <code>register</code> or key. An unbound agent token, from <code>message-cp token add &lt;account&gt; --agent-only</code>, needs <code>register</code> or the <a href="server.html#running-the-http-server">agent headers</a>.</p>
+  <p>Use your proxy&#39;s address plus <code>/mcp</code>, and the agent token <code>message-cp connect</code> prints: the agent&#39;s whole credential, with no <code>register</code> or key. <a href="getting-started.html#team-server">A team server</a> says where to run <code>connect</code> and sets up Cursor and Claude Desktop over HTTP; <a href="accounts.html#agents">Agents</a> has the rest.</p>
   <p><strong>Cursor over stdio</strong> (<code>.cursor/mcp.json</code> in the project, or <code>~/.cursor/mcp.json</code>):</p>
   <CodeBlock lang="json" code={"{\n  \"mcpServers\": {\n    \"message-cp\": {\n      \"command\": \"npx\",\n      \"args\": [\"-y\", \"message-cp\"]\n    }\n  }\n}"} />
-  <p>Every stdio server started this way opens the same database, so an agent registered in one session is visible from every other. Set <code>MESSAGE_CP_DB</code> in the server&#39;s environment to use a file other than the default (see <a href="server.html#settings">Settings</a>).</p>
+  <p>Stdio servers started this way share one database (<code>MESSAGE_CP_DB</code> in <a href="server.html#settings">Settings</a>).</p>
 </Page>
