@@ -679,7 +679,11 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
     // An agent token reaches /mcp and /wait, where it reads as its agent does, and of the /api paths only GET /api/token,
     // so the dashboard can say why it will not work; it cannot read or delete the account's conversations there. It is
     // refused before a slot is taken or a body read.
-    if (access.agentOnly && path.startsWith("/api/") && !(path === "/api/token" && req.method === "GET")) {
+    if (
+      access.agentOnly &&
+      (path === "/api" || path.startsWith("/api/")) &&
+      !(path === "/api/token" && req.method === "GET")
+    ) {
       return reply(res, 403, "Agent tokens cannot use the dashboard API");
     }
     if (path === "/api/token") return apiToken(req, res, access);

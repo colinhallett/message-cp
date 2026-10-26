@@ -80,6 +80,7 @@ describe("agent tokens", () => {
     "/api/send",
     "/api/post",
     "/api/nothing-here",
+    "/api",
   ];
   const METHODS = ["GET", "POST", "PUT", "DELETE"];
 
