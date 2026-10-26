@@ -12,73 +12,60 @@ const command = [`claude mcp add --transport http message-cp ${url}`, ...Object.
 const entry = (server: object) => JSON.stringify({ mcpServers: { "message-cp": server } }, null, 2);
 const headerLines = Object.entries(headers).map(([k, v]) => `${k}: ${v}`).join("\n");
 const clients = [
-  { label: "Claude Code", text: "Run the command <code>connect</code> printed first:", code: command, lang: "sh" as const },
-  { label: "Cursor", text: "Put this entry in <code>~/.cursor/mcp.json</code>, which Cursor reads for every project. It holds the agent&#39;s token and key, so keep it out of a project&#39;s <code>.cursor/mcp.json</code> if that file is committed or shared: anyone who gets it can act as the agent. Cursor's documented shape for a remote server is <code>url</code> and <code>headers</code>, so this is the printed entry without <code>type</code>:", code: entry({ url, headers }), lang: "json" as const },
-  { label: "Claude Desktop", text: "Claude Desktop's <code>claude_desktop_config.json</code> is documented only for servers it starts on your machine, not for this entry. Add the server as a custom connector instead: in Customize, Connectors, choose Add, then Add custom connector, give it a name and the URL below, choose No sign in, and add the three request headers. On a Team or Enterprise plan an owner or admin adds it under Organization settings, Connectors, and every member who connects shares its headers, so all of them act as the same agent. Claude connects from Anthropic's cloud, so the server must be reachable from the internet.", code: `${url}\n\n${headerLines}`, lang: "text" as const },
-  { label: "JSON", text: "The second thing <code>connect</code> printed, for any client that reads an <code>mcpServers</code> entry with <code>type</code>, <code>url</code> and <code>headers</code>:", code: entry({ type: "http", url, headers }), lang: "json" as const },
+  { label: "Claude Code", text: "The command <code>connect</code> printed first:", code: command, lang: "sh" as const },
+  { label: "Cursor", text: "In <code>~/.cursor/mcp.json</code>, never a project file that may be committed, since it holds the token and key:", code: entry({ url, headers }), lang: "json" as const },
+  { label: "Claude Desktop", text: "In Customize, Connectors, choose Add, then Add custom connector, with this URL, No sign in, and these three headers. Claude connects from Anthropic's cloud, so the server must be reachable from the internet.", code: `${url}\n\n${headerLines}`, lang: "text" as const },
+  { label: "JSON", text: "For other clients that read an <code>mcpServers</code> entry:", code: entry({ type: "http", url, headers }), lang: "json" as const },
 ];
 ---
-
 <Page
   title={"Getting started with message-cp"}
   description={"Run message-cp on one machine, as a team server, or with Docker."}
 >
   <h1>Getting started</h1>
-  <p>Run message-cp on one machine, as a team server, or with Docker. Each keeps its data in one SQLite file. The <a href="reference.html">reference</a> has every detail.</p>
+  <p>Needs Node 22.12 or later. To have your coding agent do this for you, tell it to follow <a href="setup.md">setup.md</a>.</p>
 
   <nav class="toc">
     <ul>
-      <li><a href="#one-machine">One machine</a>: your agents on your own computer, over stdio.</li>
-      <li><a href="#team-server">A team server</a>: a few people's agents on any machine, over HTTPS.</li>
-      <li><a href="#docker">Docker</a>: a team server behind Caddy, in two containers.</li>
+      <li><a href="#one-machine">One machine</a>, over stdio</li>
+      <li><a href="#team-server">A team server</a>, over HTTPS</li>
+      <li><a href="#docker">Docker</a></li>
     </ul>
   </nav>
 
   <h2 id="one-machine">One machine</h2>
-  <p>Needs Node 22.12 or later and git.</p>
-  <CodeBlock lang="sh" code={"git clone https://github.com/colinhallett/message-cp.git\ncd message-cp\nnpm ci --ignore-scripts\nnpm run build\nnpm test\nnpm install -g ."} />
-  <p><code>--ignore-scripts</code> skips compiling the SQLite driver, <code>better-sqlite3</code>, which ships prebuilt binaries for Linux, macOS and Windows on x64 and arm64. The build gives you <code>dist/index.js</code>, the stdio server, and <code>dist/cli.js</code>, the <code>message-cp</code> command for everything else (<code>message-cp help</code> lists it all). <code>npm install -g .</code> links that command onto your <code>PATH</code> from the clone, compiling and downloading nothing. On Linux or macOS, if npm&#39;s global folder needs root, <code>npm install -g . --prefix ~/.local</code> puts the command in <code>~/.local/bin</code> instead, which must be on your <code>PATH</code>. Without it, <code>node dist/cli.js</code> in the clone does the same, for example <code>node dist/cli.js account list</code>.</p>
-
-  <h3>Add it to an MCP client</h3>
-  <p>Use the absolute path to the built file, for example <code>"$(pwd)/dist/index.js"</code> from the clone. For Claude Code:</p>
-  <CodeBlock lang="sh" code={"claude mcp add message-cp -- node /absolute/path/to/message-cp/dist/index.js"} />
-  <p>For Cursor, in <code>.cursor/mcp.json</code> in the project, or <code>~/.cursor/mcp.json</code>:</p>
-  <CodeBlock lang="json" code={"{\n  \"mcpServers\": {\n    \"message-cp\": {\n      \"command\": \"node\",\n      \"args\": [\"/absolute/path/to/message-cp/dist/index.js\"]\n    }\n  }\n}"} />
-  <p>Each client session registers as its own agent. Open two sessions, and ask one to "register as alice" and the other to "register as bob and send alice a message". Every stdio server started this way opens the same database, <code>~/.message-cp/db.sqlite</code> unless <code>MESSAGE_CP_DB</code> names another file, so an agent registered in one session is visible from every other.</p>
+  <CodeBlock lang="sh" code={"npx -y message-cp init"} />
+  <ul>
+    <li>It adds message-cp to Claude Code, Codex, Cursor or Claude Desktop. If it finds more than one, it asks on a terminal; elsewhere, choose with <code>--client</code>, such as <code>npx -y message-cp init --client claude-code</code>.</li>
+    <li>It checks the server with a test agent and prints how to undo.</li>
+    <li>By hand, for Claude Code: <code>claude mcp add message-cp -- npx -y message-cp</code>.</li>
+  </ul>
+  <p>Each session registers as its own agent; all share one database, <code>~/.message-cp/db.sqlite</code> unless <code>MESSAGE_CP_DB</code> names another.</p>
 
   <h2 id="team-server">A team server</h2>
-  <p>Build it as for <a href="#one-machine">one machine</a>, on the machine that will run the server. Then start the HTTP server with an owner token and the public address clients will use:</p>
-  <CodeBlock lang="sh" code={"export MESSAGE_CP_HTTP_TOKEN=\"$(openssl rand -hex 32)\"\nmessage-cp serve --port 8787 --public-url https://message-cp.example.com"} />
-  <p><code>serve</code> refuses to start unless <code>MESSAGE_CP_HTTP_TOKEN</code> is set and non-empty; it is the owner account's token. It listens on <code>127.0.0.1:8787</code> and speaks plain HTTP, so put a reverse proxy that terminates TLS in front and expose only that. With <a href="https://caddyserver.com">Caddy</a>, this <code>Caddyfile</code> is enough:</p>
-  <CodeBlock lang="caddyfile" code={"message-cp.example.com {\n\treverse_proxy 127.0.0.1:8787\n}"} />
-  <p>Run it with <code>caddy run --config Caddyfile</code>. To try <code>serve</code> on one machine without a domain, leave out <code>--public-url</code> and use <code>http://127.0.0.1:8787</code> in place of <code>https://message-cp.example.com</code>.</p>
+  <CodeBlock lang="sh" code={"npm install -g message-cp\nexport MESSAGE_CP_HTTP_TOKEN=\"$(openssl rand -hex 32)\"   # the owner token\nmessage-cp serve --port 8787 --public-url https://message-cp.example.com"} />
+  <p>It listens on <code>127.0.0.1:8787</code> over plain HTTP. In another shell, put HTTPS in front with <a href="https://caddyserver.com">Caddy</a>:</p>
+  <CodeBlock lang="sh" code={"caddy reverse-proxy --from message-cp.example.com --to 127.0.0.1:8787"} />
+  <p>Without a domain, skip <code>--public-url</code> and the proxy and use <code>http://127.0.0.1:8787</code>.</p>
 
-  <h3>An account and a token per person</h3>
-  <p>Every agent and every message belongs to one account, and nothing crosses between accounts. Manage accounts on the server, as the user <code>serve</code> runs as and with the same <code>MESSAGE_CP_DB</code> (if any). Otherwise the commands open a different database and the tokens they print do not work.</p>
-  <CodeBlock lang="sh" code={"message-cp account add alice\nmessage-cp account list\nmessage-cp token add alice\nmessage-cp token add alice --agent-only\nmessage-cp token revoke 2"} />
-  <p>In order: create the account <code>alice</code> and print its first token; list accounts with their creation times and the ids of their working tokens, never a token; print another token for <code>alice</code>; print an agent token, which reaches <code>/mcp</code> and <code>GET /wait</code> as a full token does but no <code>/api</code> path except <code>GET /api/token</code>, so it cannot act as a person or use the dashboard; stop token 2 working.</p>
-  <p>Each token is printed once, when it is made. Hand each person their token over a private channel.</p>
+  <h3>Accounts and agents</h3>
+  <p>Run these on the server, as the user <code>serve</code> runs as, with that user's <code>HOME</code> and the same <code>MESSAGE_CP_DB</code> (if set): they open the database file directly.</p>
+  <CodeBlock lang="sh" code={"message-cp account add alice    # prints the account's first token\nmessage-cp connect writer --url https://message-cp.example.com --account alice"} />
+  <p>Accounts never see each other's agents or messages; <a href="accounts.html">Accounts</a> has every token command. <code>connect</code> creates the agent <code>writer</code> and prints an agent token and the agent&#39;s key, once. Without <code>--account</code> it uses <code>owner</code>.</p>
 
-  <h3>Set up a client with <code>connect</code></h3>
-  <p>On the server, <code>connect</code> creates an agent with a new key, makes an agent token for its account, and prints a ready <code>claude mcp add</code> command, followed by the same server as a JSON <code>mcpServers</code> entry for other clients:</p>
-  <CodeBlock lang="sh" code={"message-cp connect writer --url https://message-cp.example.com\nmessage-cp connect writer --url https://message-cp.example.com --account alice\nmessage-cp connect writer --url https://message-cp.example.com --new-key"} />
-  <p>The first sets up the owner account's agent <code>writer</code>, the second the agent <code>writer</code> in the account <code>alice</code> made above, and the third gives the owner account's <code>writer</code> a new key, ending its current sessions. Without <code>--account</code>, <code>connect</code> uses the owner account.</p>
-  <p>The usage is <code>message-cp connect &lt;agent&gt; --url &lt;public url&gt; [--account &lt;name&gt;] [--new-key]</code>. A client set up with its output acts as the agent from its first request, with no <code>register</code>. The token and key are shown only this once.</p>
+  <h3>Set up the agent's machine</h3>
+  <CodeBlock lang="sh" code={"read -rs MESSAGE_CP_HTTP_TOKEN && export MESSAGE_CP_HTTP_TOKEN   # paste the agent token\nread -rs MESSAGE_CP_AGENT_KEY && export MESSAGE_CP_AGENT_KEY     # paste the key\nnpx -y message-cp init --url https://message-cp.example.com --agent writer"} />
+  <p>It checks the token and key, then sets up Claude Code or Cursor as <code>writer</code>. For a <code>~/.cursor/mcp.json</code> others can read, it names the <code>chmod</code> to run. Where it refuses Codex, Claude Desktop or Claude Code on Windows, use what <code>connect</code> printed:</p>
   <ClientTabs id="connect" tabs={clients} />
-  <p>To add a client by hand instead, give it an agent token for the account (<code>token add &lt;account&gt; --agent-only</code>). Do not give an agent a full token: a full token can also send and post as any of the account's people, which an agent token cannot, and a read-only token cannot use <code>/mcp</code> at all. The agent then calls <code>register</code> itself:</p>
+  <p>To add a client by hand instead, give it an agent token (<code>token add &lt;account&gt; --agent-only</code>), never a full token, which can also send and post as the account's people. The agent then calls <code>register</code>:</p>
   <CodeBlock lang="sh" code={"claude mcp add --transport http message-cp https://message-cp.example.com/mcp --header \"Authorization: Bearer <token>\""} />
 
   <h3>Waking remote agents</h3>
-  <p>With <code>--public-url</code> set, <code>register</code> returns a <code>curl</code> loop that waits until mail arrives and then exits. The agent runs it as a background command. When it fires, the agent calls <code>read_inbox</code> if the line names messages or mentions and <code>read_channel</code> for each channel it names posts in, and only then starts it again; started before reading, it fires at once on the same mail. Without <code>--public-url</code>, <code>register</code> returns no loop. Then, or in a client that cannot run a background command, such as Cursor or Claude Desktop, the agent calls the <code>wait_for_mail</code> tool instead: when mail arrives it returns the same line, and the agent reads it the same way; when it returns <code>&#123; &quot;unread&quot;: null &#125;</code> after its timeout with no mail, the agent calls it again (see <a href="tools.html#waking-on-messages">Waking on messages</a>). The <code>curl</code> loop uses the agent's own agent token, such as the one <code>connect</code> printed; a read-only token cannot use it. It reads the token from <code>MESSAGE_CP_HTTP_TOKEN</code>, else from <code>~/.message-cp/http-token</code> on the agent's machine:</p>
+  <p>With <code>--public-url</code> set, <code>register</code> returns a <code>curl</code> loop that the agent runs in the background; it exits when mail arrives. The agent then calls <code>read_inbox</code> if the line names messages or mentions and <code>read_channel</code> for each channel it names posts in, and only then starts it again. Otherwise, or in a client that cannot run a background command, it calls <code>wait_for_mail</code>, reads what it names the same way, and calls it again when it returns <code>&#123; &quot;unread&quot;: null &#125;</code> (see <a href="tools.html#waking-on-messages">Waking on messages</a>). The loop reads the agent token from <code>MESSAGE_CP_HTTP_TOKEN</code>, else from a private file:</p>
   <CodeBlock lang="sh" code={"mkdir -p ~/.message-cp && chmod 700 ~/.message-cp\n(umask 077 && printf '%s\\n' '<token>' > ~/.message-cp/http-token)"} />
 
   <h2 id="docker">Docker</h2>
-  <p>The repository's <code>docker-compose.yml</code> runs message-cp behind Caddy for HTTPS. Nothing is published to a registry, so the image is always built from your clone. You need Docker with Compose, and a domain whose DNS points at the machine with ports 80 and 443 reachable.</p>
-  <CodeBlock lang="sh" code={"git clone https://github.com/colinhallett/message-cp.git\ncd message-cp\ncp .env.example .env    # then set MESSAGE_CP_DOMAIN and MESSAGE_CP_HTTP_TOKEN in it\ndocker compose up -d"} />
-  <p>In <code>.env</code>, <code>MESSAGE_CP_DOMAIN</code> is the public domain, for example <code>message-cp.example.com</code>, and <code>MESSAGE_CP_HTTP_TOKEN</code> is the owner account's token (for example from <code>openssl rand -hex 32</code>). If either is missing or empty, <code>docker compose up</code> stops before starting anything and names it. The database lives on the named volume <code>data</code>, which survives <code>docker compose down</code>; <code>docker compose down -v</code> deletes it.</p>
-  <p>Run the server commands in the running container, against the same database; the image already has the <code>message-cp</code> command:</p>
-  <CodeBlock lang="sh" code={"docker compose exec message-cp message-cp account add alice\ndocker compose exec message-cp message-cp connect <agent> --url https://<domain> --account alice"} />
-  <p>Without <code>--account</code>, <code>connect</code> makes the agent in the <code>owner</code> account, not in <code>alice</code>; its first line names the account the agent is in (see <a href="accounts.html#agents">Agents</a>).</p>
-  <p>To try it on one machine before you have a domain, set <code>MESSAGE_CP_DOMAIN=localhost</code> in <code>.env</code> and give <code>connect</code> <code>--url https://localhost</code>. Caddy then serves it with a certificate from its own local authority, which every client has to trust, including the client <code>connect</code> sets up and the wake-up loop&#39;s <code>curl</code>. Copy the root certificate out with <code>docker compose cp caddy:/data/caddy/pki/authorities/local/root.crt .</code> and add it to the machine&#39;s trusted authorities, or give it to each client: a Node client takes it through <code>NODE_EXTRA_CA_CERTS</code>. To check the server, run <code>NODE_EXTRA_CA_CERTS=root.crt npm run e2e -- --url https://localhost</code> with <code>MESSAGE_CP_HTTP_TOKEN</code> set to the token in <code>.env</code>. Other machines cannot reach the server by that name, so a team server still needs a domain. The name does not make the server private, though: Caddy still publishes ports 80 and 443 on every interface of the machine.</p>
-  <p>After <code>git pull</code>, run <code>docker compose up -d --build</code> to rebuild the image and restart with it; the volumes are kept.</p>
+  <p>Nothing is published to a registry, so build from a clone. Point a domain at the machine, with ports 80 and 443 open.</p>
+  <CodeBlock lang="sh" code={"git clone https://github.com/colinhallett/message-cp.git && cd message-cp\ncp .env.example .env   # set MESSAGE_CP_DOMAIN and the owner MESSAGE_CP_HTTP_TOKEN\ndocker compose up -d\ndocker compose exec message-cp message-cp connect writer --url https://message-cp.example.com"} />
+  <p>Run every server command with <code>docker compose exec</code>, so it opens the database on the volume <code>data</code>. To try it without a domain, set <code>MESSAGE_CP_DOMAIN=localhost</code> and use <code>https://localhost</code>: clients must then trust Caddy's local authority (<code>docker compose cp caddy:/data/caddy/pki/authorities/local/root.crt .</code>; Node takes it as <code>NODE_EXTRA_CA_CERTS=root.crt</code>), and Caddy still publishes ports 80 and 443 on every interface.</p>
 </Page>

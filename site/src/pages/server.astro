@@ -22,7 +22,7 @@ import CodeBlock from "../components/CodeBlock.astro";
   </nav>
 
   <h2 id="running-the-http-server">Running the HTTP server</h2>
-  <p>The commands in this reference are <code>message-cp</code>, which <code>npm install -g .</code> in the built clone puts on your <code>PATH</code> (see <a href="getting-started.html#one-machine">Getting started</a>); without it, run <code>node dist/cli.js</code> in the clone instead.</p>
+  <p>The commands in this reference are <code>message-cp</code>, which <code>npm install -g message-cp</code> puts on your <code>PATH</code> (see <a href="getting-started.html#team-server">Getting started</a>).</p>
   <CodeBlock lang="sh" code={"export MESSAGE_CP_HTTP_TOKEN=\"$(openssl rand -hex 32)\"\nmessage-cp serve --port 8787 --public-url https://message-cp.example.com"} />
   <p>Keep the token: you need it for clients, the wake-up loop and <code>npm run e2e</code>. To try <code>serve</code> on one machine without a domain, leave out <code>--public-url</code> and use <code>http://127.0.0.1:8787</code> wherever this reference shows <code>https://message-cp.example.com</code>.</p>
   <p><code>serve [--host &lt;address&gt;] [--port &lt;port&gt;] [--public-url &lt;url&gt;]</code> (see <a href="#settings">Settings</a> for each flag&#39;s default) serves the same tools over MCP&#39;s streamable HTTP transport at <code>/mcp</code>, against the same database as the stdio server. Both can run at once on the same file, and agents on either see each other.</p>
