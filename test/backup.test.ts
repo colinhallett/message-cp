@@ -1,10 +1,15 @@
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdtempSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 
 const script = join(resolve(import.meta.dirname, ".."), "ops/backup.sh");
+const dirs: string[] = [];
+
+afterEach(() => {
+  for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+});
 
 /**
  * Runs ops/backup.sh with `url` in its URL file. A stand-in sqlite3 that always fails stops it at the snapshot, so an
@@ -12,6 +17,7 @@ const script = join(resolve(import.meta.dirname, ".."), "ops/backup.sh");
  */
 function backup(url: string) {
   const dir = mkdtempSync(join(tmpdir(), "message-cp-backup-"));
+  dirs.push(dir);
   const bin = join(dir, "bin");
   spawnSync("mkdir", [bin]);
   writeFileSync(join(bin, "sqlite3"), "#!/bin/sh\nexit 1\n");
@@ -35,6 +41,10 @@ describe("ops/backup.sh upload URL", () => {
     "https://user@h.example/o/",
     "http://example.com/o/",
     "http://10.0.0.1/o/",
+    "http://127.0.0.999/o/",
+    "http://127.256.0.1/o/",
+    "http://127.0.0.01/o/",
+    "http://127.0.0.1.evil/o/",
     "https://h.example/p/o",
   ])("refuses %s without printing it", (url) => {
     const r = backup(url);
@@ -43,7 +53,7 @@ describe("ops/backup.sh upload URL", () => {
     expect(r.stderr).not.toContain(url);
   });
 
-  it.each(["https://objectstorage.example.com/p/secret/n/ns/b/bucket/o/", "https://h.example:8443/o/", "http://127.0.0.1/o/", "http://127.0.0.1:8080/p/o/", "http://127.1.2.3:9/o/"])(
+  it.each(["https://objectstorage.example.com/p/secret/n/ns/b/bucket/o/", "https://h.example:8443/o/", "http://127.0.0.1/o/", "http://127.0.0.1:8080/p/o/", "http://127.1.2.3:9/o/", "http://127.255.250.199/o/"])(
     "accepts %s",
     (url) => {
       const r = backup(url);

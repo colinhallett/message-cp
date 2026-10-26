@@ -36,8 +36,9 @@ url="$(tr -d '[:space:]' <"$url_file")"
 # Checked so it can go into curl's config safely: a plain host name (no userinfo), an optional port, and a path ending in /o/ with no query or fragment.
 # The message names the file, never the URL.
 # Plain http is allowed only to a literal loopback address, for testing: the URL's path is the credential, and the name
-# localhost is refused because a resolver may send it elsewhere.
-[[ "$url" =~ ^(https://[A-Za-z0-9.-]+|http://127(\.[0-9]{1,3}){3})(:[0-9]+)?/([^\"\\?#]*/)?o/$ ]] ||
+# localhost is refused because a resolver may send it elsewhere. Each octet is 0-255 with no leading zero, so curl reads the host as an
+# IPv4 literal rather than a name to resolve.
+[[ "$url" =~ ^(https://[A-Za-z0-9.-]+|http://127(\.(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])){3})(:[0-9]+)?/([^\"\\?#]*/)?o/$ ]] ||
   fail "$url_file must hold one https URL ending in /o/"
 
 work="$(mktemp -d)"
