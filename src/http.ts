@@ -367,10 +367,13 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
     closed: (id) => live.open.get(id)?.signal,
   });
 
-  /** One check for mail; a lock held past the busy timeout counts as no mail this time, as in `message-cp wait`. */
-  const poll = (account: AccountId, name: string): Unread | undefined => {
+  /**
+   * One check for mail, for a name or for one registration; a lock held past the busy timeout counts as no mail this
+   * time, as in `message-cp wait`.
+   */
+  const poll = (account: AccountId, reader: string | Identity): Unread | undefined => {
     try {
-      return unreadSummary(db, account, name);
+      return unreadSummary(db, account, reader);
     } catch (err) {
       const code = (err as { code?: unknown } | null)?.code;
       if (typeof code !== "string" || !code.startsWith("SQLITE_BUSY")) throw err;
@@ -382,14 +385,17 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
    * Answers 200 with the unread summary as soon as the account's agent has mail or unread posts in a channel it has
    * joined, 204 after `waitHoldMs` without any.
    * Another account's agent is answered like an unknown one. A token bound to an agent waits only for that agent: for it
-   * when `agent` is left out, and as for an unknown agent when `agent` names another.
+   * when `agent` is left out, and as for an unknown agent when `agent` names another. Every poll of a bound wait reads
+   * the token's registration, not its name, so a hold whose agent is removed meanwhile answers 404 rather than another
+   * agent's mail under the same name.
    */
   const wait = async (req: IncomingMessage, res: ServerResponse, account: AccountId, bound?: BoundAgent) => {
     if (req.method !== "GET") return reply(res, 405, "Method not allowed", { Allow: "GET" });
     const asked = new URL(req.url ?? "", "http://x").searchParams.get("agent");
     if (bound && asked && asked.toLowerCase() !== bound.name.toLowerCase()) return reply(res, 404, "No such agent");
     const name = bound ? bound.name : asked;
-    const first = name ? poll(account, name) : undefined;
+    const reader: string | Identity | null = bound ?? asked;
+    const first = reader ? poll(account, reader) : undefined;
     if (!first) return reply(res, 404, "No such agent");
     // Mail that is already there is answered at once, whatever the cap.
     if (hasUnread(first)) {
@@ -408,7 +414,7 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
     });
     const deadline = Date.now() + waitHoldMs;
     try {
-      await hold(first, account, name!, deadline, res, () => gone, (w) => (wake = w));
+      await hold(first, account, reader!, deadline, res, () => gone, (w) => (wake = w));
     } finally {
       waiting--;
       holding(account, name!, -1);
@@ -420,13 +426,13 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
   const hold = async (
     first: NonNullable<ReturnType<typeof poll>>,
     account: AccountId,
-    name: string,
+    reader: string | Identity,
     deadline: number,
     res: ServerResponse,
     isGone: () => boolean,
     setWake: (w: () => void) => void,
   ) => {
-    for (let unread: typeof first | undefined = first; ; unread = poll(account, name)) {
+    for (let unread: typeof first | undefined = first; ; unread = poll(account, reader)) {
       if (isGone()) return;
       if (!unread) return reply(res, 404, "No such agent");
       if (hasUnread(unread)) {

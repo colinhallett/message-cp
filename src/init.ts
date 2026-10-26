@@ -709,7 +709,8 @@ export async function checkRemote(r: Remote): Promise<void> {
  * itself, reads it back and unregisters it, then ends the session. If a step failed after `register`, it still tries to
  * remove the test agent by name and key. A token `connect` made is bound to its agent and cannot register another name,
  * so with one the agent sends itself a message instead and finds it with `read_conversation`, which marks nothing read:
- * the agent's own unread mail stays unread, and so does the check's message.
+ * the agent's own unread mail stays unread, and so does the check's message. A bound token whose agent is not `r.agent`
+ * fails at `register` before anything is sent.
  * Returns what the check did, for `runInit` to print. Throws an InitError naming the failed step and any failed
  * clean-up; no message holds the token or either key.
  */
@@ -733,9 +734,13 @@ export async function proveRemote(r: Remote): Promise<string> {
     try {
       await call("register", { name, bio: "message-cp init check; removed when the check ends", key });
     } catch (err) {
-      if (!/This token is already agent /.test(err instanceof Error ? err.message : "")) throw err;
-      // Refused, so nothing was registered: the token is the agent, which proves the server by itself.
+      const refused = /This token is already agent '([^']*)'/.exec(err instanceof Error ? err.message : "");
+      if (!refused) throw err;
+      // Refused, so nothing was registered: the token is the agent, which proves the server by itself, but only when it
+      // is the agent this setup names, so the check never messages another agent.
       registered = false;
+      if (refused[1].toLowerCase() !== r.agent.toLowerCase())
+        throw new Error(`the token is agent '${refused[1]}', not '${r.agent}'`);
       bound = true;
     }
     if (bound) {

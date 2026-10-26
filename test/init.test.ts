@@ -826,6 +826,15 @@ describe("checkRemote and proveRemote", () => {
     ]);
   });
 
+  it("with a token bound to another agent, fails at register and sends nothing", async () => {
+    const reader = connectAgent(db, "owner", "reader", false);
+    const before = db.prepare("SELECT * FROM messages ORDER BY id").all();
+    const err = await failure(proveRemote(r({ token: reader.token })));
+    expect(err?.message).toBe("register: the token is agent 'reader', not 'writer'");
+    expect(db.prepare("SELECT * FROM messages ORDER BY id").all()).toEqual(before);
+    expect(names()).toEqual(["owner/reader", "owner/writer"]);
+  });
+
   it("proves the server without touching the agent: a test agent sends itself a message and is removed", async () => {
     // An unbound agent token can register the test agent.
     agentToken = addToken(db, "owner", false, true).token;

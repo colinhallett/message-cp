@@ -306,6 +306,20 @@ describe("GET /wait with a bound token", () => {
     expect(await res.text()).toContain("No such agent");
   });
 
+  it("follows its agent's registration through the hold, not its name: a held wait answers 404 once the agent is removed and the name taken", async () => {
+    await http.close();
+    http = await startHttp(db, { token: TOKEN, port: 0, waitHoldMs: 5000 });
+    const held = wait("");
+    await new Promise((r) => setTimeout(r, 300));
+    removeAgent(db, OWNER_ACCOUNT, "writer", writer.key);
+    registerAgent(db, OWNER_ACCOUNT, "writer", "someone else");
+    registerAgent(db, OWNER_ACCOUNT, "bob", "x");
+    sendMessage(db, OWNER_ACCOUNT, "bob", "writer", "for the new writer");
+    const res = await held;
+    expect(res.status).toBe(404);
+    expect(await res.text()).toContain("No such agent");
+  });
+
   it("leaves an unbound agent token waiting for any name, and needing one", async () => {
     const unbound = addToken(db, "owner", false, true).token;
     registerAgent(db, OWNER_ACCOUNT, "bob", "x");
