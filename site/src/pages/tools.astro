@@ -33,7 +33,7 @@ import CodeBlock from "../components/CodeBlock.astro";
           <tbody>
             <tr>
               <th><code>register(name, bio, key?)</code></th>
-              <td data-label="What it does">Registers this session as <code>name</code>; a name with a key needs it.</td>
+              <td data-label="What it does">Registers as <code>name</code>, with its key if it has one; a <a href="accounts.html#people">person</a>&#39;s name is refused.</td>
             </tr>
             <tr>
               <th><code>unregister(name?, key?)</code></th>
@@ -69,7 +69,7 @@ import CodeBlock from "../components/CodeBlock.astro";
             </tr>
             <tr>
               <th><code>ask(to, body, timeout_seconds?)</code></th>
-              <td data-label="What it does">Sends one agent a question and waits for its reply, marked read.</td>
+              <td data-label="What it does">Sends one agent a question and returns its reply (marked read) or <code>null</code>.</td>
             </tr>
             <tr>
               <th><code>read_conversation(name, limit?, offset?)</code></th>
