@@ -66,6 +66,38 @@ export function checkRedirectUri(raw: unknown): string {
   return raw;
 }
 
+/**
+ * `raw` parsed, when it is an http URI on a loopback host written exactly as `new URL()` writes it (so no other letter
+ * case, default port or encoding), with no username, password, query or fragment; otherwise undefined.
+ */
+function loopbackUri(raw: string): URL | undefined {
+  if (raw.length > MAX_URI_LENGTH) return undefined;
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    return undefined;
+  }
+  if (url.href !== raw || url.protocol !== "http:" || !isLoopback(url)) return undefined;
+  return url.username || url.password || raw.includes("?") || raw.includes("#") ? undefined : url;
+}
+
+/**
+ * Whether `requested` is one of a client's `registered` redirect URIs: the same string, or, for an http loopback URI,
+ * the same but for the port, which OAuth 2.1 (section 2.3.1) and RFC 8252 (section 7.3) let a native client choose when
+ * it asks. Codex registers `http://127.0.0.1/callback/<id>` and asks with a port of its choosing. Scheme, host and path
+ * are compared parsed, and both URIs must pass `loopbackUri`, so `localhost` never matches `127.0.0.1`.
+ */
+export function matchesRedirectUri(registered: string[], requested: string): boolean {
+  if (registered.includes(requested)) return true;
+  const asked = loopbackUri(requested);
+  if (!asked) return false;
+  return registered.some((raw) => {
+    const url = loopbackUri(raw);
+    return url !== undefined && url.hostname === asked.hostname && url.pathname === asked.pathname;
+  });
+}
+
 export interface Client {
   clientId: string;
   clientName: string | null;
@@ -197,7 +229,7 @@ export type AuthorizeOutcome =
   | { page: "redirect"; location: string }
   | { page: "approve"; authorization: Authorization };
 
-/** `redirectUri` with the query `params` (and `state`, when given) added. `redirectUri` is a registered one. */
+/** `redirectUri` with the query `params` (and `state`, when given) added. `redirectUri` passed `matchesRedirectUri`. */
 export function redirectTo(redirectUri: string, params: Record<string, string>, state: string | null): string {
   const url = new URL(redirectUri);
   for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
@@ -241,7 +273,7 @@ export const startAuthorization = (db: Db, query: URLSearchParams, resource: str
     else if (clientId) client = findClient(db, clientId);
     if (!client) return { page: "error", message: "This client is not registered with this server. Start connecting again from the client." };
     const redirectUri = one("redirect_uri");
-    if (!redirectUri || !client.redirectUris.includes(redirectUri)) {
+    if (!redirectUri || !matchesRedirectUri(client.redirectUris, redirectUri)) {
       return { page: "error", message: "The address this client asked to be sent back to is not one it registered." };
     }
     const state = one("state");
