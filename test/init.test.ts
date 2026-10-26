@@ -124,6 +124,15 @@ describe("mergeServer", () => {
     chmodSync(file, 0o600);
     expect(mergeServer(file, secret)).toBe("added");
     expect(statSync(file).mode & 0o777).toBe(0o600);
+
+    // The same entry already there is "present" only while the file is private.
+    const same = { ...secret, same: () => true };
+    expect(mergeServer(file, same)).toBe("present");
+    chmodSync(file, 0o640);
+    const before = readFileSync(file, "utf8");
+    expect(() => mergeServer(file, same)).toThrow(/holds the token and key, and other users of this machine can read it; .*chmod 600/);
+    expect(readFileSync(file, "utf8")).toBe(before);
+    expect(statSync(file).mode & 0o777).toBe(0o640);
   });
 
   it("says it cannot read a path that is a directory, rather than calling it invalid JSON", () => {

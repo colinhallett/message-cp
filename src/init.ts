@@ -145,8 +145,13 @@ export function mergeServer(file: string, server: JsonServer = STDIO_SERVER): Se
   if (!isObject(config)) throw new InitError(`${file} does not hold a JSON object; it was left unchanged.`);
   const servers = config.mcpServers ?? {};
   if (!isObject(servers)) throw new InitError(`${file} has an mcpServers that is not a JSON object; it was left unchanged.`);
+  const readable = (mode: number) => server.secret === true && process.platform !== "win32" && (mode & 0o044) !== 0;
   const entry = servers[SERVER_NAME];
   if (entry !== undefined) {
+    // A secret entry already there is "present" only while no other user can read it.
+    if (server.same(entry) && readable(existsSync(file) ? statSync(file).mode : 0)) {
+      throw new InitError(`${file} holds the token and key, and other users of this machine can read it; it was left as it is. To make it private, run: chmod 600 ${file}, then run message-cp init again.`);
+    }
     return server.same(entry) ? "present" : "differs";
   }
   config.mcpServers = { ...servers, [SERVER_NAME]: server.entry };
@@ -158,7 +163,7 @@ export function mergeServer(file: string, server: JsonServer = STDIO_SERVER): Se
     if (text !== undefined) {
       // The mode the new file is given, checked here as well as in remoteRefusal, since it may have changed since.
       const mode = statSync(target).mode & 0o777;
-      if (server.secret && process.platform !== "win32" && (mode & 0o044) !== 0) {
+      if (readable(mode)) {
         throw new InitError(`${file} became readable by other users of this machine while message-cp init was running; it was left as it is. To make it private, run: chmod 600 ${file}, then run message-cp init again.`);
       }
       chmodSync(tmp, mode);
