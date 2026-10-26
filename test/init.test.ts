@@ -1,7 +1,10 @@
 import { spawn, spawnSync } from "node:child_process";
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { createServer, request } from "node:http";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { addAccount, addToken, listAccounts } from "../src/accounts.js";
 import { addPerson, listServerAgents, registerAgent } from "../src/agents.js";
@@ -11,6 +14,7 @@ import { startHttp, type HttpServer } from "../src/http.js";
 import {
   InitError,
   checkRemote,
+  endSession,
   claudeDesktopDir,
   detectClients,
   mergeServer,
@@ -687,21 +691,25 @@ describe("runInit with a team server", () => {
     expect(t.proved()).toBe(0);
   });
 
-  it("says so when an existing Cursor file lets others read it, and does not change its mode", async () => {
+  it("refuses an existing Cursor file that others can read before checking or writing it, and does not change its mode", async () => {
     if (process.platform === "win32") return;
     mkdirSync(join(home, ".cursor"));
     const file = join(home, ".cursor", "mcp.json");
     writeFileSync(file, "{}", { mode: 0o644 });
     chmodSync(file, 0o644);
     const t = options();
-    expect(await runInit(t.o)).toBe(0);
-    expect(t.err.join("\n")).toContain(`other users of this machine can read it; to make it private: chmod 600 ${file}`);
+    expect(await runInit(t.o)).toBe(1);
+    expect(t.err.join("\n")).toContain(`other users of this machine can read it; to make it private, run: chmod 600 ${file}, then run message-cp init again. Nothing was changed.`);
+    expect(t.checked()).toBe(0);
+    expect(t.proved()).toBe(0);
+    expect(readFileSync(file, "utf8")).toBe("{}");
     expect(statSync(file).mode & 0o777).toBe(0o644);
 
     chmodSync(file, 0o600);
     const quiet = options();
     expect(await runInit(quiet.o)).toBe(0);
     expect(quiet.err).toEqual([]);
+    expect(readFileSync(file, "utf8")).toContain(TOKEN);
   });
 
   it("keeps the configuration when the proof fails, redacting its message", async () => {
@@ -786,6 +794,39 @@ describe("checkRemote and proveRemote", () => {
     // The test agent's message stays in the database, addressed to the removed agent, as unregister keeps it.
     expect(db.prepare("SELECT sender FROM messages").all()).toEqual([{ sender: expect.stringMatching(/^init-check-[0-9a-f]{20}$/) }]);
     expect(db.prepare("SELECT COUNT(*) AS n FROM agents WHERE name LIKE 'init-check-%' AND removed_at IS NULL").get()).toEqual({ n: 0 });
+  });
+
+  it("stops waiting for a session's DELETE that is never answered", async () => {
+    // Passes every request on to the server, but holds a DELETE open without answering it.
+    const held: { destroy: () => void }[] = [];
+    const proxy = createServer((req, res) => {
+      if (req.method === "DELETE") {
+        held.push(res.socket!);
+        return;
+      }
+      const up = request({ host: "127.0.0.1", port: http.port, path: req.url, method: req.method, headers: req.headers }, (u) => {
+        res.writeHead(u.statusCode!, u.headers);
+        u.pipe(res);
+      });
+      req.pipe(up);
+    });
+    await new Promise<void>((resolve) => proxy.listen(0, "127.0.0.1", resolve));
+    try {
+      const port = (proxy.address() as { port: number }).port;
+      const client = new Client({ name: "test", version: "1.0.0" });
+      const transport = new StreamableHTTPClientTransport(mcpEndpoint(`http://127.0.0.1:${port}`), {
+        requestInit: { headers: { Authorization: `Bearer ${agentToken}` } },
+      });
+      await client.connect(transport);
+      expect(transport.sessionId).toBeDefined();
+      const started = Date.now();
+      await endSession(client, transport, 200);
+      expect(held).toHaveLength(1);
+      expect(Date.now() - started).toBeLessThan(2000);
+    } finally {
+      for (const s of held) s.destroy();
+      await new Promise<void>((resolve) => proxy.close(() => resolve()));
+    }
   });
 
   it("names the failed step and holds no token when the proof cannot start", async () => {

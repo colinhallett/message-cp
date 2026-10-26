@@ -277,7 +277,8 @@ export interface SetUp {
  * Why `client` cannot be set up for the team server at `endpoint` on this machine, with what to do by hand, or undefined
  * if it can. `codex mcp add` takes `--url` but no custom headers. Claude Desktop takes a team server only as a custom
  * connector in its app. On Windows `claude` is a `.cmd` file that only a shell can start, and the token and key must
- * not pass through a shell string.
+ * not pass through a shell string. An existing Cursor file that group or others can read is refused, so the token and
+ * key are never written where other users can read them; its mode is left as it is.
  */
 export function remoteRefusal(client: ClientId, m: Machine, endpoint: URL): string | undefined {
   if (client === "codex") {
@@ -288,6 +289,19 @@ export function remoteRefusal(client: ClientId, m: Machine, endpoint: URL): stri
   }
   if (client === "claude-code" && m.platform === "win32") {
     return "on Windows, message-cp init cannot run `claude mcp add` without passing the token and key through a shell; run the `claude mcp add` command `message-cp connect` printed instead, or use --client cursor.";
+  }
+  if (client === "cursor" && m.platform !== "win32") {
+    // Checked before the token and key are written, not after: its mode is the user's to change, not init's.
+    const file = configFile("cursor", m);
+    let mode = 0;
+    try {
+      mode = statSync(file).mode;
+    } catch {
+      // Not there yet: mergeServer makes it 0600.
+    }
+    if ((mode & 0o044) !== 0) {
+      return `${file} would hold the token and key, and other users of this machine can read it; to make it private, run: chmod 600 ${file}, then run message-cp init again.`;
+    }
   }
   return undefined;
 }
@@ -442,9 +456,19 @@ function remoteClient(r: Remote, headers: Record<string, string>) {
   return { client, transport };
 }
 
-/** Ends the session `transport` holds with DELETE /mcp, then closes the client; neither failure matters. */
-async function endSession(client: Client, transport: StreamableHTTPClientTransport): Promise<void> {
-  if (transport.sessionId !== undefined) await transport.terminateSession().catch(() => {});
+/**
+ * Ends the session `transport` holds with DELETE /mcp, waiting at most `ms` for it, then closes the client, which
+ * aborts a DELETE still pending; neither failure matters, since the server ends an idle session itself.
+ */
+export async function endSession(client: Client, transport: StreamableHTTPClientTransport, ms = CALL_TIMEOUT_MS): Promise<void> {
+  if (transport.sessionId !== undefined) {
+    let timer: NodeJS.Timeout | undefined;
+    const timeout = new Promise<void>((resolve) => {
+      timer = setTimeout(resolve, ms);
+    });
+    await Promise.race([transport.terminateSession().catch(() => {}), timeout]);
+    clearTimeout(timer);
+  }
   await client.close().catch(() => {});
 }
 
@@ -660,18 +684,6 @@ export async function runInit(o: InitOptions): Promise<number> {
     return 1;
   }
   o.out(setUp.state === "added" ? `${label}: added message-cp ${setUp.changed}.` : `${label}: already set up; nothing was changed.`);
-  if (remote !== undefined && client === "cursor") {
-    const file = configFile("cursor", o.machine);
-    let mode = 0;
-    try {
-      mode = statSync(file).mode;
-    } catch {
-      // Gone since it was written: there is nothing to warn about.
-    }
-    if (o.machine.platform !== "win32" && (mode & 0o044) !== 0) {
-      o.err(`Warning: ${file} holds the token and key, and other users of this machine can read it; to make it private: chmod 600 ${file}`);
-    }
-  }
   try {
     await o.prove();
   } catch (err) {
