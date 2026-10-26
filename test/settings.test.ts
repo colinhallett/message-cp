@@ -49,7 +49,13 @@ describe("package", () => {
   it("packs only package.json, README.md, LICENSE and the built dist/", async () => {
     const { execFileSync } = await import("node:child_process");
     // prepack builds dist/ first, so the list does not depend on an earlier build.
-    const out = execFileSync("npm", ["pack", "--dry-run", "--json"], { cwd: join(import.meta.dirname, ".."), encoding: "utf8" });
+    // npm is npm.cmd on Windows, which needs a shell; its lifecycle output goes to stderr, kept out of the test log.
+    const out = execFileSync("npm", ["pack", "--dry-run", "--json"], {
+      cwd: join(import.meta.dirname, ".."),
+      encoding: "utf8",
+      shell: process.platform === "win32",
+      stdio: ["ignore", "pipe", "pipe"],
+    });
     const paths: string[] = JSON.parse(out.slice(out.indexOf("[")))[0].files.map((f: { path: string }) => f.path);
     expect(paths).toContain("dist/cli.js");
     expect(paths).toContain("dist/index.js");
