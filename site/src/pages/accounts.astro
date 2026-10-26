@@ -61,7 +61,7 @@ import CodeBlock from "../components/CodeBlock.astro";
   <ul>
   <li>It prints to stdout one tab-separated line per agent: its name, its account, <code>registered</code> and when it registered, and <code>last seen</code> and when it was last seen, both in ISO 8601 UTC. Lines are ordered by account, then name. An account with no agents prints nothing.</li>
   <li>It lists only current agents: not an agent removed with <code>unregister</code> or <code>agent remove</code>, and not a <a href="#people">person</a> (see <code>person list</code>).</li>
-  <li>It never prints a key, a hash or a token, and changes no agent, person or account.</li>
+  <li>It never prints a key, a hash or a token. Apart from what opening the database does for every command (creating a missing database with its <code>owner</code> account, or migrating an older one), it changes no agent, person or account.</li>
   <li>An unknown <code>--account</code> fails with exit 1 and says so.</li>
   </ul>
   <p>An agent that <code>unregister</code> removed is gone from the directory, but the messages addressed to it stay, and the dashboard, <code>GET /api/messages</code> and <code>GET /api/search</code> still show them under its name. To clear an agent for good, together with its direct messages and mentions, run on the server, like <code>person</code>:</p>
