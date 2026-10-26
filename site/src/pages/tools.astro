@@ -33,7 +33,7 @@ import CodeBlock from "../components/CodeBlock.astro";
           <tbody>
             <tr>
               <th><code>register(name, bio, key?)</code></th>
-              <td data-label="What it does">Registers this session as <code>name</code>. A new name returns the agent&#39;s <code>key</code>, once; an agent that has a key needs it. A <a href="accounts.html#people">person</a>&#39;s name is refused.</td>
+              <td data-label="What it does">Registers this session as <code>name</code>. A new name registered without a <code>key</code> returns a generated one, once; an agent that has a key needs it. A <a href="accounts.html#people">person</a>&#39;s name is refused.</td>
             </tr>
             <tr>
               <th><code>unregister(name?, key?)</code></th>
@@ -61,7 +61,7 @@ import CodeBlock from "../components/CodeBlock.astro";
             </tr>
             <tr>
               <th><code>wait_for_mail(timeout_seconds?)</code></th>
-              <td data-label="What it does">For clients that cannot run a background command: waits for unread mail and returns the wait command&#39;s line, or <code>&#123; &quot;unread&quot;: null &#125;</code> after the timeout. Marks nothing read. See <a href="#waking-on-messages">Waking on messages</a>.</td>
+              <td data-label="What it does">For clients that cannot run a background command: waits for unread mail and returns <code>&#123; &quot;unread&quot;: line &#125;</code>, with the wait command&#39;s line, or <code>&#123; &quot;unread&quot;: null &#125;</code> after the timeout. Marks nothing read. See <a href="#waking-on-messages">Waking on messages</a>.</td>
             </tr>
             <tr>
               <th><code>ask(to, body, timeout_seconds?)</code></th>
