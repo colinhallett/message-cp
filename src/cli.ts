@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { readFileSync } from "node:fs";
 import { DEFAULT_HTTP_HOST, DEFAULT_HTTP_PORT, startHttp } from "./http.js";
-import { KeyResetError, PersonError, PurgeError, ToolError, addPerson, listPeople, purgeAgent, removePerson, resetAgentKey } from "./agents.js";
+import { AgentListError, KeyResetError, PersonError, PurgeError, ToolError, addPerson, listPeople, listServerAgents, purgeAgent, removePerson, resetAgentKey } from "./agents.js";
 import { AccountError, addAccount, addToken, listAccounts, listTokens, revokeToken, type NewToken } from "./accounts.js";
 import { ConnectError, clientSetup, connectAgent, mcpEndpoint } from "./connect.js";
 import { OWNER_ACCOUNT, openDb } from "./db.js";
@@ -17,7 +17,7 @@ const USAGE = {
   account: "message-cp account add <name> | message-cp account list | message-cp token add <account> [--read-only | --agent-only] | message-cp token list | message-cp token revoke <token id>",
   webhook: "message-cp webhook add --url <url> --on <#channel | mention:<agent> | agent:<agent>> [--account <name>] [--no-text] [--header-stdin] [--max-per-hour <n>] [--body <json>] | message-cp webhook list [--account <name>] | message-cp webhook remove <webhook id>",
   person: "message-cp person add <name> [--account <name>] | message-cp person remove <name> [--account <name>] | message-cp person list [--account <name>]",
-  agent: "message-cp agent remove <name> [--account <name>] | message-cp agent key reset <name> [--account <name>]",
+  agent: "message-cp agent list [--account <name>] | message-cp agent remove <name> [--account <name>] | message-cp agent key reset <name> [--account <name>]",
   connect: "message-cp connect <agent> --url <public url> [--account <name>] [--new-key]",
 };
 
@@ -231,14 +231,16 @@ if (command === "serve") {
   db.close();
 } else if (command === "agent") {
   // Run on the server, like `person`. `remove` prints only names and counts, never a message body or a key. `key reset`
-  // prints the new key this once, to stdout, and only names to stderr; it never prints the old key or a hash.
+  // prints the new key this once, to stdout, and only names to stderr; it never prints the old key or a hash. `list`
+  // prints names, accounts and times, never a key or a hash.
   const usage = () => {
     console.error(`usage: ${USAGE.agent}`);
     process.exit(2);
   };
   const reset = rest[0] === "key" && rest[1] === "reset";
-  const [action, name, ...args] = reset ? ["key reset", ...rest.slice(2)] : rest;
-  if ((action !== "remove" && !reset) || !name || name.startsWith("--")) usage();
+  const list = rest[0] === "list";
+  const [action, name, ...args] = reset ? ["key reset", ...rest.slice(2)] : list ? ["list", undefined, ...rest.slice(1)] : rest;
+  if (!list && ((action !== "remove" && !reset) || !name || name.startsWith("--"))) usage();
   const opts = new Map<string, string>();
   for (let i = 0; i < args.length; i += 2) {
     const option = args[i]!;
@@ -249,7 +251,11 @@ if (command === "serve") {
   let db: ReturnType<typeof openDb> | undefined;
   try {
     db = openDb();
-    if (reset) {
+    if (list) {
+      for (const a of listServerAgents(db, opts.get("--account"))) {
+        console.log(`${a.name}\t${a.account}\tregistered ${a.registeredAt}\tlast seen ${a.lastSeen}`);
+      }
+    } else if (reset) {
       const k = resetAgentKey(db, opts.get("--account") ?? "owner", name!);
       console.error(
         `message-cp: new key for agent '${k.name}' of account '${k.account}'. It is shown only now; keep it. The old key no longer works.`,
@@ -268,7 +274,7 @@ if (command === "serve") {
       console.error("message-cp: the database is busy; nothing was changed. Try again.");
       process.exit(1);
     }
-    if (!(err instanceof PurgeError) && !(err instanceof KeyResetError)) throw err;
+    if (!(err instanceof PurgeError) && !(err instanceof KeyResetError) && !(err instanceof AgentListError)) throw err;
     console.error(`message-cp: ${err.message}`);
     process.exit(1);
   }

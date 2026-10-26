@@ -478,3 +478,36 @@ export function listPeople(db: Db, account?: string): Person[] {
     .all(account ?? null, account ?? null) as { name: string; account: string; registered_at: number }[];
   return rows.map((r) => ({ name: r.name, account: r.account, addedAt: new Date(r.registered_at).toISOString() }));
 }
+
+export class AgentListError extends Error {}
+
+export interface ListedAgent {
+  name: string;
+  account: string;
+  registeredAt: string;
+  lastSeen: string;
+}
+
+/**
+ * For `message-cp agent list`: the live agents (not people) of the account named `account`, or of every account
+ * without it, by account then name. Returns no key or hash.
+ */
+export function listServerAgents(db: Db, account?: string): ListedAgent[] {
+  if (account !== undefined && !db.prepare("SELECT 1 FROM accounts WHERE name = ?").get(account)) {
+    throw new AgentListError(`No account named '${account}'.`);
+  }
+  const rows = db
+    .prepare(
+      `SELECT agents.name, accounts.name AS account, agents.registered_at, agents.last_seen
+       FROM agents JOIN accounts ON accounts.id = agents.account_id
+       WHERE agents.person = 0 AND agents.removed_at IS NULL AND (? IS NULL OR accounts.name = ?)
+       ORDER BY accounts.name, agents.name`,
+    )
+    .all(account ?? null, account ?? null) as { name: string; account: string; registered_at: number; last_seen: number }[];
+  return rows.map((r) => ({
+    name: r.name,
+    account: r.account,
+    registeredAt: new Date(r.registered_at).toISOString(),
+    lastSeen: new Date(r.last_seen).toISOString(),
+  }));
+}
