@@ -35,6 +35,32 @@ CREATE TABLE IF NOT EXISTS ${table} (
   UNIQUE (account_id, name)
 );`;
 
+// One row per recipient, so a broadcast has its own read state for each agent. A message belongs to its recipient's
+// account. AUTOINCREMENT so an id, once handed out, never names a later message, even after the highest row is deleted:
+// `in_reply_to`, `message_status` and `ask` refer to messages by id. `in_reply_to` is the id of the message a reply
+// answers (\`send_message\` with \`in_reply_to\`), null for none; deleting that message sets it to null. The rebuild in
+// rebuildMessages() creates the same table.
+const messagesTable = (table: string) => `
+CREATE TABLE IF NOT EXISTS ${table} (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  recipient_id INTEGER NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+  sender TEXT NOT NULL,
+  body TEXT NOT NULL,
+  broadcast INTEGER NOT NULL,
+  created_at INTEGER NOT NULL,
+  read_at INTEGER,
+  in_reply_to INTEGER REFERENCES messages(id) ON DELETE SET NULL
+);`;
+
+// Dropping a table drops its indexes, so rebuildMessages() creates these again.
+const MESSAGES_INDEXES = `
+CREATE INDEX IF NOT EXISTS messages_inbox ON messages (recipient_id, read_at, id);
+CREATE INDEX IF NOT EXISTS messages_history ON messages (recipient_id, id);
+-- Deleting a conversation finds its messages by recipient and sender.
+CREATE INDEX IF NOT EXISTS messages_by_sender ON messages (recipient_id, sender COLLATE NOCASE);
+-- read_conversation reads a pair's messages newest first, so a page stops after its rows instead of sorting the pair's history.
+CREATE INDEX IF NOT EXISTS messages_by_pair ON messages (recipient_id, sender COLLATE NOCASE, created_at, id);`;
+
 // Every table lives here so later changes add to one place.
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS accounts (
@@ -55,23 +81,8 @@ CREATE TABLE IF NOT EXISTS tokens (
 );
 ${agentsTable("agents")}
 
--- One row per recipient, so a broadcast has its own read state for each agent. A message belongs to its recipient's account.
-CREATE TABLE IF NOT EXISTS messages (
-  id INTEGER PRIMARY KEY,
-  recipient_id INTEGER NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
-  sender TEXT NOT NULL,
-  body TEXT NOT NULL,
-  broadcast INTEGER NOT NULL,
-  created_at INTEGER NOT NULL,
-  read_at INTEGER
-);
-CREATE INDEX IF NOT EXISTS messages_inbox ON messages (recipient_id, read_at, id);
-CREATE INDEX IF NOT EXISTS messages_history ON messages (recipient_id, id);
--- Deleting a conversation finds its messages by recipient and sender.
-CREATE INDEX IF NOT EXISTS messages_by_sender ON messages (recipient_id, sender COLLATE NOCASE);
--- read_conversation reads a pair's messages newest first, so a page stops after its rows instead of sorting the pair's history.
-CREATE INDEX IF NOT EXISTS messages_by_pair ON messages (recipient_id, sender COLLATE NOCASE, created_at, id);
-
+${messagesTable("messages")}
+${MESSAGES_INDEXES}
 -- A channel belongs to one account and exists from its first post, or from the first agent joining it. Names follow the agent-name rules, unique per
 -- account regardless of case, keeping the first spelling. None of these names may appear in DROP_REMOVED.
 CREATE TABLE IF NOT EXISTS channels (
@@ -283,6 +294,38 @@ function addAccounts(db: Db, path: string): void {
   }
 }
 
+const messagesAutoincrement = (db: Db) =>
+  /\bAUTOINCREMENT\b/i.test((db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'messages'").get() as { sql: string }).sql);
+
+/**
+ * Rebuilds a `messages` table from before AUTOINCREMENT as `messagesTable`, keeping every row and its id, so that no id
+ * is handed out again once the highest message is deleted. SQLite cannot add AUTOINCREMENT to a table in place. Copying
+ * the rows with their ids sets the table's sqlite_sequence entry to the highest id kept. As in addAccounts(), the check
+ * and the rebuild happen under the write lock, so when several processes open the file at once exactly one rebuilds.
+ */
+function rebuildMessages(db: Db): void {
+  if (messagesAutoincrement(db)) return;
+  // Dropping the old table must not cascade to the webhook deliveries or replies that reference it.
+  const foreignKeys = db.pragma("foreign_keys", { simple: true });
+  db.pragma("foreign_keys = OFF");
+  try {
+    db.transaction(() => {
+      if (messagesAutoincrement(db)) return;
+      db.exec(messagesTable("messages_autoincrement"));
+      db.exec(
+        `INSERT INTO messages_autoincrement (id, recipient_id, sender, body, broadcast, created_at, read_at, in_reply_to)
+         SELECT id, recipient_id, sender, body, broadcast, created_at, read_at, in_reply_to FROM messages ORDER BY id`,
+      );
+      db.exec("DROP TABLE messages");
+      db.exec("ALTER TABLE messages_autoincrement RENAME TO messages");
+      db.exec(MESSAGES_INDEXES);
+      if ((db.pragma("foreign_key_check") as unknown[]).length > 0) throw new Error("messages migration broke a foreign key");
+    }).immediate();
+  } finally {
+    db.pragma(`foreign_keys = ${foreignKeys ? "ON" : "OFF"}`);
+  }
+}
+
 function migrate(db: Db, path: string): void {
   addColumn(db, "key_hash", "TEXT");
   // A random token per registration, so a session can tell its agent from a later one that reuses the id or name.
@@ -317,8 +360,9 @@ function migrate(db: Db, path: string): void {
   // Set once a DELETE ends an HTTP session, so no server restores it or records it again.
   addColumn(db, "ended", "INTEGER NOT NULL DEFAULT 0", "http_sessions");
   // The id of the message a reply answers (`send_message` with `in_reply_to`), null for none. Deleting that message sets
-  // it to null, so a reply never points at a later message that reuses the id.
+  // it to null. Added here before rebuildMessages() copies it.
   addColumn(db, "in_reply_to", "INTEGER REFERENCES messages(id) ON DELETE SET NULL", "messages");
+  rebuildMessages(db);
   // Deleting a message finds the replies to it (ON DELETE SET NULL) through this, not by scanning the table.
   db.exec("CREATE INDEX IF NOT EXISTS messages_by_reply ON messages (in_reply_to)");
   // `ask` finds the replies to one question sent to the asker through this, in id order, not by walking every reply to it.

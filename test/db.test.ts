@@ -8,11 +8,12 @@ import Database from "better-sqlite3";
 import { OWNER_ACCOUNT, openDb, preAccountsCopy } from "../src/db.js";
 import { accountForToken, addAccount, addToken } from "../src/accounts.js";
 import { getAgent, registerAgent } from "../src/agents.js";
-import { readInbox, sendMessage } from "../src/messages.js";
+import { deleteConversation, readInbox, sendMessage } from "../src/messages.js";
 
 const OPEN_DB = join(import.meta.dirname, "fixtures", "open-db.ts");
 const SCHEMA_BEFORE_REMOVAL = join(import.meta.dirname, "fixtures", "schema-before-removal.sql");
 const SCHEMA_SIGN_IN = join(import.meta.dirname, "fixtures", "schema-sign-in.sql");
+const SCHEMA_BEFORE_AUTOINCREMENT = join(import.meta.dirname, "fixtures", "schema-before-autoincrement.sql");
 
 /** Starts `count` real processes that open `file` at the same instant; resolves to each one's exit code and stderr. */
 function openTogether(file: string, count: number) {
@@ -325,5 +326,77 @@ describe("openDb", () => {
       expect(db.prepare("SELECT wait_key_hash FROM agents WHERE wait_key_hash IS NOT NULL").pluck().all()).toEqual(["wait-hash"]);
       db.close();
     });
+  });
+
+  describe("on a database from before message ids were AUTOINCREMENT", () => {
+    /** A file in main's schema whose highest message, a reply, has a webhook delivery, and whose question was read. */
+    function oldDatabase(): string {
+      const file = join(mkdtempSync(join(tmpdir(), "message-cp-")), "db.sqlite");
+      const db = new Database(file);
+      db.exec(readFileSync(SCHEMA_BEFORE_AUTOINCREMENT, "utf8"));
+      db.exec(`
+        INSERT INTO accounts (id, name, created_at) VALUES (1, 'owner', 1);
+        INSERT INTO agents (id, account_id, name, bio, registered_at, last_seen, instance) VALUES
+          (1, 1, 'alice', 'a', 10, 20, 'inst-a'),
+          (2, 1, 'bob', 'b', 11, 21, 'inst-b');
+        INSERT INTO messages (id, recipient_id, sender, body, broadcast, created_at, read_at, in_reply_to) VALUES
+          (3, 2, 'alice', 'question', 0, 30, 35, NULL),
+          (7, 1, 'bob', 'answer', 0, 31, NULL, 3);
+        INSERT INTO webhooks (id, account_id, url, event, name, include_text, secret, created_at) VALUES
+          (1, 1, 'https://example.com/hook', 'agent', 'alice', 0, 's', 40);
+        INSERT INTO webhook_deliveries (id, webhook_id, message_id, created_at) VALUES (1, 1, 7, 41);
+      `);
+      db.close();
+      return file;
+    }
+
+    const kept = (db: Database.Database) => ({
+      messages: db.prepare("SELECT * FROM messages ORDER BY id").all(),
+      deliveries: db.prepare("SELECT * FROM webhook_deliveries ORDER BY id").all(),
+      indexes: db.prepare("SELECT name, sql FROM sqlite_master WHERE type = 'index' AND tbl_name = 'messages' ORDER BY name").all(),
+    });
+    const messagesSql = (db: Database.Database) =>
+      db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'messages'").pluck().get() as string;
+
+    it("rebuilds messages with AUTOINCREMENT, keeping every message, its id, its indexes and its webhook deliveries", () => {
+      const file = oldDatabase();
+      const before = new Database(file, { readonly: true });
+      const old = kept(before);
+      before.close();
+
+      openDb(file).close();
+      const db = openDb(file); // a second open is harmless
+      expect(messagesSql(db)).toMatch(/id INTEGER PRIMARY KEY AUTOINCREMENT/);
+      expect(kept(db)).toEqual(old);
+      expect(db.pragma("foreign_key_check")).toEqual([]);
+      db.close();
+    });
+
+    it("never hands out a deleted message's id again, so a later message cannot answer as the deleted one", () => {
+      const db = openDb(oldDatabase());
+      const alice = getAgent(db, OWNER_ACCOUNT, "alice")!;
+      expect(deleteConversation(db, OWNER_ACCOUNT, "alice", "bob")).toBe(2);
+      expect(db.prepare("SELECT COUNT(*) FROM webhook_deliveries").pluck().get()).toBe(0);
+      const sent = sendMessage(db, OWNER_ACCOUNT, "bob", "alice", "later");
+      expect(sent.messages[0].id).toBe(8);
+      expect(readInbox(db, OWNER_ACCOUNT, alice.name)).toMatchObject([{ id: 8, body: "later", inReplyTo: null }]);
+      db.close();
+    });
+
+    it("is rebuilt once when many processes open it at once", async () => {
+      const file = oldDatabase();
+      const before = new Database(file, { readonly: true });
+      const old = kept(before);
+      before.close();
+
+      const results = await openTogether(file, 20);
+      expect(results.filter((r) => r.code !== 0).map((r) => r.stderr)).toEqual([]);
+
+      const db = new Database(file, { readonly: true });
+      expect(messagesSql(db)).toMatch(/AUTOINCREMENT/);
+      expect(kept(db)).toEqual(old);
+      expect(db.prepare("SELECT name FROM sqlite_master WHERE name = 'messages_autoincrement'").get()).toBeUndefined();
+      db.close();
+    }, 60_000);
   });
 });
