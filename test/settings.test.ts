@@ -48,10 +48,15 @@ describe("package", () => {
 
   it("packs only package.json, README.md, LICENSE and the built dist/", async () => {
     const { execFileSync } = await import("node:child_process");
-    // prepack builds dist/ first, so the list does not depend on an earlier build.
+    const { mkdirSync, writeFileSync } = await import("node:fs");
+    const root = join(import.meta.dirname, "..");
+    // prepack clears dist/ and builds it again, so the list does not depend on an earlier build:
+    // an output left behind by a renamed or deleted source is not packed.
+    mkdirSync(join(root, "dist"), { recursive: true });
+    writeFileSync(join(root, "dist", "stale-output.js"), "");
     // npm is npm.cmd on Windows, which needs a shell; its lifecycle output goes to stderr, kept out of the test log.
     const out = execFileSync("npm", ["pack", "--dry-run", "--json"], {
-      cwd: join(import.meta.dirname, ".."),
+      cwd: root,
       encoding: "utf8",
       shell: process.platform === "win32",
       stdio: ["ignore", "pipe", "pipe"],
@@ -60,6 +65,7 @@ describe("package", () => {
     expect(paths).toContain("dist/cli.js");
     expect(paths).toContain("dist/index.js");
     expect(paths.filter((p) => !p.startsWith("dist/")).sort()).toEqual(["LICENSE", "README.md", "package.json"]);
-    expect(paths.every((p) => !/\.test\.|\.ts$/.test(p))).toBe(true);
+    expect(paths).not.toContain("dist/stale-output.js");
+    expect(paths.every((p) => !/\.(test|spec)\.|\.ts$/.test(p))).toBe(true);
   }, 60_000);
 });
