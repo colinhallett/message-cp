@@ -17,10 +17,11 @@ export const MAX_METADATA_BYTES = 5 * 1024;
 /** A fetch refused or failed. Its message is fixed text that never quotes the URL or the answer. */
 export class MetadataFetchError extends Error {}
 
-// Every range that is not a public unicast address: loopback, private, link-local (169.254.169.254 among them),
-// carrier-grade NAT, unspecified, documentation, benchmarking, multicast and reserved, and in IPv6 unique-local,
-// link-local and site-local, multicast, and the forms that embed an IPv4 address (mapped, compatible, NAT64, 6to4 and
-// Teredo), which are refused whole rather than unpacked.
+// Every range that is not a public unicast address: in IPv4 loopback, private, link-local (169.254.169.254 among them),
+// carrier-grade NAT, unspecified, documentation, benchmarking, multicast and reserved. In IPv6 only global unicast
+// (2000::/3) is allowed, which leaves out loopback, unspecified, unique-local, link-local, multicast and the IPv4-mapped,
+// -compatible and -translated forms; within it the ranges that embed an IPv4 address (NAT64, 6to4 and Teredo) and the
+// documentation ones are refused whole rather than unpacked.
 // Kept apart by family: an IPv6 rule such as ::ffff:0:0/96 would otherwise match every IPv4 address.
 const blocked = { ipv4: new BlockList(), ipv6: new BlockList() };
 for (const [net, prefix] of [
@@ -42,28 +43,24 @@ for (const [net, prefix] of [
   blocked.ipv4.addSubnet(net, prefix, "ipv4");
 }
 for (const [net, prefix] of [
-  ["::", 96],
-  ["::ffff:0:0", 96],
-  ["64:ff9b::", 96],
-  ["64:ff9b:1::", 48],
-  ["100::", 64],
   ["2001::", 32],
   ["2001:db8::", 32],
   ["2002::", 16],
-  ["fc00::", 7],
-  ["fe80::", 10],
-  ["fec0::", 10],
-  ["ff00::", 8],
+  ["3fff::", 20],
 ] as const) {
   blocked.ipv6.addSubnet(net, prefix, "ipv6");
 }
+
+const globalUnicast = new BlockList();
+globalUnicast.addSubnet("2000::", 3, "ipv6");
 
 /** Whether `address`, an IP address as a resolver or socket reports it, is a public unicast address. */
 export function isPublicAddress(address: string | undefined): boolean {
   const family = address === undefined ? 0 : isIP(address);
   if (family === 0) return false;
   try {
-    return family === 4 ? !blocked.ipv4.check(address!, "ipv4") : !blocked.ipv6.check(address!, "ipv6");
+    if (family === 4) return !blocked.ipv4.check(address!, "ipv4");
+    return globalUnicast.check(address!, "ipv6") && !blocked.ipv6.check(address!, "ipv6");
   } catch {
     return false;
   }
@@ -83,8 +80,8 @@ const refused = () => new MetadataFetchError("The address is not a public one.")
  * sends only `Accept: application/json` (and the `Host` and `Connection` headers Node adds); it rejects with
  * `MetadataFetchError` for a host that is or resolves to an address that is not public, an answer other than 200
  * (a redirect included), one over MAX_METADATA_BYTES or not JSON, a connection that fails, or past METADATA_TIMEOUT_MS.
- * There is no cache: the authorization endpoint fetches on every request, one fetch per approval page shown, which the
- * cap on those fetches bounds.
+ * There is no cache: the authorization endpoint fetches once for each request whose `client_id` passes
+ * `checkMetadataUrl`, before checking its other parameters, with at most `maxSessions` fetches at once.
  */
 export function fetchClientMetadata(url: string, options: MetadataFetchOptions = {}): Promise<unknown> {
   const allowed = options.allowed ?? isPublicAddress;
@@ -120,7 +117,7 @@ export function fetchClientMetadata(url: string, options: MetadataFetchOptions =
       lookup: lookup as RequestOptions["lookup"],
     });
     const deadline = setTimeout(() => fail(new MetadataFetchError("The document took too long.")), options.timeoutMs ?? METADATA_TIMEOUT_MS);
-    // Checked again on the socket, before anything is sent, whatever reached it.
+    // Checked again on the socket once it connects, before the HTTP request is sent (TLS has begun its handshake by then).
     req.on("socket", (socket: Socket) => {
       socket.once("connect", () => {
         if (!allowed(socket.remoteAddress)) fail(refused());

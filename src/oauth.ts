@@ -227,7 +227,7 @@ function storeMetadataClient(db: Db, client: Client): Client & { id: number } {
  * Checks an authorization request's query and, if it may go ahead, stores it hashed with an expiry. `resource` is the
  * server's `/mcp` address, the only resource it accepts. A parameter given twice counts as bad. `fetched` is the client
  * a metadata document described, for a `client_id` that is its URL (see `clientFromMetadata`); it is stored in the same
- * transaction, in place of looking up a registration.
+ * transaction, in place of looking up a registration, even when the request then redirects back with an error.
  */
 export const startAuthorization = (db: Db, query: URLSearchParams, resource: string, fetched?: Client): AuthorizeOutcome =>
   db.transaction((): AuthorizeOutcome => {
@@ -236,7 +236,9 @@ export const startAuthorization = (db: Db, query: URLSearchParams, resource: str
       return values.length === 0 ? null : values.length === 1 ? values[0] : undefined;
     };
     const clientId = one("client_id");
-    const client = !clientId ? undefined : fetched ? (fetched.clientId === clientId ? storeMetadataClient(db, fetched) : undefined) : findClient(db, clientId);
+    let client: (Client & { id: number }) | undefined;
+    if (clientId && fetched) client = fetched.clientId === clientId ? storeMetadataClient(db, fetched) : undefined;
+    else if (clientId) client = findClient(db, clientId);
     if (!client) return { page: "error", message: "This client is not registered with this server. Start connecting again from the client." };
     const redirectUri = one("redirect_uri");
     if (!redirectUri || !client.redirectUris.includes(redirectUri)) {

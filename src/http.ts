@@ -826,6 +826,7 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
         if (err instanceof OAuthError) return showError(res, err.message);
         throw err;
       }
+      // An HTML page, not an OAuth error's JSON as for the other caps: this request is a person's browser.
       if (fetchingMetadata >= maxSessions) {
         res.writeHead(503, { ...APPROVE_HEADERS, "Retry-After": "5" });
         return void res.end(errorPage("Too many clients are connecting at once. Try again in a moment."));
