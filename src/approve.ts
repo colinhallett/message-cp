@@ -11,7 +11,7 @@ import { isLoopback, type Authorization } from "./oauth.js";
 const PAGE_STYLE = `${STYLE}
 main { margin: 10vh auto var(--s4); width: min(32rem, 100% - 2 * var(--s4)); display: flex; flex-direction: column; gap: var(--s3); }
 main h1 { display: flex; align-items: center; gap: var(--s2); }
-main p { margin: 0; }
+main h2, main p { margin: 0; }
 .client { font-family: var(--font-mono); font-weight: 600; overflow-wrap: anywhere; }
 .warn { padding: var(--s2) var(--s3); background: var(--error-bg); color: var(--error); border-radius: var(--radius); }
 #approve { display: flex; flex-direction: column; gap: var(--s1); }
