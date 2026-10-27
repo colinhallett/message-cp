@@ -15,6 +15,25 @@ import type { AccountId, Db } from "./db.js";
 
 export class LoginError extends Error {}
 
+/** The admin person a token acts as was removed, or is no longer an admin, by the time their request was carried out. */
+export class NotAdminError extends Error {
+  constructor() {
+    super("This person is no longer an admin of the account");
+  }
+}
+
+/**
+ * Inside the caller's transaction: refuses with `NotAdminError` unless `admin`, an admin person token's person, is
+ * still a live admin of `account`, found by row. The token was checked when the request began, but its body is read
+ * after, and the person may have been removed or unmarked meanwhile.
+ */
+function requireAdmin(db: Db, account: AccountId, admin: number): void {
+  const live = db
+    .prepare("SELECT 1 FROM agents WHERE id = ? AND account_id = ? AND person = 1 AND admin = 1 AND removed_at IS NULL")
+    .get(admin, account);
+  if (!live) throw new NotAdminError();
+}
+
 /** Why a code gave no token: used once already, an invite cancelled, or unknown, expired, or for a person no longer live. */
 export class LoginRefused extends Error {
   constructor(readonly reason: "used" | "cancelled" | "invalid") {
@@ -130,11 +149,13 @@ export interface InvitedPerson {
 
 /**
  * For POST /api/people: adds the person `name`, an admin with `admin`, to the account `account` as `addPerson` does,
- * and makes their first invite, in one transaction, so a refused name or a refused invite stores neither. Throws
- * `PersonError` as `addPerson` does and `LoginError` past MAX_INVITES_PER_ACCOUNT.
+ * and makes their first invite, in one transaction, so a refused name or a refused invite stores neither. `by` is the
+ * row of the admin person asking. Throws `NotAdminError` unless they are still a live admin of the account, `PersonError`
+ * as `addPerson` does and `LoginError` past MAX_INVITES_PER_ACCOUNT.
  */
-export const addInvitedPerson = (db: Db, account: AccountId, name: string, admin: boolean, now = Date.now()): InvitedPerson =>
+export const addInvitedPerson = (db: Db, account: AccountId, by: number, name: string, admin: boolean, now = Date.now()): InvitedPerson =>
   db.transaction((): InvitedPerson => {
+    requireAdmin(db, account, by);
     const acct = db.prepare("SELECT name FROM accounts WHERE id = ?").pluck().get(account) as string | undefined;
     if (acct === undefined) throw new PersonError("No such account.");
     // A nested transaction is a savepoint inside this one.
@@ -150,10 +171,12 @@ export const addInvitedPerson = (db: Db, account: AccountId, name: string, admin
 /**
  * For POST /api/invites: a new invite for the live person `person` (any case) of the account `account`, or undefined,
  * storing nothing, for a name no live person of the account has, an agent's included. Earlier invites stay as they are.
- * Throws `LoginError` past MAX_INVITES_PER_ACCOUNT.
+ * `by` is the row of the admin person asking. Throws `NotAdminError` unless they are still a live admin of the account,
+ * and `LoginError` past MAX_INVITES_PER_ACCOUNT.
  */
-export const makeInvite = (db: Db, account: AccountId, person: string, now = Date.now()): InvitedPerson | undefined =>
+export const makeInvite = (db: Db, account: AccountId, by: number, person: string, now = Date.now()): InvitedPerson | undefined =>
   db.transaction(() => {
+    requireAdmin(db, account, by);
     const live = db
       .prepare("SELECT id, name, admin FROM agents WHERE account_id = ? AND name = ? AND removed_at IS NULL AND person = 1")
       .get(account, person) as { id: number; name: string; admin: number } | undefined;

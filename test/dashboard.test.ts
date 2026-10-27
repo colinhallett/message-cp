@@ -608,7 +608,9 @@ describe("the page's channels and messages", () => {
 
     it("shows the token form saying a cancelled invite was cancelled", async () => {
       addPerson(db, "owner", "maria");
-      const invite = makeInvite(db, OWNER_ACCOUNT, "maria")!.invite;
+      addPerson(db, "owner", "ana", true);
+      const ana = db.prepare("SELECT id FROM agents WHERE name = 'ana'").pluck().get() as number;
+      const invite = makeInvite(db, OWNER_ACCOUNT, ana, "maria")!.invite;
       cancelInvite(db, OWNER_ACCOUNT, invite.id);
       const page = await openLink(`#code=${invite.code}`);
       await page.until(() => page.elements["status-line"].textContent.startsWith("This link was cancelled."));

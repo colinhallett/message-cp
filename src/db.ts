@@ -70,6 +70,30 @@ CREATE INDEX IF NOT EXISTS messages_by_reply ON messages (in_reply_to);
 -- \`ask\` finds the replies to one question sent to the asker through this, in id order, not by walking every reply to it.
 CREATE INDEX IF NOT EXISTS messages_by_question ON messages (in_reply_to, recipient_id);`;
 
+// One-time dashboard sign-in codes from `message-cp login-link`, and invites an admin person made (src/login.ts). Only
+// the code's hash is kept. `person_id` is set for a link that signs in as that person; `used_at` once it has given its
+// token or, for an invite, was cancelled. AUTOINCREMENT so an invite's id, which GET and DELETE /api/invites hand out,
+// never names a later invite once expired codes are deleted. A table from before it is rebuilt by rebuildLoginCodes(),
+// which creates the same table; the invite columns are added to it in migrate first.
+const loginCodesTable = (table: string) => `
+CREATE TABLE IF NOT EXISTS ${table} (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  code_hash TEXT NOT NULL UNIQUE,
+  account_id INTEGER NOT NULL REFERENCES accounts(id),
+  person_id INTEGER REFERENCES agents(id) ON DELETE CASCADE,
+  expires_at INTEGER NOT NULL,
+  used_at INTEGER,
+  invite INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER,
+  cancelled_at INTEGER
+);`;
+
+// Dropping a table drops its indexes, so rebuildLoginCodes() creates these again.
+const LOGIN_CODES_INDEXES = `
+CREATE INDEX IF NOT EXISTS login_codes_by_expiry ON login_codes (expires_at);
+-- The same as mcp_authorizations_by_agent, for an agent's row, should one ever be deleted.
+CREATE INDEX IF NOT EXISTS login_codes_by_person ON login_codes (person_id);`;
+
 // Every table lives here so later changes add to one place.
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS accounts (
@@ -229,20 +253,8 @@ CREATE INDEX IF NOT EXISTS mcp_authorizations_by_client ON mcp_authorizations (c
 -- The same for an agent's row, should one ever be deleted.
 CREATE INDEX IF NOT EXISTS mcp_authorizations_by_agent ON mcp_authorizations (agent_id);
 
--- One-time dashboard sign-in codes from \`message-cp login-link\`, and invites an admin person made (src/login.ts). Only
--- the code's hash is kept. \`person_id\` is set for a link that signs in as that person; \`used_at\` once it has given its
--- token or, for an invite, was cancelled. The invite columns are added in migrate.
-CREATE TABLE IF NOT EXISTS login_codes (
-  id INTEGER PRIMARY KEY,
-  code_hash TEXT NOT NULL UNIQUE,
-  account_id INTEGER NOT NULL REFERENCES accounts(id),
-  person_id INTEGER REFERENCES agents(id) ON DELETE CASCADE,
-  expires_at INTEGER NOT NULL,
-  used_at INTEGER
-);
-CREATE INDEX IF NOT EXISTS login_codes_by_expiry ON login_codes (expires_at);
--- The same as mcp_authorizations_by_agent, for an agent's row, should one ever be deleted.
-CREATE INDEX IF NOT EXISTS login_codes_by_person ON login_codes (person_id);
+${loginCodesTable("login_codes")}
+${LOGIN_CODES_INDEXES}
 `;
 
 // CREATE TABLE IF NOT EXISTS leaves an existing table alone, so columns added later are added here, only when missing.
@@ -384,6 +396,29 @@ function rebuildMessages(db: Db): void {
   }
 }
 
+const loginCodesAutoincrement = (db: Db) =>
+  /\bAUTOINCREMENT\b/i.test((db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'login_codes'").get() as { sql: string }).sql);
+
+/**
+ * Rebuilds a `login_codes` table from before AUTOINCREMENT as `loginCodesTable`, keeping every row and its id, as
+ * rebuildMessages() does for `messages`, so that no invite id is handed out again once the highest code is deleted,
+ * whichever server deletes it. Under the write lock, so exactly one process rebuilds. No table refers to `login_codes`.
+ */
+function rebuildLoginCodes(db: Db): void {
+  if (loginCodesAutoincrement(db)) return;
+  db.transaction(() => {
+    if (loginCodesAutoincrement(db)) return;
+    db.exec(loginCodesTable("login_codes_autoincrement"));
+    db.exec(
+      `INSERT INTO login_codes_autoincrement (id, code_hash, account_id, person_id, expires_at, used_at, invite, created_at, cancelled_at)
+       SELECT id, code_hash, account_id, person_id, expires_at, used_at, invite, created_at, cancelled_at FROM login_codes ORDER BY id`,
+    );
+    db.exec("DROP TABLE login_codes");
+    db.exec("ALTER TABLE login_codes_autoincrement RENAME TO login_codes");
+    db.exec(LOGIN_CODES_INDEXES);
+  }).immediate();
+}
+
 function migrate(db: Db, path: string): void {
   addColumn(db, "key_hash", "TEXT");
   // A random token per registration, so a session can tell its agent from a later one that reuses the id or name.
@@ -437,11 +472,12 @@ function migrate(db: Db, path: string): void {
   addColumn(db, "in_reply_to", "INTEGER REFERENCES messages(id) ON DELETE SET NULL", "messages");
   // 1 for an invite an admin person made (POST /api/people and /api/invites, src/login.ts), which lasts INVITE_TTL_MS; 0
   // for a `login-link` code and every code from before it. With it, when the code was made (null for one from before)
-  // and when it was cancelled (null for not). Cancelling sets `used_at` as well, so a server from before these columns,
+  // and when it was cancelled (null for not), all added here before rebuildLoginCodes() copies them. Cancelling sets `used_at` as well, so a server from before these columns,
   // which reads only `person_id`, `expires_at` and `used_at`, refuses a cancelled invite as used rather than redeeming it.
   addColumn(db, "invite", "INTEGER NOT NULL DEFAULT 0", "login_codes");
   addColumn(db, "created_at", "INTEGER", "login_codes");
   addColumn(db, "cancelled_at", "INTEGER", "login_codes");
+  rebuildLoginCodes(db);
   // GET /api/invites pages an account's unused invites newest first, and storeCode counts its invites, through this.
   db.exec("CREATE INDEX IF NOT EXISTS login_codes_invites ON login_codes (account_id, used_at, id) WHERE invite = 1");
   // storeCode counts the unused `login-link` codes through this, not by scanning invites.

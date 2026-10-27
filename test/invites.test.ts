@@ -2,6 +2,7 @@ import { mkdtempSync } from "node:fs";
 import { request } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { accountForToken, addAccount, addToken, listAccounts } from "../src/accounts.js";
 import { addPerson, registerAgent, removePerson, setPersonAdmin } from "../src/agents.js";
@@ -14,6 +15,8 @@ import {
   LoginRefused,
   MAX_INVITES_PER_ACCOUNT,
   MAX_LOGIN_CODES,
+  NotAdminError,
+  addInvitedPerson,
   cancelInvite,
   makeInvite,
   makeLoginCode,
@@ -57,6 +60,18 @@ const call = (path: string, token: string | null, method = "GET", body?: unknown
   });
 const login = (code: string) => call("/api/login", null, "POST", { code });
 const message = async (res: Response) => ((await res.json()) as { error: { message: string } }).error.message;
+/** A live admin of `account`'s row, adding one named boss if it has none, as a token's person is passed to makeInvite. */
+const adminOf = (account: AccountId): number => {
+  const find = () =>
+    db.prepare("SELECT id FROM agents WHERE account_id = ? AND person = 1 AND admin = 1 AND removed_at IS NULL ORDER BY id").pluck().get(account) as
+      | number
+      | undefined;
+  const found = find();
+  if (found !== undefined) return found;
+  addPerson(db, listAccounts(db).find((a) => a.id === account)!.name, "boss", true);
+  return find()!;
+};
+const mkInvite = (account: AccountId, person: string, now?: number) => makeInvite(db, account, adminOf(account), person, now);
 const codes = () => db.prepare("SELECT * FROM login_codes ORDER BY id").all() as Record<string, unknown>[];
 const people = () => db.prepare("SELECT account_id, name, person, admin FROM agents WHERE removed_at IS NULL ORDER BY id").all();
 const sha256 = async (text: string) => (await import("node:crypto")).createHash("sha256").update(text).digest("hex");
@@ -137,7 +152,7 @@ describe("POST /api/people", () => {
   });
 
   it("stores neither the person nor the invite past MAX_INVITES_PER_ACCOUNT", async () => {
-    for (let i = 0; i < MAX_INVITES_PER_ACCOUNT; i++) makeInvite(db, OWNER_ACCOUNT, "ana");
+    for (let i = 0; i < MAX_INVITES_PER_ACCOUNT; i++) mkInvite(OWNER_ACCOUNT, "ana");
     const before = { people: people(), codes: codes() };
     const res = await call("/api/people", ana, "POST", { name: "dee", admin: false });
     expect(res.status).toBe(503);
@@ -193,7 +208,7 @@ describe("invites and login-link codes", () => {
   it("expires an invite after 7 days, and leaves a login-link code at 5 minutes", () => {
     addPerson(db, "owner", "ben");
     const now = 1_000_000;
-    const invite = makeInvite(db, OWNER_ACCOUNT, "ben", now)!.invite;
+    const invite = mkInvite(OWNER_ACCOUNT, "ben", now)!.invite;
     expect(invite.expiresAt).toBe(now + 7 * 24 * 60 * 60 * 1000);
     const link = makeLoginCode(db, "owner", "ben", now);
     expect(link.expiresAt).toBe(now + LOGIN_CODE_TTL_MS);
@@ -212,7 +227,7 @@ describe("invites and login-link codes", () => {
     };
     expect(refused(() => redeemLoginCode(db, link.code, now + LOGIN_CODE_TTL_MS))).toBe("invalid");
     expect(refused(() => redeemLoginCode(db, invite.code, now + INVITE_TTL_MS))).toBe("invalid");
-    const later = makeInvite(db, OWNER_ACCOUNT, "ben", now)!.invite;
+    const later = mkInvite(OWNER_ACCOUNT, "ben", now)!.invite;
     expect(refused(() => redeemLoginCode(db, later.code, now + INVITE_TTL_MS - 1))).toBe("redeemed");
   });
 });
@@ -221,14 +236,14 @@ describe("the invite cap", () => {
   it("counts each account's invites apart, cancelled ones included, so a full account blocks no other account or login-link", () => {
     addPerson(db, "friend", "fay");
     for (let i = 0; i < MAX_INVITES_PER_ACCOUNT; i++) {
-      const { invite } = makeInvite(db, OWNER_ACCOUNT, "ana")!;
+      const { invite } = mkInvite(OWNER_ACCOUNT, "ana")!;
       if (i % 2 === 0) cancelInvite(db, OWNER_ACCOUNT, invite.id);
     }
-    expect(() => makeInvite(db, OWNER_ACCOUNT, "ana")).toThrow(LoginError);
-    expect(makeInvite(db, friend, "fay")).toMatchObject({ name: "fay" });
+    expect(() => mkInvite(OWNER_ACCOUNT, "ana")).toThrow(LoginError);
+    expect(mkInvite(friend, "fay")).toMatchObject({ name: "fay" });
     expect(makeLoginCode(db, "owner", "ana")).toMatchObject({ person: "ana" });
     // Expired invites stop counting, and are deleted when the next code is made.
-    expect(makeInvite(db, OWNER_ACCOUNT, "ana", Date.now() + INVITE_TTL_MS)).toMatchObject({ name: "ana" });
+    expect(mkInvite(OWNER_ACCOUNT, "ana", Date.now() + INVITE_TTL_MS)).toMatchObject({ name: "ana" });
     expect(db.prepare("SELECT count(*) FROM login_codes WHERE account_id = ? AND invite = 1").pluck().get(OWNER_ACCOUNT)).toBe(1);
   });
 
@@ -236,7 +251,7 @@ describe("the invite cap", () => {
     const insert = db.prepare("INSERT INTO login_codes (code_hash, account_id, expires_at) VALUES (?, ?, ?)");
     for (let i = 0; i < MAX_LOGIN_CODES; i++) insert.run(`h${i}`, OWNER_ACCOUNT, Date.now() + 60_000);
     expect(() => makeLoginCode(db, "owner")).toThrow(LoginError);
-    expect(makeInvite(db, OWNER_ACCOUNT, "ana")).toMatchObject({ name: "ana" });
+    expect(mkInvite(OWNER_ACCOUNT, "ana")).toMatchObject({ name: "ana" });
   });
 });
 
@@ -246,16 +261,16 @@ describe("GET /api/invites", () => {
     addPerson(db, "owner", "cy");
     addPerson(db, "owner", "gone");
     addPerson(db, "friend", "fay");
-    const used = makeInvite(db, OWNER_ACCOUNT, "ben")!.invite;
+    const used = mkInvite(OWNER_ACCOUNT, "ben")!.invite;
     redeemLoginCode(db, used.code);
-    const expired = makeInvite(db, OWNER_ACCOUNT, "ben", Date.now() - INVITE_TTL_MS)!.invite;
-    const ben = makeInvite(db, OWNER_ACCOUNT, "ben")!.invite;
-    makeInvite(db, OWNER_ACCOUNT, "gone");
+    const expired = mkInvite(OWNER_ACCOUNT, "ben", Date.now() - INVITE_TTL_MS)!.invite;
+    const ben = mkInvite(OWNER_ACCOUNT, "ben")!.invite;
+    mkInvite(OWNER_ACCOUNT, "gone");
     removePerson(db, "owner", "gone");
     makeLoginCode(db, "owner", "cy");
-    const cy = makeInvite(db, OWNER_ACCOUNT, "cy")!.invite;
-    makeInvite(db, friend, "fay");
-    const cancelled = makeInvite(db, OWNER_ACCOUNT, "cy")!.invite;
+    const cy = mkInvite(OWNER_ACCOUNT, "cy")!.invite;
+    mkInvite(friend, "fay");
+    const cancelled = mkInvite(OWNER_ACCOUNT, "cy")!.invite;
     expect((await call(`/api/invites?id=${cancelled.id}`, ana, "DELETE")).status).toBe(200);
 
     const res = await call("/api/invites", ana);
@@ -279,7 +294,7 @@ describe("GET /api/invites", () => {
 describe("DELETE /api/invites", () => {
   it("cancels an unused invite once, after which it answers cancelled at POST /api/login", async () => {
     addPerson(db, "owner", "ben");
-    const { invite } = makeInvite(db, OWNER_ACCOUNT, "ben")!;
+    const { invite } = mkInvite(OWNER_ACCOUNT, "ben")!;
     const res = await call(`/api/invites?id=${invite.id}`, ana, "DELETE");
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ cancelled: true });
@@ -297,12 +312,12 @@ describe("DELETE /api/invites", () => {
   it("answers the same 404 for a used, expired, removed person's, login-link, unknown or other account's id, changing nothing", async () => {
     addPerson(db, "owner", "ben");
     addPerson(db, "friend", "fay");
-    const used = makeInvite(db, OWNER_ACCOUNT, "ben")!.invite;
+    const used = mkInvite(OWNER_ACCOUNT, "ben")!.invite;
     redeemLoginCode(db, used.code);
-    const expired = makeInvite(db, OWNER_ACCOUNT, "ben", Date.now() - INVITE_TTL_MS)!.invite;
-    const theirs = makeInvite(db, friend, "fay")!.invite;
+    const expired = mkInvite(OWNER_ACCOUNT, "ben", Date.now() - INVITE_TTL_MS)!.invite;
+    const theirs = mkInvite(friend, "fay")!.invite;
     addPerson(db, "owner", "gone");
-    const gone = makeInvite(db, OWNER_ACCOUNT, "gone")!.invite;
+    const gone = mkInvite(OWNER_ACCOUNT, "gone")!.invite;
     removePerson(db, "owner", "gone");
     makeLoginCode(db, "owner", "ben");
     const link = db.prepare("SELECT id FROM login_codes WHERE invite = 0").pluck().get() as number;
@@ -320,6 +335,57 @@ describe("DELETE /api/invites", () => {
   });
 });
 
+describe("invite ids", () => {
+  it("never hands out an expired invite's id again, so a stale DELETE cannot cancel a later invite", async () => {
+    addPerson(db, "owner", "ben");
+    const old = mkInvite(OWNER_ACCOUNT, "ben", Date.now() - INVITE_TTL_MS)!.invite;
+    // Making the next invite deletes the expired one, the highest row of the table.
+    const later = mkInvite(OWNER_ACCOUNT, "ben")!.invite;
+    expect(codes().map((c) => c.id)).toEqual([later.id]);
+    expect(later.id).toBeGreaterThan(old.id);
+    expect((await call(`/api/invites?id=${old.id}`, ana, "DELETE")).status).toBe(404);
+    expect((await login(later.code)).status).toBe(200);
+  });
+
+  it("rebuilds a login_codes table from before AUTOINCREMENT, keeping every code, its id and its indexes", () => {
+    const file = join(mkdtempSync(join(tmpdir(), "message-cp-invites-old-")), "db.sqlite");
+    openDb(file).close();
+    const raw = new Database(file);
+    raw.exec(`
+      DROP TABLE login_codes;
+      CREATE TABLE login_codes (
+        id INTEGER PRIMARY KEY,
+        code_hash TEXT NOT NULL UNIQUE,
+        account_id INTEGER NOT NULL REFERENCES accounts(id),
+        person_id INTEGER REFERENCES agents(id) ON DELETE CASCADE,
+        expires_at INTEGER NOT NULL,
+        used_at INTEGER
+      );
+      CREATE INDEX login_codes_by_expiry ON login_codes (expires_at);
+      CREATE INDEX login_codes_by_person ON login_codes (person_id);
+      INSERT INTO login_codes (id, code_hash, account_id, person_id, expires_at, used_at) VALUES
+        (4, 'a', 1, NULL, 10, NULL),
+        (9, 'b', 1, NULL, 20, 15);
+    `);
+    raw.close();
+    const indexes = (d: Database.Database) =>
+      d.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'login_codes' AND sql IS NOT NULL ORDER BY name").pluck().all();
+    const reopened = openDb(file);
+    openDb(file).close(); // a second open is harmless
+    expect(reopened.prepare("SELECT sql FROM sqlite_master WHERE name = 'login_codes'").pluck().get()).toMatch(/id INTEGER PRIMARY KEY AUTOINCREMENT/);
+    expect(reopened.prepare("SELECT id, code_hash, expires_at, used_at, invite, created_at, cancelled_at FROM login_codes ORDER BY id").all()).toEqual([
+      { id: 4, code_hash: "a", expires_at: 10, used_at: null, invite: 0, created_at: null, cancelled_at: null },
+      { id: 9, code_hash: "b", expires_at: 20, used_at: 15, invite: 0, created_at: null, cancelled_at: null },
+    ]);
+    expect(indexes(reopened)).toEqual(["login_codes_by_expiry", "login_codes_by_person", "login_codes_invites", "login_codes_unused_links"]);
+    // Both rows have expired: the next code deletes them and still takes a new id.
+    addPerson(reopened, "owner", "boss", true);
+    const boss = reopened.prepare("SELECT id FROM agents WHERE name = 'boss'").pluck().get() as number;
+    expect(makeInvite(reopened, OWNER_ACCOUNT, boss, "boss")!.invite.id).toBe(10);
+    reopened.close();
+  });
+});
+
 describe("who reaches the invite routes", () => {
   const routes = [
     ["/api/people", "POST", { name: "dee", admin: false }],
@@ -330,7 +396,7 @@ describe("who reaches the invite routes", () => {
 
   it("refuses a plain person, read-only, agent and full token with 403, closing the connection, and stores nothing", async () => {
     addPerson(db, "owner", "ben");
-    makeInvite(db, OWNER_ACCOUNT, "ana");
+    mkInvite(OWNER_ACCOUNT, "ana");
     const tokens = [
       [personToken("owner", "ben"), "A person token only reads, sends and posts"],
       [addToken(db, "owner", true).token, "This token is read-only"],
@@ -365,11 +431,68 @@ describe("who reaches the invite routes", () => {
     expect(people()).not.toContainEqual(expect.objectContaining({ name: "dee" }));
   });
 
+  it("refuses an admin removed or unmarked while their POST body was still arriving, storing nothing", async () => {
+    addPerson(db, "owner", "ben");
+    for (const [change, undo] of [
+      [() => setPersonAdmin(db, "owner", "ana", false), () => setPersonAdmin(db, "owner", "ana", true)],
+      [
+        () => removePerson(db, "owner", "ana"),
+        () => {
+          addPerson(db, "owner", "ana", true);
+          ana = personToken("owner", "ana");
+        },
+      ],
+    ] as const) {
+      for (const [path, body] of [
+        ["/api/people", { name: "dee", admin: true }],
+        ["/api/invites", { person: "ben" }],
+      ] as const) {
+        const text = JSON.stringify(body);
+        const held = request(`${base()}${path}`, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${ana}`, "Content-Type": "application/json", "Content-Length": String(text.length) },
+        });
+        const answered = new Promise<{ status: number; body: string }>((resolve, reject) => {
+          held.on("response", (r) => {
+            let got = "";
+            r.on("data", (c) => (got += c));
+            r.on("end", () => resolve({ status: r.statusCode!, body: got }));
+          });
+          held.on("error", reject);
+        });
+        held.write(text.slice(0, 1));
+        await new Promise((r) => setTimeout(r, 100));
+        change();
+        held.end(text.slice(1));
+        const res = await answered;
+        expect(res.status, path).toBe(403);
+        expect(res.body).toContain("This person is no longer an admin of the account");
+        expect(codes()).toEqual([]);
+        expect(people()).not.toContainEqual(expect.objectContaining({ name: "dee" }));
+        undo();
+      }
+    }
+  });
+
+  it("refuses makeInvite and addInvitedPerson for a person who is not a live admin of the account", () => {
+    addPerson(db, "owner", "ben");
+    addPerson(db, "friend", "fay", true);
+    const id = (account: AccountId, name: string) =>
+      db.prepare("SELECT id FROM agents WHERE account_id = ? AND name = ?").pluck().get(account, name) as number;
+    const agent = registerAgent(db, OWNER_ACCOUNT, "bot", "b");
+    for (const by of [id(OWNER_ACCOUNT, "ben"), id(friend, "fay"), id(OWNER_ACCOUNT, agent.name), 9999]) {
+      expect(() => makeInvite(db, OWNER_ACCOUNT, by, "ben")).toThrow(NotAdminError);
+      expect(() => addInvitedPerson(db, OWNER_ACCOUNT, by, "dee", false)).toThrow(NotAdminError);
+    }
+    expect(codes()).toEqual([]);
+    expect(people()).not.toContainEqual(expect.objectContaining({ name: "dee" }));
+  });
+
   it("keeps a second account's admin out of the first account entirely", async () => {
     addPerson(db, "friend", "fay", true);
     const fay = personToken("friend", "fay");
     addPerson(db, "owner", "ben");
-    const ours = makeInvite(db, OWNER_ACCOUNT, "ben")!.invite;
+    const ours = mkInvite(OWNER_ACCOUNT, "ben")!.invite;
     expect(await (await call("/api/invites", fay)).json()).toEqual([]);
     expect((await call(`/api/invites?id=${ours.id}`, fay, "DELETE")).status).toBe(404);
     expect((await call("/api/invites", fay, "POST", { person: "ben" })).status).toBe(404);

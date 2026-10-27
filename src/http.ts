@@ -17,7 +17,7 @@ import {
 import { APPROVE_HEADERS, approvePage, errorPage } from "./approve.js";
 import { mcpEndpoint } from "./connect.js";
 import { DASHBOARD_FONTS, DASHBOARD_HEADERS, DASHBOARD_HTML } from "./dashboard.js";
-import { LoginError, LoginRefused, addInvitedPerson, cancelInvite, dashboardUrl, listInvites, loginLink, makeInvite, redeemLoginCode, type Invite } from "./login.js";
+import { LoginError, LoginRefused, NotAdminError, addInvitedPerson, cancelInvite, dashboardUrl, listInvites, loginLink, makeInvite, redeemLoginCode, type Invite } from "./login.js";
 import type { AccountId, Db } from "./db.js";
 import {
   DEFAULT_INBOX_LIMIT,
@@ -787,7 +787,8 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
   /**
    * POST /api/people and /api/invites: reads a JSON object and answers with what `act` makes of it, never cached, as it
    * carries an invite's code. A slot is taken before the body is read and given back at the end, sharing `asPerson`'s
-   * count. `act` answers a string for 400, undefined for 404, and throws `PersonError` for 400 and `LoginError` for 503.
+   * count. `act` answers a string for 400, undefined for 404, and throws `PersonError` for 400, `LoginError` for 503 and
+   * `NotAdminError`, for a token's person removed or unmarked while the body was read, for 403.
    */
   const asAdmin = async (req: IncomingMessage, res: ServerResponse, act: (input: Record<string, unknown>) => unknown) => {
     if (actingAsPerson >= maxSessions) return reply(res, 503, "Too many requests", { Connection: "close" });
@@ -805,6 +806,7 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
         done = unlessBusy(res, () => act(typeof input === "object" && input !== null ? (input as Record<string, unknown>) : {}) ?? null);
       } catch (err) {
         if (err instanceof PersonError) return reply(res, 400, err.message);
+        if (err instanceof NotAdminError) return reply(res, 403, err.message);
         if (err instanceof LoginError) return reply(res, 503, err.message);
         throw err;
       }
@@ -821,11 +823,11 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
    * POST /api/people: `{ name, admin }`, adds the person `name`, an admin with `admin` true, to the account and makes
    * their first invite, as `addInvitedPerson` does. Answers `{ name, admin, invite: { id, code, expiresAt, link? } }`.
    */
-  const apiPeople = (req: IncomingMessage, res: ServerResponse, account: AccountId) => {
+  const apiPeople = (req: IncomingMessage, res: ServerResponse, account: AccountId, by: number) => {
     if (req.method !== "POST") return reply(res, 405, "Method not allowed", { Allow: "POST" });
     return asAdmin(req, res, (input) => {
       if (typeof input.name !== "string" || typeof input.admin !== "boolean") return "Give name as a string and admin as true or false";
-      const added = addInvitedPerson(db, account, input.name, input.admin);
+      const added = addInvitedPerson(db, account, by, input.name, input.admin);
       return { name: added.name, admin: added.admin, invite: inviteJson(added.invite) };
     });
   };
@@ -836,12 +838,12 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
    * expired, newest first, never a code. DELETE `?id=<id>`: cancels the account's invite `id` while it is not used,
    * cancelled or expired, else 404, the same for another account's. GET and DELETE read no body and take no slot.
    */
-  const apiInvites = (req: IncomingMessage, res: ServerResponse, account: AccountId) => {
+  const apiInvites = (req: IncomingMessage, res: ServerResponse, account: AccountId, by: number) => {
     const query = new URL(req.url ?? "", "http://x").searchParams;
     if (req.method === "POST") {
       return asAdmin(req, res, (input) => {
         if (typeof input.person !== "string") return "Give person as a string";
-        const made = makeInvite(db, account, input.person);
+        const made = makeInvite(db, account, by, input.person);
         return made && { name: made.name, admin: made.admin, invite: inviteJson(made.invite) };
       });
     }
@@ -1144,7 +1146,7 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
     // taken or a body read. A plain person token was refused above.
     if (inviting) {
       if (!access.person) return reply(res, 403, FULL_TOKEN_INVITES, { Connection: "close" });
-      return (path === "/api/people" ? apiPeople : apiInvites)(req, res, account);
+      return (path === "/api/people" ? apiPeople : apiInvites)(req, res, account, access.person.id);
     }
     if (path === "/api/conversation") return apiConversation(req, res, account);
     if (path === "/wait") return wait(req, res, account, access.agent);
