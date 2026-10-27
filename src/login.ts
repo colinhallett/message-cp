@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
 import { issueToken } from "./accounts.js";
-import { KeyResetError, PersonError, PurgeError, addPerson, purgeAgent, resetAgentKey } from "./agents.js";
+import { KeyResetError, PersonError, PurgeError, addPerson, purgeAgent, removePerson, resetAgentKey, setPersonAdmin, type Purged } from "./agents.js";
 import { publicUrl } from "./connect.js";
 import type { AccountId, Db } from "./db.js";
 
@@ -185,6 +185,58 @@ export const makeInvite = (db: Db, account: AccountId, by: number, person: strin
     return { name: live.name, admin: live.admin === 1, invite: { id, code, expiresAt } };
   }).immediate();
 
+/** An admin person unmarking or removing their own person, which they leave to another admin or the server. */
+export class OwnPersonError extends Error {
+  constructor() {
+    super("An admin cannot unmark or remove themselves. Ask another admin, or run message-cp person on the server");
+  }
+}
+
+/**
+ * Inside the caller's transaction: the account's name, after refusing with `NotAdminError` unless `by` is still a live
+ * admin of `account`, and the row of its live person `name` (any case), or undefined for a name no live person of the
+ * account has, an agent's included.
+ */
+function personOf(db: Db, account: AccountId, by: number, name: string): { account: string; id: number } | undefined {
+  requireAdmin(db, account, by);
+  const id = db
+    .prepare("SELECT id FROM agents WHERE account_id = ? AND name = ? AND removed_at IS NULL AND person = 1")
+    .pluck()
+    .get(account, name) as number | undefined;
+  if (id === undefined) return undefined;
+  return { account: db.prepare("SELECT name FROM accounts WHERE id = ?").pluck().get(account) as string, id };
+}
+
+/**
+ * For PATCH /api/people: marks the live person `name` (any case) of the account `account` an admin, or unmarks them
+ * with `admin` false, as `setPersonAdmin` does, or answers undefined, changing nothing, for a name no live person of the
+ * account has. `by` is the row of the admin person asking. Throws `NotAdminError` unless they are still a live admin of
+ * the account, and `OwnPersonError` if they would unmark themselves.
+ */
+export const setAdminBy = (db: Db, account: AccountId, by: number, name: string, admin: boolean): { name: string; admin: boolean } | undefined =>
+  db.transaction(() => {
+    const person = personOf(db, account, by, name);
+    if (person === undefined) return undefined;
+    if (person.id === by && !admin) throw new OwnPersonError();
+    // A nested transaction is a savepoint inside this one.
+    const marked = setPersonAdmin(db, person.account, name, admin);
+    return { name: marked.name, admin: marked.admin };
+  }).immediate();
+
+/**
+ * For DELETE /api/people: removes the live person `name` (any case) of the account `account` as `removePerson` does,
+ * or answers undefined, changing nothing, for a name no live person of the account has. `by` is the row of the admin
+ * person asking. Throws `NotAdminError` unless they are still a live admin of the account, and `OwnPersonError` if they
+ * would remove themselves.
+ */
+export const removePersonBy = (db: Db, account: AccountId, by: number, name: string): Purged | undefined =>
+  db.transaction(() => {
+    const person = personOf(db, account, by, name);
+    if (person === undefined) return undefined;
+    if (person.id === by) throw new OwnPersonError();
+    return removePerson(db, person.account, name);
+  }).immediate();
+
 /** An agent removed by an admin person: its name and how many direct messages and mentions went with it. */
 export interface RemovedAgent {
   name: string;
@@ -198,7 +250,7 @@ export interface RemovedAgent {
  * person's included. `by` is the row of the admin person asking. Throws `NotAdminError` unless they are still a live
  * admin of the account.
  */
-export const removeAgentAsAdmin = (db: Db, account: AccountId, by: number, name: string): RemovedAgent | undefined =>
+export const removeAgentBy = (db: Db, account: AccountId, by: number, name: string): RemovedAgent | undefined =>
   db.transaction(() => {
     requireAdmin(db, account, by);
     const acct = db.prepare("SELECT name FROM accounts WHERE id = ?").pluck().get(account) as string | undefined;
@@ -219,7 +271,7 @@ export const removeAgentAsAdmin = (db: Db, account: AccountId, by: number, name:
  * name no live agent of the account has, a person's included. `by` is the row of the admin person asking. Throws
  * `NotAdminError` unless they are still a live admin of the account.
  */
-export const resetAgentKeyAsAdmin = (db: Db, account: AccountId, by: number, name: string): { name: string; key: string } | undefined =>
+export const resetAgentKeyBy = (db: Db, account: AccountId, by: number, name: string): { name: string; key: string } | undefined =>
   db.transaction(() => {
     requireAdmin(db, account, by);
     const acct = db.prepare("SELECT name FROM accounts WHERE id = ?").pluck().get(account) as string | undefined;

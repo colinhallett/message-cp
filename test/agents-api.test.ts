@@ -9,7 +9,7 @@ import { addAccount, addToken, listAccounts } from "../src/accounts.js";
 import { addPerson, purgeAgent, setPersonAdmin } from "../src/agents.js";
 import { OWNER_ACCOUNT, openDb, type AccountId, type Db } from "../src/db.js";
 import { startHttp, type HttpServer } from "../src/http.js";
-import { NotAdminError, removeAgentAsAdmin, resetAgentKeyAsAdmin } from "../src/login.js";
+import { NotAdminError, removeAgentBy, resetAgentKeyBy } from "../src/login.js";
 import { Session, createServer } from "../src/server.js";
 import { addWebhook } from "../src/webhooks.js";
 
@@ -302,14 +302,14 @@ describe("who reaches DELETE /api/agents and POST /api/agents/key", () => {
     }
   });
 
-  it("refuses removeAgentAsAdmin and resetAgentKeyAsAdmin for anyone who is not a live admin of the account", async () => {
+  it("refuses removeAgentBy and resetAgentKeyBy for anyone who is not a live admin of the account", async () => {
     await agent("alice");
     addPerson(db, "owner", "ben");
     addPerson(db, "friend", "fay", true);
     const before = snapshot();
     for (const by of [idOf(OWNER_ACCOUNT, "ben"), idOf(friend, "fay"), idOf(OWNER_ACCOUNT, "alice"), 9999]) {
-      expect(() => removeAgentAsAdmin(db, OWNER_ACCOUNT, by, "alice")).toThrow(NotAdminError);
-      expect(() => resetAgentKeyAsAdmin(db, OWNER_ACCOUNT, by, "alice")).toThrow(NotAdminError);
+      expect(() => removeAgentBy(db, OWNER_ACCOUNT, by, "alice")).toThrow(NotAdminError);
+      expect(() => resetAgentKeyBy(db, OWNER_ACCOUNT, by, "alice")).toThrow(NotAdminError);
     }
     expect(snapshot()).toEqual(before);
   });

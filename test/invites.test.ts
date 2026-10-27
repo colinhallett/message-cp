@@ -401,7 +401,7 @@ describe("who reaches the invite routes", () => {
       [personToken("owner", "ben"), "A person token only reads, sends and posts"],
       [addToken(db, "owner", true).token, "This token is read-only"],
       [addToken(db, "owner", false, true).token, "Agent tokens cannot use the dashboard API"],
-      [OWNER_TOKEN, /^A full token cannot add people or make invites\. Sign in as an admin person/],
+      [OWNER_TOKEN, /^A full token cannot add, mark or remove people or make invites\. Sign in as an admin person/],
     ] as const;
     const before = { people: people(), codes: codes() };
     for (const [token, expected] of tokens) {
