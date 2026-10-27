@@ -10,13 +10,14 @@ import { MAX_BODY_LENGTH } from "./messages.js";
 // middle, and the agents on the right. A search box asks GET /api/search once per search and shows the answer in the
 // middle in place of the open conversation. The sidebar's "Webhook deliveries" entry shows the newest deliveries in the
 // middle the same way, refreshed with each poll. It asks GET /api/token once whether the token is read-only or
-// agent-only. With a full token it lets a person choose which of the account's people they are, post in the open channel
-// with POST /api/post and reply in an open direct conversation of theirs, or start one with anyone in the account from
-// "New message", with POST /api/send, or create a channel from "New channel" by its first post, with POST /api/post, and
-// delete an open direct conversation, after confirming, with DELETE /api/conversation; that is all it ever writes. With a
-// read-only token it only reads. An agent token, which the server refuses on every /api path but GET /api/token, it
-// forgets, saying that agent tokens cannot use it. It puts agent- and person-supplied text on the page with textContent, never
-// as HTML.
+// agent-only, and for a person token whose person it is. With a full token it lets a person choose which of the account's
+// people they are, post in the open channel with POST /api/post and reply in an open direct conversation of theirs, or
+// start one with anyone in the account from "New message", with POST /api/send, or create a channel from "New channel" by
+// its first post, with POST /api/post, and delete an open direct conversation, after confirming, with
+// DELETE /api/conversation; that is all it ever writes. With a person token it is that person: it names them in place of
+// the choice and does the same, except deleting, only as them. With a read-only token it only reads. An agent token,
+// which the server refuses on every /api path but GET /api/token, it forgets, saying that agent tokens cannot use it. It
+// puts agent- and person-supplied text on the page with textContent, never as HTML.
 
 // The faces the page's CSS uses, each served at /fonts/<file> by `message-cp serve` from the package that ships it, so the
 // page loads no font from another host. Read once here, never on a request.
@@ -359,10 +360,12 @@ let deliveryCount;
 // results or ask() drops a search's answer.
 let searchGeneration = 0;
 let searchController;
-// Whether GET /api/token said this token is a full one, which alone shows the person picker and the compose box; the
-// server's 403 is still what keeps a read-only token from posting. tokenGeneration drops an answer to GET /api/token,
-// or to a send, that comes after the token was forgotten.
+// Whether GET /api/token said this token is a full or a person token, which alone shows the compose box, and for a
+// person token the name of its person (undefined otherwise), whom the page then posts and sends as in place of a
+// choice; the server's 403 is still what keeps a read-only token from posting, and a person token from posting as anyone
+// else. tokenGeneration drops an answer to GET /api/token, or to a send, that comes after the token was forgotten.
 let canPost = false;
+let me;
 let tokenGeneration = 0;
 let tokenController;
 // The names whose details the agents panel shows open, kept across polls; a name no longer listed is dropped, and ask()
@@ -467,10 +470,12 @@ function cancel() {
 function ask(message) {
   sessionStorage.removeItem(KEY);
   cancel();
-  // Forget whether the last token could post, and who the page posted as, so the next token starts read-only.
+  // Forget whether the last token could post, its person, and who the page posted as, so the next token starts
+  // read-only and with no person.
   tokenGeneration++;
   if (tokenController) tokenController.abort();
   canPost = false;
+  me = undefined;
   people = undefined;
   pickerKey = "";
   person = undefined;
@@ -579,8 +584,9 @@ newForm.addEventListener("submit", (event) => {
   startPair(newFrom.value, newTo.value);
 });
 asSelect.addEventListener("change", () => {
-  // Only a name GET /api/agents gave for this token is ever sent as "as".
-  person = people && people.includes(asSelect.value) ? asSelect.value : undefined;
+  // Only a name GET /api/agents gave for this token, and that the token may act as, is ever sent as "as".
+  const known = senders();
+  person = known && known.includes(asSelect.value) ? asSelect.value : undefined;
   showCompose();
   markMentions();
 });
@@ -848,10 +854,12 @@ function start() {
   poll(generation);
 }
 
-// Asks GET /api/token once whether this token is read-only or agent-only. Only an answer of readOnly and agentOnly
-// both false shows the picker; a read-only token, a failure or an answer this page cannot read leaves the page
-// read-only. An agent token, which the server refuses on every other /api path, is forgotten and another asked for.
-const AGENT_TOKEN = "That is an agent token, and agent tokens cannot use the dashboard. Enter a full or read-only token.";
+// Asks GET /api/token once whether this token is read-only or agent-only, and whose person token it is. Only an answer
+// of readOnly and agentOnly both false lets the page post: with no person in it, as a person chosen in the picker; with
+// a person, as that person only, with no picker. A read-only token, a failure or an answer this page cannot read leaves
+// the page read-only. An agent token, which the server refuses on every other /api path, is forgotten and another asked
+// for.
+const AGENT_TOKEN = "That is an agent token, and agent tokens cannot use the dashboard. Enter a full, read-only or person token.";
 async function checkToken() {
   const token = sessionStorage.getItem(KEY);
   if (!token) return;
@@ -860,6 +868,7 @@ async function checkToken() {
   tokenController = ac;
   const deadline = setTimeout(() => ac.abort(), TIMEOUT_MS);
   let full = false;
+  let own;
   let refused = false;
   let agent = false;
   try {
@@ -874,10 +883,12 @@ async function checkToken() {
     if (res.ok) {
       const answer = await res.json();
       full = answer.readOnly === false && answer.agentOnly === false;
+      own = full && typeof answer.person === "string" ? answer.person : undefined;
       agent = answer.agentOnly === true;
     }
   } catch {
     full = false;
+    own = undefined;
   } finally {
     clearTimeout(deadline);
   }
@@ -885,11 +896,26 @@ async function checkToken() {
   if (refused) return ask("The server refused that token. Enter another.");
   if (agent) return ask(AGENT_TOKEN);
   canPost = full;
+  me = own;
   showPicker();
+  fillNew();
+  fillChannel();
   showNewButton();
 }
 
-// Shows the "New message" and "New channel" buttons only with a full token, and closes their forms without one.
+// The people the page may post and send as: with a person token only its person, while GET /api/agents lists them;
+// else every person it listed. Undefined until GET /api/agents has answered.
+function senders() {
+  if (people === undefined || me === undefined) return people;
+  return people.filter((name) => name === me);
+}
+
+// What the "New message" and "New channel" forms say when there is no one to send as.
+function noSenders(fallback) {
+  return me !== undefined ? me + " is no longer a person in this account." : fallback;
+}
+
+// Shows the "New message" and "New channel" buttons only with a token that may post, and closes their forms without one.
 function showNewButton() {
   newButton.hidden = !canPost;
   channelButton.hidden = !canPost;
@@ -920,8 +946,8 @@ function openNew() {
   newForm.hidden = false;
   newButton.setAttribute("aria-expanded", "true");
   fillNew();
-  // The From select starts at the person chosen in "Post as", if there is one.
-  if (person !== undefined && people && people.includes(person)) {
+  // The From select starts at the person chosen in "Post as", or the token's person, if there is one.
+  if (person !== undefined && senders()?.includes(person)) {
     newFrom.value = person;
     fillNew();
   }
@@ -936,27 +962,25 @@ function closeNew(refocus) {
   if (refocus) newButton.focus();
 }
 
-// Builds the "New message" form's selects from the last GET /api/agents: From lists the account's people, and To its
-// agents and people, each person marked as one, without "all" or the From name, compared without case. Each select
-// keeps its choice while that name is still listed, and is rebuilt only when its list changes. When the chosen name
-// goes, the select falls back to its empty first option rather than another name, so a refresh never retargets it.
+// Builds the "New message" form's selects from the last GET /api/agents: From lists the account's people (with a person
+// token, only its person, already chosen, as senders gives them), and To its agents and people, each person marked as
+// one, without "all" or the From name, compared without case. Each select keeps its choice while that name is still
+// listed, and is rebuilt only when its list changes. When the chosen name goes, the select falls back to its empty first
+// option (with a person token, its form says the person is gone) rather than another name, so a refresh never retargets
+// it.
 function fillNew() {
-  const known = people ?? [];
-  const none = people !== undefined && known.length === 0;
-  newNote.textContent = none ? "No people to send as. Add one with: message-cp person add <name>" : "";
+  const listed = senders();
+  const known = listed ?? [];
+  const none = listed !== undefined && known.length === 0;
+  newNote.textContent = none ? noSenders("No people to send as. Add one with: message-cp person add <name>") : "";
   newFields.hidden = none;
   newOpen.hidden = none;
-  const fromNow = JSON.stringify(known);
+  const fromNow = JSON.stringify([me ?? null, known]);
   if (fromNow !== fromKey) {
     fromKey = fromNow;
     const chosen = newFrom.value;
-    newFrom.replaceChildren(choose("Choose a person"), ...known.map((name) => {
-      const option = document.createElement("option");
-      option.value = name;
-      option.textContent = name;
-      return option;
-    }));
-    newFrom.value = known.includes(chosen) ? chosen : "";
+    newFrom.replaceChildren(...fromOptions(known));
+    newFrom.value = known.includes(chosen) ? chosen : me !== undefined && known.includes(me) ? me : "";
   }
   const from = known.includes(newFrom.value) ? newFrom.value.toLowerCase() : undefined;
   const to = mentionable.filter((n) => {
@@ -984,8 +1008,8 @@ function openChannelForm() {
   channelForm.hidden = false;
   channelButton.setAttribute("aria-expanded", "true");
   fillChannel();
-  // From starts at the person chosen in "Post as", if there is one, as in "New message".
-  if (person !== undefined && people && people.includes(person)) channelFrom.value = person;
+  // From starts at the person chosen in "Post as", or the token's person, if there is one, as in "New message".
+  if (person !== undefined && senders()?.includes(person)) channelFrom.value = person;
   if (!channelFields.hidden) (channelFrom.value !== "" ? channelName : channelFrom).focus();
 }
 
@@ -1002,24 +1026,33 @@ function closeChannelForm(refocus) {
 // Builds the "New channel" form's From select from the account's people, as fillNew builds "New message"'s, or names
 // message-cp person add when there are none. A note left by a submit stays until the next submit.
 function fillChannel() {
-  const known = people ?? [];
-  const none = people !== undefined && known.length === 0;
-  if (none) channelNote.textContent = NO_PEOPLE_TO_POST;
-  else if (channelNote.textContent === NO_PEOPLE_TO_POST) channelNote.textContent = "";
+  const listed = senders();
+  const known = listed ?? [];
+  const none = listed !== undefined && known.length === 0;
+  const empty = noSenders(NO_PEOPLE_TO_POST);
+  if (none) channelNote.textContent = empty;
+  else if (channelNote.textContent === empty) channelNote.textContent = "";
   channelFields.hidden = none;
   channelCreate.hidden = none;
-  const fromNow = JSON.stringify(known);
+  const fromNow = JSON.stringify([me ?? null, known]);
   if (fromNow !== channelFromKey) {
     channelFromKey = fromNow;
     const chosen = channelFrom.value;
-    channelFrom.replaceChildren(choose("Choose a person"), ...known.map((name) => {
-      const option = document.createElement("option");
-      option.value = name;
-      option.textContent = name;
-      return option;
-    }));
-    channelFrom.value = known.includes(chosen) ? chosen : "";
+    channelFrom.replaceChildren(...fromOptions(known));
+    channelFrom.value = known.includes(chosen) ? chosen : me !== undefined && known.includes(me) ? me : "";
   }
+}
+
+// A From select's options: the empty "Choose a person" and then known, or, with a person token whose person is listed,
+// only that person, so there is nothing else to choose.
+function fromOptions(known) {
+  const options = known.map((name) => {
+    const option = document.createElement("option");
+    option.value = name;
+    option.textContent = name;
+    return option;
+  });
+  return me !== undefined && known.length > 0 ? options : [choose("Choose a person"), ...options];
 }
 
 // Why the "New channel" form cannot create a channel from what it holds, or undefined if it can.
@@ -1027,7 +1060,7 @@ function channelProblem(from, name, body) {
   if (!CHANNEL_NAME.test(name)) return "A channel name is 1 to 32 letters, digits, - or _.";
   if (channelNames === undefined) return "The channel list has not loaded yet. Try again in a moment.";
   if (channelNames.includes(name.toLowerCase()) || channelsSent.has(name.toLowerCase())) return "#" + name + " already exists. Open it from the channel list to post in it.";
-  if (!people || !people.includes(from)) return "Choose who you are under From.";
+  if (!senders()?.includes(from)) return "Choose who you are under From.";
   if (body.trim() === "") return "Write a first post.";
   // The server counts characters as code points, as send() does.
   if ([...body].length > ${MAX_BODY_LENGTH}) return "The first post is longer than ${MAX_BODY_LENGTH} characters.";
@@ -1132,7 +1165,7 @@ function choose(text) {
 // pairKey gives its messages, so the first one lands in it. Only a person of the account is ever chosen, and only a
 // name the form offers is ever opened with them.
 function startPair(from, to) {
-  if (!canPost || !people || !people.includes(from)) return;
+  if (!canPost || !senders()?.includes(from)) return;
   const offeredTo = mentionable.some((n) => n.name === to);
   if (!offeredTo || to.toLowerCase() === "all" || to.toLowerCase() === from.toLowerCase()) return;
   // openPairLog's showPicker sets the "Post as" select to the person.
@@ -1147,15 +1180,20 @@ function startPair(from, to) {
 
 // Shows the person picker beside the compose box, with a full token and an open channel or pair, from the people
 // GET /api/agents last gave, and clears the chosen person once they are gone. The list is rebuilt only when it changes,
-// so a poll never closes it under the reader.
+// so a poll never closes it under the reader. With a person token there is no picker: the page posts as its person while
+// GET /api/agents lists them, and as no one otherwise, and names them in the picker's place while the compose box shows.
 function showPicker() {
   const before = person;
-  const known = people ?? [];
+  const known = senders() ?? [];
   if (person !== undefined && !known.includes(person)) person = undefined;
+  if (canPost && me !== undefined) person = known.includes(me) ? me : undefined;
   const conversation = openChannel !== undefined || openPair !== undefined;
-  asBox.hidden = !canPost || !conversation || known.length === 0;
-  asNote.textContent = canPost && conversation && people !== undefined && known.length === 0 ? NO_PEOPLE_TO_POST : "";
-  const key = canPost ? JSON.stringify(known) : "";
+  const choosing = canPost && me === undefined;
+  asBox.hidden = !choosing || !conversation || known.length === 0;
+  const posting = canPost && person !== undefined && (openChannel !== undefined || replyTo() !== undefined);
+  if (!choosing) asNote.textContent = posting ? "Posting as " + person : "";
+  else asNote.textContent = conversation && people !== undefined && known.length === 0 ? NO_PEOPLE_TO_POST : "";
+  const key = choosing ? JSON.stringify(known) : "";
   if (key !== pickerKey) {
     pickerKey = key;
     const none = document.createElement("option");
@@ -1167,7 +1205,7 @@ function showPicker() {
       option.textContent = name;
       return option;
     });
-    asSelect.replaceChildren(...(canPost ? [none, ...options] : []));
+    asSelect.replaceChildren(...(choosing ? [none, ...options] : []));
   }
   asSelect.value = person ?? "";
   showCompose();
@@ -1287,7 +1325,7 @@ async function send() {
   const token = sessionStorage.getItem(KEY);
   if (!token) return ask();
   const tokenGen = tokenGeneration;
-  // The box is shown only for a full token, a chosen person and a channel or a pair of theirs (showCompose).
+  // The box is shown only for a full or person token, a person to post as and a channel or a pair of theirs (showCompose).
   const target = composeTarget();
   if (sending === tokenGen || target === undefined) return;
   const body = composeText.value;
@@ -1352,10 +1390,11 @@ async function send() {
   composeSend.disabled = false;
 }
 
-// The open pair, while its Delete button may show: a full token and a direct conversation with messages in it.
+// The open pair, while its Delete button may show: a full token, not a person token, and a direct conversation with
+// messages in it.
 function deletable() {
   const pair = openPair !== undefined ? pairs.get(openPair) : undefined;
-  return canPost && pair && pair.count > 0 ? pair : undefined;
+  return canPost && me === undefined && pair && pair.count > 0 ? pair : undefined;
 }
 
 // The keys of the held pairs that DELETE /api/conversation with key's two names deletes too: the server matches names
@@ -1876,7 +1915,8 @@ function bodyPart(text, mentions) {
   return body;
 }
 
-// A mention's classes: "mention me" for the chosen person's name, without case, with a full token; else "mention".
+// A mention's classes: "mention me" for the chosen person's name, or a person token's person, without case, with a token
+// that may post; else "mention".
 function mentionClass(name) {
   return canPost && person !== undefined && name.toLowerCase() === person.toLowerCase() ? "mention me" : "mention";
 }
