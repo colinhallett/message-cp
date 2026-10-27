@@ -98,44 +98,61 @@ function validateKey(key: string): void {
 export const registerAgent = (db: Db, account: AccountId, name: string, bio?: string, key?: string): RegisterResult =>
   registerWithIdentity(db, account, name, bio, key).result;
 
-/** `registerAgent`, also returning the identity of the registration the caller now holds. */
+/** The refusal for a token that registers its own agents, given a key: such a token's agents have none. */
+export const REGISTERS_NO_KEY = "This token registers its own agents, which have no key: the token is their credential. Call register without a key.";
+
+/**
+ * `registerAgent`, also returning the identity of the registration the caller now holds. With `token`, the row id of a
+ * token that registers its own agents, it takes no key and returns none: a name no live agent or person of the account
+ * has makes a new agent recorded as that token's, and a live agent that token registered is taken back as it is; any
+ * other agent is refused, whatever key it has. The new agent's key hash is still set, from a key nobody is given, so no
+ * call without the token can claim it.
+ */
 export const registerWithIdentity = (
   db: Db,
   account: AccountId,
   name: string,
   bio?: string,
   key?: string,
+  token?: number,
 ): { result: RegisterResult; identity: Identity } =>
   db.transaction(() => {
     validateName(name);
     if (bio !== undefined && bio.length > MAX_BIO_LENGTH) {
       throw new ToolError(`Bio is too long: at most ${MAX_BIO_LENGTH} characters.`);
     }
+    if (token !== undefined && key !== undefined) throw new ToolError(REGISTERS_NO_KEY);
     if (key !== undefined) validateKey(key);
     const existing = db
-      .prepare("SELECT name, key_hash, person FROM agents WHERE account_id = ? AND name = ? AND removed_at IS NULL")
+      .prepare("SELECT name, key_hash, person, token_id FROM agents WHERE account_id = ? AND name = ? AND removed_at IS NULL")
       .get(account, name) as
-      | { name: string; key_hash: string | null; person: number }
+      | { name: string; key_hash: string | null; person: number; token_id: number | null }
       | undefined;
     // Before the key check: no key, not even a right one, makes a person's name an agent's.
     if (existing?.person === 1) throw new ToolError(personRefusal(existing.name));
-    if (existing && existing.key_hash !== null && (key === undefined || !sameHash(hashKey(key), existing.key_hash))) {
+    if (token !== undefined) {
+      if (existing && existing.token_id !== token) {
+        throw new ToolError(`Agent '${existing.name}' is already registered. This token registers only new names and takes back only agents it registered.`);
+      }
+    } else if (existing && existing.key_hash !== null && (key === undefined || !sameHash(hashKey(key), existing.key_hash))) {
       throw new ToolError(
         `Agent '${name}' is already registered and has a key. Pass its key to take it over.`,
       );
     }
-    const issued = key === undefined;
+    const issued = key === undefined && token === undefined;
     const effectiveKey = key ?? randomBytes(32).toString("hex");
     const keyHash = hashKey(effectiveKey);
     const now = Date.now();
     const row = db
       .prepare(
-        `INSERT INTO agents (account_id, name, bio, registered_at, last_seen, key_hash, instance) VALUES (?, ?, ?, ?, ?, ?, ?)
-         -- Reached on a conflict only after the key check above passed. Another account's agent of the same name never conflicts.
-         ON CONFLICT(account_id, name) DO UPDATE SET bio = COALESCE(?, bio), last_seen = excluded.last_seen, key_hash = excluded.key_hash
+        `INSERT INTO agents (account_id, name, bio, registered_at, last_seen, key_hash, instance, token_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+         -- Reached on a conflict only after the key or token check above passed. Another account's agent of the same name
+         -- never conflicts. A token's own agent keeps its key hash and token, so taking it back changes neither.
+         ON CONFLICT(account_id, name) DO UPDATE SET bio = COALESCE(?, bio), last_seen = excluded.last_seen,
+           key_hash = CASE WHEN excluded.token_id IS NULL THEN excluded.key_hash ELSE key_hash END
          RETURNING id, name, bio, registered_at, last_seen, person, instance`,
       )
-      .get(account, name, bio ?? "", now, now, keyHash, randomBytes(16).toString("hex"), bio ?? null) as Row & IdentityRow;
+      .get(account, name, bio ?? "", now, now, keyHash, randomBytes(16).toString("hex"), token ?? null, bio ?? null) as Row & IdentityRow;
     // A caller that supplied its own key already has it.
     return { result: issued ? { ...toAgent(row), key: effectiveKey } : toAgent(row), identity: toIdentity(row) };
   }).immediate();
@@ -192,6 +209,28 @@ export function identityOf(db: Db, account: AccountId, name: string): Identity |
     | IdentityRow
     | undefined;
   return row && toIdentity(row);
+}
+
+/**
+ * Whether `identity` is a live agent of `account` that the token of row id `token` registered (`registerWithIdentity`
+ * with that token). Found by row, so an agent removed and its name registered again by someone else is not the token's.
+ */
+export function registeredBy(db: Db, account: AccountId, identity: Identity, token: number): boolean {
+  return (
+    db
+      .prepare(
+        "SELECT 1 FROM agents WHERE account_id = ? AND id = ? AND registered_at = ? AND instance IS ? AND removed_at IS NULL AND person = 0 AND token_id = ?",
+      )
+      .get(account, identity.id, identity.registeredAt, identity.instance, token) !== undefined
+  );
+}
+
+/** The identity and stored name of the live agent `name` (any case) of `account` that the token of row id `token` registered. */
+export function ownAgentOf(db: Db, account: AccountId, name: string, token: number): (Identity & { name: string }) | undefined {
+  const row = db
+    .prepare("SELECT id, registered_at, instance, name FROM agents WHERE account_id = ? AND name = ? AND removed_at IS NULL AND person = 0 AND token_id = ?")
+    .get(account, name, token) as (IdentityRow & { name: string }) | undefined;
+  return row && { ...toIdentity(row), name: row.name };
 }
 
 /** Thrown, with nothing stored, when a person token sends or posts as anyone but its own person. */
@@ -328,10 +367,12 @@ const REMOVED_INSTANCE = "removed";
  * in `removed_name`, so the messages addressed to it are kept and its id is never given to a new agent. An agent
  * with a key is removed only with that key, unless `own` is the identity of the caller's session: then that exact
  * registration is removed, or nothing if it is already gone, so a name registered by someone else in the meantime is
- * never touched.
+ * never touched. With `token` instead, the row id of a token that registers its own agents, only a live agent that token
+ * registered is removed, with no key (a key is refused); any other name is refused.
  */
-export const removeAgent = (db: Db, account: AccountId, name: string, key?: string, own?: Identity): Unregistered =>
+export const removeAgent = (db: Db, account: AccountId, name: string, key?: string, own?: Identity, token?: number): Unregistered =>
   db.transaction((): Unregistered => {
+    if (token !== undefined && !own && key !== undefined) throw new ToolError(REGISTERS_NO_KEY);
     const row = (
       own
         ? db
@@ -339,11 +380,15 @@ export const removeAgent = (db: Db, account: AccountId, name: string, key?: stri
               "SELECT id, name, key_hash, person FROM agents WHERE account_id = ? AND id = ? AND registered_at = ? AND instance IS ? AND removed_at IS NULL",
             )
             .get(account, own.id, own.registeredAt, own.instance)
-        : db.prepare("SELECT id, name, key_hash, person FROM agents WHERE account_id = ? AND name = ? AND removed_at IS NULL").get(account, name)
-    ) as { id: number; name: string; key_hash: string | null; person: number } | undefined;
+        : db
+            .prepare("SELECT id, name, key_hash, person, token_id FROM agents WHERE account_id = ? AND name = ? AND removed_at IS NULL")
+            .get(account, name)
+    ) as { id: number; name: string; key_hash: string | null; person: number; token_id?: number | null } | undefined;
     if (!row) throw new ToolError(own ? NOT_REGISTERED : `No agent named '${name}'.`);
     if (row.person === 1) throw new ToolError(personRefusal(row.name));
-    if (row.key_hash !== null && !own) {
+    if (token !== undefined && !own) {
+      if (row.token_id !== token) throw new ToolError(`Agent '${row.name}' was not registered by this token, which removes only agents it registered.`);
+    } else if (row.key_hash !== null && !own) {
       if (key === undefined) throw new ToolError(`Agent '${row.name}' has a key. Pass its key to remove it.`);
       if (!sameHash(hashKey(key), row.key_hash)) throw new ToolError(`Wrong key for agent '${row.name}'.`);
     }

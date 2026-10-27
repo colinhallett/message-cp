@@ -5,7 +5,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
 import { LATEST_PROTOCOL_VERSION, isInitializeRequest, isJSONRPCRequest, type RequestId } from "@modelcontextprotocol/sdk/types.js";
 import { accountForToken, accountName, listApprovals, type BoundAgent, type TokenAccess } from "./accounts.js";
-import { DEFAULT_LIST_LIMIT, MAX_LIST_LIMIT, PersonError, ToolError, WrongPersonError, markWaiting, registerWithIdentity, type Identity } from "./agents.js";
+import { DEFAULT_LIST_LIMIT, MAX_LIST_LIMIT, PersonError, ToolError, WrongPersonError, markWaiting, ownAgentOf, registerWithIdentity, registeredBy, type Identity } from "./agents.js";
 import {
   DEFAULT_CHANNEL_LIMIT,
   MAX_CHANNEL_LIMIT,
@@ -190,6 +190,17 @@ function agentHeaders(req: IncomingMessage): AgentHeaders | undefined | null {
 /** Whether `identity` is the registration `agent` holds now; false for none. */
 const isAgent = (identity: Identity | undefined, agent: BoundAgent) =>
   identity !== undefined && identity.id === agent.id && identity.registeredAt === agent.registeredAt && identity.instance === agent.instance;
+
+/**
+ * Whether a request with `access` may act through a session registered as `identity` (undefined for none yet): a bound
+ * token only as its agent; a token that registers its own agents only as one it registered, or through a session not yet
+ * registered, where its `register` is checked; any other token as any agent of its account.
+ */
+const mayActAs = (db: Db, access: TokenAccess, identity: Identity | undefined) => {
+  if (access.agent) return isAgent(identity, access.agent);
+  if (access.registers !== undefined) return identity === undefined || registeredBy(db, access.account, identity, access.registers);
+  return true;
+};
 
 /** The account the request's bearer token belongs to, checked afresh on every request so a revoked token stops at once. */
 function accountOf(db: Db, header: string | undefined, ownerToken: string): TokenAccess | undefined {
@@ -516,14 +527,23 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
    * Another account's agent is answered like an unknown one. A token bound to an agent waits only for that agent: for it
    * when `agent` is left out, and as for an unknown agent when `agent` names another. Every poll of a bound wait reads
    * the token's registration, not its name, so a hold whose agent is removed meanwhile answers 404 rather than another
-   * agent's mail under the same name.
+   * agent's mail under the same name. A token that registers its own agents waits only for one it registered, named by
+   * `agent`, and reads that agent's registration in the same way; any other name is answered as an unknown agent.
    */
-  const wait = async (req: IncomingMessage, res: ServerResponse, account: AccountId, bound?: BoundAgent) => {
+  const wait = async (req: IncomingMessage, res: ServerResponse, account: AccountId, bound?: BoundAgent, registers?: number) => {
     if (req.method !== "GET") return reply(res, 405, "Method not allowed", { Allow: "GET" });
     const asked = new URL(req.url ?? "", "http://x").searchParams.get("agent");
     if (bound && asked && asked.toLowerCase() !== bound.name.toLowerCase()) return reply(res, 404, "No such agent");
-    const name = bound ? bound.name : asked;
-    const reader: string | Identity | null = bound ?? asked;
+    let own: (Identity & { name: string }) | undefined;
+    if (registers !== undefined && asked) {
+      const found = unlessBusy(res, () => ownAgentOf(db, account, asked, registers) ?? null);
+      if (found === undefined) return;
+      if (found === null) return reply(res, 404, "No such agent");
+      own = found;
+    }
+    if (registers !== undefined && !own) return reply(res, 404, "No such agent");
+    const name = bound ? bound.name : own ? own.name : asked;
+    const reader: string | Identity | null = bound ?? (own ? { id: own.id, registeredAt: own.registeredAt, instance: own.instance } : asked);
     const first = reader ? poll(account, reader) : undefined;
     if (!first) return reply(res, 404, "No such agent");
     // Mail that is already there is answered at once, whatever the cap.
@@ -1040,7 +1060,8 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
   /**
    * POST /oauth/approve: `{ request, state, agent, fresh, as }` from the approval page, with a full or person token of the
    * account the client's agent is made or found in. `fresh: true` says `agent` is the name the page suggested, left as
-   * it was, so a live agent of that name is refused rather than connected as. Signed in by the cookie (`signedIn`, who
+   * it was, so a live agent of that name is refused rather than connected as. `registers: true` in place of `agent`
+   * approves a client that registers its own agents, so its token is bound to no agent. Signed in by the cookie (`signedIn`, who
    * GET /oauth/signin says it signs in as now), `as` must be the `{ account, person? }` the page showed, so a sign-in
    * that changed since the page showed it is refused with 409 rather than approving into another account. Answers
    * `{ location }`, the redirect URI with the code, or 400 or 409 with the reason.
@@ -1054,8 +1075,13 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
         input = undefined;
       }
       const state = input?.state;
-      if (typeof input?.request !== "string" || typeof input.agent !== "string" || (state !== null && typeof state !== "string")) {
-        return sendOAuthJson(res, 400, { message: "Give request, state and agent." });
+      const registers = input?.registers === true;
+      if (
+        typeof input?.request !== "string" ||
+        (registers ? input.agent !== undefined : typeof input.agent !== "string") ||
+        (state !== null && typeof state !== "string")
+      ) {
+        return sendOAuthJson(res, 400, { message: "Give request, state and agent, or registers: true in place of agent." });
       }
       const fresh = input.fresh === true;
       const as = input.as as { account?: unknown; person?: unknown } | null | undefined;
@@ -1063,7 +1089,7 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
         return sendOAuthJson(res, 409, { message: "This browser is now signed in as someone else. Check who approves, then approve again." });
       }
       try {
-        sendOAuthJson(res, 200, { location: approveAuthorization(db, account, input.request, state as string | null, input.agent, fresh) });
+        sendOAuthJson(res, 200, { location: approveAuthorization(db, account, input.request, state as string | null, registers ? null : (input.agent as string), fresh) });
       } catch (err) {
         if (err instanceof OAuthError || err instanceof ToolError) return sendOAuthJson(res, 400, { message: err.message });
         throw err;
@@ -1266,7 +1292,7 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
       return (path === "/api/people" ? apiPeople : apiInvites)(req, res, account, access.person.id);
     }
     if (path === "/api/conversation") return apiConversation(req, res, account);
-    if (path === "/wait") return wait(req, res, account, access.agent);
+    if (path === "/wait") return wait(req, res, account, access.agent, access.registers);
     if (path !== "/mcp") return reply(res, 404, "Not found");
     if (req.method !== "POST" && req.method !== "GET" && req.method !== "DELETE") {
       return reply(res, 405, "Method not allowed", { Allow: "GET, POST, DELETE" });
@@ -1279,8 +1305,9 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
     if (id && !sessions.has(id)) {
       const identity = unlessBusy(res, () => restorableSession(db, id, account, Date.now() - idleTimeoutMs) ?? null);
       if (identity === undefined) return;
-      // A token bound to an agent restores only a session of that agent; any other looks like one that does not exist.
-      if (identity === null || (access.agent && !isAgent(identity, access.agent))) {
+      // A token bound to an agent restores only a session of that agent, and one that registers its own agents only a
+      // session of one of them; any other looks like one that does not exist.
+      if (identity === null || !mayActAs(db, access, identity)) {
         return reply(res, 404, "Unknown session", { Connection: "close" });
       }
       if (sessions.size + initializing >= maxSessions) return reply(res, 503, "Too many sessions", { Connection: "close" });
@@ -1298,6 +1325,10 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
     if (named && access.agent && named.name.toLowerCase() !== access.agent.name.toLowerCase()) {
       return reply(res, 403, `This token acts only as agent '${access.agent.name}'`, { Connection: "close" });
     }
+    // A token that registers its own agents takes no key, and headers always carry one: its sessions call `register`.
+    if (named && access.registers !== undefined) {
+      return reply(res, 403, "This token registers its own agents: call register instead of sending agent headers", { Connection: "close" });
+    }
     // A request without a session can only start one. Refuse it at the cap, closing the connection so an unread
     // body cannot hold it open; otherwise take a slot now, before the body is buffered, and give it back at the end.
     if (!id && sessions.size + initializing >= maxSessions) {
@@ -1308,7 +1339,7 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
     // tool call held open afterwards does not keep it.
     if (id) {
       const live = sessions.get(id);
-      if (!live || live.account !== account || (access.agent && !isAgent(live.session?.registration, access.agent))) {
+      if (!live || live.account !== account || !mayActAs(db, access, live.session?.registration)) {
         return reply(res, 404, "Unknown session", { Connection: "close" });
       }
     }
@@ -1337,9 +1368,11 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
     named?: AgentHeaders,
     bodyRead?: () => void,
   ) => {
-    const { account, agent: bound } = access;
-    // Tools read the token's agent from here, so a bound token cannot `register` or remove another name on any session.
+    const { account, agent: bound, registers } = access;
+    // Tools read the token's agent from here, so a bound token cannot `register` or remove another name on any session,
+    // and the row id of a token that registers its own agents, so it registers and removes only its own.
     if (bound) (req as IncomingMessage & { auth?: AuthInfo }).auth = { token: "", clientId: "", scopes: [], extra: { agent: bound.name } };
+    else if (registers !== undefined) (req as IncomingMessage & { auth?: AuthInfo }).auth = { token: "", clientId: "", scopes: [], extra: { registers } };
     let body: unknown;
     if (req.method === "POST") {
       try {
@@ -1353,8 +1386,9 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
 
     if (id) {
       const live = sessions.get(id);
-      // Another account's session looks like one that does not exist, as does another agent's to a bound token.
-      if (!live || live.account !== account || (bound && !isAgent(live.session?.registration, bound))) {
+      // Another account's session looks like one that does not exist, as does another agent's to a bound token, or to a
+      // token that registers its own agents.
+      if (!live || live.account !== account || !mayActAs(db, access, live.session?.registration)) {
         return reply(res, 404, "Unknown session");
       }
       await live.ready;

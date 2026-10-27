@@ -828,7 +828,7 @@ describe("agent headers", () => {
   it("answers 503 with Retry-After when the database is too busy to register, creating no session", async () => {
     const prepare = db.prepare.bind(db);
     vi.spyOn(db, "prepare").mockImplementation(((sql: string) => {
-      if (sql.startsWith("SELECT name, key_hash, person FROM agents")) {
+      if (sql.startsWith("SELECT name, key_hash, person, token_id FROM agents")) {
         throw Object.assign(new Error("database is locked"), { code: "SQLITE_BUSY" });
       }
       return prepare(sql);

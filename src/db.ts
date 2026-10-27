@@ -453,6 +453,13 @@ function migrate(db: Db, path: string): void {
   addColumn(db, "oauth", "INTEGER", "tokens");
   addColumn(db, "client_name", "TEXT", "tokens");
   addColumn(db, "client_host", "TEXT", "tokens");
+  // 1 for an agent token an approval issued for a client that registers its own agents (exchangeCode in oauth.ts), 0 for
+  // every other token and every one from before it. Its row is agent-only, read-only and bound to no agent, so a server
+  // from before this column takes it for an unbound agent token, which registers only names whose key it holds.
+  addColumn(db, "registers", "INTEGER NOT NULL DEFAULT 0", "tokens");
+  // 1 for an approval of a client that registers its own agents, which stores no agent_id; 0 for every other. A server
+  // from before this column refuses to exchange its code, as it finds no live agent for a null agent_id.
+  addColumn(db, "registers", "INTEGER NOT NULL DEFAULT 0", "mcp_authorizations");
   // Until when the request of the sender that last claimed the delivery may be in flight; no sender takes it before then.
   addColumn(db, "claimed_until", "INTEGER", "webhook_deliveries");
   // The one header a webhook's deliveries carry (`webhook add --header-stdin`); both null for a webhook without one.
@@ -493,6 +500,10 @@ function migrate(db: Db, path: string): void {
   // has ended, and drops it instead if the agent has read the message or mention by then.
   addColumn(db, "waiting_until", "INTEGER");
   addColumn(db, "held_for", "INTEGER", "webhook_deliveries");
+  // The registering token (`tokens.registers`) whose session registered the agent, null for every other agent and every
+  // one from before it. That token may act again as the agent; nothing else follows from it. Added after addAccounts(),
+  // like waiting_until. Tokens are revoked, never deleted, so nothing looks agents up by it.
+  addColumn(db, "token_id", "INTEGER REFERENCES tokens(id)");
   // Broadcast reads every live agent of one account in name order; this keeps it from scanning the removed rows too.
   db.exec("CREATE INDEX IF NOT EXISTS agents_live ON agents (account_id, name) WHERE removed_at IS NULL");
 }

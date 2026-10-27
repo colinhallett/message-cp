@@ -12,8 +12,9 @@ import { agentNameBase, isLoopback, isMetadataUrl, type Authorization } from "./
 // to the dashboard in a new tab, checks again when the page regains focus or on "Check again", and meanwhile asks for a
 // full or person token of the account, sent once in the Authorization header and kept only in the form field, never in
 // storage. On approval it goes to the address the server answers with, the client's redirect URI with a code; refusing
-// goes to the redirect URI with error=access_denied. Client-supplied text is put on the page HTML-escaped by the server,
-// never as markup, and the server's answers with textContent.
+// goes to the redirect URI with error=access_denied. "This client registers its own agents", when ticked, sends
+// `registers: true` in place of the agent name, which is then neither required nor sent. Client-supplied text is put on
+// the page HTML-escaped by the server, never as markup, and the server's answers with textContent.
 
 const PAGE_STYLE = `${STYLE}
 main { margin: 10vh auto var(--s4); width: min(32rem, 100% - 2 * var(--s4)); display: flex; flex-direction: column; gap: var(--s3); }
@@ -22,12 +23,13 @@ main h2, main p { margin: 0; }
 .client { font-family: var(--font-mono); font-weight: 600; overflow-wrap: anywhere; }
 .warn { padding: var(--s2) var(--s3); background: var(--error-bg); color: var(--error); border-radius: var(--radius); }
 #approve { display: flex; flex-direction: column; gap: var(--s1); }
-#approve input { width: 100%; padding: var(--s2); margin-bottom: var(--s2); background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); }
+#approve input:not([type="checkbox"]) { width: 100%; padding: var(--s2); margin-bottom: var(--s2); background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); }
 .actions { display: flex; gap: var(--s2); }
 #approve-yes { background: var(--accent); border-color: var(--accent); color: var(--bg); font-weight: 600; }
 #approve-yes:hover:enabled { background: color-mix(in srgb, var(--accent) 85%, var(--text)); }
 #approve-note.error { color: var(--error); }
 #signed-in { font-weight: 600; }
+.choice { display: flex; align-items: center; gap: var(--s2); margin-bottom: var(--s2); }
 `;
 
 const SCRIPT = `
@@ -40,6 +42,8 @@ const signedIn = document.getElementById("signed-in");
 const signedOut = document.getElementById("signed-out");
 const again = document.getElementById("signin-again");
 const agent = document.getElementById("approve-agent");
+const agentField = document.getElementById("agent-field");
+const registers = document.getElementById("approve-registers");
 const yes = document.getElementById("approve-yes");
 const no = document.getElementById("approve-no");
 const note = document.getElementById("approve-note");
@@ -111,6 +115,7 @@ form.addEventListener("submit", async (event) => {
   const deadline = setTimeout(() => ac.abort(), TIMEOUT_MS);
   const signed = cookie;
   const as = who;
+  const own = registers.checked;
   const name = agent.value.trim();
   let res;
   let answer;
@@ -123,8 +128,7 @@ form.addEventListener("submit", async (event) => {
       body: JSON.stringify({
         request: form.dataset.request,
         state: form.dataset.state === undefined ? null : form.dataset.state,
-        agent: name,
-        fresh: suggested !== undefined && name === suggested,
+        ...(own ? { registers: true } : { agent: name, fresh: suggested !== undefined && name === suggested }),
         ...(signed && { as }),
       }),
       cache: "no-store",
@@ -162,6 +166,11 @@ form.addEventListener("submit", async (event) => {
 no.addEventListener("click", () => location.assign(no.dataset.location));
 agent.addEventListener("input", () => {
   suggested = undefined;
+});
+// Ticked, the client names its own agents, so the agent name is hidden, not required and not sent.
+registers.addEventListener("change", () => {
+  agentField.hidden = registers.checked;
+  agent.required = !registers.checked;
 });
 // Without the sign-in (no https public URL) the page only takes a typed token.
 if (form.dataset.signin !== undefined) {
@@ -248,9 +257,13 @@ ${
 <label for="approve-token">Full or person token of the account</label>
 <input id="approve-token" type="password" autocomplete="off" required>
 </div>
+<div id="agent-field">
 <label for="approve-agent">Agent name</label>
 <input id="approve-agent" type="text" autocomplete="off" required maxlength="32" pattern="[A-Za-z0-9_\\-]{1,32}" placeholder="for example claude-desktop">
 <p class="dim">A new name makes that agent; an existing agent's name, typed in, connects the client as it, leaving its key and sessions alone. A suggested name is never an existing agent's.</p>
+</div>
+<label class="choice"><input id="approve-registers" type="checkbox"> This client registers its own agents</label>
+<p class="dim">Ticked, each session of the client registers its own new name, and acts again only as the agents it registered, never as another agent or a person.</p>
 <div class="actions">
 <button id="approve-yes" type="submit">Approve</button>
 <button id="approve-no" type="button" data-location="${escape(deny)}">Refuse</button>
