@@ -171,7 +171,7 @@ export function mergeServer(file: string, server: JsonServer = STDIO_SERVER): Se
   if (entry !== undefined) {
     // A secret entry already there is "present" only while no other user can read it.
     if (server.same(entry) && readable(existsSync(file) ? statSync(file).mode : 0)) {
-      throw new InitError(`${file} holds the token, and other users of this machine can read it; it was left as it is. To make it private, run: chmod 600 ${file}, then run message-cp init again.`);
+      throw new InitError(`${file} holds the token, and other users of this machine can read it; it was left as it is. To make it private, run: chmod 600 ${shellQuote(file)}, then run message-cp init again.`);
     }
     return server.same(entry) ? "present" : "differs";
   }
@@ -185,7 +185,7 @@ export function mergeServer(file: string, server: JsonServer = STDIO_SERVER): Se
       // The mode the new file is given, checked here as well as in remoteRefusal, since it may have changed since.
       const mode = statSync(target).mode & 0o777;
       if (readable(mode)) {
-        throw new InitError(`${file} became readable by other users of this machine while message-cp init was running; it was left as it is. To make it private, run: chmod 600 ${file}, then run message-cp init again.`);
+        throw new InitError(`${file} became readable by other users of this machine while message-cp init was running; it was left as it is. To make it private, run: chmod 600 ${shellQuote(file)}, then run message-cp init again.`);
       }
       chmodSync(tmp, mode);
     }
@@ -252,7 +252,7 @@ export function readConnectFile(file: string, platform: NodeJS.Platform = proces
     const st = fstatSync(fd);
     if (!st.isFile()) throw refuse("is not a file");
     if (platform !== "win32" && (st.mode & 0o177) !== 0) {
-      throw refuse(`holds a token and key, and its mode ${(st.mode & 0o777).toString(8).padStart(4, "0")} is wider than 0600; make it private with: chmod 600 ${file}, then run message-cp init again`);
+      throw refuse(`holds a token and key, and its mode ${(st.mode & 0o777).toString(8).padStart(4, "0")} is wider than 0600; make it private with: chmod 600 ${shellQuote(file)}, then run message-cp init again`);
     }
     if (st.size > MAX_CONNECT_FILE) throw refuse("is too large to be what message-cp connect wrote");
     text = readFileSync(fd, "utf8");
@@ -490,7 +490,7 @@ export function remoteRefusal(client: ClientId, m: Machine, endpoint: URL): stri
       // Not there yet: mergeServer makes it 0600.
     }
     if ((mode & 0o044) !== 0) {
-      return `${file} would hold the token, and other users of this machine can read it; to make it private, run: chmod 600 ${file}, then run message-cp init again.`;
+      return `${file} would hold the token, and other users of this machine can read it; to make it private, run: chmod 600 ${shellQuote(file)}, then run message-cp init again.`;
     }
   }
   return undefined;
@@ -513,7 +513,7 @@ export function setUpClient(client: ClientId, m: Machine, run: Runner, remote?: 
   const undo = [c.command, ...c.remove].join(" ");
   // With `remote`, what is shown leaves out the headers, which hold the token (and key).
   const add = remote === undefined ? c.add : claudeRemoteAdd(remote);
-  const target = remote === undefined ? [c.command, ...c.add].join(" ") : `${c.command} mcp add --scope user --transport http ${SERVER_NAME} ${remote.endpoint.href}`;
+  const target = remote === undefined ? [c.command, ...c.add].join(" ") : `${c.command} mcp add --scope user --transport http ${SERVER_NAME} ${shellQuote(remote.endpoint.href)}`;
   const got = run(c.command, c.get);
   const headers = remote?.bound ? "the token's Authorization header" : "the agent's three headers";
   const changed = remote === undefined ? `with \`${target}\`` : `with \`${target}\` and ${headers}`;
@@ -722,7 +722,7 @@ export async function checkRemote(r: Remote): Promise<boolean> {
     } catch (err) {
       const message = said(err);
       if (/No agent named/.test(message)) {
-        throw new InitError(`the server has no agent named '${r.agent}'; make it on the server with: message-cp connect ${r.agent} --url <public url>`);
+        throw new InitError(`the server has no agent named '${r.agent}'; make it on the server with: message-cp connect ${shellQuote(r.agent)} --url <public url>`);
       }
       throw new InitError(`get_agent: ${message.slice(0, 300)}`);
     }
@@ -987,7 +987,7 @@ export async function runInit(o: InitOptions): Promise<number> {
   if (state === "differs") {
     // Any token of the account wakes the agent, so a different one is not an error, but it is never replaced unasked.
     o.err(`message-cp init: ${tokenFile} is already there and does not hold this token, so it was left as it is; the wake-up command reads the token from it when MESSAGE_CP_HTTP_TOKEN is not set.`);
-    o.err(`To use this agent's token there instead, delete ${tokenFile}, then run message-cp init --from ${remote.from} again.`);
+    o.err(`To use this agent's token there instead, delete ${tokenFile}, then run message-cp init --from ${shellQuote(remote.from)} again.`);
     // The rerun needs the file, so it is not called deletable yet.
     o.err(`Once that is done, or you keep the token already there, ${remote.from} can be deleted, and its copy on the server.`);
     return 0;
