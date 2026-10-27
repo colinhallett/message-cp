@@ -10,7 +10,7 @@ import { MAX_BODY_LENGTH } from "./messages.js";
 // token under an https public URL (and out with DELETE on "Forget token", which also signs out its other dashboard tabs),
 // and polls GET /api/agents, GET /api/channels, GET /api/messages and, while one is
 // open, a channel's GET /api/channel-posts, the account's GET /api/webhook-deliveries, its GET /api/approvals or, for
-// an admin person, its GET /api/invites with it. It shows them as a chat app: channels and the pairs of agents that have
+// an admin person, its GET /api/people and GET /api/invites with it. It shows them as a chat app: channels and the pairs of agents that have
 // messaged each other in a sidebar, the open one as a log in the middle, and the agents on the right. A search box asks GET /api/search once per search and
 // shows the answer in the middle in place of the open conversation. The sidebar's "Webhook deliveries" entry shows
 // the newest deliveries in the middle the same way, refreshed with each poll, and its "Approved clients" entry, the
@@ -20,9 +20,11 @@ import { MAX_BODY_LENGTH } from "./messages.js";
 // open channel with POST /api/post and replies in an open direct conversation of theirs, or starts one with anyone in
 // the account from "New message", with POST /api/send, or creates a channel from "New channel" by its first post, with
 // POST /api/post; and, only when GET /api/token says the person is an admin, deletes an open direct conversation, after
-// confirming, with DELETE /api/conversation, and, from the sidebar's "Invites" entry, which lists the unused invites
-// with GET /api/invites, adds a person with POST /api/people, makes a new invite for one with POST /api/invites and,
-// after confirming, cancels one with DELETE /api/invites; that is all it ever writes. An invite's link is shown only in
+// confirming, with DELETE /api/conversation, and, from the sidebar's "People" entry, which lists the account's people
+// with GET /api/people and the unused invites with GET /api/invites, marks or unmarks another person an admin with PATCH
+// /api/people, removes one, after confirming, with DELETE /api/people, adds a person with POST /api/people, makes a new
+// invite for one with POST /api/invites and, after confirming, cancels one with DELETE /api/invites; that is all it ever
+// writes. An invite's link is shown only in
 // a field of that view, from the answer that made it, and never kept or written anywhere else but the clipboard, when
 // its Copy is pressed. With a full token, which acts as no person, it
 // reads and offers Delete, but not posting or sending, which the server refuses it: in the compose box's place it says
@@ -234,7 +236,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .c5 { --who: var(--who5); }
 .c6 { --who: var(--who6); }
 .c7 { --who: var(--who7); }
-/* The "Invites" view's forms sit above its list of unused invites, side by side when there is room. */
+/* The "People" view's list and forms sit above its list of unused invites, the forms side by side when there is room. */
 #invite-forms { display: flex; flex-wrap: wrap; gap: var(--s3); padding: var(--s3) var(--s4); border-bottom: 1px solid var(--border); }
 #person-form, #link-form { flex: 1 1 14rem; display: flex; flex-direction: column; gap: var(--s1); }
 #invite-forms h3 { margin: 0; font-size: var(--text-sm); font-weight: 600; color: var(--muted); }
@@ -244,6 +246,13 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 #invite-made, #cancel-confirm { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2); }
 #invite-for, #cancel-text { flex: 1 1 100%; margin: 0; }
 #invite-link { flex: 1 1 16rem; min-width: 0; font-family: var(--font-mono); }
+/* The people list heads the view: a row per person with their role and, but for the token's own, its buttons. */
+#people-list, #invites-title { flex: 1 1 100%; }
+#people-list { display: flex; flex-direction: column; gap: var(--s2); }
+#people-rows li { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2); padding: var(--s1) 0; border-bottom: 1px solid var(--border); }
+#people-rows li > .from { flex: 1 1 4rem; min-width: 0; overflow-wrap: anywhere; font-weight: 600; }
+#remove-confirm { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2); }
+#remove-text { flex: 1 1 100%; margin: 0; }
 .entry.invite { grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "from cancel" "time cancel" "body cancel"; }
 .entry.invite > button { grid-area: cancel; align-self: center; }
 .delivery.failed .tag { color: var(--error); background: var(--error-bg); }
@@ -324,6 +333,12 @@ const approvalEntry = document.getElementById("approval-entry");
 const peopleHead = document.getElementById("people-head");
 const inviteEntry = document.getElementById("invite-entry");
 const inviteForms = document.getElementById("invite-forms");
+const peopleRows = document.getElementById("people-rows");
+const peopleRead = document.getElementById("people-read");
+const peopleNote = document.getElementById("people-note");
+const removeConfirm = document.getElementById("remove-confirm");
+const removeText = document.getElementById("remove-text");
+const removeYes = document.getElementById("remove-yes");
 const personForm = document.getElementById("person-form");
 const personName = document.getElementById("person-name");
 const personKind = document.getElementById("person-kind");
@@ -402,8 +417,8 @@ let seenAll = false;
 let deliveryCount;
 // The count on the sidebar's approved clients entry, once the entry is made: how many the view read when last open.
 let approvalCount;
-// The count on the sidebar's invites entry while it is made, for an admin person only: how many unused invites the view
-// read when last open.
+// The count on the sidebar's people entry while it is made, for an admin person only: how many people the view read
+// when last open.
 let inviteCount;
 // The search's own counter and request, separate from generation and controller, so a newer search, leaving the
 // results or ask() drops a search's answer.
@@ -563,21 +578,28 @@ let deleting;
 let adding;
 let linking;
 let cancelling;
-// How many times the "Invites" view has closed (closeLog), so an answer that comes after it closed changes nothing and
+// The tokenGeneration a PATCH or a DELETE /api/people from the people list is in flight for, or undefined, likewise.
+let marking;
+let removing;
+// The person the view asks before removing ({ name }), or undefined.
+let removeTarget;
+// The list the people rows were last built from, as inviteRowsKey is for the invites.
+let peopleRowsKey = "";
+// How many times the "People" view has closed (closeLog), so an answer that comes after it closed changes nothing and
 // never puts an invite's link on the page, as channelClosings does for "New channel". unmarked() bumps it too.
 let inviteClosings = 0;
 // The id of the invite whose link the view shows, or undefined, so cancelling that invite takes its link away.
 let shownInvite;
-// The invite the "Invites" view asks before cancelling ({ id, person, createdAt }), or undefined.
+// The invite the "People" view asks before cancelling ({ id, person, createdAt }), or undefined.
 let cancelTarget;
-// The list the invites view and the "New link" select were last built from, so a poll rebuilds them only when it
+// The list the people view's invites and the "New link" select were last built from, so a poll rebuilds them only when it
 // changes, never taking the focus from a Cancel button or closing the select under the reader.
 let inviteRowsKey = "";
 let linkKey = "";
 // How long an invite lasts, in days: INVITE_TTL_MS in src/login.ts.
 const INVITE_DAYS = ${INVITE_TTL_MS / 86400000};
 const NO_INVITES = "No unused invites. One is listed here from when it is made until it is used, cancelled or expires.";
-const NOT_ADMIN = "The server says you are no longer an admin of this account (403), so this page no longer offers adding people or invites.";
+const NOT_ADMIN = "The server says you are no longer an admin of this account (403), so this page no longer offers changing people or invites.";
 
 function say(text, isError) {
   statusLine.textContent = text;
@@ -632,7 +654,7 @@ function ask(message) {
   channelFields.hidden = false;
   channelCreate.hidden = false;
   channelCreate.disabled = false;
-  // And the "Invites" view's fields and buttons; closeLog() below drops a link it showed.
+  // And the "People" view's fields and buttons; closeLog() below drops a link it showed.
   personName.value = "";
   personKind.value = "plain";
   linkKey = "";
@@ -640,6 +662,7 @@ function ask(message) {
   personAdd.disabled = false;
   linkMake.disabled = false;
   cancelYes.disabled = false;
+  removeYes.disabled = false;
   // Clear every panel, so one token's agents, channels, pairs and messages never show under the next token.
   rows.replaceChildren();
   openAgents = new Set();
@@ -733,6 +756,8 @@ linkForm.addEventListener("submit", (event) => {
 document.getElementById("invite-copy").addEventListener("click", () => copyInvite());
 cancelYes.addEventListener("click", () => cancelInvite());
 document.getElementById("cancel-no").addEventListener("click", () => closeCancelInvite(true));
+removeYes.addEventListener("click", () => removeAccountPerson());
+document.getElementById("remove-no").addEventListener("click", () => closeRemovePerson(true));
 newFrom.addEventListener("change", () => fillNew());
 newForm.addEventListener("submit", (event) => {
   event.preventDefault();
@@ -845,7 +870,7 @@ function closeLog() {
   openPair = undefined;
   openDeliveries = false;
   openApprovals = false;
-  // Leaving the invites view drops the link it showed, its notes and its confirmation, and any answer still to come.
+  // Leaving the people view drops the link it showed, its notes and its confirmation, and any answer still to come.
   openInvites = false;
   inviteClosings++;
   inviteForms.hidden = true;
@@ -859,6 +884,11 @@ function closeLog() {
   cancelNote.textContent = "";
   closeCancelInvite();
   inviteRowsKey = "";
+  peopleNote.textContent = "";
+  peopleRead.textContent = "";
+  closeRemovePerson();
+  peopleRows.replaceChildren();
+  peopleRowsKey = "";
   held = 0;
   postRows.replaceChildren();
   postRows.className = "";
@@ -968,15 +998,17 @@ function openApprovalLog() {
   poll(generation);
 }
 
-// Opens the "Invites" view in the log, for an admin person only, and polls again at once, as openApprovalLog does: its
+// Opens the "People" view in the log, for an admin person only, and polls again at once, as openApprovalLog does: the
+// account's people, each but the token's own with buttons to mark or unmark them an admin and to remove them, its
 // "Add person" and "New link" forms, then the account's unused invites, each with a Cancel button.
 function openInviteLog() {
   if (!meAdmin) return;
   closeLog();
   openInvites = true;
   postRows.className = "top";
-  logTitle.textContent = "Invites";
+  logTitle.textContent = "People";
   logNote.textContent = "Loading…";
+  peopleRead.textContent = "Loading…";
   inviteForms.hidden = false;
   personAdd.disabled = adding === tokenGeneration;
   linkMake.disabled = linking === tokenGeneration;
@@ -989,7 +1021,7 @@ function openInviteLog() {
   personName.focus();
 }
 
-// Makes the sidebar's "Invites" entry, under its People heading, while the token is an admin person's, and removes both
+// Makes the sidebar's "People" entry, under its People heading, while the token is an admin person's, and removes both
 // otherwise.
 function showInviteEntry() {
   peopleHead.hidden = !meAdmin;
@@ -998,12 +1030,12 @@ function showInviteEntry() {
     inviteCount = undefined;
   } else if (!inviteCount) {
     inviteCount = part("span", "count", "");
-    inviteEntry.append(sidebarItem("invites", "Invites", "", inviteCount, openInviteLog));
+    inviteEntry.append(sidebarItem("invites", "People", "", inviteCount, openInviteLog));
   }
 }
 
 // After the server's 403 to an admin's request, which says the person is no longer an admin: the page forgets it, so
-// the "Invites" entry and Delete go, and an open invites view keeps only a note saying why.
+// the "People" entry and Delete go, and an open people view keeps only a note saying why.
 function unmarked() {
   meAdmin = false;
   // An Add or New link still in flight then shows no link.
@@ -1018,8 +1050,11 @@ function unmarked() {
   inviteLink.value = "";
   shownInvite = undefined;
   closeCancelInvite();
+  closeRemovePerson();
   postRows.replaceChildren();
   inviteRowsKey = "";
+  peopleRows.replaceChildren();
+  peopleRowsKey = "";
   logNote.textContent = NOT_ADMIN;
 }
 
@@ -1040,7 +1075,7 @@ function fillLink() {
   linkPerson.value = known.includes(chosen) ? chosen : "";
 }
 
-// Sends one of the "Invites" view's writes: method to path, with body as JSON if given, under ac. Answers the status
+// Sends one of the "People" view's writes: method to path, with body as JSON if given, under ac. Answers the status
 // with a 200's body, or another answer's reason and whether it asked to be retried (a busy database), or { error } with
 // no answer, saying whether the deadline passed.
 async function inviteWrite(token, ac, method, path, body) {
@@ -1274,6 +1309,141 @@ async function cancelInvite() {
   else if (answer.status === 404) cancelNote.textContent = invite.person + "'s invite was already used, cancelled or expired (404).";
   else if (answer.error) cancelNote.textContent = answer.error + ", so " + invite.person + "'s invite may have been cancelled: the list below shows whether.";
   else cancelNote.textContent = refusal(answer);
+  if (answer.status === 200 || answer.status === 404 || answer.error) refresh();
+}
+
+// Marks the person name an admin, or unmarks them with admin false, with PATCH /api/people, says what changed in the
+// list's note and reads the list again. An answer that comes after the token was forgotten, or after the view closed,
+// changes nothing; a 403 means the token's person is no longer an admin (unmarked).
+async function markPerson(name, admin) {
+  const token = sessionStorage.getItem(KEY);
+  if (!token) return ask();
+  const tokenGen = tokenGeneration;
+  if (!meAdmin || !openInvites || marking === tokenGen) return;
+  marking = tokenGen;
+  const closings = inviteClosings;
+  peopleNote.textContent = admin ? "Making " + name + " an admin…" : "Removing admin from " + name + "…";
+  const ac = new AbortController();
+  const deadline = setTimeout(() => ac.abort(), TIMEOUT_MS);
+  let answer;
+  try {
+    answer = await inviteWrite(token, ac, "PATCH", "/api/people?" + new URLSearchParams({ name }), { admin });
+  } finally {
+    clearTimeout(deadline);
+  }
+  if (tokenGen !== tokenGeneration) return;
+  marking = undefined;
+  if (answer.status === 401) return ask("The server refused that token. Enter another.");
+  if (closings !== inviteClosings) return;
+  if (answer.status === 403) return unmarked();
+  if (answer.status === 200) peopleNote.textContent = admin ? name + " is now an admin." : name + " is no longer an admin.";
+  else if (answer.status === 404) peopleNote.textContent = name + " is already gone (404).";
+  else if (answer.error) peopleNote.textContent = answer.error + ", so " + name + " may have been changed: the list below shows whether.";
+  else peopleNote.textContent = refusal(answer);
+  if (answer.status === 200 || answer.status === 404 || answer.error) refresh();
+}
+
+// Asks in the people list before removing a person; nothing is sent until its Remove is pressed.
+function openRemovePerson(name) {
+  if (!meAdmin || !openInvites) return;
+  removeTarget = { name };
+  peopleNote.textContent = "";
+  removeText.textContent = "Remove " + name + "? This cannot be undone: it deletes their direct messages and mentions.";
+  removeConfirm.hidden = false;
+  removeYes.disabled = removing === tokenGeneration;
+  document.getElementById("remove-no").focus();
+}
+
+// Dismisses the remove confirmation; when the reader dismissed it, or it was answered, the focus goes to the name field,
+// as the row may be gone.
+function closeRemovePerson(refocus) {
+  removeConfirm.hidden = true;
+  removeText.textContent = "";
+  removeTarget = undefined;
+  if (refocus) personName.focus();
+}
+
+const counted = (n, one) => n + " " + one + (n === 1 ? "" : "s");
+
+// Drops the messages the page holds so the next poll reads them again from the start, after a removal deleted the
+// direct messages of name, as deletePair does after a delete: a pair started from "New message" with none yet is kept,
+// an open pair's rows are emptied until the read refills them, and, once the server said they were deleted (gone), what
+// this tab had seen of name's pairs is forgotten. It reads nothing itself; the caller's refresh() or the next poll does.
+function forgetMessagesOf(name, gone) {
+  const folded = name.toLowerCase();
+  if (gone) {
+    for (const [k, p] of pairs) {
+      if (p.names.some((n) => n.toLowerCase() === folded)) {
+        seen.delete("pair " + k);
+        shownTotals.delete("pair " + k);
+      }
+    }
+  }
+  heldMessages = 0;
+  messages = [];
+  pairs = new Map([...pairs].filter(([, p]) => p.count === 0).map(([k, p]) => [k, { ...p, newest: 0 }]));
+  if (openPair !== undefined) {
+    closeDelete(false);
+    postRows.replaceChildren();
+    lastEntry = undefined;
+    chatRows = [];
+    chatTimes = [];
+    logMentions = [];
+    if (pairs.has(openPair)) logNote.textContent = "No messages yet.";
+  }
+  showPairs();
+  showPicker();
+  showDelete();
+}
+
+// Removes the person being asked about with DELETE /api/people and says what it ended from the answer's counts, then
+// reads the list again, as cancelInvite does. After a 200, 404 or no answer it also reads the account's messages again
+// from the start (forgetMessagesOf), even if the view has closed since; any other answer after the view closed, or any
+// answer after the token was forgotten, changes nothing.
+async function removeAccountPerson() {
+  const token = sessionStorage.getItem(KEY);
+  if (!token) return ask();
+  const tokenGen = tokenGeneration;
+  const target = removeTarget;
+  if (!meAdmin || !openInvites || !target || removing === tokenGen) return;
+  removing = tokenGen;
+  const closings = inviteClosings;
+  removeYes.disabled = true;
+  const ac = new AbortController();
+  const deadline = setTimeout(() => ac.abort(), TIMEOUT_MS);
+  let answer;
+  try {
+    answer = await inviteWrite(token, ac, "DELETE", "/api/people?" + new URLSearchParams({ name: target.name }));
+  } finally {
+    clearTimeout(deadline);
+  }
+  if (tokenGen !== tokenGeneration) return;
+  removing = undefined;
+  removeYes.disabled = false;
+  if (answer.status === 401) return ask("The server refused that token. Enter another.");
+  // Their direct messages are deleted (200), were deleted by whoever removed them first (404), or may be (no answer),
+  // so the messages the page holds are read again from the start, as deletePair does, since GET /api/messages pages by
+  // offset; this holds whichever view is open now.
+  const forgot = answer.status === 200 || answer.status === 404 || Boolean(answer.error);
+  if (forgot) forgetMessagesOf(target.name, answer.status === 200 || answer.status === 404);
+  if (closings !== inviteClosings) {
+    // The poll in flight may still read from the old offset, so a new one starts.
+    if (forgot) refresh();
+    return;
+  }
+  if (answer.status === 403) return unmarked();
+  // A confirmation opened for another person meanwhile stays.
+  if (removeTarget === target) closeRemovePerson(true);
+  const name = target.name;
+  const body = answer.body;
+  if (answer.status === 200) {
+    peopleNote.textContent =
+      body && Number.isInteger(body.messages) && Number.isInteger(body.mentions)
+        ? "Removed " + name + ": " + counted(body.messages, "message") + " and " + counted(body.mentions, "mention") + " deleted."
+        : "Removed " + name + ".";
+  } else if (answer.status === 404) peopleNote.textContent = name + " is already gone (404).";
+  else if (answer.error) peopleNote.textContent = answer.error + ", so " + name + " may have been removed: the list below shows whether.";
+  else peopleNote.textContent = refusal(answer);
   if (answer.status === 200 || answer.status === 404 || answer.error) refresh();
 }
 
@@ -2317,6 +2487,52 @@ async function readApprovals(token, signal, gen) {
   return { ok: true };
 }
 
+// Reads the account's people, by name, and replaces the list the view holds when it changed, as readInvites does; with
+// the view closed, or no longer an admin's, it leaves the list as it is. A 403 says the person is no longer an admin
+// (unmarked). Any other failure but a refused token goes in the list's note.
+async function readPeople(token, signal, gen) {
+  if (!meAdmin) return { ok: true };
+  let page;
+  try {
+    page = await fetchPage(token, signal, "/api/people", {}, 0, list);
+  } catch {
+    page = { error: signal.aborted ? "The server did not answer in time" : "Cannot reach the server" };
+  }
+  if (gen !== generation || !openInvites || !meAdmin) return { ok: true };
+  if (page.status === 401) return page;
+  if (page.status === 403) {
+    unmarked();
+    return { ok: true };
+  }
+  let shown;
+  const key = page.items ? JSON.stringify(page.items) : "";
+  try {
+    if (page.items && key !== peopleRowsKey) shown = page.items.map(personRow);
+  } catch {
+    page = { error: "The server sent an answer this page cannot read" };
+  }
+  if (page.items) {
+    if (shown) {
+      peopleRowsKey = key;
+      peopleRows.replaceChildren(...shown);
+    }
+    inviteCount.textContent = String(page.items.length);
+    peopleRead.textContent = page.items.length === PAGE ? "Only the first " + PAGE + " people are shown." : "";
+  } else if (page.status === 503) {
+    peopleRead.textContent = "The server is busy (503). Retrying…";
+  } else {
+    peopleRead.textContent = (page.error || "The server answered " + page.status) + ". Retrying…";
+  }
+  return { ok: true };
+}
+
+// Reads the account's people and its unused invites side by side for the open people view, answering a refused
+// token's answer if either read had one.
+async function readPeopleView(token, signal, gen) {
+  const answers = await Promise.all([readPeople(token, signal, gen), readInvites(token, signal, gen)]);
+  return answers.find((a) => a.status === 401) ?? { ok: true };
+}
+
 // Reads the account's unused invites, newest first, and replaces the ones the log holds when they changed, as
 // readApprovals does; with the invites closed, or no longer an admin's, it leaves the log as it is. A 403 says the person
 // is no longer an admin (unmarked). Any other failure but a refused token goes in the log's note.
@@ -2347,7 +2563,6 @@ async function readInvites(token, signal, gen) {
       postRows.replaceChildren(...shown);
       postRows.scrollTop = 0;
     }
-    inviteCount.textContent = String(page.items.length);
     logNote.textContent = page.items.length === 0 ? NO_INVITES : "";
   } else if (page.status === 503) {
     logNote.textContent = "The server is busy (503). Retrying…";
@@ -2372,9 +2587,9 @@ async function poll(gen) {
   try {
     result = await fetchView(token, ac.signal);
     // The agents and channels go up before the messages and the log are read, so a long or slow history never holds
-    // them back. The messages and the log (a channel's posts, the webhook deliveries, the approvals or the invites) are read side by
-    // side, so neither waits on the other or fails with it, and both have finished before the next poll can read past
-    // what they hold.
+    // them back. The messages and the log (a channel's posts, the webhook deliveries, the approvals, or the people and
+    // invites) are read side by side, so neither waits on the other or fails with it, and both have finished before the
+    // next poll can read past what they hold.
     if (result.ok && gen === generation) {
       show(result.agents);
       refreshChat();
@@ -2390,7 +2605,7 @@ async function poll(gen) {
             : approvals
               ? readApprovals(token, ac.signal, gen)
               : invites
-                ? readInvites(token, ac.signal, gen)
+                ? readPeopleView(token, ac.signal, gen)
                 : { ok: true },
       ]);
       // A refused token from either read wins, so a failure of the other never leaves the page showing its data.
@@ -2912,6 +3127,29 @@ function approvalRow(a) {
   return li;
 }
 
+// A person of the account: their name and role and, unless they are the token's own person, whom the server never lets
+// it unmark or remove, a button to mark or unmark them an admin and a Remove button that asks first. Throws on an entry
+// that is not a person, so readPeople shows the answer as unreadable.
+function personRow(p) {
+  if (!p || typeof p.name !== "string" || typeof p.admin !== "boolean") throw new TypeError("not a person");
+  const li = document.createElement("li");
+  li.append(part("span", "from", p.name), part("span", "tag", p.admin ? "admin" : "person"));
+  if (me === undefined || p.name.toLowerCase() === me.toLowerCase()) {
+    li.append(part("span", "note", "you"));
+    return li;
+  }
+  const mark = part("button", "", p.admin ? "Remove admin" : "Make admin");
+  mark.type = "button";
+  mark.setAttribute("aria-label", (p.admin ? "Remove admin from " : "Make an admin: ") + p.name);
+  mark.addEventListener("click", () => markPerson(p.name, !p.admin));
+  const remove = part("button", "", "Remove");
+  remove.type = "button";
+  remove.setAttribute("aria-label", "Remove " + p.name);
+  remove.addEventListener("click", () => openRemovePerson(p.name));
+  li.append(mark, remove);
+  return li;
+}
+
 // An unused invite: its person, when it was made and when it expires, and a Cancel button that asks first. Never its
 // code, which GET /api/invites does not give. Throws on an entry that is not an invite, so readInvites shows the answer
 // as unreadable.
@@ -3108,6 +3346,17 @@ export const DASHBOARD_HTML = `<!doctype html>
 <button id="close-log" type="button">Close</button>
 </div>
 <div id="invite-forms" hidden>
+<div id="people-list" role="group" aria-labelledby="people-title">
+<h3 id="people-title">People</h3>
+<p id="people-read" class="note"></p>
+<ul id="people-rows"></ul>
+<div id="remove-confirm" role="group" aria-labelledby="remove-text" hidden>
+<p id="remove-text"></p>
+<button id="remove-yes" type="button">Remove</button>
+<button id="remove-no" type="button">Keep them</button>
+</div>
+<p id="people-note" class="note" role="status"></p>
+</div>
 <form id="person-form" aria-labelledby="person-title">
 <h3 id="person-title">Add person</h3>
 <p id="person-note" class="note" role="status"></p>
@@ -3136,6 +3385,7 @@ export const DASHBOARD_HTML = `<!doctype html>
 <button id="cancel-no" type="button">Keep it</button>
 </div>
 <p id="cancel-note" class="note" role="status"></p>
+<h3 id="invites-title">Unused invites</h3>
 </div>
 <p id="log-note" class="note"></p>
 <ol id="post-rows" role="log"></ol>
