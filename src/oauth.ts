@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
-import { AccountError, addToken } from "./accounts.js";
+import { AccountError, addToken, recordClient } from "./accounts.js";
 import { ToolError, registerWithIdentity, validateName } from "./agents.js";
 import type { AccountId, Db } from "./db.js";
 
@@ -361,7 +361,7 @@ export function exchangeCode(db: Db, exchange: CodeExchange): string {
     .transaction((): { token: string } | { refused: true } => {
       const row = db
         .prepare(
-          `SELECT mcp_authorizations.id, mcp_clients.client_id, redirect_uri, code_challenge, resource, account_id, agent_id, expires_at,
+          `SELECT mcp_authorizations.id, mcp_clients.client_id, mcp_clients.client_name, redirect_uri, code_challenge, resource, account_id, agent_id, expires_at,
              (SELECT name FROM accounts WHERE accounts.id = mcp_authorizations.account_id) AS account
            FROM mcp_authorizations JOIN mcp_clients ON mcp_clients.id = mcp_authorizations.client_id
            WHERE code_hash = ?`,
@@ -370,6 +370,7 @@ export function exchangeCode(db: Db, exchange: CodeExchange): string {
         | {
             id: number;
             client_id: string;
+            client_name: string | null;
             redirect_uri: string;
             code_challenge: string;
             resource: string | null;
@@ -392,7 +393,10 @@ export function exchangeCode(db: Db, exchange: CodeExchange): string {
         return { refused: true };
       }
       try {
-        return { token: addToken(db, row.account, false, true, row.agent_id).token };
+        const issued = addToken(db, row.account, false, true, row.agent_id);
+        // The client row may be forgotten later (pruneClients), so what the account's approvals show is kept on the token.
+        recordClient(db, issued.id, { name: row.client_name, host: isMetadataUrl(row.client_id) ? new URL(row.client_id).host : null });
+        return { token: issued.token };
       } catch (err) {
         // The agent was removed since the approval: its savepoint is rolled back, the code stays used up.
         if (err instanceof AccountError) return { refused: true };

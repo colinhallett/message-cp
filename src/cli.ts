@@ -134,7 +134,12 @@ if (command === "serve") {
     } else if (command === "token" && action === "add" && arg && !arg.startsWith("--")) {
       printToken(addToken(db, arg, readOnly, agentOnly, undefined, person));
     } else if (command === "token" && action === "list" && arg === undefined) {
-      for (const t of listTokens(db)) console.log(`${t.id}\t${t.account}\t${t.kind}\tcreated ${t.createdAt}`);
+      for (const t of listTokens(db)) {
+        // An OAuth token's client goes after its kind: its name, else its metadata host, so the operator can tell which to
+        // revoke. The client chose its name, so control and format characters (a tab, a newline, an escape) are replaced.
+        const client = t.client ? `\tclient ${(t.client.name ?? t.client.host ?? "(unnamed)").replace(/[\p{Cc}\p{Cf}]/gu, "\uFFFD")}` : "";
+        console.log(`${t.id}\t${t.account}\t${t.kind}${client}\tcreated ${t.createdAt}`);
+      }
     } else if (command === "token" && action === "revoke" && arg) {
       const id = Number(arg);
       if (!/^[0-9]+$/.test(arg) || !Number.isSafeInteger(id)) usage();

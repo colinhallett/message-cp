@@ -4,7 +4,7 @@ import { PassThrough } from "node:stream";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
 import { LATEST_PROTOCOL_VERSION, isInitializeRequest, isJSONRPCRequest, type RequestId } from "@modelcontextprotocol/sdk/types.js";
-import { accountForToken, type BoundAgent, type TokenAccess } from "./accounts.js";
+import { accountForToken, listApprovals, type BoundAgent, type TokenAccess } from "./accounts.js";
 import { DEFAULT_LIST_LIMIT, MAX_LIST_LIMIT, ToolError, WrongPersonError, registerWithIdentity, type Identity } from "./agents.js";
 import {
   DEFAULT_CHANNEL_LIMIT,
@@ -668,6 +668,21 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
   };
 
   /**
+   * GET /api/approvals: one page of the account's unrevoked tokens the OAuth code exchange issued, newest first, each with
+   * its id, its agent's name, the client's name and metadata host (each null for none) and when it was issued. A token
+   * whose agent was removed is left out. Never a token, hash, code or redirect URI.
+   */
+  const apiApprovals = (req: IncomingMessage, res: ServerResponse, account: AccountId) => {
+    if (req.method !== "GET") return reply(res, 405, "Method not allowed", { Allow: "GET" });
+    const query = new URL(req.url ?? "", "http://x").searchParams;
+    const paging = page(query, DEFAULT_LIST_LIMIT, MAX_LIST_LIMIT);
+    if (paging === undefined) return reply(res, 400, `limit must be 1-${MAX_LIST_LIMIT} and offset 0 or more`);
+    const approvals = unlessBusy(res, () => listApprovals(db, account, paging.limit, paging.offset));
+    if (approvals === undefined) return;
+    sendJson(res, approvals);
+  };
+
+  /**
    * GET /api/search?text=<text>: one page of the account's messages and channel posts whose body contains `text`,
    * newest first, with the `search` tool's filters and errors. It marks nothing read and moves no read position.
    */
@@ -1011,6 +1026,7 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
     if (path === "/api/messages") return apiMessages(req, res, account);
     if (path === "/api/search") return apiSearch(req, res, account);
     if (path === "/api/webhook-deliveries") return apiWebhookDeliveries(req, res, account);
+    if (path === "/api/approvals") return apiApprovals(req, res, account);
     // A read-only token reaches the read-only endpoints above and nothing else: /mcp can write, and so can any path added later.
     if (access.readOnly) return reply(res, 403, "This token is read-only");
     // A person token also sends and posts, only as its person (checked by row once the body is read), approves clients
