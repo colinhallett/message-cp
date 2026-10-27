@@ -4,7 +4,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { addAccount, addToken, listAccounts, listTokens, revokeToken } from "../src/accounts.js";
+import { addAccount, addToken, listAccounts, listApprovals, listTokens, revokeToken } from "../src/accounts.js";
 import { addPerson, purgeAgent, registerAgent } from "../src/agents.js";
 import { connectAgent } from "../src/connect.js";
 import { makeLoginCode, redeemLoginCode } from "../src/login.js";
@@ -258,17 +258,18 @@ describe("GET /api/approvals", () => {
   });
 
   it("reads the account's tokens through the agents primary key, searching agents rather than scanning them", () => {
-    const plan = (
-      db
-        .prepare(
-          `EXPLAIN QUERY PLAN SELECT tokens.id, agents.name, tokens.client_name, tokens.client_host, tokens.created_at
-           FROM tokens JOIN agents ON agents.id = tokens.agent_id AND agents.account_id = tokens.account_id
-             AND agents.removed_at IS NULL AND agents.person = 0
-           WHERE tokens.account_id = ? AND tokens.oauth = 1 AND tokens.revoked_at IS NULL
-           ORDER BY tokens.id DESC LIMIT ? OFFSET ?`,
-        )
-        .all(OWNER_ACCOUNT, 50, 0) as { detail: string }[]
-    ).map((r) => r.detail);
+    const prepare = db.prepare.bind(db);
+    const sql: string[] = [];
+    const spy = vi.spyOn(db, "prepare").mockImplementation(((s: string) => {
+      sql.push(s);
+      return prepare(s);
+    }) as typeof db.prepare);
+    listApprovals(db, OWNER_ACCOUNT, 50, 0);
+    spy.mockRestore();
+    expect(sql).toHaveLength(1);
+    const plan = (db.prepare(`EXPLAIN QUERY PLAN ${sql[0]}`).all(OWNER_ACCOUNT, 50, 0) as { detail: string }[]).map(
+      (r) => r.detail,
+    );
     expect(plan.some((d) => /SEARCH agents USING INTEGER PRIMARY KEY/.test(d))).toBe(true);
     expect(plan.some((d) => /SCAN agents/.test(d))).toBe(false);
   });
