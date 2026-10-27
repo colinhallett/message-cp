@@ -511,12 +511,16 @@ export const removePerson = (db: Db, account: string, name: string): Purged =>
     if (!live) throw new PersonError(`No person named '${name}' in account '${acct.name}'.`);
     // Only the person sends under the name while it is theirs, so messages from it since they were added, by the
     // server's clock, are theirs; older ones are an earlier agent's, which keeps them until `agent remove`.
-    const messages = db
-      .prepare(
-        `DELETE FROM messages WHERE recipient_id = ?
-         OR (sender = ? COLLATE NOCASE AND created_at >= ? AND recipient_id IN (SELECT id FROM agents WHERE account_id = ?))`,
-      )
-      .run(live.id, live.name, live.registered_at, acct.id).changes;
+    // Two deletes rather than one with OR, so each searches an index (messages_history, messages_by_pair) rather than
+    // scanning every message under the write lock. A message to themselves goes with the first.
+    const messages =
+      db.prepare("DELETE FROM messages WHERE recipient_id = ?").run(live.id).changes +
+      db
+        .prepare(
+          `DELETE FROM messages WHERE sender = ? COLLATE NOCASE AND created_at >= ?
+           AND recipient_id IN (SELECT id FROM agents WHERE account_id = ?)`,
+        )
+        .run(live.name, live.registered_at, acct.id).changes;
     const mentions = db.prepare("DELETE FROM mentions WHERE agent_id = ?").run(live.id).changes;
     db.prepare(
       "UPDATE agents SET name = ?, removed_name = name, removed_at = ?, key_hash = ?, instance = ?, status = NULL, status_at = NULL WHERE id = ?",
