@@ -58,7 +58,24 @@ export interface TokenInfo {
   id: number;
   account: string;
   kind: "full" | "read-only" | "agent" | "person";
+  /** For a token the OAuth code exchange issued, the client it was issued to, as `exchangeCode` recorded it. */
+  client?: ApprovedClient;
   createdAt: string;
+}
+
+/** The client an OAuth token was issued to: its `client_name` then (null for none), and its metadata URL's host (null for a registered client). */
+export interface ApprovedClient {
+  name: string | null;
+  host: string | null;
+}
+
+/** An unrevoked token the OAuth code exchange issued, as GET /api/approvals serves it: never the token or its hash. */
+export interface Approval {
+  id: number;
+  agent: string;
+  clientName: string | null;
+  clientHost: string | null;
+  issuedAt: string;
 }
 
 const NAME_PATTERN = /^[A-Za-z0-9_-]{1,32}$/;
@@ -139,20 +156,61 @@ export const addToken = (db: Db, account: string, readOnly = false, agentOnly = 
     return { ...issueToken(db, row.id, readOnly, agentOnly, agent, bound), account: row.name };
   }).immediate();
 
-/** Every token that still works, oldest first, with its account and kind. */
+/** Every token that still works, oldest first, with its account and kind, and for an OAuth token its client. */
 export function listTokens(db: Db): TokenInfo[] {
   const rows = db
     .prepare(
-      `SELECT tokens.id, accounts.name, tokens.read_only, tokens.agent_only, tokens.person_id, tokens.created_at
+      `SELECT tokens.id, accounts.name, tokens.read_only, tokens.agent_only, tokens.person_id, tokens.created_at,
+         tokens.oauth, tokens.client_name, tokens.client_host
        FROM tokens JOIN accounts ON accounts.id = tokens.account_id WHERE tokens.revoked_at IS NULL ORDER BY tokens.id`,
     )
-    .all() as { id: number; name: string; read_only: number; agent_only: number; person_id: number | null; created_at: number }[];
+    .all() as {
+    id: number;
+    name: string;
+    read_only: number;
+    agent_only: number;
+    person_id: number | null;
+    created_at: number;
+    oauth: number | null;
+    client_name: string | null;
+    client_host: string | null;
+  }[];
   return rows.map((r) => ({
     id: r.id,
     account: r.name,
     // A person token's row has read_only set too (see `issueToken`), so its person comes first.
     kind: r.person_id !== null ? "person" : r.agent_only === 1 ? "agent" : r.read_only === 1 ? "read-only" : "full",
+    ...(r.oauth === 1 && { client: { name: r.client_name, host: r.client_host } }),
     createdAt: new Date(r.created_at).toISOString(),
+  }));
+}
+
+/** Records on the token of row id `token` that the OAuth code exchange issued it to `client`. Run inside that exchange's transaction. */
+export function recordClient(db: Db, token: number, client: ApprovedClient): void {
+  db.prepare("UPDATE tokens SET oauth = 1, client_name = ?, client_host = ? WHERE id = ?").run(client.name, client.host, token);
+}
+
+/**
+ * One page of the account's unrevoked tokens the OAuth code exchange issued, newest first, each with its agent and
+ * client. A token whose agent was removed is left out, as `accountForToken` refuses it, and so is one issued before
+ * the exchange recorded its client.
+ */
+export function listApprovals(db: Db, account: AccountId, limit: number, offset: number): Approval[] {
+  const rows = db
+    .prepare(
+      `SELECT tokens.id, agents.name, tokens.client_name, tokens.client_host, tokens.created_at
+       FROM tokens JOIN agents ON agents.id = tokens.agent_id AND agents.account_id = tokens.account_id
+         AND agents.removed_at IS NULL AND agents.person = 0
+       WHERE tokens.account_id = ? AND tokens.oauth = 1 AND tokens.revoked_at IS NULL
+       ORDER BY tokens.id DESC LIMIT ? OFFSET ?`,
+    )
+    .all(account, limit, offset) as { id: number; name: string; client_name: string | null; client_host: string | null; created_at: number }[];
+  return rows.map((r) => ({
+    id: r.id,
+    agent: r.name,
+    clientName: r.client_name,
+    clientHost: r.client_host,
+    issuedAt: new Date(r.created_at).toISOString(),
   }));
 }
 
