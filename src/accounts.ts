@@ -83,7 +83,12 @@ export interface ApprovedClient {
 /** An unrevoked token the OAuth code exchange issued, as GET /api/approvals serves it: never the token or its hash. */
 export interface Approval {
   id: number;
-  agent: string;
+  /** Whether the token registers its own agents, in which case it has no agent of its own. */
+  registers: boolean;
+  /** The agent a single-agent approval acts as; null for one that registers its own agents. */
+  agent: string | null;
+  /** For one that registers its own agents only, the live agents it registered, in name order; empty for none. */
+  agents?: string[];
   clientName: string | null;
   clientHost: string | null;
   issuedAt: string;
@@ -214,23 +219,42 @@ export function recordClient(db: Db, token: number, client: ApprovedClient): voi
 }
 
 /**
- * One page of the account's unrevoked tokens the OAuth code exchange issued, newest first, each with its agent and
- * client. A token whose agent was removed is left out, as `accountForToken` refuses it, and so is one issued before
- * the exchange recorded its client, and one that registers its own agents, which has no agent.
+ * One page of the account's unrevoked tokens the OAuth code exchange issued, newest first, each with its client and
+ * either its agent or, for one that registers its own agents, the live agents of the account it registered, which may
+ * be none. A single-agent token whose agent was removed is left out, as `accountForToken` refuses it, and so is one
+ * issued before the exchange recorded its client.
  */
 export function listApprovals(db: Db, account: AccountId, limit: number, offset: number): Approval[] {
+  // A token that registers is kept in the shape `accountForToken` accepts as registering. Its agents are looked for in
+  // its own account only; the unary + keeps SQLite finding them through agents_by_token rather than agents_live, which
+  // would read every live agent of the account for each token.
   const rows = db
     .prepare(
-      `SELECT tokens.id, agents.name, tokens.client_name, tokens.client_host, tokens.created_at
-       FROM tokens JOIN agents ON agents.id = tokens.agent_id AND agents.account_id = tokens.account_id
+      `SELECT tokens.id, agents.name, tokens.client_name, tokens.client_host, tokens.created_at,
+         CASE WHEN agents.id IS NULL THEN
+           (SELECT json_group_array(own.name ORDER BY own.name) FROM agents own
+            WHERE own.token_id = tokens.id AND +own.account_id = tokens.account_id AND own.removed_at IS NULL AND own.person = 0)
+         END AS registered
+       FROM tokens LEFT JOIN agents ON agents.id = tokens.agent_id AND agents.account_id = tokens.account_id
          AND agents.removed_at IS NULL AND agents.person = 0
        WHERE tokens.account_id = ? AND tokens.oauth = 1 AND tokens.revoked_at IS NULL
+         AND (agents.id IS NOT NULL OR (tokens.registers = 1 AND tokens.agent_only = 1 AND tokens.agent_id IS NULL))
        ORDER BY tokens.id DESC LIMIT ? OFFSET ?`,
     )
-    .all(account, limit, offset) as { id: number; name: string; client_name: string | null; client_host: string | null; created_at: number }[];
+    .all(account, limit, offset) as {
+    id: number;
+    name: string | null;
+    client_name: string | null;
+    client_host: string | null;
+    created_at: number;
+    registered: string | null;
+  }[];
   return rows.map((r) => ({
     id: r.id,
+    // Only a token stored as registering, with no agent, is kept without a live agent.
+    registers: r.name === null,
     agent: r.name,
+    ...(r.name === null && { agents: JSON.parse(r.registered!) as string[] }),
     clientName: r.client_name,
     clientHost: r.client_host,
     issuedAt: new Date(r.created_at).toISOString(),

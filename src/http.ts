@@ -764,9 +764,10 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
 
   /**
    * GET /api/approvals: one page of the account's unrevoked tokens the OAuth code exchange issued, newest first, each with
-   * its id, its agent's name, the client's name and metadata host (each null for none) and when it was issued. A token
-   * whose agent was removed is left out, and so is one approved for a client that registers its own agents, which has no
-   * agent. Never a token, hash, code or redirect URI.
+   * its id, whether it registers its own agents, its agent's name (null for one that registers), for one that registers
+   * the names of the live agents it registered (empty for none), the client's name and metadata host (each null for
+   * none) and when it was issued. A single-agent token whose agent was removed is left out. Never a token, hash, code or
+   * redirect URI.
    */
   const apiApprovals = (req: IncomingMessage, res: ServerResponse, account: AccountId) => {
     if (req.method !== "GET") return reply(res, 405, "Method not allowed", { Allow: "GET" });
