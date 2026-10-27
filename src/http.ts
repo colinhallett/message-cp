@@ -1316,7 +1316,7 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
     // connection.
     const inviting = path === "/api/people" || path === "/api/invites";
     // Removing an agent and resetting its key, which only an admin person token does; GET /api/agents is a read, and any
-    // other method there gets apiAgents' 405.
+    // other method there gets apiAgents' 405. Neither reads a body; their 403s close the connection as the routes above do.
     const managing = (path === "/api/agents" && req.method === "DELETE") || path === "/api/agents/key";
     // An agent token reaches /mcp and /wait, where it reads as its agent does, and of the /api paths only GET /api/token,
     // so the dashboard can say why it will not work; it cannot read or delete the account's conversations there. It is
