@@ -356,3 +356,13 @@ describe("query plans", () => {
     expect(plan.map((r) => r.detail)).toEqual(["SEARCH agents USING COVERING INDEX agents_by_token (token_id=?)"]);
   });
 });
+
+describe("GET /api/approvals", () => {
+  it("leaves out a token that registers its own agents, which has no agent, and lists a single-agent approval", async () => {
+    await approved();
+    await approved({ agent: "desk" });
+    const res = await fetch(`${base()}/api/approvals`, { headers: auth(ownerFull) });
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { agent: string }[]).map((a) => a.agent)).toEqual(["desk"]);
+  });
+});

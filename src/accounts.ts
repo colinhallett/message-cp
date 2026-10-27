@@ -215,7 +215,7 @@ export function recordClient(db: Db, token: number, client: ApprovedClient): voi
 /**
  * One page of the account's unrevoked tokens the OAuth code exchange issued, newest first, each with its agent and
  * client. A token whose agent was removed is left out, as `accountForToken` refuses it, and so is one issued before
- * the exchange recorded its client.
+ * the exchange recorded its client, and one that registers its own agents, which has no agent.
  */
 export function listApprovals(db: Db, account: AccountId, limit: number, offset: number): Approval[] {
   const rows = db

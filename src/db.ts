@@ -455,7 +455,7 @@ function migrate(db: Db, path: string): void {
   addColumn(db, "client_host", "TEXT", "tokens");
   // 1 for an agent token an approval issued for a client that registers its own agents (exchangeCode in oauth.ts), 0 for
   // every other token and every one from before it. Its row is agent-only, read-only and bound to no agent, so a server
-  // from before this column takes it for an unbound agent token, which registers only names whose key it holds.
+  // from before this column takes it for an unbound agent token, never for anything with more access.
   addColumn(db, "registers", "INTEGER NOT NULL DEFAULT 0", "tokens");
   // 1 for an approval of a client that registers its own agents, which stores no agent_id; 0 for every other. A server
   // from before this column refuses to exchange its code, as it finds no live agent for a null agent_id.
