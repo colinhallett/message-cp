@@ -25,6 +25,7 @@ import {
   addInvitedPerson,
   cancelInvite,
   dashboardUrl,
+  listAccountPeople,
   listInvites,
   loginLink,
   makeInvite,
@@ -915,7 +916,8 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
   };
 
   /**
-   * /api/people. POST `{ name, admin }`: adds the person `name`, an admin with `admin` true, to the account and makes
+   * /api/people. GET: one page of the account's live people by name, each `{ name, admin, addedAt }`; it reads no body
+   * and takes no slot. POST `{ name, admin }`: adds the person `name`, an admin with `admin` true, to the account and makes
    * their first invite, as `addInvitedPerson` does. Answers `{ name, admin, invite: { id, code, expiresAt, link? } }`.
    * PATCH `?name=<name>` with `{ admin }`: marks the account's live person `name` (any case) an admin, or unmarks them
    * with `admin` false, as `setAdminBy` does, answering `{ name, admin }`. DELETE `?name=<name>`: removes them as
@@ -931,8 +933,16 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
         return { name: added.name, admin: added.admin, invite: inviteJson(added.invite) };
       });
     }
-    if (req.method !== "PATCH" && req.method !== "DELETE") return reply(res, 405, "Method not allowed", { Allow: "POST, PATCH, DELETE" });
-    const names = new URL(req.url ?? "", "http://x").searchParams.getAll("name");
+    const query = new URL(req.url ?? "", "http://x").searchParams;
+    if (req.method === "GET") {
+      const paging = page(query, DEFAULT_LIST_LIMIT, MAX_LIST_LIMIT);
+      if (paging === undefined) return reply(res, 400, `limit must be 1-${MAX_LIST_LIMIT} and offset 0 or more`);
+      const people = unlessBusy(res, () => listAccountPeople(db, account, paging.limit, paging.offset));
+      if (people === undefined) return;
+      return sendJson(res, people);
+    }
+    if (req.method !== "PATCH" && req.method !== "DELETE") return reply(res, 405, "Method not allowed", { Allow: "GET, POST, PATCH, DELETE" });
+    const names = query.getAll("name");
     // A PATCH's body is left unread, so its 400 closes the connection.
     if (names.length !== 1 || names[0] === "") return reply(res, 400, "Give name once", req.method === "PATCH" ? { Connection: "close" } : {});
     const name = names[0];
@@ -1413,9 +1423,9 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
     // A read-only token reaches the read-only endpoints above and nothing else: /mcp can write, and so can any path added later.
     if (access.readOnly) return reply(res, 403, "This token is read-only", inviting || managing || hooks ? { Connection: "close" } : {});
     // A person token also sends and posts, only as its person (checked by row once the body is read), approves clients
-    // (above), and, while its person is an admin, deletes the account's conversations as a full token does, adds, marks,
-    // unmarks and removes people, makes, lists and cancels invites, removes agents and resets their keys, and lists and
-    // removes webhooks. It reaches nothing else: not /mcp, /wait, nor any path added later. It is refused before a slot
+    // (above), and, while its person is an admin, deletes the account's conversations as a full token does, lists, adds,
+    // marks, unmarks and removes people, makes, lists and cancels invites, removes agents and resets their keys, and lists
+    // and removes webhooks. It reaches nothing else: not /mcp, /wait, nor any path added later. It is refused before a slot
     // is taken or a body read.
     if (
       access.person &&
@@ -1438,8 +1448,8 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
       if (!access.person) return reply(res, 403, FULL_TOKEN_SENDS, { Connection: "close" });
       return (path === "/api/send" ? apiSend : apiPost)(req, res, account, access.person.id);
     }
-    // Only an admin person adds, marks and removes people and makes invites: a full token, which is no person, is refused before a slot is
-    // taken or a body read. A plain person token was refused above.
+    // Only an admin person lists, adds, marks, unmarks and removes people and makes, lists and cancels invites: a full
+    // token, which is no person, is refused before a slot is taken or a body read. A plain person token was refused above.
     if (inviting) {
       if (!access.person) return reply(res, 403, FULL_TOKEN_INVITES, { Connection: "close" });
       return (path === "/api/people" ? apiPeople : apiInvites)(req, res, account, access.person.id);

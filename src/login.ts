@@ -238,6 +238,23 @@ export const removePersonBy = (db: Db, account: AccountId, by: number, name: str
     return removePerson(db, person.account, name);
   }).immediate();
 
+/** A live person of an account as GET /api/people lists them. */
+export interface AccountPerson {
+  name: string;
+  admin: boolean;
+  addedAt: string;
+}
+
+/** One page of the account's live people, by name. Found by the account's id only, so it never names another account's. */
+export function listAccountPeople(db: Db, account: AccountId, limit: number, offset: number): AccountPerson[] {
+  const rows = db
+    .prepare(
+      "SELECT name, admin, registered_at FROM agents WHERE account_id = ? AND person = 1 AND removed_at IS NULL ORDER BY name LIMIT ? OFFSET ?",
+    )
+    .all(account, limit, offset) as { name: string; admin: number; registered_at: number }[];
+  return rows.map((r) => ({ name: r.name, admin: r.admin === 1, addedAt: new Date(r.registered_at).toISOString() }));
+}
+
 /** An agent removed by an admin person: its name and how many direct messages and mentions went with it. */
 export interface RemovedAgent {
   name: string;

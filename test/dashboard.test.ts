@@ -5764,7 +5764,7 @@ describe("the page's invites", () => {
       ([id, node]) => id !== "invite-link" && JSON.stringify(node, (k, v) => (k === "on" ? undefined : v)).includes(secret),
     );
 
-  it("shows People and Invites to an admin person only, never to a plain person, the full token or a read-only token", async () => {
+  it("shows the People entry to an admin person only, never to a plain person, the full token or a read-only token", async () => {
     addPerson(db, "owner", "maria");
     const plain = addToken(db, "owner", false, false, undefined, "maria").token;
     for (const token of [plain, OWNER_TOKEN, viewer]) {
@@ -5778,9 +5778,9 @@ describe("the page's invites", () => {
     const page = await load(anaToken);
     await page.until(() => page.entry() !== undefined);
     expect(page.elements["people-head"].hidden).toBe(false);
-    expect(page.entry()!.children.map((c) => c.textContent)).toEqual(["Invites", ""]);
-    // Until the view is opened, the invites are not read.
-    expect(page.requests.filter((r) => r.url.startsWith("/api/invites"))).toEqual([]);
+    expect(page.entry()!.children.map((c) => c.textContent)).toEqual(["People", ""]);
+    // Until the view is opened, the people and invites are not read.
+    expect(page.requests.filter((r) => r.url.startsWith("/api/invites") || r.url.startsWith("/api/people"))).toEqual([]);
   });
 
   it("lists this account's unused invites newest first, without codes, and never another account's", async () => {
@@ -5797,14 +5797,15 @@ describe("the page's invites", () => {
 
     const page = await load(anaToken);
     await page.openInvites();
-    expect(page.elements["log-title"].textContent).toBe("Invites");
+    expect(page.elements["log-title"].textContent).toBe("People");
     expect(page.elements["invite-forms"].hidden).toBe(false);
     const made = (id: number) => at(new Date(db.prepare("SELECT created_at FROM login_codes WHERE id = ?").pluck().get(id) as number).toISOString());
     expect(rows(page)).toEqual([
       ["ana", `made ${made(second.id)}`, `expires ${at(new Date(second.expiresAt).toISOString())}`],
       ["ben", `made ${made(first.id)}`, `expires ${at(new Date(first.expiresAt).toISOString())}`],
     ]);
-    expect(page.entry()!.children.map((c) => c.textContent)).toEqual(["Invites", "2"]);
+    // The entry counts the account's people, ana and ben.
+    expect(page.entry()!.children.map((c) => c.textContent)).toEqual(["People", "2"]);
     for (const code of [first.code, second.code, theirs.code]) expect(onPage(page, code)).toBe(false);
     expect(onPage(page, "olga")).toBe(false);
     // The New link select offers the account's people.
@@ -6053,6 +6054,241 @@ describe("the page's invites", () => {
     }
     expect(page.elements["person-add"].disabled).toBe(false);
     expect(page.entry()).toBeUndefined();
+  });
+
+  describe("its people list", () => {
+    const personRows = (page: Page) =>
+      page.elements["people-rows"].children.map((r) => r.children.map((c) => c.textContent));
+    const button = (page: Page, name: string, label: string) =>
+      page.elements["people-rows"].children.find((r) => r.children[0].textContent === name)!.children.find((c) => c.textContent === label)!;
+    const adminOf = (name: string) => db.prepare("SELECT admin FROM agents WHERE name = ? AND removed_at IS NULL").pluck().get(name);
+
+    it("lists the account's people by name with their role, offering no button on the token's own row and nobody from another account", async () => {
+      addPerson(db, "owner", "ben");
+      addPerson(db, "owner", "cy", true);
+      addAccount(db, "other");
+      addPerson(db, "other", "olga", true);
+      const page = await load(anaToken);
+      await page.openInvites();
+      await page.until(() => personRows(page).length === 3);
+      expect(personRows(page)).toEqual([
+        ["ana", "admin", "you"],
+        ["ben", "person", "Make admin", "Remove"],
+        ["cy", "admin", "Remove admin", "Remove"],
+      ]);
+      expect(page.requests.some((r) => r.url.startsWith("/api/people?") && r.method === "GET")).toBe(true);
+      expect(onPage(page, "olga")).toBe(false);
+      expect(page.entry()!.children.map((c) => c.textContent)).toEqual(["People", "3"]);
+    });
+
+    it("marks and unmarks a person with PATCH /api/people, saying so and reading the list again", async () => {
+      addPerson(db, "owner", "ben");
+      const page = await load(anaToken);
+      await page.openInvites();
+      await page.until(() => personRows(page).length === 2);
+      button(page, "ben", "Make admin").on.click();
+      await page.until(() => page.elements["people-note"].textContent === "ben is now an admin.");
+      expect(page.writes()).toEqual([{ url: "/api/people?name=ben", method: "PATCH", body: { admin: true } }]);
+      expect(adminOf("ben")).toBe(1);
+      await page.until(() => personRows(page)[1][1] === "admin");
+      button(page, "ben", "Remove admin").on.click();
+      await page.until(() => page.elements["people-note"].textContent === "ben is no longer an admin.");
+      expect(page.writes()[1]).toEqual({ url: "/api/people?name=ben", method: "PATCH", body: { admin: false } });
+      expect(adminOf("ben")).toBe(0);
+      await page.until(() => personRows(page)[1][1] === "person");
+    });
+
+    it("removes a person only after asking, and says what it deleted from the answer's counts", async () => {
+      addPerson(db, "owner", "ben");
+      registerAgent(db, OWNER_ACCOUNT, "bot", "");
+      for (const body of ["a", "b", "c"]) sendMessage(db, OWNER_ACCOUNT, "bot", "ben", body);
+      const bot = { ...identityOf(db, OWNER_ACCOUNT, "bot")!, name: "bot" };
+      joinChannel(db, OWNER_ACCOUNT, bot, "general");
+      post(db, OWNER_ACCOUNT, bot, "general", "hi @ben");
+      const page = await load(anaToken);
+      await page.openInvites();
+      await page.until(() => personRows(page).length === 2);
+      button(page, "ben", "Remove").on.click();
+      expect(page.elements["remove-confirm"].hidden).toBe(false);
+      expect(page.elements["remove-text"].textContent).toBe(
+        "Remove ben? This cannot be undone: it deletes their direct messages and mentions.",
+      );
+      // Keep them sends nothing.
+      page.elements["remove-no"].on.click();
+      expect(page.elements["remove-confirm"].hidden).toBe(true);
+      expect(page.writes()).toEqual([]);
+      button(page, "ben", "Remove").on.click();
+      page.elements["remove-yes"].on.click();
+      await page.until(() => page.elements["people-note"].textContent === "Removed ben: 3 messages and 1 mention deleted.");
+      expect(page.writes()).toEqual([{ url: "/api/people?name=ben", method: "DELETE", body: undefined }]);
+      expect(page.elements["remove-confirm"].hidden).toBe(true);
+      expect(adminOf("ben")).toBeUndefined();
+      await page.until(() => personRows(page).length === 1);
+      // No message body is shown.
+      expect(onPage(page, "hi @ben")).toBe(false);
+    });
+
+    it("reads the account's messages again from the start after a removal, so a later message is not skipped", async () => {
+      addPerson(db, "owner", "ben");
+      registerAgent(db, OWNER_ACCOUNT, "bot", "");
+      registerAgent(db, OWNER_ACCOUNT, "eve", "");
+      for (const body of ["a", "b", "c"]) sendMessage(db, OWNER_ACCOUNT, "bot", "ben", body);
+      sendMessage(db, OWNER_ACCOUNT, "bot", "eve", "first");
+      const page = await load(anaToken);
+      await page.openInvites();
+      await page.until(() => personRows(page).length === 2 && page.elements["pair-rows"].children.length === 2);
+      button(page, "ben", "Remove").on.click();
+      page.elements["remove-yes"].on.click();
+      await page.until(() => page.elements["people-note"].textContent === "Removed ben: 3 messages and 0 mentions deleted.");
+      // bot and eve's next message is read, though the three rows before it were deleted, and ben's pair is gone.
+      sendMessage(db, OWNER_ACCOUNT, "eve", "bot", "second");
+      for (let i = 0; i < 5 && !page.requests.some((r) => r.url.startsWith("/api/messages?") && r.url.includes("offset=0")); i++) await page.poll();
+      await page.poll();
+      await page.until(() => page.elements["pair-rows"].children.length === 1);
+      expect(text(page.elements["pair-rows"])).not.toContain("ben");
+      page.elements["pair-rows"].children[0].children[0].on.click();
+      await page.until(() => page.elements["post-rows"].children.length === 2);
+      expect(page.elements["post-rows"].children.map((r) => field(r, "body"))).toEqual(["first", "second"]);
+    });
+
+    it("reads the account's messages again from the start when another admin removed the person first (404)", async () => {
+      addPerson(db, "owner", "ben");
+      registerAgent(db, OWNER_ACCOUNT, "bot", "");
+      registerAgent(db, OWNER_ACCOUNT, "eve", "");
+      for (const body of ["a", "b", "c"]) sendMessage(db, OWNER_ACCOUNT, "bot", "ben", body);
+      sendMessage(db, OWNER_ACCOUNT, "bot", "eve", "first");
+      const page = await load(anaToken);
+      await page.openInvites();
+      await page.until(() => personRows(page).length === 2 && page.elements["pair-rows"].children.length === 2);
+      button(page, "ben", "Remove").on.click();
+      // Another admin removes ben, and his messages with him, before this tab's Remove is pressed.
+      removePerson(db, "owner", "ben");
+      page.elements["remove-yes"].on.click();
+      await page.until(() => page.elements["people-note"].textContent === "ben is already gone (404).");
+      sendMessage(db, OWNER_ACCOUNT, "eve", "bot", "second");
+      for (let i = 0; i < 5 && !page.requests.some((r) => r.url.startsWith("/api/messages?") && r.url.includes("offset=0")); i++) await page.poll();
+      await page.poll();
+      await page.until(() => page.elements["pair-rows"].children.length === 1);
+      expect(text(page.elements["pair-rows"])).not.toContain("ben");
+      page.elements["pair-rows"].children[0].children[0].on.click();
+      await page.until(() => page.elements["post-rows"].children.length === 2);
+      expect(page.elements["post-rows"].children.map((r) => field(r, "body"))).toEqual(["first", "second"]);
+    });
+
+    it("says each answer in the list's note, and reads the list again after a 200, 404 or no answer", async () => {
+      addPerson(db, "owner", "ben");
+      let next: Refusal | undefined;
+      const page = await load(anaToken, (url, init) => (init.method === "PATCH" || init.method === "DELETE" ? next : undefined));
+      await page.openInvites();
+      await page.until(() => personRows(page).length === 2);
+      const reads = () => page.requests.filter((r) => r.url.startsWith("/api/people?") && r.method === "GET").length;
+      const answer = async (act: "mark" | "remove", value: Refusal | undefined, said: string, reread: boolean) => {
+        next = value;
+        page.elements["people-note"].textContent = "";
+        const before = reads();
+        if (act === "mark") button(page, "ben", "Make admin").on.click();
+        else {
+          button(page, "ben", "Remove").on.click();
+          page.elements["remove-yes"].on.click();
+        }
+        await page.until(() => page.elements["people-note"].textContent === said);
+        if (reread) await page.until(() => reads() > before);
+        else {
+          await new Promise((resolve) => setTimeout(resolve, 20));
+          expect(reads(), said).toBe(before);
+        }
+      };
+      for (const act of ["mark", "remove"] as const) {
+        const verb = act === "mark" ? "changed" : "removed";
+        await answer(act, 404, "ben is already gone (404).", true);
+        await answer(act, { status: 400, reason: "Give admin as true or false" }, "Give admin as true or false", false);
+        await answer(act, { status: 503, reason: "Database busy", retry: true }, "The server is busy (503). Try again in a moment.", false);
+        await answer(act, "fail", `No answer from the server, so ben may have been ${verb}: the list below shows whether.`, true);
+      }
+      // A deadline that passes says so too.
+      next = "hang";
+      button(page, "ben", "Make admin").on.click();
+      await page.until(() => page.deadlines.size > 0 && page.elements["people-note"].textContent === "Making ben an admin…");
+      for (const [, fn] of page.deadlines) fn();
+      await page.until(() => page.elements["people-note"].textContent.startsWith("The server did not answer in time, so ben may have been changed"));
+      expect(adminOf("ben")).toBe(0);
+    });
+
+    it("forgets the admin on a 403, and asks for a token again on a 401", async () => {
+      addPerson(db, "owner", "ben");
+      for (const [status, act] of [[403, "mark"], [403, "remove"], [401, "mark"], [401, "remove"]] as const) {
+        let refuse = false;
+        const page = await load(anaToken, (url, init) => (refuse && (init.method === "PATCH" || init.method === "DELETE") ? status : undefined));
+        await page.openInvites();
+        await page.until(() => personRows(page).length === 2);
+        refuse = true;
+        if (act === "mark") button(page, "ben", "Make admin").on.click();
+        else {
+          button(page, "ben", "Remove").on.click();
+          page.elements["remove-yes"].on.click();
+        }
+        if (status === 403) {
+          await page.until(() => page.elements["log-note"].textContent.startsWith("The server says you are no longer an admin"));
+          expect(page.elements["invite-forms"].hidden).toBe(true);
+          expect(page.elements["people-rows"].children).toEqual([]);
+          expect(page.entry()).toBeUndefined();
+        } else {
+          await page.until(() => page.elements["status-line"].textContent === "The server refused that token. Enter another.");
+          expect(page.store.size).toBe(0);
+        }
+      }
+      // A 403 or 401 to the list's own read does the same.
+      for (const status of [403, 401]) {
+        let refuse = false;
+        const page = await load(anaToken, (url, init) => (refuse && url.startsWith("/api/people") && (init.method ?? "GET") === "GET" ? status : undefined));
+        await page.openInvites();
+        refuse = true;
+        await page.poll();
+        if (status === 403) await page.until(() => page.elements["log-note"].textContent.startsWith("The server says you are no longer an admin"));
+        else await page.until(() => page.elements["status-line"].textContent === "The server refused that token. Enter another.");
+        expect(page.entry()).toBeUndefined();
+      }
+    });
+
+    it("changes nothing on the page for an answer that comes after the view closed or the token was forgotten", async () => {
+      addPerson(db, "owner", "ben");
+      addPerson(db, "owner", "cy");
+      let hold = false;
+      const page = await load(anaToken, (url, init) => (hold && (init.method === "PATCH" || init.method === "DELETE") ? "held" : undefined));
+      for (const [leave, act] of [["close", "mark"], ["close", "remove"], ["forget", "remove"]] as const) {
+        if (leave === "forget") page.store.set("message-cp-token", anaToken);
+        await page.openInvites();
+        await page.until(() => personRows(page).some((r) => r[0] === (act === "mark" ? "ben" : "cy")));
+        hold = true;
+        if (act === "mark") button(page, "ben", "Make admin").on.click();
+        else {
+          button(page, "cy", "Remove").on.click();
+          page.elements["remove-yes"].on.click();
+        }
+        await page.until(() => page.held.length === 1);
+        if (leave === "close") page.elements["close-log"].on.click();
+        else page.elements["forget"].on.click();
+        hold = false;
+        page.release();
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        // The server did it, but the page says nothing of it and opens nothing.
+        expect(page.elements["people-note"].textContent).toBe("");
+        expect(page.elements["people-rows"].children).toEqual([]);
+        expect(page.elements["remove-confirm"].hidden).toBe(true);
+        expect(page.elements["log-title"].textContent).toBe("");
+        // The buttons work again for the next view.
+        expect(page.elements["remove-yes"].disabled).not.toBe(true);
+        if (act === "mark") {
+          expect(adminOf("ben")).toBe(1);
+          setPersonAdmin(db, "owner", "ben", false);
+        }
+        if (leave === "forget") {
+          expect(page.entry()).toBeUndefined();
+          return;
+        }
+        if (act === "remove") addPerson(db, "owner", "cy");
+      }
+    });
   });
 
   it("asks for a token again on a 401 to any of its requests", async () => {
