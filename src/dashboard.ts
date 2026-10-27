@@ -3,7 +3,8 @@ import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { MAX_BODY_LENGTH } from "./messages.js";
 
-// The page served at GET / by `message-cp serve`. It holds no data and no token: it asks for a token, keeps it in
+// The page served at GET / by `message-cp serve`. It holds no data and no token: it asks for a token, or redeems the
+// one-time code a `message-cp login-link` link carries in its fragment for one with POST /api/login, keeps it in
 // sessionStorage (that tab only), and polls GET /api/agents, GET /api/channels, GET /api/messages and, while one is
 // open, a channel's GET /api/channel-posts or the account's GET /api/webhook-deliveries with it. It shows them as a
 // chat app: channels and the pairs of agents that have messaged each other in a sidebar, the open one as a log in the
@@ -901,6 +902,50 @@ async function checkToken() {
   fillNew();
   fillChannel();
   showNewButton();
+}
+
+// Redeems a login link's code once with POST /api/login, which takes no token, for a new full or person token, kept and
+// started with as a pasted one is. Any token the tab held is forgotten first, and the token form shows while the request
+// is in flight; a token submitted or forgotten meanwhile wins, so the answer is dropped. A used, expired or unknown code,
+// or no answer, leaves the form with the reason.
+const LINK_USED = "This link was already used. Make a new one on the server, or enter a token.";
+const LINK_INVALID = "This link has expired or is not valid. Make a new one on the server, or enter a token.";
+async function login(code) {
+  ask();
+  say("Signing in with the link…", false);
+  const gen = tokenGeneration;
+  // A pasted token's start() and a forgotten token's ask() both call cancel(), which bumps generation.
+  const pollGen = generation;
+  const ac = new AbortController();
+  tokenController = ac;
+  const deadline = setTimeout(() => ac.abort(), TIMEOUT_MS);
+  let answer;
+  try {
+    const res = await fetch("/api/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ code }),
+      cache: "no-store",
+      credentials: "omit",
+      referrerPolicy: "no-referrer",
+      signal: ac.signal,
+    });
+    const body = await res.json().catch(() => ({}));
+    answer = { status: res.status, token: body && body.token, reason: body && body.reason };
+  } catch {
+    answer = {};
+  } finally {
+    clearTimeout(deadline);
+  }
+  if (gen !== tokenGeneration || pollGen !== generation) return;
+  if (answer.status === 200 && typeof answer.token === "string" && answer.token) {
+    sessionStorage.setItem(KEY, answer.token);
+    return start();
+  }
+  if (answer.reason === "used") return ask(LINK_USED);
+  if (answer.reason === "invalid") return ask(LINK_INVALID);
+  if (answer.status === 503) return ask("The server is busy (503), so the link was not used. Open it again in a moment.");
+  ask(answer.status === undefined ? "No answer from the server, so the link may have been used. Make a new one on the server, or enter a token." : "The server answered " + answer.status + ". Make a new link on the server, or enter a token.");
 }
 
 // The people the page may post and send as: with a person token only its person, while GET /api/agents lists them;
@@ -2319,8 +2364,22 @@ function when(iso) {
   return Number.isFinite(date.getTime()) ? date.toLocaleString() : String(iso);
 }
 
-if (sessionStorage.getItem(KEY)) start();
-else ask();
+// A link from message-cp login-link carries a one-time code in its fragment, which a browser never sends in a request.
+// It leaves the address bar before anything else, so a reload never sends it again; a page opened without one starts
+// as before. A link opened in a tab already showing the dashboard changes only the fragment and does not load the page
+// again, so hashchange takes its code the same way, and login() forgets the token the tab held.
+function takeLoginCode() {
+  const code = new URLSearchParams(location.hash.slice(1)).get("code");
+  if (code === null) return false;
+  history.replaceState(null, "", location.pathname + location.search);
+  login(code);
+  return true;
+}
+addEventListener("hashchange", () => takeLoginCode());
+if (!takeLoginCode()) {
+  if (sessionStorage.getItem(KEY)) start();
+  else ask();
+}
 `;
 
 const hash = (text: string) => `'sha256-${createHash("sha256").update(text, "utf8").digest("base64")}'`;

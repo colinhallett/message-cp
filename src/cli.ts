@@ -7,6 +7,7 @@ import { AccountError, addAccount, addToken, listAccounts, listTokens, revokeTok
 import { ConnectError, clientSetup, connectAgent, mcpEndpoint, publicUrl as checkedPublicUrl } from "./connect.js";
 import { OWNER_ACCOUNT, openDb } from "./db.js";
 import { CLIENT_IDS, InitError, askOnTerminal, ownServer, proveRemote, proveServer, readConnectFile, realRunner, runInit, type ClientId, type Remote } from "./init.js";
+import { LOGIN_CODE_TTL_MS, LoginError, dashboardUrl, loginLink, makeLoginCode } from "./login.js";
 import { hasUnread, unreadSummary } from "./messages.js";
 import { setting } from "./settings.js";
 import { formatUnread } from "./wait.js";
@@ -21,6 +22,7 @@ const USAGE = {
   person: "message-cp person add <name> [--account <name>] | message-cp person remove <name> [--account <name>] | message-cp person list [--account <name>]",
   agent: "message-cp agent list [--account <name>] | message-cp agent remove <name> [--account <name>] | message-cp agent key reset <name> [--account <name>]",
   connect: "message-cp connect <agent> --url <public url> [--account <name>] [--new-key]",
+  "login-link": "message-cp login-link --url <public url> [--account <name>] [--person <name>]",
   init: `message-cp init [--client <${CLIENT_IDS.join("|")}>] [--url <public url> --agent <name> | --from <file connect wrote>] (with --url, the token from MESSAGE_CP_HTTP_TOKEN and, unless the token is bound to the agent, the key from MESSAGE_CP_AGENT_KEY)`,
 };
 
@@ -342,6 +344,43 @@ if (command === "serve") {
     process.exit(1);
   }
   db.close();
+} else if (command === "login-link") {
+  // Run on the server, like `connect`. The link, carrying a one-time code, is printed this once, to stdout; stderr says
+  // what it signs in as and when it expires, and never carries a code, a token or a hash.
+  const usage = () => {
+    console.error(`usage: ${USAGE["login-link"]}`);
+    process.exit(2);
+  };
+  const opts = new Map<string, string>();
+  for (let i = 0; i < rest.length; i += 2) {
+    const option = rest[i]!;
+    const value = rest[i + 1];
+    if (!["--url", "--account", "--person"].includes(option) || opts.has(option) || !value || value.startsWith("--")) usage();
+    opts.set(option, value!);
+  }
+  if (!opts.has("--url")) usage();
+  let db: ReturnType<typeof openDb> | undefined;
+  try {
+    // The URL first, so a refused one changes nothing.
+    const base = dashboardUrl(opts.get("--url")!);
+    db = openDb();
+    const c = makeLoginCode(db, opts.get("--account") ?? "owner", opts.get("--person"));
+    const as = c.person ? `person '${c.person}' of account '${c.account}' (a person token)` : `the owner of account '${c.account}' (a full token)`;
+    console.error(
+      `message-cp: this link signs one browser in to the dashboard as ${as}. It works once, and expires in ${LOGIN_CODE_TTL_MS / 60000} minutes, at ${new Date(c.expiresAt).toISOString()}.`,
+    );
+    console.log(loginLink(base, c.code).href);
+  } catch (err) {
+    const code = (err as { code?: unknown } | null)?.code;
+    if (typeof code === "string" && code.startsWith("SQLITE_BUSY")) {
+      console.error("message-cp: the database is busy; nothing was changed. Try again.");
+      process.exit(1);
+    }
+    if (!(err instanceof ConnectError) && !(err instanceof LoginError)) throw err;
+    console.error(`message-cp: ${err.message}`);
+    process.exit(1);
+  }
+  db.close();
 } else if (command === "init") {
   // Run on the machine the coding agent runs on. Adds the stdio server, or with --from or --url and --agent the team
   // server, to one client's user-level configuration and checks it with a test agent that is removed afterwards; nothing
@@ -409,6 +448,6 @@ if (command === "serve") {
     ["usage: message-cp              runs the stdio MCP server", ...Object.values(USAGE).flatMap((u) => u.split(" | message-cp ").map((line, i) => `       ${i ? "message-cp " : ""}${line}`))].join("\n"),
   );
 } else {
-  console.error(`message-cp: unknown command '${command}'. Commands: serve, wait, account, token, webhook, person, agent, connect, init, help`);
+  console.error(`message-cp: unknown command '${command}'. Commands: serve, wait, account, token, webhook, person, agent, connect, login-link, init, help`);
   process.exit(2);
 }
