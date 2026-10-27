@@ -17,7 +17,21 @@ import {
 import { APPROVE_HEADERS, approvePage, errorPage } from "./approve.js";
 import { mcpEndpoint } from "./connect.js";
 import { DASHBOARD_FONTS, DASHBOARD_HEADERS, DASHBOARD_HTML } from "./dashboard.js";
-import { LoginError, LoginRefused, NotAdminError, addInvitedPerson, cancelInvite, dashboardUrl, listInvites, loginLink, makeInvite, redeemLoginCode, type Invite } from "./login.js";
+import {
+  LoginError,
+  LoginRefused,
+  NotAdminError,
+  addInvitedPerson,
+  cancelInvite,
+  dashboardUrl,
+  listInvites,
+  loginLink,
+  makeInvite,
+  redeemLoginCode,
+  removeAgentAsAdmin,
+  resetAgentKeyAsAdmin,
+  type Invite,
+} from "./login.js";
 import type { AccountId, Db } from "./db.js";
 import {
   DEFAULT_INBOX_LIMIT,
@@ -66,6 +80,9 @@ const FULL_TOKEN_SENDS =
 /** What POST /api/people and the /api/invites routes answer a full token, which is no admin person, with its 403. */
 const FULL_TOKEN_INVITES =
   "A full token cannot add people or make invites. Sign in as an admin person: run message-cp login-link --url <public url> --account <account> --person <name> on the server";
+/** What DELETE /api/agents and POST /api/agents/key answer a full token, which is no admin person, with its 403. */
+const FULL_TOKEN_AGENTS =
+  "A full token cannot remove agents or reset their keys. Run message-cp agent remove or agent key reset on the server, or sign in as an admin person: run message-cp login-link --url <public url> --account <account> --person <name> on the server";
 /** The body limit for the OAuth registration, approval and token endpoints, which take a few short fields. */
 const MAX_OAUTH_BODY_BYTES = 16 * 1024;
 /** An agent seen this recently counts as online in GET /api/agents, as does one with a GET /wait held now. */
@@ -609,7 +626,7 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
    * never a message or post; it reads nothing as read.
    */
   const apiAgents = (req: IncomingMessage, res: ServerResponse, account: AccountId) => {
-    if (req.method !== "GET") return reply(res, 405, "Method not allowed", { Allow: "GET" });
+    if (req.method !== "GET") return reply(res, 405, "Method not allowed", { Allow: "GET, DELETE" });
     const query = new URL(req.url ?? "", "http://x").searchParams;
     const paging = page(query, DEFAULT_LIST_LIMIT, MAX_LIST_LIMIT);
     if (paging === undefined) return reply(res, 400, `limit must be 1-${MAX_LIST_LIMIT} and offset 0 or more`);
@@ -909,6 +926,45 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
       return sendJson(res, { cancelled: true });
     }
     return reply(res, 405, "Method not allowed", { Allow: "GET, POST, DELETE" });
+  };
+
+  /**
+   * DELETE /api/agents?name=<name> and POST /api/agents/key?name=<name>: the agent named in the query, which neither reads
+   * a body, so neither takes a slot. `act` answers undefined for 404, and throws `NotAdminError`, for a token's person
+   * removed or unmarked since the token was checked, for 403.
+   */
+  const asAdminOnAgent = (req: IncomingMessage, res: ServerResponse, act: (name: string) => unknown, answer: (res: ServerResponse, value: unknown) => void) => {
+    const names = new URL(req.url ?? "", "http://x").searchParams.getAll("name");
+    if (names.length !== 1 || names[0] === "") return reply(res, 400, "Give name once");
+    let done: unknown;
+    try {
+      // null for no such agent, kept apart from the undefined `unlessBusy` gives once it has answered 503.
+      done = unlessBusy(res, () => act(names[0]) ?? null);
+    } catch (err) {
+      if (err instanceof NotAdminError) return reply(res, 403, err.message);
+      throw err;
+    }
+    if (done === undefined) return;
+    if (done === null) return reply(res, 404, "No such agent");
+    answer(res, done);
+  };
+
+  /**
+   * DELETE /api/agents?name=<name>: removes the account's agent `name` (any case), live or only left as removed rows,
+   * with its direct messages and mentions, as `removeAgentAsAdmin` does. Answers `{ name, messages, mentions }`, the
+   * counts deleted, or 404 for a name no agent of the account has had, a person's or another account's agent's included.
+   */
+  const apiRemoveAgent = (req: IncomingMessage, res: ServerResponse, account: AccountId, by: number) =>
+    asAdminOnAgent(req, res, (name) => removeAgentAsAdmin(db, account, by, name), sendJson);
+
+  /**
+   * POST /api/agents/key?name=<name>: gives the account's live agent `name` (any case) a new key, ending its sessions,
+   * as `resetAgentKeyAsAdmin` does. Answers `{ name, key }`, never cached, as it carries the key, or 404 for a name no
+   * live agent of the account has, a person's or another account's agent's included.
+   */
+  const apiAgentKey = (req: IncomingMessage, res: ServerResponse, account: AccountId, by: number) => {
+    if (req.method !== "POST") return reply(res, 405, "Method not allowed", { Allow: "POST" });
+    return asAdminOnAgent(req, res, (name) => resetAgentKeyAsAdmin(db, account, by, name), (r, value) => sendOAuthJson(r, 200, value));
   };
 
   // MCP's authorization flow, served only with a public URL, from which every address it advertises is built: as
@@ -1226,6 +1282,9 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
     const { account } = access;
     // A POST to /api/people or /api/invites carries a body its 403 leaves unread, so their 403s close the connection.
     const inviting = path === "/api/people" || path === "/api/invites";
+    // Removing an agent and resetting its key, which only an admin person token does; GET /api/agents is a read, and any
+    // other method there gets apiAgents' 405.
+    const managing = (path === "/api/agents" && req.method === "DELETE") || path === "/api/agents/key";
     // An agent token reaches /mcp and /wait, where it reads as its agent does, and of the /api paths only GET /api/token,
     // so the dashboard can say why it will not work; it cannot read or delete the account's conversations there. It is
     // refused before a slot is taken or a body read.
@@ -1234,10 +1293,10 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
       (path === "/api" || path.startsWith("/api/")) &&
       !(path === "/api/token" && req.method === "GET")
     ) {
-      return reply(res, 403, "Agent tokens cannot use the dashboard API", inviting ? { Connection: "close" } : {});
+      return reply(res, 403, "Agent tokens cannot use the dashboard API", inviting || managing ? { Connection: "close" } : {});
     }
     if (path === "/api/token") return apiToken(req, res, access);
-    if (path === "/api/agents") return apiAgents(req, res, account);
+    if (path === "/api/agents" && !managing) return apiAgents(req, res, account);
     if (path === "/api/channels") return apiChannels(req, res, account);
     if (path === "/api/channel-posts") return apiChannelPosts(req, res, account);
     if (path === "/api/messages") return apiMessages(req, res, account);
@@ -1245,13 +1304,23 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
     if (path === "/api/webhook-deliveries") return apiWebhookDeliveries(req, res, account);
     if (path === "/api/approvals") return apiApprovals(req, res, account);
     // A read-only token reaches the read-only endpoints above and nothing else: /mcp can write, and so can any path added later.
-    if (access.readOnly) return reply(res, 403, "This token is read-only", inviting ? { Connection: "close" } : {});
+    if (access.readOnly) return reply(res, 403, "This token is read-only", inviting || managing ? { Connection: "close" } : {});
     // A person token also sends and posts, only as its person (checked by row once the body is read), approves clients
-    // (above), and, while its person is an admin, deletes the account's conversations as a full token does, adds people
-    // and makes, lists and cancels invites. It reaches nothing else: not /mcp, /wait, nor any path added later. It is
-    // refused before a slot is taken or a body read.
-    if (access.person && path !== "/api/send" && path !== "/api/post" && !(access.person.admin && (inviting || path === "/api/conversation"))) {
-      return reply(res, 403, access.person.admin ? "An admin person token only reads, sends, posts, deletes and invites" : "A person token only reads, sends and posts", { Connection: "close" });
+    // (above), and, while its person is an admin, deletes the account's conversations as a full token does, adds people,
+    // makes, lists and cancels invites, removes agents and resets their keys. It reaches nothing else: not /mcp, /wait,
+    // nor any path added later. It is refused before a slot is taken or a body read.
+    if (
+      access.person &&
+      path !== "/api/send" &&
+      path !== "/api/post" &&
+      !(access.person.admin && (inviting || managing || path === "/api/conversation"))
+    ) {
+      return reply(
+        res,
+        403,
+        access.person.admin ? "An admin person token only reads, sends, posts, deletes, invites and manages agents" : "A person token only reads, sends and posts",
+        { Connection: "close" },
+      );
     }
     // Only a person token sends and posts, as its own person, so nobody acts as another person: a full token, which has
     // no person, is refused before a slot is taken or a body read.
@@ -1264,6 +1333,11 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
     if (inviting) {
       if (!access.person) return reply(res, 403, FULL_TOKEN_INVITES, { Connection: "close" });
       return (path === "/api/people" ? apiPeople : apiInvites)(req, res, account, access.person.id);
+    }
+    // Likewise only an admin person removes agents and resets their keys; a full token is refused before anything runs.
+    if (managing) {
+      if (!access.person) return reply(res, 403, FULL_TOKEN_AGENTS, { Connection: "close" });
+      return (path === "/api/agents" ? apiRemoveAgent : apiAgentKey)(req, res, account, access.person.id);
     }
     if (path === "/api/conversation") return apiConversation(req, res, account);
     if (path === "/wait") return wait(req, res, account, access.agent);
