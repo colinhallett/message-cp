@@ -234,9 +234,11 @@ describe("GET /api/approvals", () => {
       { id: desk.id, registers: false, agent: "desk", clientName: "Cursor", clientHost: null, issuedAt: issued(desk.id) },
     ]);
     for (const name of ["codex-b", "codex-a"]) registerWithIdentity(db, OWNER_ACCOUNT, name, "x", undefined, codex.id);
-    // Agents and people of the account that the token did not register are not its agents.
+    // Agents and people of the account that the token did not register are not its agents, nor is a person, even
+    // through a bad row that records the person as the token's.
     registerAgent(db, OWNER_ACCOUNT, "plain", "x");
     addPerson(db, "owner", "maria");
+    db.prepare("UPDATE agents SET token_id = ? WHERE name = 'maria'").run(codex.id);
     const listed = await approvals(ownerFull);
     expect(listed[1]).toEqual({ ...entry, agents: ["codex-a", "codex-b"] });
     expect(listed[0]).not.toHaveProperty("agents");

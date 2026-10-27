@@ -2281,7 +2281,8 @@ async function readDeliveries(token, signal, gen) {
 }
 
 // Reads the newest PAGE approvals and replaces the ones the log holds, as readDeliveries does: they come newest first, and
-// one goes when its token is revoked or its agent removed. Any failure but a refused token goes in the log's note.
+// one goes when its token is revoked or, for a single-agent approval, its agent removed. Any failure but a refused token
+// goes in the log's note.
 async function readApprovals(token, signal, gen) {
   let page;
   try {
