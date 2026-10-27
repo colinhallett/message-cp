@@ -44,6 +44,7 @@ const NO_MESSAGES = "No direct messages yet: they appear here when an agent send
 const NEW_MESSAGE = ' You can also start one from "New message" above.';
 const NO_DELIVERIES =
   "No webhook deliveries yet: add a webhook on the server with message-cp webhook add --url <url> --on <#channel | mention:<agent> | agent:<agent>>, and its deliveries show here once it fires.";
+const NO_INVITES = "No unused invites. One is listed here from when it is made until it is used, cancelled or expires.";
 const NO_APPROVALS =
   "No approved clients yet: a client appears here once it connects through the server's authorization flow (serve --public-url), and its token is revoked on the server with message-cp token revoke <id>.";
 
@@ -237,9 +238,9 @@ describe("GET /", () => {
     expect(html).not.toMatch(/<img|data:/);
     expect(style).toContain(".mention.me { color: var(--me); background: var(--me-bg); box-shadow: inset 0 -2px 0 currentColor; }");
     expect(style).toMatch(/^button \{[^}]*background: none;/m);
-    expect(style).toContain("#login button, #compose-send, #channel-create, #new-open, #delete-yes { background: var(--accent); border-color: var(--accent); color: var(--bg);");
+    expect(style).toContain("#login button, #compose-send, #channel-create, #new-open, #delete-yes, #person-add, #link-make, #cancel-yes { background: var(--accent); border-color: var(--accent); color: var(--bg);");
     expect(style).toContain(
-      "#login button:hover:enabled, #compose-send:hover:enabled, #channel-create:hover:enabled, #new-open:hover:enabled, #delete-yes:hover:enabled { background: color-mix(in srgb, var(--accent) 85%, var(--text)); }",
+      "#login button:hover:enabled, #compose-send:hover:enabled, #channel-create:hover:enabled, #new-open:hover:enabled, #delete-yes:hover:enabled, #person-add:hover:enabled, #link-make:hover:enabled, #cancel-yes:hover:enabled { background: color-mix(in srgb, var(--accent) 85%, var(--text)); }",
     );
     // The only shadows left are the inset accent bars on the open conversation and the highlighted mention option, and
     // the underline on the reader's own mention.
@@ -5507,5 +5508,384 @@ describe("everything but GET / still needs the token", () => {
     expect((await fetch(`${base()}/elsewhere`, { headers: auth(viewer) })).status).toBe(403);
     expect((await fetch(`${base()}/`, { method: "POST", headers: auth(viewer) })).status).toBe(403);
     expect((await fetch(`${base()}/api/agents`, { headers: auth(viewer) })).status).toBe(200);
+  });
+});
+
+describe("the page's invites", () => {
+  // A stub DOM element, as in the approved clients tests above, with select() for the link field.
+  interface Stub {
+    on: Record<string, () => void>;
+    hidden: boolean;
+    disabled?: boolean;
+    value: string;
+    textContent: string;
+    className: string;
+    title: string;
+    scrollTop: number;
+    scrollHeight: number;
+    children: Stub[];
+    append(...children: Stub[]): void;
+    replaceChildren(...children: Stub[]): void;
+    addEventListener(type: string, fn: (event?: unknown) => void): void;
+    setAttribute(name: string, value: string): void;
+    focus(): void;
+    select(): void;
+  }
+  const el = (): Stub => ({
+    on: {},
+    hidden: true,
+    value: "",
+    textContent: "",
+    className: "",
+    title: "",
+    scrollTop: 0,
+    scrollHeight: 0,
+    children: [],
+    append(...children) {
+      this.children.push(...children);
+    },
+    replaceChildren(...children) {
+      this.children = children;
+    },
+    addEventListener(type, fn) {
+      this.on[type] = fn;
+    },
+    setAttribute() {},
+    focus() {},
+    select() {},
+  });
+  const text = (node: Stub): string => (node.children.length > 0 ? node.children.map(text).join("") : node.textContent);
+  const field = (row: Stub, name: string) => {
+    const node = row.children.find((c) => c.className === name);
+    return node && text(node);
+  };
+  const submit = (form: Stub) => form.on.submit({ preventDefault() {} });
+
+  let ana: number;
+  let anaToken: string;
+  beforeEach(() => {
+    addPerson(db, "owner", "ana", true);
+    ana = db.prepare("SELECT id FROM agents WHERE name = 'ana'").pluck().get() as number;
+    anaToken = addToken(db, "owner", false, false, undefined, "ana").token;
+  });
+
+  // Runs the served script with the given token, as the approved clients tests do. refuse, when it returns a status,
+  // answers a request with that status; "hang" answers only by failing when it is aborted, "fail" rejects, "held" waits
+  // for release() to answer as the server does, and a { status, reason, retry } answers with that error.
+  type Refusal = number | "hang" | "fail" | "held" | { status: number; reason: string; retry?: boolean };
+  async function load(token: string, refuse: (url: string, init: RequestInit) => Refusal | undefined = () => undefined, server = base) {
+    const html = await (await fetch(`${server()}/`)).text();
+    const script = /<script>([\s\S]*?)<\/script>/.exec(html)![1];
+    const elements: Record<string, Stub> = {};
+    const requests: { url: string; method: string; body: unknown }[] = [];
+    const timers = handTimers();
+    const store = new Map([["message-cp-token", token]]);
+    const held: (() => void)[] = [];
+    const copied: string[] = [];
+    runInNewContext(script, {
+      AbortController,
+      URL,
+      location: { hash: "", pathname: "/", search: "", href: "https://dash.example/team/?x=1#y" },
+      history: { replaceState() {} },
+      navigator: { clipboard: { writeText: async (t: string) => void copied.push(t) } },
+      addEventListener() {},
+      URLSearchParams,
+      document: { getElementById: (id: string) => (elements[id] ??= el()), createElement: el, addEventListener() {} },
+      sessionStorage: { getItem: (k: string) => store.get(k) ?? null, setItem: (k: string, v: string) => store.set(k, v), removeItem: (k: string) => store.delete(k) },
+      setTimeout: timers.set,
+      clearTimeout: timers.clear,
+      fetch: (url: string, init: RequestInit) => {
+        requests.push({ url, method: init.method ?? "GET", body: init.body === undefined ? undefined : JSON.parse(String(init.body)) });
+        const status = refuse(url, init);
+        if (status === "hang") return new Promise<Response>((_resolve, reject) => init.signal!.addEventListener("abort", () => reject(new Error("aborted"))));
+        if (status === "held") return new Promise<Response>((resolve) => held.push(() => resolve(fetch(`${server()}${url}`, { ...init, signal: undefined }))));
+        if (status === "fail") return Promise.reject(new TypeError("fetch failed"));
+        if (typeof status === "object") {
+          const body = JSON.stringify({ jsonrpc: "2.0", error: { code: -32000, message: status.reason }, id: null });
+          return Promise.resolve(new Response(body, { status: status.status, headers: status.retry ? { "Retry-After": "1" } : {} }));
+        }
+        return status === undefined ? fetch(`${server()}${url}`, init) : Promise.resolve(new Response(null, { status }));
+      },
+    });
+    const until = async (done: () => boolean) => {
+      for (let i = 0; i < 200 && !done(); i++) await new Promise((resolve) => setTimeout(resolve, 5));
+      expect(done()).toBe(true);
+    };
+    const entry = () => elements["invite-entry"].children[0]?.children[0] as Stub | undefined;
+    const openInvites = async () => {
+      await until(() => entry() !== undefined);
+      entry()!.on.click();
+      await until(() => elements["log-note"].textContent !== "Loading…" && timers.scheduled());
+    };
+    const release = () => held.splice(0).forEach((answer) => answer());
+    const writes = () => requests.filter((r) => r.method !== "GET");
+    return { elements, requests, writes, store, until, poll: timers.poll, deadlines: timers.deadlines, entry, openInvites, held, release, copied };
+  }
+  type Page = Awaited<ReturnType<typeof load>>;
+  const rows = (page: Page) => page.elements["post-rows"].children.map((r) => [field(r, "from"), field(r, "time"), field(r, "body")]);
+  const at = (iso: string) => new Date(iso).toLocaleString();
+  const codeOf = (link: string) => new URL(link).hash.slice("#code=".length);
+  // Whether a string appears anywhere on the page, other than in the link field.
+  const onPage = (page: Page, secret: string) =>
+    Object.entries(page.elements).some(
+      ([id, node]) => id !== "invite-link" && JSON.stringify(node, (k, v) => (k === "on" ? undefined : v)).includes(secret),
+    );
+
+  it("shows People and Invites to an admin person only, never to a plain person, the full token or a read-only token", async () => {
+    addPerson(db, "owner", "maria");
+    const plain = addToken(db, "owner", false, false, undefined, "maria").token;
+    for (const token of [plain, OWNER_TOKEN, viewer]) {
+      const page = await load(token);
+      await page.until(() => page.elements["approval-entry"].children.length === 1 && page.requests.some((r) => r.url === "/api/token"));
+      await page.poll();
+      expect(page.elements["people-head"].hidden).toBe(true);
+      expect(page.entry()).toBeUndefined();
+      expect(page.requests.filter((r) => r.url.startsWith("/api/invites") || r.url.startsWith("/api/people"))).toEqual([]);
+    }
+    const page = await load(anaToken);
+    await page.until(() => page.entry() !== undefined);
+    expect(page.elements["people-head"].hidden).toBe(false);
+    expect(page.entry()!.children.map((c) => c.textContent)).toEqual(["Invites", ""]);
+    // Until the view is opened, the invites are not read.
+    expect(page.requests.filter((r) => r.url.startsWith("/api/invites"))).toEqual([]);
+  });
+
+  it("lists this account's unused invites newest first, without codes, and never another account's", async () => {
+    addPerson(db, "owner", "ben");
+    const first = makeInvite(db, OWNER_ACCOUNT, ana, "ben")!.invite;
+    const second = makeInvite(db, OWNER_ACCOUNT, ana, "ana")!.invite;
+    const used = makeInvite(db, OWNER_ACCOUNT, ana, "ben")!.invite;
+    redeemLoginCode(db, used.code);
+    addAccount(db, "other");
+    const otherId = listAccounts(db).find((a) => a.name === "other")!.id;
+    addPerson(db, "other", "olga", true);
+    const olga = db.prepare("SELECT id FROM agents WHERE name = 'olga'").pluck().get() as number;
+    const theirs = makeInvite(db, otherId, olga, "olga")!.invite;
+
+    const page = await load(anaToken);
+    await page.openInvites();
+    expect(page.elements["log-title"].textContent).toBe("Invites");
+    expect(page.elements["invite-forms"].hidden).toBe(false);
+    const made = (id: number) => at(new Date(db.prepare("SELECT created_at FROM login_codes WHERE id = ?").pluck().get(id) as number).toISOString());
+    expect(rows(page)).toEqual([
+      ["ana", `made ${made(second.id)}`, `expires ${at(new Date(second.expiresAt).toISOString())}`],
+      ["ben", `made ${made(first.id)}`, `expires ${at(new Date(first.expiresAt).toISOString())}`],
+    ]);
+    expect(page.entry()!.children.map((c) => c.textContent)).toEqual(["Invites", "2"]);
+    for (const code of [first.code, second.code, theirs.code]) expect(onPage(page, code)).toBe(false);
+    expect(onPage(page, "olga")).toBe(false);
+    // The New link select offers the account's people.
+    expect(page.elements["link-person"].children.map((o) => o.value)).toEqual(["", "ana", "ben"]);
+  });
+
+  it("adds a person, plain or admin, shows the server's link once with the 7 days, and drops it when the view closes", async () => {
+    await http.close();
+    http = await startHttp(db, { token: OWNER_TOKEN, port: 0, publicUrl: "https://chat.example" });
+    const page = await load(anaToken);
+    await page.openInvites();
+    page.elements["person-name"].value = "ben";
+    page.elements["person-kind"].value = "admin";
+    submit(page.elements["person-form"]);
+    await page.until(() => page.elements["person-note"].textContent === "Added ben.");
+    expect(page.writes()).toEqual([{ url: "/api/people", method: "POST", body: { name: "ben", admin: true } }]);
+    const ben = db.prepare("SELECT admin FROM agents WHERE name = 'ben' AND person = 1").get() as { admin: number };
+    expect(ben.admin).toBe(1);
+    const link = page.elements["invite-link"].value;
+    expect(link).toMatch(/^https:\/\/chat\.example\/#code=/);
+    expect(page.elements["invite-made"].hidden).toBe(false);
+    expect(page.elements["invite-for"].textContent).toContain("Invite link for ben (admin).");
+    expect(page.elements["invite-for"].textContent).toContain("It works once and lasts 7 days");
+    expect(page.elements["person-name"].value).toBe("");
+    expect(page.elements["person-kind"].value).toBe("plain");
+    // The link is only in its field: nowhere else on the page, nor stored.
+    expect(onPage(page, codeOf(link))).toBe(false);
+    expect([...page.store.values()].join()).not.toContain(codeOf(link));
+    // Copy puts it on the clipboard.
+    page.elements["invite-copy"].on.click();
+    await page.until(() => page.elements["copy-note"].textContent === "Copied.");
+    expect(page.copied).toEqual([link]);
+    // The list shows ben's invite with the next read, and opening the link signs in as ben.
+    await page.until(() => rows(page).some((r) => r[0] === "ben"));
+    // Leaving the view drops the link.
+    page.elements["close-log"].on.click();
+    expect(page.elements["invite-link"].value).toBe("");
+    expect(page.elements["invite-made"].hidden).toBe(true);
+    expect(page.elements["invite-for"].textContent).toBe("");
+    const res = await fetch(`${base()}/api/login`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ code: codeOf(link) }) });
+    expect(res.status).toBe(200);
+    // A plain person, by default.
+    await page.openInvites();
+    page.elements["person-name"].value = "cat";
+    submit(page.elements["person-form"]);
+    await page.until(() => page.elements["person-note"].textContent === "Added cat.");
+    expect(page.writes()[1]).toEqual({ url: "/api/people", method: "POST", body: { name: "cat", admin: false } });
+    expect(page.elements["invite-for"].textContent).toContain("Invite link for cat. ");
+  });
+
+  it("builds the link from the page's own address when serve has no public URL", async () => {
+    const page = await load(anaToken);
+    await page.openInvites();
+    page.elements["person-name"].value = "ben";
+    submit(page.elements["person-form"]);
+    await page.until(() => page.elements["person-note"].textContent === "Added ben.");
+    const link = page.elements["invite-link"].value;
+    // The page's address, without its query or fragment, with the code in the fragment.
+    expect(link).toMatch(/^https:\/\/dash\.example\/team\/#code=[^&?#]+$/);
+    const res = await fetch(`${base()}/api/login`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ code: codeOf(link) }) });
+    expect(res.status).toBe(200);
+  });
+
+  it("makes a new link for an existing person, and cancels an invite after asking, saying whose it was", async () => {
+    addPerson(db, "owner", "ben");
+    const page = await load(anaToken);
+    await page.openInvites();
+    page.elements["link-person"].value = "ben";
+    submit(page.elements["link-form"]);
+    await page.until(() => page.elements["invite-link"].value !== "");
+    expect(page.writes()).toEqual([{ url: "/api/invites", method: "POST", body: { person: "ben" } }]);
+    expect(page.elements["invite-for"].textContent).toContain("Invite link for ben.");
+    await page.until(() => rows(page).length === 1);
+    const id = (db.prepare("SELECT id FROM login_codes WHERE invite = 1").pluck().get() as number);
+    // Cancel asks first; nothing is sent until it is confirmed, and Keep it sends nothing.
+    const cancelButton = () => page.elements["post-rows"].children[0].children.find((c) => c.textContent === "Cancel")!;
+    cancelButton().on.click();
+    expect(page.elements["cancel-confirm"].hidden).toBe(false);
+    expect(page.elements["cancel-text"].textContent).toMatch(/^Cancel ben's invite, made .+\? Its link will stop working\.$/);
+    page.elements["cancel-no"].on.click();
+    expect(page.elements["cancel-confirm"].hidden).toBe(true);
+    expect(page.writes()).toHaveLength(1);
+    cancelButton().on.click();
+    page.elements["cancel-yes"].on.click();
+    await page.until(() => page.elements["cancel-note"].textContent === "Cancelled ben's invite.");
+    expect(page.writes()[1]).toEqual({ url: `/api/invites?id=${id}`, method: "DELETE", body: undefined });
+    await page.until(() => page.elements["log-note"].textContent === NO_INVITES);
+    expect(rows(page)).toEqual([]);
+    // Cancelling again: the server says no such invite.
+    const res = await fetch(`${base()}/api/invites?id=${id}`, { method: "DELETE", headers: auth(anaToken) });
+    expect(res.status).toBe(404);
+  });
+
+  it("says each refusal in plain words in the form's note", async () => {
+    addPerson(db, "owner", "ben");
+    let next: Refusal | undefined;
+    const page = await load(anaToken, (url, init) => (init.method === "POST" || init.method === "DELETE" ? next : undefined));
+    await page.openInvites();
+    const add = async (answer: Refusal | undefined, said: string) => {
+      next = answer;
+      page.elements["person-name"].value = "ben";
+      submit(page.elements["person-form"]);
+      await page.until(() => page.elements["person-note"].textContent === said);
+    };
+    // The server's own 400: the name is taken.
+    await add(undefined, "The name 'ben' is already used by a person in account 'owner'.");
+    await add({ status: 400, reason: "'all' is reserved" }, "'all' is reserved");
+    await add({ status: 503, reason: "Database busy", retry: true }, "The server is busy (503). Try again in a moment.");
+    await add({ status: 503, reason: "Too many requests" }, "The server is busy (503). Try again in a moment.");
+    const many = "This account has made 100 invites in the last 7 days; try again once some expire.";
+    await add({ status: 503, reason: many }, many);
+    await add("fail", "No answer from the server, so ben may have been added: the agents panel and the invites below show whether.");
+    next = "hang";
+    submit(page.elements["person-form"]);
+    await page.until(() => page.deadlines.size > 0 && page.elements["person-note"].textContent === "Adding…");
+    expect(page.elements["person-add"].disabled).toBe(true);
+    for (const [, fn] of page.deadlines) fn();
+    await page.until(() => page.elements["person-note"].textContent.startsWith("The server did not answer in time, so ben may have been added"));
+    expect(page.elements["person-add"].disabled).toBe(false);
+
+    next = 404;
+    page.elements["link-person"].value = "ben";
+    submit(page.elements["link-form"]);
+    await page.until(() => page.elements["link-note"].textContent === "ben is not a person in this account now (404).");
+    next = "fail";
+    submit(page.elements["link-form"]);
+    await page.until(() => page.elements["link-note"].textContent === "No answer from the server, so a link for ben may have been made: the invites below show whether.");
+
+    // No invite is ever shown by a refusal.
+    expect(page.elements["invite-made"].hidden).toBe(true);
+    expect(page.elements["invite-link"].value).toBe("");
+  });
+
+  it("says a cancelled invite that is gone is gone, and a busy server is busy", async () => {
+    addPerson(db, "owner", "ben");
+    makeInvite(db, OWNER_ACCOUNT, ana, "ben");
+    let next: Refusal | undefined;
+    const page = await load(anaToken, (url, init) => (init.method === "DELETE" ? next : undefined));
+    await page.openInvites();
+    await page.until(() => rows(page).length === 1);
+    const cancelOne = async (answer: Refusal | undefined, said: string) => {
+      next = answer;
+      page.elements["post-rows"].children[0].children.find((c) => c.textContent === "Cancel")!.on.click();
+      page.elements["cancel-yes"].on.click();
+      await page.until(() => page.elements["cancel-note"].textContent === said);
+    };
+    await cancelOne({ status: 503, reason: "Database busy", retry: true }, "The server is busy (503). Try again in a moment.");
+    await cancelOne(404, "ben's invite was already used, cancelled or expired (404).");
+    await cancelOne("fail", "No answer from the server, so ben's invite may have been cancelled: the list below shows whether.");
+  });
+
+  it("hides the controls once the server says the person is no longer an admin", async () => {
+    addPerson(db, "owner", "ben");
+    const page = await load(anaToken);
+    await page.openInvites();
+    setPersonAdmin(db, "owner", "ana", false);
+    page.elements["person-name"].value = "ben2";
+    submit(page.elements["person-form"]);
+    await page.until(() => page.elements["log-note"].textContent.startsWith("The server says you are no longer an admin"));
+    expect(page.elements["invite-forms"].hidden).toBe(true);
+    expect(page.elements["people-head"].hidden).toBe(true);
+    expect(page.entry()).toBeUndefined();
+    expect(db.prepare("SELECT 1 FROM agents WHERE name = 'ben2'").get()).toBeUndefined();
+    // The next poll does not read the invites again.
+    const before = page.requests.length;
+    await page.poll();
+    await page.until(() => page.requests.length > before && page.requests.slice(before).some((r) => r.url.startsWith("/api/messages")));
+    expect(page.requests.slice(before).filter((r) => r.url.startsWith("/api/invites"))).toEqual([]);
+  });
+
+  it("drops an answer that comes after the view closed or the token was forgotten, leaving no link on the page", async () => {
+    let hold = false;
+    const page = await load(anaToken, (url, init) => (hold && init.method === "POST" ? "held" : undefined));
+    await page.openInvites();
+    for (const leave of ["close", "forget"]) {
+      hold = true;
+      page.elements["person-name"].value = leave === "close" ? "ben" : "cat";
+      submit(page.elements["person-form"]);
+      await page.until(() => page.held.length === 1);
+      if (leave === "close") page.elements["close-log"].on.click();
+      else page.elements["forget"].on.click();
+      hold = false;
+      page.release();
+      // The server added them, but the page shows nothing of it.
+      await page.until(() => db.prepare("SELECT 1 FROM agents WHERE name = ?").get(leave === "close" ? "ben" : "cat") !== undefined);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(page.elements["invite-link"].value).toBe("");
+      expect(page.elements["invite-made"].hidden).toBe(true);
+      expect(page.elements["person-note"].textContent).toBe("");
+      if (leave === "close") {
+        // Add is enabled again for the next submit.
+        expect(page.elements["person-add"].disabled).toBe(false);
+        await page.openInvites();
+      }
+    }
+    expect(page.elements["person-add"].disabled).toBe(false);
+    expect(page.entry()).toBeUndefined();
+  });
+
+  it("asks for a token again on a 401 to any of its requests", async () => {
+    for (const method of ["POST", "GET"]) {
+      let refuse = false;
+      const page = await load(anaToken, (url) => (refuse && url.startsWith(method === "POST" ? "/api/people" : "/api/invites") ? 401 : undefined));
+      await page.openInvites();
+      refuse = true;
+      if (method === "POST") {
+        page.elements["person-name"].value = "ben";
+        submit(page.elements["person-form"]);
+      } else {
+        await page.poll();
+      }
+      await page.until(() => page.elements["status-line"].textContent === "The server refused that token. Enter another.");
+      expect(page.store.size).toBe(0);
+      expect(page.entry()).toBeUndefined();
+    }
   });
 });

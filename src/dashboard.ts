@@ -1,13 +1,14 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
+import { INVITE_TTL_MS } from "./login.js";
 import { MAX_BODY_LENGTH } from "./messages.js";
 
 // The page served at GET / by `message-cp serve`. It holds no data and no token: it asks for a token, or redeems the
 // one-time code a `message-cp login-link` link carries in its fragment for one with POST /api/login, keeps it in
 // sessionStorage (that tab only), and polls GET /api/agents, GET /api/channels, GET /api/messages and, while one is
-// open, a channel's GET /api/channel-posts, the account's GET /api/webhook-deliveries or its GET /api/approvals with
-// it. It shows them as a chat app: channels and the pairs of agents that have messaged each other in a sidebar, the
+// open, a channel's GET /api/channel-posts, the account's GET /api/webhook-deliveries, its GET /api/approvals or, for
+// an admin person, its GET /api/invites with it. It shows them as a chat app: channels and the pairs of agents that have messaged each other in a sidebar, the
 // open one as a log in the middle, and the agents on the right. A search box asks GET /api/search once per search and
 // shows the answer in the middle in place of the open conversation. The sidebar's "Webhook deliveries" entry shows
 // the newest deliveries in the middle the same way, refreshed with each poll, and its "Approved clients" entry, the
@@ -17,7 +18,11 @@ import { MAX_BODY_LENGTH } from "./messages.js";
 // open channel with POST /api/post and replies in an open direct conversation of theirs, or starts one with anyone in
 // the account from "New message", with POST /api/send, or creates a channel from "New channel" by its first post, with
 // POST /api/post; and, only when GET /api/token says the person is an admin, deletes an open direct conversation, after
-// confirming, with DELETE /api/conversation; that is all it ever writes. With a full token, which acts as no person, it
+// confirming, with DELETE /api/conversation, and, from the sidebar's "Invites" entry, which lists the unused invites
+// with GET /api/invites, adds a person with POST /api/people, makes a new invite for one with POST /api/invites and,
+// after confirming, cancels one with DELETE /api/invites; that is all it ever writes. An invite's link is shown only in
+// a field of that view, from the answer that made it, and never kept or written anywhere else but the clipboard, when
+// its Copy is pressed. With a full token, which acts as no person, it
 // reads and offers Delete, but not posting or sending, which the server refuses it: in the compose box's place it says
 // how to sign in as a person. With a read-only token it only reads. An agent token,
 // which the server refuses on every /api path but GET /api/token, it forgets, saying that agent tokens cannot use it. It
@@ -122,8 +127,8 @@ button, input, select, textarea { font: inherit; color: inherit; }
 button { cursor: pointer; background: none; border: 1px solid var(--border); border-radius: var(--radius); padding: var(--s1) var(--s3); }
 button:hover { background: var(--hover); }
 /* Only the primary actions are filled, in the accent with the page's background as their text. */
-#login button, #compose-send, #channel-create, #new-open, #delete-yes { background: var(--accent); border-color: var(--accent); color: var(--bg); font-weight: 600; }
-#login button:hover:enabled, #compose-send:hover:enabled, #channel-create:hover:enabled, #new-open:hover:enabled, #delete-yes:hover:enabled { background: color-mix(in srgb, var(--accent) 85%, var(--text)); }
+#login button, #compose-send, #channel-create, #new-open, #delete-yes, #person-add, #link-make, #cancel-yes { background: var(--accent); border-color: var(--accent); color: var(--bg); font-weight: 600; }
+#login button:hover:enabled, #compose-send:hover:enabled, #channel-create:hover:enabled, #new-open:hover:enabled, #delete-yes:hover:enabled, #person-add:hover:enabled, #link-make:hover:enabled, #cancel-yes:hover:enabled { background: color-mix(in srgb, var(--accent) 85%, var(--text)); }
 button:disabled { cursor: default; opacity: 0.6; }
 button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .note { color: var(--muted); margin: var(--s2) var(--s3); }
@@ -227,6 +232,18 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .c5 { --who: var(--who5); }
 .c6 { --who: var(--who6); }
 .c7 { --who: var(--who7); }
+/* The "Invites" view's forms sit above its list of unused invites, side by side when there is room. */
+#invite-forms { display: flex; flex-wrap: wrap; gap: var(--s3); padding: var(--s3) var(--s4); border-bottom: 1px solid var(--border); }
+#person-form, #link-form { flex: 1 1 14rem; display: flex; flex-direction: column; gap: var(--s1); }
+#invite-forms h3 { margin: 0; font-size: var(--text-sm); font-weight: 600; color: var(--muted); }
+#invite-forms input, #invite-forms select { padding: var(--s1); background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); }
+#invite-forms .note { margin: 0; }
+#invite-made, #cancel-confirm, #cancel-note { flex: 1 1 100%; }
+#invite-made, #cancel-confirm { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2); }
+#invite-for, #cancel-text { flex: 1 1 100%; margin: 0; }
+#invite-link { flex: 1 1 16rem; min-width: 0; font-family: var(--font-mono); }
+.entry.invite { grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "from cancel" "time cancel" "body cancel"; }
+.entry.invite > button { grid-area: cancel; align-self: center; }
 .delivery.failed .tag { color: var(--error); background: var(--error-bg); }
 .item { display: flex; align-items: center; gap: var(--s2); text-align: left; background: none; border: 0; border-radius: var(--radius); padding: var(--s1) var(--s2); margin: 1px var(--s2); width: calc(100% - 2 * var(--s2)); }
 .item.current { background: var(--active); font-weight: 600; box-shadow: inset 3px 0 0 var(--accent); }
@@ -301,6 +318,26 @@ const resultsNote = document.getElementById("results-note");
 const resultRows = document.getElementById("result-rows");
 const deliveryEntry = document.getElementById("delivery-entry");
 const approvalEntry = document.getElementById("approval-entry");
+const peopleHead = document.getElementById("people-head");
+const inviteEntry = document.getElementById("invite-entry");
+const inviteForms = document.getElementById("invite-forms");
+const personForm = document.getElementById("person-form");
+const personName = document.getElementById("person-name");
+const personKind = document.getElementById("person-kind");
+const personAdd = document.getElementById("person-add");
+const personNote = document.getElementById("person-note");
+const linkForm = document.getElementById("link-form");
+const linkPerson = document.getElementById("link-person");
+const linkMake = document.getElementById("link-make");
+const linkNote = document.getElementById("link-note");
+const inviteMade = document.getElementById("invite-made");
+const inviteFor = document.getElementById("invite-for");
+const inviteLink = document.getElementById("invite-link");
+const copyNote = document.getElementById("copy-note");
+const cancelConfirm = document.getElementById("cancel-confirm");
+const cancelText = document.getElementById("cancel-text");
+const cancelYes = document.getElementById("cancel-yes");
+const cancelNote = document.getElementById("cancel-note");
 const asNote = document.getElementById("as-note");
 const writer = document.getElementById("writer");
 const compose = document.getElementById("compose");
@@ -345,10 +382,11 @@ let pairs = new Map();
 let madePairs = 0;
 // The pair whose messages are open in the log, by pairKey, or undefined.
 let openPair;
-// Whether the webhook deliveries, or the approved clients, are open in the log. At most one of openChannel, openPair,
-// openDeliveries and openApprovals is set.
+// Whether the webhook deliveries, the approved clients or the invites are open in the log. At most one of openChannel,
+// openPair, openDeliveries, openApprovals and openInvites is set.
 let openDeliveries = false;
 let openApprovals = false;
+let openInvites = false;
 // What this tab has seen of each channel and pair, by sidebar key: its count of posts or messages when the tab last
 // had it open, or when the first poll for this token read it. An entry's total less this is its unread badge. It lives
 // only here, is never sent or stored, and marks nothing read for any agent; ask() forgets it.
@@ -361,6 +399,9 @@ let seenAll = false;
 let deliveryCount;
 // The count on the sidebar's approved clients entry, once the entry is made: how many the view read when last open.
 let approvalCount;
+// The count on the sidebar's invites entry while it is made, for an admin person only: how many unused invites the view
+// read when last open.
+let inviteCount;
 // The search's own counter and request, separate from generation and controller, so a newer search, leaving the
 // results or ask() drops a search's answer.
 let searchGeneration = 0;
@@ -446,6 +487,8 @@ const CHANNEL_NAME = /^[A-Za-z0-9_-]{1,32}$/;
 const SIGN_IN_TO_SEND = "To send, sign in as a person: run message-cp login-link --url <public url> --account <account> --person <name> on the server.";
 // What an empty panel says: what makes something appear there, and, for channels and direct messages, one sentence
 // more naming "New channel" or "New message" that goes only with a person token, as those buttons do.
+// An admin person's token always lists its own person, so only another token ever sees this, and it adds people on the
+// server.
 const NO_AGENTS =
   'No agents yet: one appears here once it registers with the register tool, using message-cp as an MCP server (the reference page "Add it to an MCP client", https://message-cp.vercel.app/clients.html#add-it-to-an-mcp-client, says how). ' +
   "Add a person on the server with: message-cp person add <name> --account <account>";
@@ -466,6 +509,24 @@ let creating;
 let channelClosings = 0;
 // The tokenGeneration a DELETE /api/conversation is in flight for, or undefined, as sending is for the compose box.
 let deleting;
+// The tokenGeneration a POST /api/people, a POST /api/invites or a DELETE /api/invites is in flight for, or undefined, as
+// creating is for "New channel".
+let adding;
+let linking;
+let cancelling;
+// How many times the "Invites" view has closed (closeLog), so an answer that comes after it closed changes nothing and
+// never puts an invite's link on the page, as channelClosings does for "New channel".
+let inviteClosings = 0;
+// The invite the "Invites" view asks before cancelling ({ id, person, createdAt }), or undefined.
+let cancelTarget;
+// The list the invites view and the "New link" select were last built from, so a poll rebuilds them only when it
+// changes, never taking the focus from a Cancel button or closing the select under the reader.
+let inviteRowsKey = "";
+let linkKey = "";
+// How long an invite lasts, in days: INVITE_TTL_MS in src/login.ts.
+const INVITE_DAYS = ${INVITE_TTL_MS / 86400000};
+const NO_INVITES = "No unused invites. One is listed here from when it is made until it is used, cancelled or expires.";
+const NOT_ADMIN = "The server says you are no longer an admin of this account (403), so this page no longer offers adding people or invites.";
 
 function say(text, isError) {
   statusLine.textContent = text;
@@ -489,6 +550,7 @@ function ask(message) {
   canPost = false;
   me = undefined;
   meAdmin = false;
+  showInviteEntry();
   fullToken = false;
   people = undefined;
   person = undefined;
@@ -519,6 +581,14 @@ function ask(message) {
   channelFields.hidden = false;
   channelCreate.hidden = false;
   channelCreate.disabled = false;
+  // And the "Invites" view's fields and buttons; closeLog() below drops a link it showed.
+  personName.value = "";
+  personKind.value = "plain";
+  linkKey = "";
+  linkPerson.replaceChildren();
+  personAdd.disabled = false;
+  linkMake.disabled = false;
+  cancelYes.disabled = false;
   // Clear every panel, so one token's agents, channels, pairs and messages never show under the next token.
   rows.replaceChildren();
   openAgents = new Set();
@@ -590,6 +660,17 @@ channelForm.addEventListener("submit", (event) => {
   event.preventDefault();
   createChannel();
 });
+personForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  addInvitedPerson();
+});
+linkForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  makeInvite();
+});
+document.getElementById("invite-copy").addEventListener("click", () => copyInvite());
+cancelYes.addEventListener("click", () => cancelInvite());
+document.getElementById("cancel-no").addEventListener("click", () => closeCancelInvite(true));
 newFrom.addEventListener("change", () => fillNew());
 newForm.addEventListener("submit", (event) => {
   event.preventDefault();
@@ -702,6 +783,19 @@ function closeLog() {
   openPair = undefined;
   openDeliveries = false;
   openApprovals = false;
+  // Leaving the invites view drops the link it showed, its notes and its confirmation, and any answer still to come.
+  openInvites = false;
+  inviteClosings++;
+  inviteForms.hidden = true;
+  inviteMade.hidden = true;
+  inviteFor.textContent = "";
+  inviteLink.value = "";
+  copyNote.textContent = "";
+  personNote.textContent = "";
+  linkNote.textContent = "";
+  cancelNote.textContent = "";
+  closeCancelInvite();
+  inviteRowsKey = "";
   held = 0;
   postRows.replaceChildren();
   postRows.className = "";
@@ -809,6 +903,303 @@ function openApprovalLog() {
   markOpen();
   cancel();
   poll(generation);
+}
+
+// Opens the "Invites" view in the log, for an admin person only, and polls again at once, as openApprovalLog does: its
+// "Add person" and "New link" forms, then the account's unused invites, each with a Cancel button.
+function openInviteLog() {
+  if (!meAdmin) return;
+  closeLog();
+  openInvites = true;
+  postRows.className = "top";
+  logTitle.textContent = "Invites";
+  logNote.textContent = "Loading…";
+  inviteForms.hidden = false;
+  personAdd.disabled = adding === tokenGeneration;
+  linkMake.disabled = linking === tokenGeneration;
+  fillLink();
+  log.hidden = false;
+  panel("");
+  markOpen();
+  cancel();
+  poll(generation);
+  personName.focus();
+}
+
+// Makes the sidebar's "Invites" entry, under its People heading, while the token is an admin person's, and removes both
+// otherwise.
+function showInviteEntry() {
+  peopleHead.hidden = !meAdmin;
+  if (!meAdmin) {
+    inviteEntry.replaceChildren();
+    inviteCount = undefined;
+  } else if (!inviteCount) {
+    inviteCount = part("span", "count", "");
+    inviteEntry.append(sidebarItem("invites", "Invites", "", inviteCount, openInviteLog));
+  }
+}
+
+// After the server's 403 to an admin's request, which says the person is no longer an admin: the page forgets it, so
+// the "Invites" entry and Delete go, and an open invites view keeps only a note saying why.
+function unmarked() {
+  meAdmin = false;
+  showInviteEntry();
+  showDelete();
+  if (!openInvites) return;
+  // The focus may be in the forms, which go, so it moves to the view's Close button.
+  inviteForms.hidden = true;
+  document.getElementById("close-log").focus();
+  inviteMade.hidden = true;
+  inviteLink.value = "";
+  closeCancelInvite();
+  postRows.replaceChildren();
+  inviteRowsKey = "";
+  logNote.textContent = NOT_ADMIN;
+}
+
+// Builds the "New link" select from the account's people, as the last GET /api/agents gave them, keeping the choice
+// while that name is listed; rebuilt only when the list changes.
+function fillLink() {
+  const known = people ?? [];
+  const now = JSON.stringify(known);
+  if (now === linkKey) return;
+  linkKey = now;
+  const chosen = linkPerson.value;
+  linkPerson.replaceChildren(choose("Choose a person"), ...known.map((name) => {
+    const option = document.createElement("option");
+    option.value = name;
+    option.textContent = name;
+    return option;
+  }));
+  linkPerson.value = known.includes(chosen) ? chosen : "";
+}
+
+// Sends one of the "Invites" view's writes: method to path, with body as JSON if given, under ac. Answers the status
+// with a 200's body, or another answer's reason and whether it asked to be retried (a busy database), or { error } with
+// no answer, saying whether the deadline passed.
+async function inviteWrite(token, ac, method, path, body) {
+  const headers = { Authorization: "Bearer " + token };
+  if (body !== undefined) headers["Content-Type"] = "application/json";
+  try {
+    const res = await fetch(path, {
+      method,
+      headers,
+      body: body === undefined ? undefined : JSON.stringify(body),
+      cache: "no-store",
+      credentials: "omit",
+      referrerPolicy: "no-referrer",
+      signal: ac.signal,
+    });
+    if (res.status === 200) return { status: 200, body: await res.json().catch(() => undefined) };
+    return { status: res.status, reason: await reasonOf(res), retry: res.headers.get("Retry-After") !== null };
+  } catch {
+    return { error: ac.signal.aborted ? "The server did not answer in time" : "No answer from the server" };
+  }
+}
+
+// What a form's note says for an answer that is not a 200, 401, 403 or 404: a 400's reason (a name taken or not
+// allowed), a 503's (too many invites this week) unless the server was only busy.
+function refusal(answer) {
+  if (answer.status === 400) return answer.reason || "The server refused this (400).";
+  if (answer.status === 413) return "This is too long for the server (413).";
+  if (answer.status === 503) {
+    return answer.retry || !answer.reason || answer.reason === "Too many requests" ? "The server is busy (503). Try again in a moment." : answer.reason;
+  }
+  return "The server answered " + answer.status + ".";
+}
+
+// Shows the invite a 200 from POST /api/people or /api/invites made: its link, from the answer, or else built from this
+// page's own address with the code in the fragment, as loginLink builds one. It goes only into the link field, by value
+// (and the clipboard, from Copy), and the field is emptied when the view closes. Answers false for an answer this page cannot read.
+function showInvite(body) {
+  const invite = body && typeof body === "object" ? body.invite : undefined;
+  if (!invite || typeof invite !== "object" || typeof invite.code !== "string" || typeof body.name !== "string") return false;
+  let link;
+  if (typeof invite.link === "string") link = invite.link;
+  else {
+    const url = new URL(location.href);
+    url.search = "";
+    url.hash = "code=" + invite.code;
+    link = url.href;
+  }
+  inviteFor.textContent =
+    "Invite link for " + body.name + (body.admin === true ? " (admin)" : "") + ". Opening it signs one browser in as them. " +
+    "It works once and lasts " + INVITE_DAYS + " days, until " + when(invite.expiresAt) + ". It shows only here, until you leave this view.";
+  inviteLink.value = link;
+  copyNote.textContent = "";
+  inviteMade.hidden = false;
+  inviteLink.focus();
+  return true;
+}
+
+// Reads the people and the invites again at once, after a write that may have changed them.
+function refresh() {
+  cancel();
+  poll(generation);
+}
+
+// Adds a person, plain or admin, with POST /api/people, and shows the link of the invite it makes for them. Nothing is
+// sent without a name, and Add stays disabled while the request is in flight. An answer that comes after the token was
+// forgotten, or after the view closed, changes nothing; a 403 means the person is no longer an admin (unmarked).
+async function addInvitedPerson() {
+  const token = sessionStorage.getItem(KEY);
+  if (!token) return ask();
+  const tokenGen = tokenGeneration;
+  if (!meAdmin || !openInvites || adding === tokenGen) return;
+  const name = personName.value.trim();
+  const admin = personKind.value === "admin";
+  if (name === "") {
+    personNote.textContent = "Enter a name.";
+    return;
+  }
+  adding = tokenGen;
+  const closings = inviteClosings;
+  personAdd.disabled = true;
+  personNote.textContent = "Adding…";
+  const ac = new AbortController();
+  const deadline = setTimeout(() => ac.abort(), TIMEOUT_MS);
+  let answer;
+  try {
+    answer = await inviteWrite(token, ac, "POST", "/api/people", { name, admin });
+  } finally {
+    clearTimeout(deadline);
+  }
+  if (tokenGen !== tokenGeneration) return;
+  adding = undefined;
+  personAdd.disabled = false;
+  if (answer.status === 401) return ask("The server refused that token. Enter another.");
+  if (closings !== inviteClosings) return;
+  if (answer.status === 403) return unmarked();
+  if (answer.status === 200) {
+    // The form starts again as a plain person, so the next one is never an admin by accident.
+    if (personName.value.trim() === name) personName.value = "";
+    personKind.value = "plain";
+    personNote.textContent = showInvite(answer.body) ? "Added " + name + "." : "Added " + name + ", but this page cannot read the invite: make a new link for them.";
+    refresh();
+    return;
+  }
+  if (answer.error) {
+    personNote.textContent = answer.error + ", so " + name + " may have been added: the agents panel and the invites below show whether.";
+    refresh();
+    return;
+  }
+  personNote.textContent = refusal(answer);
+}
+
+// Makes a new invite for a person of the account with POST /api/invites and shows its link, as addInvitedPerson does.
+async function makeInvite() {
+  const token = sessionStorage.getItem(KEY);
+  if (!token) return ask();
+  const tokenGen = tokenGeneration;
+  if (!meAdmin || !openInvites || linking === tokenGen) return;
+  const person = linkPerson.value;
+  if (person === "") {
+    linkNote.textContent = "Choose a person.";
+    return;
+  }
+  linking = tokenGen;
+  const closings = inviteClosings;
+  linkMake.disabled = true;
+  linkNote.textContent = "Making a link…";
+  const ac = new AbortController();
+  const deadline = setTimeout(() => ac.abort(), TIMEOUT_MS);
+  let answer;
+  try {
+    answer = await inviteWrite(token, ac, "POST", "/api/invites", { person });
+  } finally {
+    clearTimeout(deadline);
+  }
+  if (tokenGen !== tokenGeneration) return;
+  linking = undefined;
+  linkMake.disabled = false;
+  if (answer.status === 401) return ask("The server refused that token. Enter another.");
+  if (closings !== inviteClosings) return;
+  if (answer.status === 403) return unmarked();
+  if (answer.status === 200) {
+    linkNote.textContent = showInvite(answer.body) ? "" : "A link was made, but this page cannot read it: make another.";
+    refresh();
+    return;
+  }
+  if (answer.error) {
+    linkNote.textContent = answer.error + ", so a link for " + person + " may have been made: the invites below show whether.";
+    refresh();
+    return;
+  }
+  linkNote.textContent = answer.status === 404 ? person + " is not a person in this account now (404)." : refusal(answer);
+}
+
+// Copies the shown link to the clipboard; where the browser refuses, selects it to copy by hand.
+async function copyInvite() {
+  const link = inviteLink.value;
+  if (!link) return;
+  const closings = inviteClosings;
+  let copied = false;
+  try {
+    await navigator.clipboard.writeText(link);
+    copied = true;
+  } catch {
+    copied = false;
+  }
+  if (closings !== inviteClosings || inviteLink.value !== link) return;
+  if (!copied) {
+    inviteLink.focus();
+    inviteLink.select();
+  }
+  copyNote.textContent = copied ? "Copied." : "This browser did not copy it: the link is selected, so copy it yourself.";
+}
+
+// Asks above the list before cancelling an invite; nothing is sent until its "Cancel invite" is pressed.
+function openCancelInvite(invite) {
+  if (!meAdmin || !openInvites) return;
+  cancelTarget = invite;
+  cancelNote.textContent = "";
+  cancelText.textContent = "Cancel " + invite.person + "'s invite, made " + when(invite.createdAt) + "? Its link will stop working.";
+  cancelConfirm.hidden = false;
+  cancelYes.disabled = cancelling === tokenGeneration;
+  document.getElementById("cancel-no").focus();
+}
+
+// Dismisses the cancel confirmation; when the reader dismissed it, or it was answered, the focus goes back to the name
+// field, at the top of the view, as the confirmation and its row may be gone.
+function closeCancelInvite(refocus) {
+  cancelConfirm.hidden = true;
+  cancelText.textContent = "";
+  cancelTarget = undefined;
+  if (refocus) personName.focus();
+}
+
+// Cancels the invite being asked about with DELETE /api/invites and says what it ended, then reads the list again. An
+// answer that comes after the token was forgotten, or after the view closed, changes nothing.
+async function cancelInvite() {
+  const token = sessionStorage.getItem(KEY);
+  if (!token) return ask();
+  const tokenGen = tokenGeneration;
+  const invite = cancelTarget;
+  if (!meAdmin || !openInvites || !invite || cancelling === tokenGen) return;
+  cancelling = tokenGen;
+  const closings = inviteClosings;
+  cancelYes.disabled = true;
+  const ac = new AbortController();
+  const deadline = setTimeout(() => ac.abort(), TIMEOUT_MS);
+  let answer;
+  try {
+    answer = await inviteWrite(token, ac, "DELETE", "/api/invites?" + new URLSearchParams({ id: String(invite.id) }));
+  } finally {
+    clearTimeout(deadline);
+  }
+  if (tokenGen !== tokenGeneration) return;
+  cancelling = undefined;
+  cancelYes.disabled = false;
+  if (answer.status === 401) return ask("The server refused that token. Enter another.");
+  if (closings !== inviteClosings) return;
+  if (answer.status === 403) return unmarked();
+  // A confirmation opened for another invite meanwhile stays.
+  if (cancelTarget === invite) closeCancelInvite(true);
+  if (answer.status === 200) cancelNote.textContent = "Cancelled " + invite.person + "'s invite.";
+  else if (answer.status === 404) cancelNote.textContent = invite.person + "'s invite was already used, cancelled or expired (404).";
+  else if (answer.error) cancelNote.textContent = answer.error + ", so " + invite.person + "'s invite may have been cancelled: the list below shows whether.";
+  else cancelNote.textContent = refusal(answer);
+  if (answer.status === 200 || answer.status === 404 || answer.error) refresh();
 }
 
 // Drops the search in flight and empties the results.
@@ -921,6 +1312,7 @@ async function checkToken() {
   me = own;
   meAdmin = admin;
   fullToken = full && own === undefined;
+  showInviteEntry();
   showPicker();
   fillNew();
   fillChannel();
@@ -1835,6 +2227,46 @@ async function readApprovals(token, signal, gen) {
   return { ok: true };
 }
 
+// Reads the account's unused invites, newest first, and replaces the ones the log holds when they changed, as
+// readApprovals does; with the invites closed, or no longer an admin's, it leaves the log as it is. A 403 says the person
+// is no longer an admin (unmarked). Any other failure but a refused token goes in the log's note.
+async function readInvites(token, signal, gen) {
+  if (!meAdmin) return { ok: true };
+  let page;
+  try {
+    page = await fetchPage(token, signal, "/api/invites", {}, 0, list);
+  } catch {
+    page = { error: signal.aborted ? "The server did not answer in time" : "Cannot reach the server" };
+  }
+  if (gen !== generation || !openInvites || !meAdmin) return { ok: true };
+  if (page.status === 401) return page;
+  if (page.status === 403) {
+    unmarked();
+    return { ok: true };
+  }
+  let shown;
+  const key = page.items ? JSON.stringify(page.items) : "";
+  try {
+    if (page.items && key !== inviteRowsKey) shown = page.items.map(inviteRow);
+  } catch {
+    page = { error: "The server sent an answer this page cannot read" };
+  }
+  if (page.items) {
+    if (shown) {
+      inviteRowsKey = key;
+      postRows.replaceChildren(...shown);
+      postRows.scrollTop = 0;
+    }
+    inviteCount.textContent = String(page.items.length);
+    logNote.textContent = page.items.length === 0 ? NO_INVITES : "";
+  } else if (page.status === 503) {
+    logNote.textContent = "The server is busy (503). Retrying…";
+  } else {
+    logNote.textContent = (page.error || "The server answered " + page.status) + ". Retrying…";
+  }
+  return { ok: true };
+}
+
 async function poll(gen) {
   const token = sessionStorage.getItem(KEY);
   if (!token) return ask();
@@ -1844,12 +2276,13 @@ async function poll(gen) {
   const channel = openChannel;
   const deliveries = openDeliveries;
   const approvals = openApprovals;
+  const invites = openInvites;
   const held = messages.length;
   let result;
   try {
     result = await fetchView(token, ac.signal);
     // The agents and channels go up before the messages and the log are read, so a long or slow history never holds
-    // them back. The messages and the log (a channel's posts, the webhook deliveries or the approvals) are read side by
+    // them back. The messages and the log (a channel's posts, the webhook deliveries, the approvals or the invites) are read side by
     // side, so neither waits on the other or fails with it, and both have finished before the next poll can read past
     // what they hold.
     if (result.ok && gen === generation) {
@@ -1866,7 +2299,9 @@ async function poll(gen) {
             ? readDeliveries(token, ac.signal, gen)
             : approvals
               ? readApprovals(token, ac.signal, gen)
-              : { ok: true },
+              : invites
+                ? readInvites(token, ac.signal, gen)
+                : { ok: true },
       ]);
       // A refused token from either read wins, so a failure of the other never leaves the page showing its data.
       const values = [messages, posts].filter((r) => r.status === "fulfilled").map((r) => r.value);
@@ -2080,6 +2515,7 @@ function show(agents) {
   showPicker();
   fillNew();
   fillChannel();
+  fillLink();
   // An open list follows the answer, so it never offers a name that has gone.
   if (offered.length > 0) offer();
 }
@@ -2090,6 +2526,7 @@ function openKey() {
   if (openPair !== undefined) return "pair " + openPair;
   if (openDeliveries) return "deliveries";
   if (openApprovals) return "approvals";
+  if (openInvites) return "invites";
   return undefined;
 }
 
@@ -2169,12 +2606,12 @@ function showPairs() {
   pairRows.replaceChildren(...items);
 }
 
-// Marks the open channel, pair, webhook deliveries or approved clients in the sidebar, in place, so the button just chosen keeps the focus.
+// Marks the open channel, pair, webhook deliveries, approved clients or invites in the sidebar, in place, so the button just chosen keeps the focus.
 // The open entry's posts or messages all count as seen, so its badge goes.
 function markOpen() {
   const key = openKey();
   if (shownTotals.has(key)) seen.set(key, shownTotals.get(key));
-  const entries = [...channelRows.children, ...pairRows.children, ...deliveryEntry.children, ...approvalEntry.children];
+  const entries = [...channelRows.children, ...pairRows.children, ...deliveryEntry.children, ...approvalEntry.children, ...inviteEntry.children];
   for (const li of entries) {
     const button = li.children[0];
     if (!button) continue;
@@ -2385,6 +2822,26 @@ function approvalRow(a) {
   return li;
 }
 
+// An unused invite: its person, when it was made and when it expires, and a Cancel button that asks first. Never its
+// code, which GET /api/invites does not give. Throws on an entry that is not an invite, so readInvites shows the answer
+// as unreadable.
+function inviteRow(i) {
+  if (!i || !Number.isInteger(i.id) || typeof i.person !== "string" || typeof i.createdAt !== "string" || typeof i.expiresAt !== "string") {
+    throw new TypeError("not an invite");
+  }
+  const li = document.createElement("li");
+  li.className = "entry invite";
+  const time = part("time", "time", "made " + when(i.createdAt));
+  time.title = i.createdAt;
+  const button = part("button", "", "Cancel");
+  button.type = "button";
+  button.setAttribute("aria-label", "Cancel " + i.person + "'s invite");
+  const invite = { id: i.id, person: i.person, createdAt: i.createdAt };
+  button.addEventListener("click", () => openCancelInvite(invite));
+  li.append(part("span", "from", i.person), time, part("div", "body", "expires " + when(i.expiresAt)), button);
+  return li;
+}
+
 // A webhook delivery: what it was for, its status (failed marked), when it was queued, its webhook, its attempts and,
 // once delivered, when. Never a URL, a secret or a message's text, which GET /api/webhook-deliveries does not give.
 // Throws on an entry that is not a delivery as GET /api/webhook-deliveries gives one, so readDeliveries shows the
@@ -2539,6 +2996,8 @@ export const DASHBOARD_HTML = `<!doctype html>
 <ul id="delivery-entry"></ul>
 <h2>Clients</h2>
 <ul id="approval-entry"></ul>
+<h2 id="people-head" hidden>People</h2>
+<ul id="invite-entry"></ul>
 </nav>
 <main id="chat">
 <section id="log" hidden>
@@ -2556,6 +3015,36 @@ export const DASHBOARD_HTML = `<!doctype html>
 </div>
 <button id="delete-pair" type="button" hidden>Delete</button>
 <button id="close-log" type="button">Close</button>
+</div>
+<div id="invite-forms" hidden>
+<form id="person-form" aria-labelledby="person-title">
+<h3 id="person-title">Add person</h3>
+<p id="person-note" class="note" role="status"></p>
+<label for="person-name">Name</label>
+<input id="person-name" type="text" maxlength="32" autocomplete="off" spellcheck="false">
+<label for="person-kind">Role</label>
+<select id="person-kind"><option value="plain">Person</option><option value="admin">Admin</option></select>
+<div class="actions"><button id="person-add" type="submit">Add person</button></div>
+</form>
+<form id="link-form" aria-labelledby="link-title">
+<h3 id="link-title">New link for a person</h3>
+<p id="link-note" class="note" role="status"></p>
+<label for="link-person">Person</label>
+<select id="link-person"></select>
+<div class="actions"><button id="link-make" type="submit">New link</button></div>
+</form>
+<div id="invite-made" hidden>
+<p id="invite-for"></p>
+<input id="invite-link" type="text" readonly aria-label="Invite link" autocomplete="off" spellcheck="false">
+<button id="invite-copy" type="button">Copy</button>
+<span id="copy-note" class="note" role="status"></span>
+</div>
+<div id="cancel-confirm" role="group" aria-labelledby="cancel-text" hidden>
+<p id="cancel-text"></p>
+<button id="cancel-yes" type="button">Cancel invite</button>
+<button id="cancel-no" type="button">Keep it</button>
+</div>
+<p id="cancel-note" class="note" role="status"></p>
 </div>
 <p id="log-note" class="note"></p>
 <ol id="post-rows" role="log"></ol>
