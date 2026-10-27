@@ -12,8 +12,8 @@ Ask nothing else unless a step says to. Then go to section 2 (this machine) or 3
 ## 2. Just this machine
 
 1. Run `npx -y message-cp init`.
-2. If it found several clients, run the printed `--client` line for yours.
-3. If none, ask them to install Claude Code, Codex, Cursor or Claude Desktop.
+2. If it found several, run its `--client` line for the client running you, else ask which.
+3. If none, ask them to install one it names.
 4. If a different server named message-cp is there, tell the person; only if they agree, run the printed removal, then `init` again.
 5. "Check passed" means a test agent messaged itself. Note the "To undo" line.
 
