@@ -161,7 +161,7 @@ CREATE INDEX IF NOT EXISTS mentions_unread ON mentions (agent_id, read_at, post_
 -- GET /api/channel-posts reads a page of posts' mentions through this, not by scanning every mention.
 CREATE INDEX IF NOT EXISTS mentions_by_post ON mentions (post_id);
 
--- Outgoing webhooks, added only with \`message-cp webhook\`, which an admin person token also lists and removes over
+-- Outgoing webhooks, added only with \`message-cp webhook\`; an admin person token also lists and removes them over
 -- /api/webhooks. \`event\` is 'channel', 'mention' or 'agent' and \`name\` the channel or agent in the same account,
 -- which need not exist yet. The secret is stored as is: deliveries sign with it.
 -- So is the value of the one header a webhook may carry (\`header_name\`, \`header_value\`, added in \`migrate\`), since
