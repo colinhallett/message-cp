@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
 import { issueToken } from "./accounts.js";
-import { PersonError, addPerson, removePerson, setPersonAdmin, type Purged } from "./agents.js";
+import { KeyResetError, PersonError, PurgeError, addPerson, purgeAgent, removePerson, resetAgentKey, setPersonAdmin, type Purged } from "./agents.js";
 import { publicUrl } from "./connect.js";
 import type { AccountId, Db } from "./db.js";
 
@@ -235,6 +235,54 @@ export const removePersonBy = (db: Db, account: AccountId, by: number, name: str
     if (person === undefined) return undefined;
     if (person.id === by) throw new OwnPersonError();
     return removePerson(db, person.account, name);
+  }).immediate();
+
+/** An agent removed by an admin person: its name and how many direct messages and mentions went with it. */
+export interface RemovedAgent {
+  name: string;
+  messages: number;
+  mentions: number;
+}
+
+/**
+ * For DELETE /api/agents: removes the agent `name` (any case) of the account `account`, live or only left as removed
+ * rows, as `purgeAgent` does, or answers undefined, changing nothing, for a name no agent of the account has had, a live
+ * person's included. `by` is the row of the admin person asking. Throws `NotAdminError` unless they are still a live
+ * admin of the account.
+ */
+export const removeAgentBy = (db: Db, account: AccountId, by: number, name: string): RemovedAgent | undefined =>
+  db.transaction(() => {
+    requireAdmin(db, account, by);
+    const acct = db.prepare("SELECT name FROM accounts WHERE id = ?").pluck().get(account) as string | undefined;
+    if (acct === undefined) return undefined;
+    try {
+      // A nested transaction is a savepoint inside this one.
+      const purged = purgeAgent(db, acct, name);
+      return { name: purged.name, messages: purged.messages, mentions: purged.mentions };
+    } catch (err) {
+      if (err instanceof PurgeError) return undefined;
+      throw err;
+    }
+  }).immediate();
+
+/**
+ * For POST /api/agents/key: gives the live agent `name` (any case) of the account `account` a new key as
+ * `resetAgentKey` does, ending its sessions, and answers its name and the key, or undefined, changing nothing, for a
+ * name no live agent of the account has, a person's included. `by` is the row of the admin person asking. Throws
+ * `NotAdminError` unless they are still a live admin of the account.
+ */
+export const resetAgentKeyBy = (db: Db, account: AccountId, by: number, name: string): { name: string; key: string } | undefined =>
+  db.transaction(() => {
+    requireAdmin(db, account, by);
+    const acct = db.prepare("SELECT name FROM accounts WHERE id = ?").pluck().get(account) as string | undefined;
+    if (acct === undefined) return undefined;
+    try {
+      const reset = resetAgentKey(db, acct, name);
+      return { name: reset.name, key: reset.key };
+    } catch (err) {
+      if (err instanceof KeyResetError) return undefined;
+      throw err;
+    }
   }).immediate();
 
 /** An unused invite as GET /api/invites lists it: never its code or hash. */

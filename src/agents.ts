@@ -388,12 +388,13 @@ export const purgeAgent = (db: Db, account: string, name: string): Purged =>
     // removed with `person remove` is not one of them.
     const rows = `SELECT id FROM agents WHERE account_id = ? AND (id = ? OR (person = 0 AND removed_at IS NOT NULL AND removed_name = ? COLLATE NOCASE))`;
     const rowArgs = [acct.id, live?.id ?? null, name];
-    const messages = db
-      .prepare(
-        `DELETE FROM messages WHERE recipient_id IN (${rows})
-         OR (sender = ? COLLATE NOCASE AND recipient_id IN (SELECT id FROM agents WHERE account_id = ?))`,
-      )
-      .run(...rowArgs, name, acct.id).changes;
+    // Two deletes, each searched by its own index (messages_history, then messages_by_sender), where one with OR scans
+    // every message. A message both match goes with the first, so the sum counts each once.
+    const messages =
+      db.prepare(`DELETE FROM messages WHERE recipient_id IN (${rows})`).run(...rowArgs).changes +
+      db
+        .prepare("DELETE FROM messages WHERE sender = ? COLLATE NOCASE AND recipient_id IN (SELECT id FROM agents WHERE account_id = ?)")
+        .run(name, acct.id).changes;
     const mentions = db.prepare(`DELETE FROM mentions WHERE agent_id IN (${rows})`).run(...rowArgs).changes;
     if (live) {
       db.prepare(
