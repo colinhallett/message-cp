@@ -1397,8 +1397,8 @@ function forgetMessagesOf(name, gone) {
 }
 
 // Removes the person being asked about with DELETE /api/people and says what it ended from the answer's counts, then
-// reads the list again, as cancelInvite does. After a 200 or no answer it also reads the account's messages again from
-// the start (forgetMessagesOf), even if the view has closed since; any other answer after the view closed, or any
+// reads the list again, as cancelInvite does. After a 200, 404 or no answer it also reads the account's messages again
+// from the start (forgetMessagesOf), even if the view has closed since; any other answer after the view closed, or any
 // answer after the token was forgotten, changes nothing.
 async function removeAccountPerson() {
   const token = sessionStorage.getItem(KEY);
@@ -1421,10 +1421,11 @@ async function removeAccountPerson() {
   removing = undefined;
   removeYes.disabled = false;
   if (answer.status === 401) return ask("The server refused that token. Enter another.");
-  // Their direct messages are deleted (200) or may be (no answer), so the messages the page holds are read again from
-  // the start, as deletePair does, since GET /api/messages pages by offset; this holds whichever view is open now.
-  const forgot = answer.status === 200 || Boolean(answer.error);
-  if (forgot) forgetMessagesOf(target.name, answer.status === 200);
+  // Their direct messages are deleted (200), were deleted by whoever removed them first (404), or may be (no answer),
+  // so the messages the page holds are read again from the start, as deletePair does, since GET /api/messages pages by
+  // offset; this holds whichever view is open now.
+  const forgot = answer.status === 200 || answer.status === 404 || Boolean(answer.error);
+  if (forgot) forgetMessagesOf(target.name, answer.status === 200 || answer.status === 404);
   if (closings !== inviteClosings) {
     // The poll in flight may still read from the old offset, so a new one starts.
     if (forgot) refresh();

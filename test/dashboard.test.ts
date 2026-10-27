@@ -6151,6 +6151,30 @@ describe("the page's invites", () => {
       expect(page.elements["post-rows"].children.map((r) => field(r, "body"))).toEqual(["first", "second"]);
     });
 
+    it("reads the account's messages again from the start when another admin removed the person first (404)", async () => {
+      addPerson(db, "owner", "ben");
+      registerAgent(db, OWNER_ACCOUNT, "bot", "");
+      registerAgent(db, OWNER_ACCOUNT, "eve", "");
+      for (const body of ["a", "b", "c"]) sendMessage(db, OWNER_ACCOUNT, "bot", "ben", body);
+      sendMessage(db, OWNER_ACCOUNT, "bot", "eve", "first");
+      const page = await load(anaToken);
+      await page.openInvites();
+      await page.until(() => personRows(page).length === 2 && page.elements["pair-rows"].children.length === 2);
+      button(page, "ben", "Remove").on.click();
+      // Another admin removes ben, and his messages with him, before this tab's Remove is pressed.
+      removePerson(db, "owner", "ben");
+      page.elements["remove-yes"].on.click();
+      await page.until(() => page.elements["people-note"].textContent === "ben is already gone (404).");
+      sendMessage(db, OWNER_ACCOUNT, "eve", "bot", "second");
+      for (let i = 0; i < 5 && !page.requests.some((r) => r.url.startsWith("/api/messages?") && r.url.includes("offset=0")); i++) await page.poll();
+      await page.poll();
+      await page.until(() => page.elements["pair-rows"].children.length === 1);
+      expect(text(page.elements["pair-rows"])).not.toContain("ben");
+      page.elements["pair-rows"].children[0].children[0].on.click();
+      await page.until(() => page.elements["post-rows"].children.length === 2);
+      expect(page.elements["post-rows"].children.map((r) => field(r, "body"))).toEqual(["first", "second"]);
+    });
+
     it("says each answer in the list's note, and reads the list again after a 200, 404 or no answer", async () => {
       addPerson(db, "owner", "ben");
       let next: Refusal | undefined;
