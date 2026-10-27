@@ -535,8 +535,9 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
 
   /**
    * GET /api/token: whether the request's token is read-only and whether it is agent-only, so the dashboard offers
-   * posting only to a full token and tells an agent token that it cannot use the page, and for a person token the
-   * person's name. It gives nothing else about the token: no token, hash, id or account.
+   * posting only to a token that may post and tells an agent token that it cannot use the page, and for a person token
+   * the person's name; the dashboard does not read that yet, so it offers a person token every person, and the server
+   * refuses the others. It gives nothing else about the token: no token, hash, id or account.
    */
   const apiToken = (req: IncomingMessage, res: ServerResponse, access: TokenAccess) => {
     if (req.method !== "GET") return reply(res, 405, "Method not allowed", { Allow: "GET" });

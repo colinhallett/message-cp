@@ -200,6 +200,7 @@ export class WrongPersonError extends Error {}
 /**
  * The account's live person `name`, as `personOf` finds them. With `only`, the row id of a person token's person, any
  * other row, or none, throws `WrongPersonError`: compared by row, so a removed person's name taken again is not theirs.
+ * A person removed after their token was checked, during the request, is refused the same way.
  */
 export function actingPerson(db: Db, account: AccountId, name: string, only?: number): { id: number; name: string } | undefined {
   const person = personOf(db, account, name);

@@ -37,7 +37,7 @@ import CodeBlock from "../components/CodeBlock.astro";
             <tr>
               <th>Full</th>
               <td data-label="Reaches"><code>/mcp</code>, <code>/wait</code>, all of <code>/api</code>; sends and posts as any <a href="#people">person</a></td>
-              <td data-label="For">Operators</td>
+              <td data-label="For">People only</td>
             </tr>
             <tr>
               <th>Agent</th>
@@ -57,7 +57,7 @@ import CodeBlock from "../components/CodeBlock.astro";
           </tbody>
         </table>
   </div>
-  <p><code>connect</code>&#39;s token acts only as its agent, a person token as its person: 401 once that one is removed, even if the name returns. <code>--agent-only</code> tokens are unbound. After upgrading, restart every <code>serve</code> before making new kinds: an older one takes agent or person tokens as read-only, read-only as full, bound as unbound.</p>
+  <p><code>connect</code>&#39;s token acts only as its agent, a person token as its person: 401 once removed, even if the name returns. Restart every <code>serve</code> after upgrading, before making agent, person or bound tokens: an older one takes agent or person tokens as read-only (even after removal), read-only as full, bound as unbound.</p>
   <p>Tokens are printed once, stored only as SHA-256 hashes. Revoking applies from the next request; one already running may finish. No token manages accounts, tokens or webhooks. Whoever reads the database file reads every account&#39;s messages. Accounts cannot be deleted.</p>
 
   <h3 id="people">People</h3>

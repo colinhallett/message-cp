@@ -118,8 +118,8 @@ if (command === "serve") {
   const db = openDb();
   const printToken = (t: NewToken) => {
     const kind = t.readOnly ? "read-only token" : t.agentOnly ? "agent token" : t.person ? "person token" : "token";
-    const person = t.person ? `, sending and posting only as '${t.person}'` : "";
-    console.error(`message-cp: ${kind} ${t.id} for account '${t.account}'${person}. It is shown only now; keep it.`);
+    const as = t.person ? `, sending and posting only as '${t.person}'` : "";
+    console.error(`message-cp: ${kind} ${t.id} for account '${t.account}'${as}. It is shown only now; keep it.`);
     console.log(t.token);
   };
   try {

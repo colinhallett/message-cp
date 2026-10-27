@@ -484,7 +484,7 @@ describe("message-cp token add", () => {
       const res = cli(...args);
       expect(res.status, args.join(" ")).toBe(1);
       expect(res.stdout).toBe("");
-      expect(res.stderr).toMatch(/^message-cp: No (person|account) named/);
+      expect(res.stderr).toMatch(/^message-cp: (No (person|account) named|The name 'bob' belongs to an agent)/);
     }
     for (const args of [
       ["token", "add", "friend", "--person"],

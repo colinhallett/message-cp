@@ -125,10 +125,12 @@ export const addToken = (db: Db, account: string, readOnly = false, agentOnly = 
     }
     let bound: BoundPerson | undefined;
     if (person !== undefined) {
-      bound = db
-        .prepare("SELECT id, name FROM agents WHERE account_id = ? AND name = ? AND removed_at IS NULL AND person = 1")
-        .get(row.id, person) as BoundPerson | undefined;
-      if (!bound) throw new AccountError(`No person named '${person}' in account '${row.name}'.`);
+      const live = db
+        .prepare("SELECT id, name, person FROM agents WHERE account_id = ? AND name = ? AND removed_at IS NULL")
+        .get(row.id, person) as (BoundPerson & { person: number }) | undefined;
+      if (live?.person === 0) throw new AccountError(`The name '${live.name}' belongs to an agent, not a person.`);
+      if (!live) throw new AccountError(`No person named '${person}' in account '${row.name}'.`);
+      bound = { id: live.id, name: live.name };
     }
     return { ...issueToken(db, row.id, readOnly, agentOnly, agent, bound), account: row.name };
   }).immediate();
@@ -200,11 +202,11 @@ export function accountForToken(db: Db, token: string, ownerToken: string): Toke
         name: string;
         person_id: number | null;
         person_row: number | null;
-        person_name: string;
+        person_name: string | null;
       }
     | undefined;
   if (!row || (row.agent_id !== null && row.id === null) || (row.person_id !== null && row.person_row === null)) return undefined;
-  if (row.person_row !== null) {
+  if (row.person_row !== null && row.person_name !== null) {
     return { account: row.account_id, readOnly: false, agentOnly: false, person: { id: row.person_row, name: row.person_name } };
   }
   // An agent token's row also has read_only set (see `issueToken`); it is agent-only here, never both.
