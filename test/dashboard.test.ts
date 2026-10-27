@@ -5956,6 +5956,57 @@ describe("the page's invites", () => {
     await cancelOne("fail", "No answer from the server, so ben's invite may have been cancelled: the list below shows whether.");
   });
 
+  it("takes the shown link away once its own invite is cancelled, but not for another invite", async () => {
+    addPerson(db, "owner", "ben");
+    makeInvite(db, OWNER_ACCOUNT, ana, "ben");
+    const page = await load(anaToken);
+    await page.openInvites();
+    page.elements["link-person"].value = "ben";
+    submit(page.elements["link-form"]);
+    await page.until(() => page.elements["invite-link"].value !== "");
+    await page.until(() => rows(page).length === 2);
+    const cancelRow = async (row: number) => {
+      page.elements["post-rows"].children[row].children.find((c) => c.textContent === "Cancel")!.on.click();
+      page.elements["cancel-yes"].on.click();
+      await page.until(() => page.elements["cancel-note"].textContent === "Cancelled ben's invite.");
+    };
+    // The older invite, listed second, is not the one shown: its link stays.
+    await cancelRow(1);
+    await page.until(() => rows(page).length === 1);
+    expect(page.elements["invite-made"].hidden).toBe(false);
+    expect(page.elements["invite-link"].value).not.toBe("");
+    page.elements["cancel-note"].textContent = "";
+    await cancelRow(0);
+    expect(page.elements["invite-made"].hidden).toBe(true);
+    expect(page.elements["invite-link"].value).toBe("");
+    expect(page.elements["invite-for"].textContent).toBe("");
+  });
+
+  it("shows no link from an answer that comes after the server said the person is no longer an admin", async () => {
+    addPerson(db, "owner", "ben");
+    let hold = false;
+    let demoted = false;
+    const page = await load(anaToken, (url, init) => {
+      if (hold && init.method === "POST") return "held";
+      if (demoted && url.startsWith("/api/invites") && (init.method ?? "GET") === "GET") return { status: 403, reason: "Forbidden" };
+      return undefined;
+    });
+    await page.openInvites();
+    hold = true;
+    page.elements["link-person"].value = "ben";
+    submit(page.elements["link-form"]);
+    await page.until(() => page.held.length === 1);
+    demoted = true;
+    await page.poll();
+    await page.until(() => page.elements["log-note"].textContent.startsWith("The server says you are no longer an admin"));
+    hold = false;
+    page.release();
+    await page.until(() => db.prepare("SELECT 1 FROM login_codes WHERE invite = 1").get() !== undefined);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(page.elements["invite-link"].value).toBe("");
+    expect(page.elements["invite-made"].hidden).toBe(true);
+  });
+
   it("hides the controls once the server says the person is no longer an admin", async () => {
     addPerson(db, "owner", "ben");
     const page = await load(anaToken);

@@ -564,8 +564,10 @@ let adding;
 let linking;
 let cancelling;
 // How many times the "Invites" view has closed (closeLog), so an answer that comes after it closed changes nothing and
-// never puts an invite's link on the page, as channelClosings does for "New channel".
+// never puts an invite's link on the page, as channelClosings does for "New channel". unmarked() bumps it too.
 let inviteClosings = 0;
+// The id of the invite whose link the view shows, or undefined, so cancelling that invite takes its link away.
+let shownInvite;
 // The invite the "Invites" view asks before cancelling ({ id, person, createdAt }), or undefined.
 let cancelTarget;
 // The list the invites view and the "New link" select were last built from, so a poll rebuilds them only when it
@@ -850,6 +852,7 @@ function closeLog() {
   inviteMade.hidden = true;
   inviteFor.textContent = "";
   inviteLink.value = "";
+  shownInvite = undefined;
   copyNote.textContent = "";
   personNote.textContent = "";
   linkNote.textContent = "";
@@ -1003,6 +1006,8 @@ function showInviteEntry() {
 // the "Invites" entry and Delete go, and an open invites view keeps only a note saying why.
 function unmarked() {
   meAdmin = false;
+  // An Add or New link still in flight then shows no link.
+  inviteClosings++;
   showInviteEntry();
   showDelete();
   if (!openInvites) return;
@@ -1011,6 +1016,7 @@ function unmarked() {
   document.getElementById("close-log").focus();
   inviteMade.hidden = true;
   inviteLink.value = "";
+  shownInvite = undefined;
   closeCancelInvite();
   postRows.replaceChildren();
   inviteRowsKey = "";
@@ -1086,6 +1092,7 @@ function showInvite(body) {
     "Invite link for " + body.name + (body.admin === true ? " (admin)" : "") + ". Opening it signs one browser in as them. " +
     "It works once and lasts " + INVITE_DAYS + " days, until " + when(invite.expiresAt) + ". It shows only here, until you leave this view.";
   inviteLink.value = link;
+  shownInvite = invite.id;
   copyNote.textContent = "";
   inviteMade.hidden = false;
   inviteLink.focus();
@@ -1255,6 +1262,14 @@ async function cancelInvite() {
   if (answer.status === 403) return unmarked();
   // A confirmation opened for another invite meanwhile stays.
   if (cancelTarget === invite) closeCancelInvite(true);
+  // Once the server says this invite is gone (200, or 404: used, cancelled or expired), its link, if shown, goes too.
+  if ((answer.status === 200 || answer.status === 404) && shownInvite === invite.id) {
+    inviteMade.hidden = true;
+    inviteFor.textContent = "";
+    inviteLink.value = "";
+    copyNote.textContent = "";
+    shownInvite = undefined;
+  }
   if (answer.status === 200) cancelNote.textContent = "Cancelled " + invite.person + "'s invite.";
   else if (answer.status === 404) cancelNote.textContent = invite.person + "'s invite was already used, cancelled or expired (404).";
   else if (answer.error) cancelNote.textContent = answer.error + ", so " + invite.person + "'s invite may have been cancelled: the list below shows whether.";
