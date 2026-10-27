@@ -548,8 +548,8 @@ const NO_MESSAGES_FULL = ' You can also start one from "New message" above.';
 const NO_DELIVERIES =
   "No webhook deliveries yet: add a webhook on the server with message-cp webhook add --url <url> --on <#channel | mention:<agent> | agent:<agent>>, and its deliveries show here once it fires.";
 const NO_APPROVALS =
-  "No approved clients yet: a client appears here once it connects through the server's authorization flow " +
-  "(serve --public-url), and its token is revoked on the server with message-cp token revoke <id>.";
+  "No approved clients yet: a client approved as one named agent appears here once it connects through the server's " +
+  "authorization flow (serve --public-url), and its token is revoked on the server with message-cp token revoke <id>.";
 // The note showChannels put in an empty channel list, or undefined, so showNewButton can make it follow canPost.
 let noChannels;
 // The tokenGeneration a "New channel" post is in flight for, or undefined, as sending is for the compose box.

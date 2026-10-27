@@ -41,6 +41,11 @@ export interface TokenAccess {
   agent?: BoundAgent;
   /** For a person token (`token add --person`), the one live person of the account it sends and posts as. */
   person?: BoundPerson;
+  /**
+   * For an agent token an approval issued to a client that registers its own agents, the token's row id: it registers
+   * new names and acts again only as the agents it registered (those whose `token_id` is this id). Never with `agent`.
+   */
+  registers?: number;
 }
 
 /** The person a person token acts as: their row in `agents`, their name and, where read, whether they are an admin. */
@@ -89,8 +94,9 @@ const NAME_PATTERN = /^[A-Za-z0-9_-]{1,32}$/;
 const hashToken = (token: string) => createHash("sha256").update(token).digest("hex");
 
 /**
- * Stores and returns a new token for the account of row id `account`, of the kind the flags say. The caller checks the
- * account, agent and person exist, inside its own transaction; `addToken` and `redeemLoginCode` in login.ts do.
+ * Stores and returns a new token for the account of row id `account`, of the kind the flags say; with `registers`, an
+ * agent token bound to no agent that registers its own agents. The caller checks the account, agent and person exist,
+ * inside its own transaction; `addToken` and `redeemLoginCode` in login.ts do.
  */
 export function issueToken(
   db: Db,
@@ -99,18 +105,20 @@ export function issueToken(
   agentOnly = false,
   agent?: number,
   person?: BoundPerson,
+  registers = false,
 ): Omit<NewToken, "account"> {
   if (readOnly && agentOnly) throw new AccountError("A token is read-only or agent-only, not both.");
   if (agent !== undefined && !agentOnly) throw new AccountError("Only an agent token is bound to an agent.");
   if (person && (readOnly || agentOnly)) throw new AccountError("A person token is neither read-only nor agent-only.");
+  if (registers && (!agentOnly || agent !== undefined)) throw new AccountError("Only an agent token bound to no agent registers its own agents.");
   const token = randomBytes(32).toString("hex");
   // An agent or person token is stored read-only too, so a server from before it that shares the database refuses it
   // everything but the read-only endpoints instead of taking it for a full token.
   const { id } = db
     .prepare(
-      "INSERT INTO tokens (account_id, hash, created_at, read_only, agent_only, agent_id, person_id) VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id",
+      "INSERT INTO tokens (account_id, hash, created_at, read_only, agent_only, agent_id, person_id, registers) VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING id",
     )
-    .get(account, hashToken(token), Date.now(), readOnly || agentOnly || person ? 1 : 0, agentOnly ? 1 : 0, agent ?? null, person?.id ?? null) as {
+    .get(account, hashToken(token), Date.now(), readOnly || agentOnly || person ? 1 : 0, agentOnly ? 1 : 0, agent ?? null, person?.id ?? null, registers ? 1 : 0) as {
     id: number;
   };
   return { id, token, readOnly, agentOnly, ...(person && { person: person.name }) };
@@ -141,9 +149,18 @@ export function listAccounts(db: Db): Account[] {
 /**
  * Another token for the account named `account`; with `readOnly`, one that can only read; with `agentOnly`, one that
  * cannot act as a person; with `agent` as well, one that acts only as the account's agent of that row id; with
- * `person`, one that sends and posts only as the account's live person of that name (any case).
+ * `person`, one that sends and posts only as the account's live person of that name (any case); with `agentOnly` and
+ * `registers`, one bound to no agent that registers its own agents.
  */
-export const addToken = (db: Db, account: string, readOnly = false, agentOnly = false, agent?: number, person?: string): NewToken =>
+export const addToken = (
+  db: Db,
+  account: string,
+  readOnly = false,
+  agentOnly = false,
+  agent?: number,
+  person?: string,
+  registers = false,
+): NewToken =>
   db.transaction((): NewToken => {
     const row = db.prepare("SELECT id, name FROM accounts WHERE name = ?").get(account) as { id: number; name: string } | undefined;
     if (!row) throw new AccountError(`No account named '${account}'.`);
@@ -159,7 +176,7 @@ export const addToken = (db: Db, account: string, readOnly = false, agentOnly = 
       if (!live) throw new AccountError(`No person named '${person}' in account '${row.name}'.`);
       bound = { id: live.id, name: live.name };
     }
-    return { ...issueToken(db, row.id, readOnly, agentOnly, agent, bound), account: row.name };
+    return { ...issueToken(db, row.id, readOnly, agentOnly, agent, bound, registers), account: row.name };
   }).immediate();
 
 /** Every token that still works, oldest first, with its account and kind, and for an OAuth token its client. */
@@ -199,7 +216,7 @@ export function recordClient(db: Db, token: number, client: ApprovedClient): voi
 /**
  * One page of the account's unrevoked tokens the OAuth code exchange issued, newest first, each with its agent and
  * client. A token whose agent was removed is left out, as `accountForToken` refuses it, and so is one issued before
- * the exchange recorded its client.
+ * the exchange recorded its client, and one that registers its own agents, which has no agent.
  */
 export function listApprovals(db: Db, account: AccountId, limit: number, offset: number): Approval[] {
   const rows = db
@@ -237,7 +254,8 @@ export function revokeToken(db: Db, id: number): string {
  * agent-only), else the account of a token created with `message-cp`, as long as it has not been revoked. A token bound
  * to an agent comes with that agent, and only while it is a live agent of the token's own account; a person token
  * comes with its person, only while that row is a live person of the token's own account, and with whether that row is
- * marked admin now. Undefined for anything else, a bound token whose agent or person has been removed included.
+ * marked admin now. A token that registers its own agents comes with its row id. Undefined for anything else, a bound
+ * token whose agent or person has been removed included.
  */
 /** The name of the account `account`. */
 export const accountName = (db: Db, account: AccountId): string =>
@@ -253,7 +271,7 @@ export function accountForToken(db: Db, token: string, ownerToken: string): Toke
   // The person is found by row, so a later person given a removed person's name is not theirs.
   const row = db
     .prepare(
-      `SELECT tokens.account_id, tokens.read_only, tokens.agent_only, tokens.agent_id,
+      `SELECT tokens.id AS token_id, tokens.registers, tokens.account_id, tokens.read_only, tokens.agent_only, tokens.agent_id,
          agents.id, agents.registered_at, agents.instance, agents.name,
          tokens.person_id, people.id AS person_row, people.name AS person_name, people.admin AS person_admin
        FROM tokens LEFT JOIN agents ON agents.id = tokens.agent_id AND agents.account_id = tokens.account_id
@@ -264,6 +282,8 @@ export function accountForToken(db: Db, token: string, ownerToken: string): Toke
     )
     .get(hash) as
     | {
+        token_id: number;
+        registers: number;
         account_id: number;
         read_only: number;
         agent_only: number;
@@ -286,5 +306,7 @@ export function accountForToken(db: Db, token: string, ownerToken: string): Toke
   // An agent token's row also has read_only set (see `issueToken`); it is agent-only here, never both.
   const access: TokenAccess = { account: row.account_id, readOnly: row.read_only === 1 && row.agent_only !== 1, agentOnly: row.agent_only === 1 };
   if (row.id !== null) access.agent = { id: row.id, registeredAt: row.registered_at, instance: row.instance, name: row.name };
+  // Only an agent-only token bound to no agent, as `issueToken` stores it; never a full, read-only or person token.
+  if (row.registers === 1 && row.agent_only === 1 && row.agent_id === null) access.registers = row.token_id;
   return access;
 }
