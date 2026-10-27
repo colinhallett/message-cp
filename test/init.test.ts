@@ -23,6 +23,7 @@ import {
   proveServer,
   readConnectFile,
   redact,
+  remoteRefusal,
   runInit,
   setUpClient,
   writeTokenFile,
@@ -837,6 +838,14 @@ describe("runInit with a team server", () => {
     expect(t.err.join("\n")).toMatch(/Codex joins a team server through the server's OAuth flow \(`serve --public-url`\), which init does not run: run `codex mcp add message-cp --url https:\/\/message-cp\.example\.com\/mcp`, then `codex mcp login message-cp`.* approve it at the address Codex prints\. Nothing was changed\./);
     expect(t.checked()).toBe(0);
     expect(t.calls).toEqual([]);
+  });
+
+  it("quotes a Codex endpoint whose path the shell would split", () => {
+    const m = { platform: "linux" } as Machine;
+    expect(remoteRefusal("codex", m, mcpEndpoint("https://h.example/team&west;id;"))).toContain(
+      "run `codex mcp add message-cp --url 'https://h.example/team&west;id;/mcp'`, then",
+    );
+    expect(remoteRefusal("codex", m, mcpEndpoint("https://h.example/it's"))).toContain("--url 'https://h.example/it'\\''s/mcp'`");
   });
 
   it("leaves a stdio entry in Claude Code as it is, and does not run the check", async () => {
