@@ -80,7 +80,7 @@ describe("addPerson and listPeople", () => {
       { account_id: OWNER_ACCOUNT, name: "colin", person: 1, key_hash: "person" },
     ]);
     expect(getAgent(db, OWNER_ACCOUNT, "Colin")).toMatchObject({ name: "colin", person: true });
-    expect(listPeople(db)).toEqual([{ name: "colin", account: "owner", addedAt: expect.any(String) }]);
+    expect(listPeople(db)).toEqual([{ name: "colin", account: "owner", addedAt: expect.any(String), admin: false }]);
   });
 
   it("refuses an invalid name, all, a taken name in any case and an unknown account, and stores nothing", () => {
@@ -521,7 +521,7 @@ describe("message-cp person", () => {
     for (const args of [["person"], ["person", "add"], ["person", "add", "--account", "owner"], ["person", "add", "c", "--bio", "x"], ["person", "list", "--account"], ["person", "remove"], ["person", "remove", "--account", "owner"], ["person", "remove", "c", "--key", "x"], ["person", "rename", "c"]]) {
       const res = cli(...args);
       expect(res.status).toBe(2);
-      expect(res.stderr).toContain("usage: message-cp person add <name> [--account <name>] | message-cp person remove <name> [--account <name>]");
+      expect(res.stderr).toContain("usage: message-cp person add <name> [--account <name>] [--admin] | message-cp person admin <name> [--off] [--account <name>] | message-cp person remove <name> [--account <name>]");
     }
     expect(cli("nope").stderr).toContain("Commands: serve, wait, account, token, webhook, person");
   }, 120_000);

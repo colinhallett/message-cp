@@ -413,6 +413,8 @@ export interface Person {
   name: string;
   account: string;
   addedAt: string;
+  /** Whether the person is an admin, whose person tokens also delete the account's conversations. */
+  admin: boolean;
 }
 
 // Matches no key and no session's instance, like REMOVED_KEY_HASH, so nothing can act as a person. The `person`
@@ -421,10 +423,11 @@ const PERSON_KEY_HASH = "person";
 const PERSON_INSTANCE = "person";
 
 /**
- * Adds the person `name` to the account named `account`, as a row of `agents` marked `person`, so messages, mentions
- * and webhooks reach it as they reach an agent. Refuses a name a live agent or person of that account has (any case).
+ * Adds the person `name` to the account named `account`, as a row of `agents` marked `person`, and `admin` with
+ * `admin`, so messages, mentions and webhooks reach it as they reach an agent. Refuses a name a live agent or person of
+ * that account has (any case).
  */
-export const addPerson = (db: Db, account: string, name: string): Person =>
+export const addPerson = (db: Db, account: string, name: string, admin = false): Person =>
   db.transaction((): Person => {
     try {
       validateName(name);
@@ -440,9 +443,28 @@ export const addPerson = (db: Db, account: string, name: string): Person =>
     if (taken) throw new PersonError(`The name '${taken.name}' is already used by ${taken.person === 1 ? "a person" : "an agent"} in account '${acct.name}'.`);
     const now = Date.now();
     db.prepare(
-      "INSERT INTO agents (account_id, name, bio, registered_at, last_seen, key_hash, instance, person) VALUES (?, ?, '', ?, ?, ?, ?, 1)",
-    ).run(acct.id, name, now, now, PERSON_KEY_HASH, PERSON_INSTANCE);
-    return { name, account: acct.name, addedAt: new Date(now).toISOString() };
+      "INSERT INTO agents (account_id, name, bio, registered_at, last_seen, key_hash, instance, person, admin) VALUES (?, ?, '', ?, ?, ?, ?, 1, ?)",
+    ).run(acct.id, name, now, now, PERSON_KEY_HASH, PERSON_INSTANCE, admin ? 1 : 0);
+    return { name, account: acct.name, addedAt: new Date(now).toISOString(), admin };
+  }).immediate();
+
+/**
+ * For `message-cp person admin`: marks the live person `name` (any case) of the account named `account` an admin, or
+ * unmarks them with `admin` false. Their person tokens follow the mark from their next request, as `accountForToken`
+ * reads it each time. Refuses, changing nothing, an agent's name, a name no live person of the account has, or an
+ * unknown account.
+ */
+export const setPersonAdmin = (db: Db, account: string, name: string, admin: boolean): { name: string; account: string; admin: boolean } =>
+  db.transaction(() => {
+    const acct = db.prepare("SELECT id, name FROM accounts WHERE name = ?").get(account) as { id: AccountId; name: string } | undefined;
+    if (!acct) throw new PersonError(`No account named '${account}'.`);
+    const live = db
+      .prepare("SELECT id, name, person FROM agents WHERE account_id = ? AND name = ? AND removed_at IS NULL")
+      .get(acct.id, name) as { id: number; name: string; person: number } | undefined;
+    if (live?.person === 0) throw new PersonError(`The name '${live.name}' belongs to an agent, not a person.`);
+    if (!live) throw new PersonError(`No person named '${name}' in account '${acct.name}'.`);
+    db.prepare("UPDATE agents SET admin = ? WHERE account_id = ? AND id = ? AND removed_at IS NULL AND person = 1").run(admin ? 1 : 0, acct.id, live.id);
+    return { name: live.name, account: acct.name, admin };
   }).immediate();
 
 /**
@@ -484,13 +506,13 @@ export function listPeople(db: Db, account?: string): Person[] {
   }
   const rows = db
     .prepare(
-      `SELECT agents.name, accounts.name AS account, agents.registered_at
+      `SELECT agents.name, accounts.name AS account, agents.registered_at, agents.admin
        FROM agents JOIN accounts ON accounts.id = agents.account_id
        WHERE agents.person = 1 AND agents.removed_at IS NULL AND (? IS NULL OR accounts.name = ?)
        ORDER BY accounts.name, agents.name`,
     )
-    .all(account ?? null, account ?? null) as { name: string; account: string; registered_at: number }[];
-  return rows.map((r) => ({ name: r.name, account: r.account, addedAt: new Date(r.registered_at).toISOString() }));
+    .all(account ?? null, account ?? null) as { name: string; account: string; registered_at: number; admin: number }[];
+  return rows.map((r) => ({ name: r.name, account: r.account, addedAt: new Date(r.registered_at).toISOString(), admin: r.admin === 1 }));
 }
 
 export class AgentListError extends Error {}
