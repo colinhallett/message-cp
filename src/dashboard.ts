@@ -2366,13 +2366,20 @@ function when(iso) {
 
 // A link from message-cp login-link carries a one-time code in its fragment, which a browser never sends in a request.
 // It leaves the address bar before anything else, so a reload never sends it again; a page opened without one starts
-// as before.
-const loginCode = new URLSearchParams(location.hash.slice(1)).get("code");
-if (loginCode !== null) {
+// as before. A link opened in a tab already showing the dashboard changes only the fragment and does not load the page
+// again, so hashchange takes its code the same way, and login() forgets the token the tab held.
+function takeLoginCode() {
+  const code = new URLSearchParams(location.hash.slice(1)).get("code");
+  if (code === null) return false;
   history.replaceState(null, "", location.pathname + location.search);
-  login(loginCode);
-} else if (sessionStorage.getItem(KEY)) start();
-else ask();
+  login(code);
+  return true;
+}
+addEventListener("hashchange", () => takeLoginCode());
+if (!takeLoginCode()) {
+  if (sessionStorage.getItem(KEY)) start();
+  else ask();
+}
 `;
 
 const hash = (text: string) => `'sha256-${createHash("sha256").update(text, "utf8").digest("base64")}'`;

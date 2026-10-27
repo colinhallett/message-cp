@@ -370,6 +370,7 @@ describe("the page's polling", () => {
       AbortController,
       location: { hash: "", pathname: "/", search: "" },
       history: { replaceState() {} },
+      addEventListener() {},
       URLSearchParams,
       document: { getElementById: (id: string) => (elements[id] ??= el()), createElement: el, addEventListener() {} },
       sessionStorage: { getItem: (k: string) => store.get(k) ?? null, setItem: (k: string, v: string) => store.set(k, v), removeItem: (k: string) => store.delete(k) },
@@ -526,6 +527,7 @@ describe("the page's channels and messages", () => {
       AbortController,
       location: { hash: "", pathname: "/", search: "" },
       history: { replaceState() {} },
+      addEventListener() {},
       URLSearchParams,
       document: doc,
       sessionStorage: { getItem: (k: string) => store.get(k) ?? null, setItem: (k: string, v: string) => store.set(k, v), removeItem: (k: string) => store.delete(k) },
@@ -638,6 +640,30 @@ describe("the page's channels and messages", () => {
       await new Promise((resolve) => setTimeout(resolve, 20));
       expect(page.store.get("message-cp-token")).toBe(viewer);
       expect(asked.filter((u) => u === "/api/token")).toHaveLength(1);
+    });
+
+    it("takes a link opened in a tab already signed in, which changes only the fragment, and replaces the tab's token", async () => {
+      addPerson(db, "owner", "maria");
+      const address = { hash: "", pathname: "/", search: "" };
+      const windowOn: Record<string, () => void> = {};
+      const page = await load(viewer, undefined, {
+        location: address,
+        history: { replaceState: () => (address.hash = "") },
+        addEventListener: (type: string, fn: () => void) => void (windowOn[type] = fn),
+      });
+      await page.until(() => page.elements["view"].hidden === false);
+      expect(page.urls).not.toContain("/api/login");
+      const { code } = makeLoginCode(db, "owner", "maria");
+      address.hash = `#code=${code}`;
+      windowOn.hashchange();
+      expect(address.hash).toBe("");
+      await page.until(() => page.urls.includes("/api/login") && page.store.get("message-cp-token") !== viewer && page.elements["view"].hidden === false);
+      expect(accountForToken(db, page.store.get("message-cp-token")!, OWNER_TOKEN)?.person?.name).toBe("maria");
+      // A fragment change without a code leaves the tab as it is.
+      const asked = page.urls.filter((u) => u === "/api/login").length;
+      address.hash = "#other";
+      windowOn.hashchange();
+      expect(page.urls.filter((u) => u === "/api/login")).toHaveLength(asked);
     });
 
     it("starts as before without a code in the fragment", async () => {
@@ -2786,6 +2812,7 @@ describe("the page's search", () => {
       AbortController,
       location: { hash: "", pathname: "/", search: "" },
       history: { replaceState() {} },
+      addEventListener() {},
       URLSearchParams,
       document: { getElementById: (id: string) => (elements[id] ??= el()), createElement: el, addEventListener() {} },
       sessionStorage: { getItem: (k: string) => store.get(k) ?? null, setItem: (k: string, v: string) => store.set(k, v), removeItem: (k: string) => store.delete(k) },
@@ -3036,6 +3063,7 @@ describe("the page's webhook deliveries", () => {
       AbortController,
       location: { hash: "", pathname: "/", search: "" },
       history: { replaceState() {} },
+      addEventListener() {},
       URLSearchParams,
       document: { getElementById: (id: string) => (elements[id] ??= el()), createElement: el, addEventListener() {} },
       sessionStorage: { getItem: (k: string) => store.get(k) ?? null, setItem: (k: string, v: string) => store.set(k, v), removeItem: (k: string) => store.delete(k) },
@@ -3354,6 +3382,7 @@ describe("the page's posting", () => {
       AbortController,
       location: { hash: "", pathname: "/", search: "" },
       history: { replaceState() {} },
+      addEventListener() {},
       URLSearchParams,
       document: {
         getElementById: (id: string) => (elements[id] ??= make()),
