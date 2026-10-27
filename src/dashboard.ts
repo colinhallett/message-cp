@@ -6,11 +6,13 @@ import { MAX_BODY_LENGTH } from "./messages.js";
 // The page served at GET / by `message-cp serve`. It holds no data and no token: it asks for a token, or redeems the
 // one-time code a `message-cp login-link` link carries in its fragment for one with POST /api/login, keeps it in
 // sessionStorage (that tab only), and polls GET /api/agents, GET /api/channels, GET /api/messages and, while one is
-// open, a channel's GET /api/channel-posts or the account's GET /api/webhook-deliveries with it. It shows them as a
-// chat app: channels and the pairs of agents that have messaged each other in a sidebar, the open one as a log in the
-// middle, and the agents on the right. A search box asks GET /api/search once per search and shows the answer in the
-// middle in place of the open conversation. The sidebar's "Webhook deliveries" entry shows the newest deliveries in the
-// middle the same way, refreshed with each poll. It asks GET /api/token once whether the token is read-only or
+// open, a channel's GET /api/channel-posts, the account's GET /api/webhook-deliveries or its GET /api/approvals with
+// it. It shows them as a chat app: channels and the pairs of agents that have messaged each other in a sidebar, the
+// open one as a log in the middle, and the agents on the right. A search box asks GET /api/search once per search and
+// shows the answer in the middle in place of the open conversation. The sidebar's "Webhook deliveries" entry shows
+// the newest deliveries in the middle the same way, refreshed with each poll, and its "Approved clients" entry, the
+// same way, the newest of the account's approvals as GET /api/approvals lists them; the page never revokes or changes
+// one. It asks GET /api/token once whether the token is read-only or
 // agent-only, and for a person token whose person it is. With a full token it lets a person choose which of the account's
 // people they are, post in the open channel with POST /api/post and reply in an open direct conversation of theirs, or
 // start one with anyone in the account from "New message", with POST /api/send, or create a channel from "New channel" by
@@ -299,6 +301,7 @@ const resultsTitle = document.getElementById("results-title");
 const resultsNote = document.getElementById("results-note");
 const resultRows = document.getElementById("result-rows");
 const deliveryEntry = document.getElementById("delivery-entry");
+const approvalEntry = document.getElementById("approval-entry");
 const asBox = document.getElementById("as-box");
 const asSelect = document.getElementById("as");
 const asNote = document.getElementById("as-note");
@@ -345,8 +348,10 @@ let pairs = new Map();
 let madePairs = 0;
 // The pair whose messages are open in the log, by pairKey, or undefined.
 let openPair;
-// Whether the webhook deliveries are open in the log. At most one of openChannel, openPair and openDeliveries is set.
+// Whether the webhook deliveries, or the approved clients, are open in the log. At most one of openChannel, openPair,
+// openDeliveries and openApprovals is set.
 let openDeliveries = false;
+let openApprovals = false;
 // What this tab has seen of each channel and pair, by sidebar key: its count of posts or messages when the tab last
 // had it open, or when the first poll for this token read it. An entry's total less this is its unread badge. It lives
 // only here, is never sent or stored, and marks nothing read for any agent; ask() forgets it.
@@ -357,6 +362,8 @@ let shownTotals = new Map();
 let seenAll = false;
 // The count on the sidebar's webhooks entry, once the entry is made: how many deliveries the view read when last open.
 let deliveryCount;
+// The count on the sidebar's approved clients entry, once the entry is made: how many the view read when last open.
+let approvalCount;
 // The search's own counter and request, separate from generation and controller, so a newer search, leaving the
 // results or ask() drops a search's answer.
 let searchGeneration = 0;
@@ -447,6 +454,8 @@ const NO_MESSAGES = "No direct messages yet: they appear here when an agent send
 const NO_MESSAGES_FULL = ' You can also start one from "New message" above.';
 const NO_DELIVERIES =
   "No webhook deliveries yet: add a webhook on the server with message-cp webhook add --url <url> --on <#channel | mention:<agent> | agent:<agent>>, and its deliveries show here once it fires.";
+const NO_APPROVALS =
+  "No approved clients yet: they appear here when a client is connected through the server's authorization flow, and a token is revoked on the server with message-cp token revoke <id>.";
 // The note showChannels put in an empty channel list, or undefined, so showNewButton can make it follow canPost.
 let noChannels;
 // The tokenGeneration a "New channel" post is in flight for, or undefined, as sending is for the compose box.
@@ -524,6 +533,7 @@ function ask(message) {
   seenAll = false;
   messagesNote.textContent = "";
   if (deliveryCount) deliveryCount.textContent = "";
+  if (approvalCount) approvalCount.textContent = "";
   closeLog();
   searchText.value = "";
   view.hidden = true;
@@ -697,6 +707,7 @@ function closeLog() {
   openChannel = undefined;
   openPair = undefined;
   openDeliveries = false;
+  openApprovals = false;
   held = 0;
   postRows.replaceChildren();
   postRows.className = "";
@@ -785,6 +796,20 @@ function openDeliveryLog() {
   openDeliveries = true;
   postRows.className = "top";
   logTitle.textContent = "Webhook deliveries";
+  logNote.textContent = "Loading…";
+  log.hidden = false;
+  panel("");
+  markOpen();
+  cancel();
+  poll(generation);
+}
+
+// Opens the account's approved clients in the log and polls again at once, as openDeliveryLog does.
+function openApprovalLog() {
+  closeLog();
+  openApprovals = true;
+  postRows.className = "top";
+  logTitle.textContent = "Approved clients";
   logNote.textContent = "Loading…";
   log.hidden = false;
   panel("");
@@ -1790,6 +1815,41 @@ async function readDeliveries(token, signal, gen) {
   return { ok: true };
 }
 
+// Reads the newest PAGE approvals and replaces the ones the log holds, as readDeliveries does: they come newest first, and
+// one goes when its token is revoked or its agent removed. Any failure but a refused token goes in the log's note.
+async function readApprovals(token, signal, gen) {
+  let page;
+  try {
+    page = await fetchPage(token, signal, "/api/approvals", {}, 0, list);
+  } catch {
+    page = { error: signal.aborted ? "The server did not answer in time" : "Cannot reach the server" };
+  }
+  // A newer poll, or the approvals were closed, while the page was read: leave the log to them.
+  if (gen !== generation || !openApprovals) return { ok: true };
+  if (page.status === 401) return page;
+  // A list whose entries are not approvals is as unreadable as one that is not a list.
+  let shown;
+  try {
+    if (page.items) shown = page.items.map(approvalRow);
+  } catch {
+    page = { error: "The server sent an answer this page cannot read" };
+  }
+  if (shown) {
+    postRows.replaceChildren(...shown);
+    postRows.scrollTop = 0;
+    approvalCount.textContent = String(shown.length);
+    logNote.textContent =
+      shown.length === 0 ? NO_APPROVALS : shown.length === PAGE ? "Only the newest " + PAGE + " approvals are shown." : "";
+  } else if (page.status === 403) {
+    logNote.textContent = "This token cannot read approved clients (403). Retrying…";
+  } else if (page.status === 503) {
+    logNote.textContent = "The server is busy (503). Retrying…";
+  } else {
+    logNote.textContent = (page.error || "The server answered " + page.status) + ". Retrying…";
+  }
+  return { ok: true };
+}
+
 async function poll(gen) {
   const token = sessionStorage.getItem(KEY);
   if (!token) return ask();
@@ -1798,12 +1858,13 @@ async function poll(gen) {
   const deadline = setTimeout(() => ac.abort(), TIMEOUT_MS);
   const channel = openChannel;
   const deliveries = openDeliveries;
+  const approvals = openApprovals;
   const held = messages.length;
   let result;
   try {
     result = await fetchView(token, ac.signal);
     // The agents and channels go up before the messages and the log are read, so a long or slow history never holds
-    // them back. The messages and the log (a channel's posts or the webhook deliveries) are read side by side, so
+    // them back. The messages and the log (a channel's posts, the webhook deliveries or the approvals) are read side by side, so
     // neither waits on the other or fails with it, and both have finished before the next poll can read past what they
     // hold.
     if (result.ok && gen === generation) {
@@ -1811,13 +1872,16 @@ async function poll(gen) {
       refreshChat();
       showChannels(result.channels);
       showDeliveryEntry();
+      showApprovalEntry();
       const [messages, posts] = await Promise.allSettled([
         readMessages(token, ac.signal, gen),
         channel !== undefined
           ? readLog(token, ac.signal, gen, channel)
           : deliveries
             ? readDeliveries(token, ac.signal, gen)
-            : { ok: true },
+            : approvals
+              ? readApprovals(token, ac.signal, gen)
+              : { ok: true },
       ]);
       // A refused token from either read wins, so a failure of the other never leaves the page showing its data.
       const values = [messages, posts].filter((r) => r.status === "fulfilled").map((r) => r.value);
@@ -2040,6 +2104,7 @@ function openKey() {
   if (openChannel !== undefined) return "channel " + openChannel;
   if (openPair !== undefined) return "pair " + openPair;
   if (openDeliveries) return "deliveries";
+  if (openApprovals) return "approvals";
   return undefined;
 }
 
@@ -2119,12 +2184,12 @@ function showPairs() {
   pairRows.replaceChildren(...items);
 }
 
-// Marks the open channel, pair or webhook deliveries in the sidebar, in place, so the button just chosen keeps the focus.
+// Marks the open channel, pair, webhook deliveries or approved clients in the sidebar, in place, so the button just chosen keeps the focus.
 // The open entry's posts or messages all count as seen, so its badge goes.
 function markOpen() {
   const key = openKey();
   if (shownTotals.has(key)) seen.set(key, shownTotals.get(key));
-  for (const li of [...channelRows.children, ...pairRows.children, ...deliveryEntry.children]) {
+  for (const li of [...channelRows.children, ...pairRows.children, ...deliveryEntry.children, ...approvalEntry.children]) {
     const button = li.children[0];
     if (!button) continue;
     const current = button.value === key;
@@ -2301,6 +2366,36 @@ function showDeliveryEntry() {
   deliveryCount = deliveryEntry.children[0].children[0].children[1];
 }
 
+// Makes the sidebar's one approved clients entry the first time the channels are shown, as showDeliveryEntry does.
+function showApprovalEntry() {
+  if (approvalCount) return;
+  approvalEntry.append(sidebarItem("approvals", "Approved clients", "", part("span", "count", ""), openApprovalLog));
+  approvalCount = approvalEntry.children[0].children[0].children[1];
+}
+
+// An approval: its agent, when it was issued, the client (its name, else its metadata host, else "unnamed client") and
+// the token's id, which message-cp token revoke takes. The client chose its name, so it goes in with textContent. Never
+// a token, hash, code or redirect URI, which GET /api/approvals does not give. Throws on an entry that is not an
+// approval as GET /api/approvals gives one, so readApprovals shows the answer as unreadable.
+function approvalRow(a) {
+  if (
+    !Number.isInteger(a.id) ||
+    typeof a.agent !== "string" ||
+    !(a.clientName === null || typeof a.clientName === "string") ||
+    !(a.clientHost === null || typeof a.clientHost === "string") ||
+    typeof a.issuedAt !== "string"
+  ) {
+    throw new TypeError("not an approval");
+  }
+  const li = document.createElement("li");
+  li.className = "entry approval";
+  const time = part("time", "time", "issued " + when(a.issuedAt));
+  time.title = a.issuedAt;
+  const client = a.clientName || a.clientHost || "unnamed client";
+  li.append(part("span", "from", a.agent), time, part("div", "body", client + " · token " + a.id));
+  return li;
+}
+
 // A webhook delivery: what it was for, its status (failed marked), when it was queued, its webhook, its attempts and,
 // once delivered, when. Never a URL, a secret or a message's text, which GET /api/webhook-deliveries does not give.
 // Throws on an entry that is not a delivery as GET /api/webhook-deliveries gives one, so readDeliveries shows the
@@ -2453,6 +2548,8 @@ export const DASHBOARD_HTML = `<!doctype html>
 <ul id="pair-rows"></ul>
 <h2>Webhooks</h2>
 <ul id="delivery-entry"></ul>
+<h2>Clients</h2>
+<ul id="approval-entry"></ul>
 </nav>
 <main id="chat">
 <section id="log" hidden>
