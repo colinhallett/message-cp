@@ -139,6 +139,20 @@ describe("mergeServer", () => {
     expect(statSync(file).mode & 0o777).toBe(0o640);
   });
 
+  it("quotes a path with a space in the chmod commands it prints", () => {
+    if (process.platform === "win32") return;
+    mkdirSync(join(home, "my config"));
+    const file = join(home, "my config", "mcp.json");
+    writeFileSync(file, "{}");
+    chmodSync(file, 0o644);
+    const secret = { entry: { url: "https://h/mcp", headers: { Authorization: "Bearer t" } }, same: () => false, secret: true };
+    expect(() => mergeServer(file, secret)).toThrow(`To make it private, run: chmod 600 '${file}', then run message-cp init again.`);
+    chmodSync(file, 0o600);
+    expect(mergeServer(file, secret)).toBe("added");
+    chmodSync(file, 0o644);
+    expect(() => mergeServer(file, { ...secret, same: () => true })).toThrow(`To make it private, run: chmod 600 '${file}', then run message-cp init again.`);
+  });
+
   it("says it cannot read a path that is a directory, rather than calling it invalid JSON", () => {
     mkdirSync(file());
     expect(() => mergeServer(file())).toThrow(/could not read .*mcp\.json \(EISDIR\)/);
@@ -584,6 +598,12 @@ describe("setUpClient with a team server", () => {
     expect(s.changed).toBe("with `claude mcp add --scope user --transport http message-cp https://message-cp.example.com/mcp` and the agent's three headers");
   });
 
+  it("quotes an endpoint the shell would split in the claude mcp add command it shows", () => {
+    const { run } = fakeRunner({ [CLAUDE_GET]: MISSING });
+    const s = setUpClient("claude-code", machine(), run, remote({ endpoint: mcpEndpoint("https://h.example/team&west") }));
+    expect(s.changed).toBe("with `claude mcp add --scope user --transport http message-cp 'https://h.example/team&west/mcp'` and the agent's three headers");
+  });
+
   it("compares Type, URL and agent from claude mcp get, and runs no add when there is an entry", () => {
     for (const [stdout, state] of [
       [claudeGetHttp(), "present"],
@@ -878,6 +898,18 @@ describe("runInit with a team server", () => {
     expect(readFileSync(file, "utf8")).toContain(TOKEN);
   });
 
+  it("quotes a path with a space in the chmod command for a Cursor file others can read", () => {
+    if (process.platform === "win32") return;
+    const m = { ...machine(), home: join(home, "my home") };
+    mkdirSync(join(m.home, ".cursor"), { recursive: true });
+    const file = join(m.home, ".cursor", "mcp.json");
+    writeFileSync(file, "{}");
+    chmodSync(file, 0o644);
+    expect(remoteRefusal("cursor", m, mcpEndpoint("https://h.example"))).toBe(
+      `${file} would hold the token, and other users of this machine can read it; to make it private, run: chmod 600 '${file}', then run message-cp init again.`,
+    );
+  });
+
   it("keeps the configuration when the proof fails, redacting its message", async () => {
     mkdirSync(join(home, ".cursor"));
     const t = options({ prove: async () => Promise.reject(new InitError(`register: refused ${TOKEN}`)) });
@@ -966,6 +998,7 @@ describe("checkRemote and proveRemote", () => {
       [{ token: readOnly }, /^the server refused the token in MESSAGE_CP_HTTP_TOKEN \(403\): This token is read-only$/],
       [{ key: "wrong-key" }, /^the server refused agent 'writer' with the key in MESSAGE_CP_AGENT_KEY \(403\): /],
       [{ agent: "nobody" }, /^the server has no agent named 'nobody'/],
+      [{ agent: "a b" }, /^the server has no agent named 'a b'; make it on the server with: message-cp connect 'a b' --url <public url>$/],
     ] as const) {
       const err = await failure(checkRemote(r(over)));
       expect(err, JSON.stringify(over)).toBeInstanceOf(InitError);
@@ -1112,6 +1145,14 @@ describe("readConnectFile", () => {
     expect(readConnectFile(write(setup(), 0o644), "win32").token).toBe(TOKEN);
   });
 
+  it("quotes a path with a space in the chmod command it prints", () => {
+    if (process.platform === "win32") return;
+    const file = join(home, "connect writer.txt");
+    writeFileSync(file, setup(), { mode: 0o644 });
+    chmodSync(file, 0o644);
+    expect(refusal(file)).toBe(`${file} holds a token and key, and its mode 0644 is wider than 0600; make it private with: chmod 600 '${file}', then run message-cp init again. Nothing was changed.`);
+  });
+
   it("refuses a file without exactly one usable URL, agent, token and key", () => {
     const json = (entry: unknown, more: Record<string, unknown> = {}) => `claude mcp add ...\n\n${JSON.stringify({ mcpServers: { "message-cp": entry, ...more } }, null, 2)}\n`;
     const good = { type: "http", url: "https://h.example/mcp", headers: { Authorization: `Bearer ${TOKEN}`, "X-Message-CP-Agent": "writer", "X-Message-CP-Agent-Key": KEY } };
@@ -1249,6 +1290,16 @@ describe("runInit with --from", () => {
     ]);
     expect(t.out.join("\n")).not.toContain("can now be deleted");
     expect(readFileSync(tokenFile(), "utf8")).toBe("other\n");
+  });
+
+  it("quotes a --from path with a space in the init command it prints", async () => {
+    mkdirSync(join(home, ".cursor"));
+    mkdirSync(join(home, ".message-cp"));
+    writeFileSync(tokenFile(), "other\n");
+    const from = "/tmp/connect writer.txt";
+    const t = options({ remote: remote({ from }) });
+    expect(await runInit(t.o)).toBe(0);
+    expect(t.err).toContain(`To use this agent's token there instead, delete ${tokenFile()}, then run message-cp init --from '${from}' again.`);
   });
 
   it("writes no wake-up token when the check or the proof fails, or for init --url", async () => {

@@ -6,10 +6,12 @@ import { MAX_BODY_LENGTH } from "./messages.js";
 
 // The page served at GET / by `message-cp serve`. It holds no data and no token: it asks for a token, or redeems the
 // one-time code a `message-cp login-link` link carries in its fragment for one with POST /api/login, keeps it in
-// sessionStorage (that tab only), and polls GET /api/agents, GET /api/channels, GET /api/messages and, while one is
+// sessionStorage (that tab only), signs the browser in to the approval page with POST oauth/signin for a full or person
+// token under an https public URL (and out with DELETE on "Forget token", which also signs out its other dashboard tabs),
+// and polls GET /api/agents, GET /api/channels, GET /api/messages and, while one is
 // open, a channel's GET /api/channel-posts, the account's GET /api/webhook-deliveries, its GET /api/approvals or, for
-// an admin person, its GET /api/invites with it. It shows them as a chat app: channels and the pairs of agents that have messaged each other in a sidebar, the
-// open one as a log in the middle, and the agents on the right. A search box asks GET /api/search once per search and
+// an admin person, its GET /api/invites with it. It shows them as a chat app: channels and the pairs of agents that have
+// messaged each other in a sidebar, the open one as a log in the middle, and the agents on the right. A search box asks GET /api/search once per search and
 // shows the answer in the middle in place of the open conversation. The sidebar's "Webhook deliveries" entry shows
 // the newest deliveries in the middle the same way, refreshed with each poll, and its "Approved clients" entry, the
 // same way, the newest of the account's approvals as GET /api/approvals lists them; the page never revokes or changes
@@ -310,6 +312,7 @@ const postRows = document.getElementById("post-rows");
 const pairRows = document.getElementById("pair-rows");
 const messagesNote = document.getElementById("messages-note");
 const statusLine = document.getElementById("status-line");
+const signoutRetry = document.getElementById("signout-retry");
 const searchForm = document.getElementById("search");
 const searchText = document.getElementById("search-text");
 const results = document.getElementById("results");
@@ -418,6 +421,52 @@ let meAdmin = false;
 let fullToken = false;
 let tokenGeneration = 0;
 let tokenController;
+// The last request to oauth/signin, settled once the server has answered or it failed. Each waits for the one before,
+// so they reach the server in the order the page sent them: a sign-out's DELETE never lands before an earlier sign-in's
+// POST, which would set the cookie again, nor after a later one, which it would clear.
+let signing = Promise.resolve();
+// Sign-ins (POSTs) this tab has sent or queued that have not been answered yet.
+let signinsPending = 0;
+// Sends a request to oauth/signin with its own deadline, settling with whether the server did it: a 2xx, or a 404 from a
+// server with no sign-in to change (no https public URL). It never rejects. Relative to this page, so it stays under the
+// public URL's path.
+function signin(init) {
+  const ac = new AbortController();
+  const deadline = setTimeout(() => ac.abort(), TIMEOUT_MS);
+  return fetch("oauth/signin", { ...init, cache: "no-store", credentials: "same-origin", referrerPolicy: "no-referrer", signal: ac.signal }).then(
+    (res) => {
+      clearTimeout(deadline);
+      return res.ok || res.status === 404;
+    },
+    () => {
+      clearTimeout(deadline);
+      return false;
+    },
+  );
+}
+// Clears the sign-in cookie once every request this tab sent to oauth/signin before has been answered. Its promise settles
+// with whether the server confirmed it.
+function signout() {
+  const done = signing.then(() => signin({ method: "DELETE" }));
+  signing = done;
+  return done;
+}
+// Forgets this tab's token and, unless clear is false, clears the sign-in cookie; if the server does not confirm that,
+// says so on the token form with a button to try again, while the token form is still showing and no newer token has
+// been entered.
+function forget(clear = true) {
+  ask();
+  const gen = tokenGeneration;
+  signoutRetry.hidden = true;
+  if (!clear) return;
+  signout().then((ok) => {
+    if (ok || gen !== tokenGeneration || form.hidden) return;
+    say("The server did not confirm signing this browser out of the page that approves clients, so it may still approve until the browser closes.", true);
+    signoutRetry.hidden = false;
+  });
+}
+// Tells the browser's other dashboard tabs that this one signed out, so they forget their tokens too; it carries no token.
+const signouts = typeof BroadcastChannel === "function" ? new BroadcastChannel("message-cp-signout") : undefined;
 // The names whose details the agents panel shows open, kept across polls; a name no longer listed is dropped, and ask()
 // forgets them all.
 let openAgents = new Set();
@@ -624,7 +673,18 @@ form.addEventListener("submit", (event) => {
   start();
 });
 
-document.getElementById("forget").addEventListener("click", () => ask());
+// Signing out forgets this tab's token, clears the approval page's sign-in cookie for the whole browser once any sign-in
+// in flight has been answered, and has every other dashboard tab of the browser forget its token. Without a public URL
+// there is no oauth/signin, and the DELETE gets 404, which changes nothing.
+document.getElementById("forget").addEventListener("click", () => {
+  forget();
+  if (signouts) signouts.postMessage("signout");
+});
+signoutRetry.addEventListener("click", () => forget());
+// Another tab signed out: forget this tab's token too. A sign-in this tab sent that is still unanswered could set the
+// cookie again after the other tab's DELETE, so this tab clears it again once its own requests are answered, and says
+// so if the server does not confirm it, as its own "Forget token" does.
+if (signouts) signouts.onmessage = () => forget(signinsPending > 0);
 document.getElementById("close-log").addEventListener("click", () => {
   closeLog();
   markOpen();
@@ -1257,6 +1317,7 @@ async function search(text) {
 
 function start() {
   cancel();
+  signoutRetry.hidden = true;
   form.hidden = true;
   view.hidden = false;
   say("Loading…", false);
@@ -1282,6 +1343,7 @@ async function checkToken() {
   let admin = false;
   let refused = false;
   let agent = false;
+  let readOnly = false;
   try {
     const res = await fetch("/api/token", {
       headers: { Authorization: "Bearer " + token },
@@ -1297,6 +1359,7 @@ async function checkToken() {
       own = full && typeof answer.person === "string" ? answer.person : undefined;
       admin = own !== undefined && answer.admin === true;
       agent = answer.agentOnly === true;
+      readOnly = answer.readOnly === true;
     }
   } catch {
     full = false;
@@ -1308,6 +1371,18 @@ async function checkToken() {
   if (gen !== tokenGeneration) return;
   if (refused) return ask("The server refused that token. Enter another.");
   if (agent) return ask(AGENT_TOKEN);
+  // A full or person token also signs this browser in to the approval page: the server sets the sign-in cookie, which no
+  // page script can read, from the token in the header. A server without an https public URL answers 404, and one reached
+  // at another address than its public URL 403; the page carries on as before either way.
+  // A read-only token clears any sign-in an earlier token left; a failure or an answer this page cannot read changes none.
+  // A queued sign-in is not sent once this token is forgotten.
+  if (full) {
+    signinsPending++;
+    signing = signing.then(() => (gen === tokenGeneration ? signin({ method: "POST", headers: { Authorization: "Bearer " + token } }) : true)).then((ok) => {
+      signinsPending--;
+      return ok;
+    });
+  } else if (readOnly) signout();
   canPost = own !== undefined;
   me = own;
   meAdmin = admin;
@@ -2935,6 +3010,7 @@ export const DASHBOARD_HTML = `<!doctype html>
 </head>
 <body>
 <p id="status-line" role="status"></p>
+<button id="signout-retry" type="button" hidden>Sign out again</button>
 <form id="login" hidden>
 <h1>message-cp</h1>
 <label for="token">Token</label>

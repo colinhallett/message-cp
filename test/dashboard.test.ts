@@ -382,6 +382,7 @@ describe("the page's polling", () => {
       // GET /api/token answers at once, so only the polls' requests are left to hang.
       fetch: (url: string, init: { signal: AbortSignal }) => {
         if (url === "/api/token") return Promise.resolve(new Response(JSON.stringify({ readOnly: true })));
+        if (url === "oauth/signin") return Promise.resolve(new Response(null, { status: 404 }));
         signals.push(init.signal);
         return new Promise((_resolve, reject) => init.signal.addEventListener("abort", () => reject(new Error("aborted"))));
       },
@@ -3699,8 +3700,9 @@ describe("the page's posting", () => {
   // answers it with that status (and a JSON error with message, for a 400) instead of the server; with hold, it answers
   // only once hold settles (and from the server when there is no status), or fails it when hold rejects; with lose, it
   // lets the server take the request and then fails it as a dropped connection would.
+  // globals, when given, adds to the script's globals, such as a BroadcastChannel.
   type Answer = { status?: number; body?: string; hold?: Promise<void>; lose?: boolean };
-  async function load(token: string, answer: (url: string, method: string) => Answer | undefined = () => undefined) {
+  async function load(token: string, answer: (url: string, method: string) => Answer | undefined = () => undefined, globals: Record<string, unknown> = {}) {
     const html = await (await fetch(`${base()}/`)).text();
     const script = /<script>([\s\S]*?)<\/script>/.exec(html)![1];
     const elements: Record<string, Stub> = {};
@@ -3740,6 +3742,7 @@ describe("the page's posting", () => {
         if (given) return Promise.resolve(reply());
         return fetch(`${base()}${url}`, init);
       },
+      ...globals,
     });
     const until = async (done: () => boolean) => {
       for (let i = 0; i < 200 && !done(); i++) await new Promise((resolve) => setTimeout(resolve, 5));
@@ -3750,7 +3753,8 @@ describe("the page's posting", () => {
       elements["compose-text"].value = text;
       elements["compose"].on.submit({ preventDefault: () => prevented++ });
     };
-    const posts = () => requests.filter((r) => r.method !== "GET");
+    // The sign-in POST oauth/signin is not a post; the approval page tests check it.
+    const posts = () => requests.filter((r) => r.method !== "GET" && r.url !== "oauth/signin");
     // The people the page may post as, as "New message" offers them under From: a person token's person once
     // GET /api/agents lists them, and no one for any other token.
     const picker = () => (elements["new-from"]?.children ?? []).map((o) => o.value).filter((v) => v !== "");
@@ -4991,6 +4995,134 @@ describe("the page's posting", () => {
     expect(page.posts()).toEqual([]);
   });
 
+  it("signs the browser in to the approval page with a person or full token, and out with Forget token after it", async () => {
+    seed();
+    const token = colinToken();
+    const page = await load(token);
+    const signins = () => page.requests.filter((r) => r.url === "oauth/signin");
+    await page.until(() => signins().length === 1);
+    expect(signins()[0].method).toBe("POST");
+    expect(signins()[0].headers).toEqual({ Authorization: `Bearer ${token}` });
+    expect(signins()[0].init).toMatchObject({ credentials: "same-origin", referrerPolicy: "no-referrer", cache: "no-store" });
+    expect(signins()[0].init.signal).toBeInstanceOf(AbortSignal);
+    page.elements["forget"].on.click();
+    await page.until(() => signins().length === 2);
+    expect(signins()[1].method).toBe("DELETE");
+    expect(signins()[1].headers).toBeUndefined();
+    const full = await load(OWNER_TOKEN);
+    await full.until(() => full.requests.some((r) => r.url === "oauth/signin"));
+    expect(full.requests.filter((r) => r.url === "oauth/signin").map((r) => r.method)).toEqual(["POST"]);
+  });
+
+  it("says when the server does not confirm a sign-out, and signs out again on the button", async () => {
+    seed();
+    let refuse = true;
+    const page = await load(colinToken(), (url, method) =>
+      url === "oauth/signin" ? (method === "DELETE" && refuse ? { status: 503 } : { status: 204 }) : undefined,
+    );
+    const signins = () => page.requests.filter((r) => r.url === "oauth/signin").map((r) => r.method);
+    await page.until(() => signins().length === 1);
+    page.elements["forget"].on.click();
+    await page.until(() => page.elements["signout-retry"].hidden === false);
+    expect(page.elements["status-line"].textContent).toContain("did not confirm signing this browser out");
+    expect(page.elements["login"].hidden).toBe(false);
+    refuse = false;
+    page.elements["signout-retry"].on.click();
+    expect(page.elements["signout-retry"].hidden).toBe(true);
+    await page.until(() => signins().length === 3);
+    expect(signins()).toEqual(["POST", "DELETE", "DELETE"]);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(page.elements["signout-retry"].hidden).toBe(true);
+  });
+
+  it("clears the sign-in again after its own unanswered sign-in when another tab signs out", async () => {
+    seed();
+    let answer!: () => void;
+    const held = new Promise<void>((resolve) => (answer = resolve));
+    const channels: { onmessage?: () => void }[] = [];
+    class Channel {
+      onmessage?: () => void;
+      constructor() {
+        channels.push(this);
+      }
+      postMessage() {}
+    }
+    const page = await load(colinToken(), (url, method) => (url === "oauth/signin" ? (method === "POST" ? { status: 204, hold: held } : { status: 204 }) : undefined), {
+      BroadcastChannel: Channel,
+    });
+    const signins = () => page.requests.filter((r) => r.url === "oauth/signin").map((r) => r.method);
+    await page.until(() => signins().length === 1);
+    // Another tab's Forget token: this tab forgets its token, and its POST, still unanswered, could set the cookie again.
+    channels[0].onmessage!();
+    expect(page.store.has("message-cp-token")).toBe(false);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(signins()).toEqual(["POST"]);
+    answer();
+    await page.until(() => signins().length === 2);
+    expect(signins()).toEqual(["POST", "DELETE"]);
+  });
+
+  it("says so when its clean-up after another tab's sign-out is not confirmed, and signs out again on the button", async () => {
+    seed();
+    let answer!: () => void;
+    const held = new Promise<void>((resolve) => (answer = resolve));
+    let refuse = true;
+    const channels: { onmessage?: () => void }[] = [];
+    class Channel {
+      onmessage?: () => void;
+      constructor() {
+        channels.push(this);
+      }
+      postMessage() {}
+    }
+    const page = await load(
+      colinToken(),
+      (url, method) =>
+        url === "oauth/signin" ? (method === "POST" ? { status: 204, hold: held } : refuse ? { status: 503 } : { status: 204 }) : undefined,
+      { BroadcastChannel: Channel },
+    );
+    const signins = () => page.requests.filter((r) => r.url === "oauth/signin").map((r) => r.method);
+    await page.until(() => signins().length === 1);
+    channels[0].onmessage!();
+    answer();
+    await page.until(() => page.elements["signout-retry"].hidden === false);
+    expect(signins()).toEqual(["POST", "DELETE"]);
+    expect(page.elements["status-line"].textContent).toContain("did not confirm signing this browser out");
+    refuse = false;
+    page.elements["signout-retry"].on.click();
+    await page.until(() => signins().length === 3);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(page.elements["signout-retry"].hidden).toBe(true);
+  });
+
+  it("does not clear the sign-in on another tab's sign-out when it has none in flight", async () => {
+    seed();
+    const channels: { onmessage?: () => void }[] = [];
+    class Channel {
+      onmessage?: () => void;
+      constructor() {
+        channels.push(this);
+      }
+      postMessage() {}
+    }
+    const page = await load(colinToken(), (url) => (url === "oauth/signin" ? { status: 204 } : undefined), { BroadcastChannel: Channel });
+    const signins = () => page.requests.filter((r) => r.url === "oauth/signin").map((r) => r.method);
+    await page.until(() => signins().length === 1);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    channels[0].onmessage!();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(signins()).toEqual(["POST"]);
+  });
+
+  it("clears the approval page's sign-in with a read-only token, and never sends it there", async () => {
+    seed();
+    const page = await load(viewer);
+    await page.until(() => page.requests.some((r) => r.url === "oauth/signin"));
+    const signins = page.requests.filter((r) => r.url === "oauth/signin");
+    expect(signins.map((r) => r.method)).toEqual(["DELETE"]);
+    expect(signins[0].headers).toBeUndefined();
+  });
+
   it("clears the page and asks for a token on a 401", async () => {
     seed();
     const page = await load(colinToken(), (url, method) => (method === "POST" ? { status: 401 } : undefined));
@@ -5035,7 +5167,7 @@ describe("the page's posting", () => {
       addPerson(db, "owner", "dana");
       sendMessage(db, OWNER_ACCOUNT, "bob", "dana", "hi dana");
     };
-    const deletes = (page: Awaited<ReturnType<typeof load>>) => page.requests.filter((r) => r.method === "DELETE");
+    const deletes = (page: Awaited<ReturnType<typeof load>>) => page.requests.filter((r) => r.method === "DELETE" && r.url !== "oauth/signin");
     const ready = async (page: Awaited<ReturnType<typeof load>>) => {
       await page.until(() => page.elements["pair-rows"].children.length === 2 && page.elements["channel-rows"].children.length === 1);
     };
@@ -5618,7 +5750,8 @@ describe("the page's invites", () => {
       await until(() => elements["log-note"].textContent !== "Loading…" && timers.scheduled());
     };
     const release = () => held.splice(0).forEach((answer) => answer());
-    const writes = () => requests.filter((r) => r.method !== "GET");
+    // The page's own writes to /api, without the sign-in to the approval page that an https address also sends.
+    const writes = () => requests.filter((r) => r.method !== "GET" && r.url.startsWith("/api/"));
     return { elements, requests, writes, store, until, poll: timers.poll, deadlines: timers.deadlines, entry, openInvites, held, release, copied };
   }
   type Page = Awaited<ReturnType<typeof load>>;
