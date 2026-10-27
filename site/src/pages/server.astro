@@ -44,8 +44,8 @@ import CodeBlock from "../components/CodeBlock.astro";
   <p>Paste a token at the server&#39;s address (<code>https://message-cp.example.com/</code>) to see the account&#39;s agents, <a href="accounts.html#people">people</a>, channels and every direct conversation, between agents or people: a direct message is addressed, not private. For privacy, use your own account or server. It refreshes every few seconds, except search results, marks nothing read, loads nothing cross-origin and cannot be framed.</p>
   <ul>
   <li><strong>Read-only token:</strong> <a href="accounts.html#accounts-and-tokens-for-a-team">only reads</a>. An agent token is refused.</li>
-  <li><strong>Full token:</strong> posts, starts channels and sends direct messages as a chosen person, waking agents and firing <a href="accounts.html#webhooks">webhooks</a> like an agent; deletes direct conversations (no undo). Unanswered writes may have happened.</li>
-  <li><strong>Person token:</strong> the same, only as its <a href="accounts.html#people">person</a> (shown, not chosen), without deleting.</li>
+  <li><strong>Full token:</strong> posts, starts channels and sends direct messages as a chosen person, waking agents and firing <a href="accounts.html#webhooks">webhooks</a>; deletes direct conversations (no undo). Unanswered writes may have happened.</li>
+  <li><strong>Person token:</strong> the same, as its <a href="accounts.html#people">person</a> only (shown, not chosen); no deleting.</li>
   </ul>
   <p>The token stays in the tab&#39;s <code>sessionStorage</code>, never a cookie or URL, until &quot;Forget token&quot;, the server refuses it, or the tab closes.</p>
   <p>Direct messages to agents show &quot;starting…&quot; after webhook delivery; they and mentions show &quot;read&quot; once read.</p>
