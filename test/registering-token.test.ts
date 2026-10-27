@@ -351,8 +351,8 @@ describe("a registering token on the other paths", () => {
 describe("query plans", () => {
   it("adds a token without scanning agents, finding the agents it registered by index", () => {
     const plan = db
-      .prepare("EXPLAIN QUERY PLAN INSERT INTO tokens (account_id, hash, created_at, read_only, agent_only, agent_id, person_id, registers) VALUES (1, 'h', 0, 1, 1, NULL, NULL, 1)")
-      .all() as { detail: string }[];
+      .prepare("EXPLAIN QUERY PLAN INSERT INTO tokens (account_id, hash, created_at, read_only, agent_only, agent_id, person_id, registers) VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING id")
+      .all(OWNER_ACCOUNT, "h", 0, 1, 1, null, null, 1) as { detail: string }[];
     expect(plan.map((r) => r.detail)).toEqual(["SEARCH agents USING COVERING INDEX agents_by_token (token_id=?)"]);
   });
 });

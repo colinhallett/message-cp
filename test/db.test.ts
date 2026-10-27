@@ -174,7 +174,7 @@ describe("openDb", () => {
       const left = db.prepare("SELECT name FROM sqlite_master WHERE name LIKE 'memor%' OR name LIKE '%task%' OR name LIKE 'hive%'").all();
       expect(left).toEqual([]);
       expect(db.prepare("SELECT type, name FROM sqlite_master WHERE tbl_name IN ('agents', 'messages') ORDER BY name").all()).toEqual(
-        [...otherObjects, { type: "index", name: "agents_live" }, { type: "index", name: "messages_by_sender" }, { type: "index", name: "messages_by_pair" }, { type: "index", name: "messages_by_reply" }, { type: "index", name: "messages_by_question" }].sort((a, b) => (a.name < b.name ? -1 : 1)),
+        [...otherObjects, { type: "index", name: "agents_by_token" }, { type: "index", name: "agents_live" }, { type: "index", name: "messages_by_sender" }, { type: "index", name: "messages_by_pair" }, { type: "index", name: "messages_by_reply" }, { type: "index", name: "messages_by_question" }].sort((a, b) => (a.name < b.name ? -1 : 1)),
       );
       db.close();
     });
