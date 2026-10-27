@@ -65,7 +65,11 @@ const NAME_PATTERN = /^[A-Za-z0-9_-]{1,32}$/;
 
 const hashToken = (token: string) => createHash("sha256").update(token).digest("hex");
 
-function issueToken(
+/**
+ * Stores and returns a new token for the account of row id `account`, of the kind the flags say. The caller checks the
+ * account, agent and person exist, inside its own transaction; `addToken` and `redeemLoginCode` in login.ts do.
+ */
+export function issueToken(
   db: Db,
   account: AccountId,
   readOnly = false,

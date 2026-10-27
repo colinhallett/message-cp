@@ -17,6 +17,7 @@ import {
 import { APPROVE_HEADERS, approvePage, errorPage } from "./approve.js";
 import { mcpEndpoint } from "./connect.js";
 import { DASHBOARD_FONTS, DASHBOARD_HEADERS, DASHBOARD_HTML } from "./dashboard.js";
+import { LoginRefused, redeemLoginCode } from "./login.js";
 import type { AccountId, Db } from "./db.js";
 import {
   DEFAULT_INBOX_LIMIT,
@@ -749,15 +750,16 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
   // MCP's authorization flow, served only with a public URL, from which every address it advertises is built: as
   // `mcpEndpoint` builds /mcp, each path is set on the parsed URL, never resolved as a reference.
   const oauth = options.publicUrl === undefined ? undefined : oauthUrls(options.publicUrl);
-  // POST /oauth/register, /oauth/approve and /oauth/token requests between taking a slot and answering.
+  // POST /oauth/register, /oauth/approve, /oauth/token and /api/login requests between taking a slot and answering.
   let authorizing = 0;
   // GET /oauth/authorize requests fetching a client's metadata document, from before the fetch begins until it ends.
   let fetchingMetadata = 0;
   const fetchMetadata = options.fetchClientMetadata ?? ((url: string) => fetchClientMetadata(url));
 
   /**
-   * Takes a slot for an OAuth request with a body, before it is read, and answers what `act` does with the body's text
-   * (at most MAX_OAUTH_BODY_BYTES); the slot is given back at the end. A lock held past the busy timeout answers 503.
+   * Takes a slot for an OAuth or POST /api/login request with a body, before it is read, and answers what `act` does with
+   * the body's text (at most MAX_OAUTH_BODY_BYTES); the slot is given back at the end. A lock held past the busy timeout
+   * answers 503. /api/login uses it with or without a public URL.
    */
   const withOAuthBody = async (req: IncomingMessage, res: ServerResponse, act: (text: string) => void) => {
     if (req.method !== "POST") return reply(res, 405, "Method not allowed", { Allow: "POST" });
@@ -914,6 +916,28 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
       sendOAuthJson(res, 200, { access_token: token, token_type: "Bearer" });
     });
 
+  /**
+   * POST /api/login: `{ code }`, a one-time code from a `message-cp login-link` link, with no token. Answers `{ token }`,
+   * a new full or person token of the code's account, or 400 with `reason` "used" or "invalid" and a message that never
+   * quotes the code.
+   */
+  const apiLogin = (req: IncomingMessage, res: ServerResponse) =>
+    withOAuthBody(req, res, (text) => {
+      let code: unknown;
+      try {
+        code = (JSON.parse(text) as Record<string, unknown> | null)?.code;
+      } catch {
+        code = undefined;
+      }
+      if (typeof code !== "string") return sendOAuthJson(res, 400, { reason: "invalid", message: "Give code." });
+      try {
+        sendOAuthJson(res, 200, { token: redeemLoginCode(db, code) });
+      } catch (err) {
+        if (err instanceof LoginRefused) return sendOAuthJson(res, 400, { reason: err.reason, message: err.message });
+        throw err;
+      }
+    });
+
   const handle = async (req: IncomingMessage, res: ServerResponse) => {
     const path = (req.url ?? "").split("?")[0];
     // The dashboard page is the same constant for everyone and holds no data, so it comes before the token.
@@ -947,6 +971,9 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
     if (oauth && path === "/oauth/register") return oauthRegister(req, res);
     if (oauth && path === "/oauth/authorize") return oauthAuthorize(req, res, oauth.resource.resource);
     if (oauth && path === "/oauth/token") return oauthToken(req, res);
+    // A login link's code stands in for the token, and redeeming it reveals nothing of any account but to its holder, so
+    // it too comes before the token, with or without a public URL.
+    if (path === "/api/login") return apiLogin(req, res);
     // The token is the first thing any other request meets, and decides the account everything after it acts as.
     const access = accountOf(db, req.headers.authorization, options.token);
     if (access === undefined) {

@@ -227,6 +227,20 @@ CREATE INDEX IF NOT EXISTS mcp_authorizations_by_expiry ON mcp_authorizations (e
 CREATE INDEX IF NOT EXISTS mcp_authorizations_by_client ON mcp_authorizations (client_id);
 -- The same for an agent's row, should one ever be deleted.
 CREATE INDEX IF NOT EXISTS mcp_authorizations_by_agent ON mcp_authorizations (agent_id);
+
+-- One-time dashboard sign-in codes from \`message-cp login-link\` (src/login.ts). Only the code's hash is kept. \`person_id\`
+-- is set for a link that signs in as that person; \`used_at\` once it has given its token.
+CREATE TABLE IF NOT EXISTS login_codes (
+  id INTEGER PRIMARY KEY,
+  code_hash TEXT NOT NULL UNIQUE,
+  account_id INTEGER NOT NULL REFERENCES accounts(id),
+  person_id INTEGER REFERENCES agents(id) ON DELETE CASCADE,
+  expires_at INTEGER NOT NULL,
+  used_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS login_codes_by_expiry ON login_codes (expires_at);
+-- The same as mcp_authorizations_by_agent, for an agent's row, should one ever be deleted.
+CREATE INDEX IF NOT EXISTS login_codes_by_person ON login_codes (person_id);
 `;
 
 // CREATE TABLE IF NOT EXISTS leaves an existing table alone, so columns added later are added here, only when missing.

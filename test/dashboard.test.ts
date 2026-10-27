@@ -6,7 +6,8 @@ import { request } from "node:http";
 import { createRequire } from "node:module";
 import { runInNewContext } from "node:vm";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { addAccount, addToken, listAccounts, revokeToken } from "../src/accounts.js";
+import { accountForToken, addAccount, addToken, listAccounts, revokeToken } from "../src/accounts.js";
+import { makeLoginCode, redeemLoginCode } from "../src/login.js";
 import { OWNER_ACCOUNT, openDb, type Db } from "../src/db.js";
 import { addPerson, identityOf, registerAgent, removeAgent, removePerson, setStatus } from "../src/agents.js";
 import { joinChannel, leaveChannel, post } from "../src/channels.js";
@@ -367,6 +368,8 @@ describe("the page's polling", () => {
     const store = new Map([["message-cp-token", "a-token"]]);
     runInNewContext(script, {
       AbortController,
+      location: { hash: "", pathname: "/", search: "" },
+      history: { replaceState() {} },
       URLSearchParams,
       document: { getElementById: (id: string) => (elements[id] ??= el()), createElement: el, addEventListener() {} },
       sessionStorage: { getItem: (k: string) => store.get(k) ?? null, setItem: (k: string, v: string) => store.set(k, v), removeItem: (k: string) => store.delete(k) },
@@ -521,6 +524,8 @@ describe("the page's channels and messages", () => {
     };
     runInNewContext(script, {
       AbortController,
+      location: { hash: "", pathname: "/", search: "" },
+      history: { replaceState() {} },
       URLSearchParams,
       document: doc,
       sessionStorage: { getItem: (k: string) => store.get(k) ?? null, setItem: (k: string, v: string) => store.set(k, v), removeItem: (k: string) => store.delete(k) },
@@ -559,6 +564,88 @@ describe("the page's channels and messages", () => {
     expect(page.scheduled()).toBe(false);
     expect(page.urls.length).toBe(asked);
     expect(db.prepare("SELECT body FROM messages").all()).toEqual([{ body: "private <b>note</b>" }]);
+  });
+
+  describe("a login link", () => {
+    // The page as a link from message-cp login-link opens it: no token yet, the code in the fragment, and an address bar
+    // that records what replaceState leaves in it.
+    async function openLink(hash: string, refuse?: (url: string) => number | "hang" | "fail" | undefined) {
+      const address = { hash, pathname: "/", search: "" };
+      const replaced: string[] = [];
+      const history = { replaceState: (_s: unknown, _t: string, url: string) => (replaced.push(url), (address.hash = "")) };
+      const page = await load("", refuse, { location: address, history });
+      return { ...page, address, replaced };
+    }
+
+    it("redeems the code once for a token, clears it from the address bar first, and starts as after a paste", async () => {
+      addPerson(db, "owner", "maria");
+      const { code } = makeLoginCode(db, "owner", "maria");
+      const page = await openLink(`#code=${code}`);
+      expect(page.replaced).toEqual(["/"]);
+      expect(page.address.hash).toBe("");
+      await page.until(() => page.elements["view"].hidden === false);
+      expect(page.urls[0]).toBe("/api/login");
+      const token = page.store.get("message-cp-token")!;
+      expect(accountForToken(db, token, OWNER_TOKEN)?.person?.name).toBe("maria");
+      expect(page.elements["login"].hidden).toBe(true);
+      await page.until(() => page.urls.includes("/api/token"));
+      expect(page.urls.filter((u) => u === "/api/login")).toHaveLength(1);
+    });
+
+    it("shows the token form saying a used link was already used", async () => {
+      const { code } = makeLoginCode(db, "owner");
+      redeemLoginCode(db, code);
+      const page = await openLink(`#code=${code}`);
+      await page.until(() => page.elements["status-line"].textContent.startsWith("This link was already used."));
+      expect(page.elements["login"].hidden).toBe(false);
+      expect(page.elements["view"].hidden).toBe(true);
+      expect(page.store.size).toBe(0);
+    });
+
+    it("shows the token form saying an unknown code has expired or is not valid", async () => {
+      const page = await openLink(`#code=${"0".repeat(64)}`);
+      await page.until(() => page.elements["status-line"].textContent.startsWith("This link has expired or is not valid."));
+      expect(page.elements["login"].hidden).toBe(false);
+      expect(page.store.size).toBe(0);
+    });
+
+    it("drops the answer when a token is entered meanwhile, so the entered token wins", async () => {
+      const { code } = makeLoginCode(db, "owner");
+      let release: () => void = () => {};
+      const held = new Promise<void>((r) => (release = r));
+      let answered = false;
+      const asked: string[] = [];
+      const address = { hash: `#code=${code}`, pathname: "/", search: "" };
+      const page = await load("", undefined, {
+        location: address,
+        history: { replaceState: () => (address.hash = "") },
+        // The login reaches the server and redeems the code, but its answer comes only after the paste.
+        fetch: async (url: string, init: RequestInit) => {
+          asked.push(url);
+          const res = await fetch(`${base()}${url}`, init);
+          if (url === "/api/login") {
+            await held;
+            answered = true;
+          }
+          return res;
+        },
+      });
+      await page.until(() => asked.includes("/api/login"));
+      page.elements["token"].value = viewer;
+      page.elements["login"].on.submit({ preventDefault() {} } as never);
+      release();
+      await page.until(() => answered);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(page.store.get("message-cp-token")).toBe(viewer);
+      expect(asked.filter((u) => u === "/api/token")).toHaveLength(1);
+    });
+
+    it("starts as before without a code in the fragment", async () => {
+      const page = await openLink("#other");
+      expect(page.replaced).toEqual([]);
+      expect(page.urls).not.toContain("/api/login");
+      expect(page.elements["login"].hidden).toBe(false);
+    });
   });
 
   it("lists the channels with a read-only token and shows a chosen channel's posts oldest first", async () => {
@@ -2697,6 +2784,8 @@ describe("the page's search", () => {
     const store = new Map([["message-cp-token", token]]);
     runInNewContext(script, {
       AbortController,
+      location: { hash: "", pathname: "/", search: "" },
+      history: { replaceState() {} },
       URLSearchParams,
       document: { getElementById: (id: string) => (elements[id] ??= el()), createElement: el, addEventListener() {} },
       sessionStorage: { getItem: (k: string) => store.get(k) ?? null, setItem: (k: string, v: string) => store.set(k, v), removeItem: (k: string) => store.delete(k) },
@@ -2945,6 +3034,8 @@ describe("the page's webhook deliveries", () => {
     const store = new Map([["message-cp-token", token]]);
     runInNewContext(script, {
       AbortController,
+      location: { hash: "", pathname: "/", search: "" },
+      history: { replaceState() {} },
       URLSearchParams,
       document: { getElementById: (id: string) => (elements[id] ??= el()), createElement: el, addEventListener() {} },
       sessionStorage: { getItem: (k: string) => store.get(k) ?? null, setItem: (k: string, v: string) => store.set(k, v), removeItem: (k: string) => store.delete(k) },
@@ -3261,6 +3352,8 @@ describe("the page's posting", () => {
     };
     runInNewContext(script, {
       AbortController,
+      location: { hash: "", pathname: "/", search: "" },
+      history: { replaceState() {} },
       URLSearchParams,
       document: {
         getElementById: (id: string) => (elements[id] ??= make()),

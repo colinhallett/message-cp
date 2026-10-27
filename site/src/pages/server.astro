@@ -27,7 +27,7 @@ import CodeBlock from "../components/CodeBlock.astro";
   <p><code>serve</code> exits without that owner token; keep it for <code>npm run e2e</code>. Clients and wake-up loops get agent tokens, made on the server as <a href="accounts.html#accounts-and-tokens-for-a-team">Accounts and tokens</a> says. <a href="#settings"><code>--public-url</code></a> enables the <a href="#waking-remote-agents">wait command</a> and MCP authorization: a full or person token approves clients. Without a domain, leave it out and use <code>http://127.0.0.1:8787</code>.</p>
   <p>Tools are at <code>/mcp</code>, over streamable HTTP (<a href="#settings">flags</a>).</p>
   <ul>
-  <li><p><strong>Token.</strong> Requests without a valid <code>Authorization: Bearer &lt;token&gt;</code> get 401, except <code>GET /</code> (the <a href="#dashboard">dashboard</a>), its fonts, <code>/health</code> and authorization but <code>/oauth/approve</code>.</p>
+  <li><p><strong>Token.</strong> Requests without a valid <code>Authorization: Bearer &lt;token&gt;</code> get 401, except <code>GET /</code> (the <a href="#dashboard">dashboard</a>), its fonts, <code>/health</code>, <code>/api/login</code> and authorization but <code>/oauth/approve</code>.</p>
   </li>
   <li><p><strong>Address.</strong> By default it listens on <code>127.0.0.1:8787</code>, plain HTTP. <strong>Exposed without HTTPS, the token and every message cross the network in the clear.</strong> Expose only a TLS proxy, such as <a href="https://caddyserver.com">Caddy</a> with this <code>Caddyfile</code>:</p>
   <CodeBlock lang="caddyfile" code={"message-cp.example.com {\n\treverse_proxy 127.0.0.1:8787\n}"} />
@@ -41,7 +41,7 @@ import CodeBlock from "../components/CodeBlock.astro";
   </li>
   </ul>
   <h3 id="dashboard">Dashboard</h3>
-  <p>Paste a token at the server&#39;s address (<code>https://message-cp.example.com/</code>) to see the account&#39;s agents, <a href="accounts.html#people">people</a>, channels and every direct conversation, between agents or people: a direct message is addressed, not private. For privacy, use your own account or server. It refreshes every few seconds, except search results, marks nothing read, loads nothing cross-origin and cannot be framed.</p>
+  <p>Paste a token at the server&#39;s address (<code>https://message-cp.example.com/</code>), or open the link <code>message-cp login-link --url &lt;that address&gt; [--person &lt;name&gt;]</code> prints: once, within 5 minutes, it gives that browser a full or person token. Run that on the server as <code>serve</code>&#39;s user, with its <code>HOME</code> and any <code>MESSAGE_CP_DB</code> naming the same file; with Docker, <code>docker compose exec message-cp message-cp login-link ...</code>. See the account&#39;s agents, <a href="accounts.html#people">people</a>, channels and every direct conversation, between agents or people: a direct message is addressed, not private. For privacy, use your own account or server. It refreshes every few seconds, except search results, marks nothing read, loads nothing cross-origin and cannot be framed.</p>
   <ul>
   <li><strong>Read-only token:</strong> <a href="accounts.html#accounts-and-tokens-for-a-team">only reads</a>. An agent token is refused.</li>
   <li><strong>Full token:</strong> posts, starts channels and sends direct messages as a chosen person, waking agents and firing <a href="accounts.html#webhooks">webhooks</a>; deletes direct conversations (no undo). Unanswered writes may have happened.</li>
@@ -56,19 +56,10 @@ import CodeBlock from "../components/CodeBlock.astro";
   <h3 id="checking-a-server-end-to-end">Checking a server end to end</h3>
   <p>Run it from a clone, not the npm package:</p>
   <CodeBlock lang="sh" code={"npm ci --ignore-scripts && npm run build\nnpm run e2e"} />
-  <p>It starts <code>dist/cli.js serve</code> with a temporary database and token, and checks:</p>
-  <ul>
-    <li>a bad or missing token: 401</li>
-    <li>two clients register</li>
-    <li><code>/wait</code> reports no mail, then mail</li>
-    <li><code>read_inbox</code>; <code>message_status</code> shows it read</li>
-    <li><code>wait_for_mail</code> sees an <code>ask</code>; its <code>in_reply_to</code> answer returns</li>
-    <li>both agents unregister</li>
-  </ul>
-  <p>It prints each step, exiting 0, or 1 naming the failed one.</p>
-  <p>For a live server, give its URL (<code>https</code>, or <code>http</code> for <code>127.x.x.x</code> or <code>[::1]</code>) and a full token for cleanup&#39;s <code>/api/messages</code> and <code>/api/conversation</code>.</p>
+  <p>It runs <code>dist/cli.js serve</code> on a temporary database, checks a 401 and two agents registering, waking, reading, unregistering, prints each step, and exits 0, or 1 naming the failed one.</p>
+  <p>For a live server, give its URL and a full token for cleanup&#39;s <code>/api/messages</code> and <code>/api/conversation</code>.</p>
   <CodeBlock lang="sh" code={"MESSAGE_CP_HTTP_TOKEN=<token> npm run e2e -- --url https://message-cp.example.com"} />
-  <p>It registers <code>e2e-&lt;random&gt;-a</code> and <code>-b</code> in the token&#39;s account. Even on failure, it tries to unregister them and delete their direct messages (60 seconds for deleting), exiting 1 if it cannot. It never prints the token.</p>
+  <p>Even on failure, it tries to unregister its two <code>e2e-</code> agents and delete their direct messages, exiting 1 if it cannot. It never prints the token.</p>
   <h2 id="running-with-docker">Running with Docker</h2>
   <p>Compose builds message-cp from your clone and runs <code>serve</code> behind <a href="https://caddyserver.com">Caddy</a> for HTTPS. Only Caddy publishes ports (80, 443): open them; point a domain at the machine.</p>
   <CodeBlock lang="sh" code={"git clone https://github.com/colinhallett/message-cp.git\ncd message-cp\ncp .env.example .env    # then set MESSAGE_CP_DOMAIN and MESSAGE_CP_HTTP_TOKEN in it\ndocker compose up -d"} />
@@ -77,7 +68,6 @@ import CodeBlock from "../components/CodeBlock.astro";
   <li><strong>Server commands.</strong> In the container (database <code>/data/db.sqlite</code>, volume <code>data</code>): <code>docker compose exec message-cp message-cp connect &lt;agent&gt; --url https://&lt;domain&gt;</code> prints an <a href="accounts.html#agents">agent token</a>&#39;s client setup.</li>
   <li><strong>Updating.</strong> <code>git pull</code>, then <code>docker compose up -d --build</code>. <code>docker compose down -v</code> deletes the volumes.</li>
   </ul>
-  <p>Without a domain, try <code>MESSAGE_CP_DOMAIN=localhost</code>; clients, the wake-up loop&#39;s <code>curl</code> included, distrust Caddy&#39;s local authority until you add it.</p>
   <h2 id="settings">Settings</h2>
   <p>message-cp reads no other <code>MESSAGE_CP_</code> variable or config file; empty means unset unless noted. <a href="#running-with-docker">Docker</a> and <a href="https://github.com/colinhallett/message-cp/tree/main/ops"><code>ops/</code></a> add their own.</p>
   <div class="table">
