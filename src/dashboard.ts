@@ -443,7 +443,7 @@ let channelsSent = new Set();
 // A channel name as the server takes one: a copy of NAME_PATTERN in src/agents.ts, to be kept in step with it.
 const CHANNEL_NAME = /^[A-Za-z0-9_-]{1,32}$/;
 // What a full token sees where a person token's compose box would be.
-const SIGN_IN_TO_SEND = "To send, sign in as a person: run message-cp login-link --url <public url> --person <name> on the server.";
+const SIGN_IN_TO_SEND = "To send, sign in as a person: run message-cp login-link --url <public url> --account <account> --person <name> on the server.";
 // What an empty panel says: what makes something appear there, and, for channels and direct messages, one sentence
 // more naming "New channel" or "New message" that goes only with a person token, as those buttons do.
 const NO_AGENTS =

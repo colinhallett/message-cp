@@ -212,7 +212,7 @@ describe("person tokens", () => {
           const res = await send(path, token, { as, ...target, body: "hi" });
           expect(res.status, `${path} ${as}`).toBe(403);
           expect(res.headers.get("connection")).toBe("close");
-          expect(await res.text()).toContain("message-cp login-link --url <public url> --person <name>");
+          expect(await res.text()).toContain("message-cp login-link --url <public url> --account <account> --person <name>");
         }
       }
     }

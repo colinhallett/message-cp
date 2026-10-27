@@ -199,7 +199,7 @@ describe.each([
       expect(res.headers.get("connection")).toBe("close");
       const message = await error(res);
       expect(message).toContain("Sign in as a person");
-      expect(message).toContain("message-cp login-link --url <public url> --person <name>");
+      expect(message).toContain("message-cp login-link --url <public url> --account <account> --person <name>");
       expect(message).not.toContain("secret");
       expect(message).not.toContain(OWNER_TOKEN);
     }

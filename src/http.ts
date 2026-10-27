@@ -61,7 +61,7 @@ const MAX_BODY_BYTES = 4 * 1024 * 1024;
 const MAX_PERSON_BODY_BYTES = 64 * 1024;
 /** What POST /api/send and /api/post answer a full token, which acts as no person, with its 403. */
 const FULL_TOKEN_SENDS =
-  "A full token cannot send or post as a person. Sign in as a person to send: run message-cp login-link --url <public url> --person <name> on the server";
+  "A full token cannot send or post as a person. Sign in as a person to send: run message-cp login-link --url <public url> --account <account> --person <name> on the server";
 /** The body limit for the OAuth registration, approval and token endpoints, which take a few short fields. */
 const MAX_OAUTH_BODY_BYTES = 16 * 1024;
 /** An agent seen this recently counts as online in GET /api/agents, as does one with a GET /wait held now. */

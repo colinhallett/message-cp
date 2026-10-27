@@ -3752,7 +3752,7 @@ describe("the page's posting", () => {
   };
 
   // What a full token sees where a person token's compose box would be.
-  const SIGN_IN = "To send, sign in as a person: run message-cp login-link --url <public url> --person <name> on the server.";
+  const SIGN_IN = "To send, sign in as a person: run message-cp login-link --url <public url> --account <account> --person <name> on the server.";
 
   it("asks GET /api/token once, with the token only in its header", async () => {
     seed();
