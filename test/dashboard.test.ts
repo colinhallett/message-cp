@@ -7,7 +7,7 @@ import { createRequire } from "node:module";
 import { runInNewContext } from "node:vm";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { accountForToken, addAccount, addToken, listAccounts, recordClient, revokeToken } from "../src/accounts.js";
-import { makeLoginCode, redeemLoginCode } from "../src/login.js";
+import { cancelInvite, makeInvite, makeLoginCode, redeemLoginCode } from "../src/login.js";
 import { OWNER_ACCOUNT, openDb, type Db } from "../src/db.js";
 import { addPerson, identityOf, registerAgent, removeAgent, removePerson, setPersonAdmin, setStatus } from "../src/agents.js";
 import { joinChannel, leaveChannel, post } from "../src/channels.js";
@@ -601,6 +601,19 @@ describe("the page's channels and messages", () => {
       redeemLoginCode(db, code);
       const page = await openLink(`#code=${code}`);
       await page.until(() => page.elements["status-line"].textContent.startsWith("This link was already used."));
+      expect(page.elements["login"].hidden).toBe(false);
+      expect(page.elements["view"].hidden).toBe(true);
+      expect(page.store.size).toBe(0);
+    });
+
+    it("shows the token form saying a cancelled invite was cancelled", async () => {
+      addPerson(db, "owner", "maria");
+      addPerson(db, "owner", "ana", true);
+      const ana = db.prepare("SELECT id FROM agents WHERE name = 'ana'").pluck().get() as number;
+      const invite = makeInvite(db, OWNER_ACCOUNT, ana, "maria")!.invite;
+      cancelInvite(db, OWNER_ACCOUNT, invite.id);
+      const page = await openLink(`#code=${invite.code}`);
+      await page.until(() => page.elements["status-line"].textContent.startsWith("This link was cancelled."));
       expect(page.elements["login"].hidden).toBe(false);
       expect(page.elements["view"].hidden).toBe(true);
       expect(page.store.size).toBe(0);
