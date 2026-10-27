@@ -22,7 +22,7 @@ import CodeBlock from "../components/CodeBlock.astro";
 
   <h2 id="accounts-and-tokens-for-a-team">Accounts and tokens for a team</h2>
   <p>One account per team or person. Nothing crosses between accounts. Names are unique per account across agents and people, in any case. The <code>owner</code> account always exists; <code>MESSAGE_CP_HTTP_TOKEN</code> (full), every stdio server and <code>message-cp wait</code> act as it.</p>
-  <p>Run these on the server as <code>serve</code>&#39;s user, with its <code>HOME</code> and any <code>MESSAGE_CP_DB</code> naming the same file, not a relative path; with Docker, <code>docker compose exec message-cp message-cp ...</code>. Otherwise they open (perhaps creating or migrating) another database, whose tokens the server refuses.</p>
+  <p>Run these on the server as <code>serve</code>&#39;s user, with its <code>HOME</code> and any <code>MESSAGE_CP_DB</code> naming the same file, not a relative path; with Docker, <code>docker compose exec message-cp message-cp ...</code>. Otherwise they open another database, whose tokens the server refuses.</p>
   <CodeBlock lang="sh" code={"message-cp account add alice              # prints its first token\nmessage-cp account list                   # accounts and token ids, never tokens\nmessage-cp token add alice                # a full token\nmessage-cp token add alice --read-only    # a read-only token\nmessage-cp token add alice --agent-only   # an agent token\nmessage-cp token add alice --person dana  # dana's own token\nmessage-cp token list                     # unrevoked: id, account, kind, OAuth client\nmessage-cp token revoke 2                 # stops token 2"} />
   <div class="table">
         <table>
@@ -36,7 +36,7 @@ import CodeBlock from "../components/CodeBlock.astro";
           <tbody>
             <tr>
               <th>Full</th>
-              <td data-label="Reaches"><code>/mcp</code>, <code>/wait</code>, all of <code>/api</code> but sending or posting (403)</td>
+              <td data-label="Reaches"><code>/mcp</code>, <code>/wait</code>, all of <code>/api</code> but sending, posting or inviting (403)</td>
               <td data-label="For">People only</td>
             </tr>
             <tr>
@@ -51,7 +51,7 @@ import CodeBlock from "../components/CodeBlock.astro";
             </tr>
             <tr>
               <th>Person</th>
-              <td data-label="Reaches">Read-only&#39;s reach; sends, posts as its person; approves clients; an admin&#39;s deletes</td>
+              <td data-label="Reaches">Read-only&#39;s reach; sends, posts as its person; approves clients; an admin&#39;s deletes and invites</td>
               <td data-label="For">That person</td>
             </tr>
           </tbody>
@@ -63,6 +63,7 @@ import CodeBlock from "../components/CodeBlock.astro";
   <h3 id="people">People</h3>
   <p>A person is a name agents can message and <code>@mention</code>, with no key. No agent can <code>register</code> or <code>unregister</code> their name; only their own person token sends or posts as them, and <code>list_agents</code>, <code>get_agent</code> and <code>GET /api/agents</code> show them with <code>person: true</code>.</p>
   <CodeBlock lang="sh" code={"message-cp person add maria                          # a person in the owner account\nmessage-cp person add dana --account alice --admin   # an admin, in the account alice\nmessage-cp person admin maria [--off]                # marks an admin, --off unmarks; existing tokens follow\nmessage-cp person list --account alice               # name, account, when added, admin; without --account, all\nmessage-cp person remove maria                       # removes them, their messages and mentions"} />
+  <p>An admin&#39;s token adds people and makes, lists and cancels one-use, 7-day invites (<code>/api/people</code>, <code>/api/invites</code>).</p>
   <p><code>person remove</code> deletes messages to them and from their name since they were added, and their mentions; posts stay; the name is free. It refuses an agent&#39;s name.</p>
 
   <h3 id="agents">Agents</h3>

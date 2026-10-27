@@ -929,10 +929,11 @@ async function checkToken() {
 
 // Redeems a login link's code once with POST /api/login, which takes no token, for a new full or person token, kept and
 // started with as a pasted one is. Any token the tab held is forgotten first, and the token form shows while the request
-// is in flight; a token submitted or forgotten meanwhile wins, so the answer is dropped. A used, expired or unknown code,
-// or no answer, leaves the form with the reason.
+// is in flight; a token submitted or forgotten meanwhile wins, so the answer is dropped. A used, cancelled, expired or
+// unknown code, or no answer, leaves the form with the reason.
 const LINK_USED = "This link was already used. Make a new one on the server, or enter a token.";
 const LINK_INVALID = "This link has expired or is not valid. Make a new one on the server, or enter a token.";
+const LINK_CANCELLED = "This link was cancelled. Ask an admin for a new one, or enter a token.";
 async function login(code) {
   ask();
   say("Signing in with the link…", false);
@@ -967,6 +968,7 @@ async function login(code) {
   }
   if (answer.reason === "used") return ask(LINK_USED);
   if (answer.reason === "invalid") return ask(LINK_INVALID);
+  if (answer.reason === "cancelled") return ask(LINK_CANCELLED);
   if (answer.status === 503) return ask("The server is busy (503), so the link was not used. Open it again in a moment.");
   ask(answer.status === undefined ? "No answer from the server, so the link may have been used. Make a new one on the server, or enter a token." : "The server answered " + answer.status + ". Make a new link on the server, or enter a token.");
 }

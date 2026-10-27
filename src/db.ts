@@ -434,6 +434,15 @@ function migrate(db: Db, path: string): void {
   // The id of the message a reply answers (`send_message` with `in_reply_to`), null for none. Deleting that message sets
   // it to null. Added here before rebuildMessages() copies it.
   addColumn(db, "in_reply_to", "INTEGER REFERENCES messages(id) ON DELETE SET NULL", "messages");
+  // 1 for an invite an admin person made (POST /api/people and /api/invites, src/login.ts), which lasts INVITE_TTL_MS; 0
+  // for a `login-link` code and every code from before it. With it, when the code was made (null for one from before)
+  // and when it was cancelled (null for not). Cancelling sets `used_at` as well, so a server from before these columns,
+  // which reads only `person_id`, `expires_at` and `used_at`, refuses a cancelled invite as used rather than redeeming it.
+  addColumn(db, "invite", "INTEGER NOT NULL DEFAULT 0", "login_codes");
+  addColumn(db, "created_at", "INTEGER", "login_codes");
+  addColumn(db, "cancelled_at", "INTEGER", "login_codes");
+  // GET /api/invites pages an account's unused invites newest first through this, not by scanning used codes.
+  db.exec("CREATE INDEX IF NOT EXISTS login_codes_unused_invites ON login_codes (account_id, id) WHERE invite = 1 AND used_at IS NULL");
   rebuildMessages(db);
   db.exec(MESSAGES_REPLY_INDEXES);
   db.exec(DROP_REMOVED);
