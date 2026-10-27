@@ -313,9 +313,11 @@ export const startAuthorization = (db: Db, query: URLSearchParams, resource: str
  * the one it was made with, and stores a code bound to the account, agent, client, redirect URI, challenge and resource.
  * Returns where to send the person: the redirect URI with the code and state. With `fresh` (a name the approval page
  * suggested and the person left as it was), a live agent of that name is refused rather than bound to, so a suggested
- * name never connects the client as an existing agent. A refusal throws `OAuthError` or `ToolError` and stores nothing.
+ * name never connects the client as an existing agent. With `name` null, the client registers its own agents: the code is
+ * bound to the account and no agent, and marked so `exchangeCode` issues a token that registers them. A refusal throws
+ * `OAuthError` or `ToolError` and stores nothing.
  */
-export const approveAuthorization = (db: Db, account: AccountId, request: string, state: string | null, name: string, fresh = false): string =>
+export const approveAuthorization = (db: Db, account: AccountId, request: string, state: string | null, name: string | null, fresh = false): string =>
   db.transaction((): string => {
     const now = Date.now();
     const row = db
@@ -324,18 +326,22 @@ export const approveAuthorization = (db: Db, account: AccountId, request: string
     if (!row || row.state_hash !== (state === null ? null : sha256(state))) {
       throw new OAuthError("invalid_request", "This approval has expired or was already used. Start connecting again from the client.");
     }
-    validateName(name);
-    const live = db
-      .prepare("SELECT id, name, person FROM agents WHERE account_id = ? AND name = ? AND removed_at IS NULL")
-      .get(account, name) as { id: number; name: string; person: number } | undefined;
-    if (live?.person === 1) throw new ToolError(`The name '${live.name}' belongs to a person, not an agent.`);
-    if (live && fresh) throw new ToolError(`An agent named '${live.name}' now exists. Choose another name, or type its name to connect the client as it.`);
-    const agent = live ? live.id : registerWithIdentity(db, account, name).identity.id;
+    let agent: number | null = null;
+    if (name !== null) {
+      validateName(name);
+      const live = db
+        .prepare("SELECT id, name, person FROM agents WHERE account_id = ? AND name = ? AND removed_at IS NULL")
+        .get(account, name) as { id: number; name: string; person: number } | undefined;
+      if (live?.person === 1) throw new ToolError(`The name '${live.name}' belongs to a person, not an agent.`);
+      if (live && fresh) throw new ToolError(`An agent named '${live.name}' now exists. Choose another name, or type its name to connect the client as it.`);
+      agent = live ? live.id : registerWithIdentity(db, account, name).identity.id;
+    }
     const code = randomBytes(32).toString("hex");
-    db.prepare("UPDATE mcp_authorizations SET code_hash = ?, account_id = ?, agent_id = ?, expires_at = ? WHERE id = ?").run(
+    db.prepare("UPDATE mcp_authorizations SET code_hash = ?, account_id = ?, agent_id = ?, registers = ?, expires_at = ? WHERE id = ?").run(
       sha256(code),
       account,
       agent,
+      name === null ? 1 : 0,
       now + CODE_TTL_MS,
       row.id,
     );
@@ -352,7 +358,8 @@ export interface CodeExchange {
 }
 
 /**
- * Exchanges a code for an agent token bound to the approved agent, made with `addToken` in the approving account. In one
+ * Exchanges a code for an agent token bound to the approved agent, made with `addToken` in the approving account, or,
+ * for an approval of a client that registers its own agents, an agent token bound to no agent that registers them. In one
  * transaction it finds the code and deletes it, so it is used up by its first exchange, successful or not; then it
  * checks it is unexpired, and that the client, redirect URI and resource are those of its request and the verifier
  * matches the challenge (S256). Any mismatch, or an agent removed meanwhile, throws `OAuthError` `invalid_grant` and
@@ -363,7 +370,7 @@ export function exchangeCode(db: Db, exchange: CodeExchange): string {
     .transaction((): { token: string } | { refused: true } => {
       const row = db
         .prepare(
-          `SELECT mcp_authorizations.id, mcp_clients.client_id, mcp_clients.client_name, redirect_uri, code_challenge, resource, account_id, agent_id, expires_at,
+          `SELECT mcp_authorizations.id, mcp_clients.client_id, mcp_clients.client_name, redirect_uri, code_challenge, resource, account_id, agent_id, registers, expires_at,
              (SELECT name FROM accounts WHERE accounts.id = mcp_authorizations.account_id) AS account
            FROM mcp_authorizations JOIN mcp_clients ON mcp_clients.id = mcp_authorizations.client_id
            WHERE code_hash = ?`,
@@ -376,7 +383,8 @@ export function exchangeCode(db: Db, exchange: CodeExchange): string {
             redirect_uri: string;
             code_challenge: string;
             resource: string | null;
-            agent_id: number;
+            agent_id: number | null;
+            registers: number;
             expires_at: number;
             account: string;
           }
@@ -395,7 +403,11 @@ export function exchangeCode(db: Db, exchange: CodeExchange): string {
         return { refused: true };
       }
       try {
-        const issued = addToken(db, row.account, false, true, row.agent_id);
+        // A code approved before `registers` existed, or by a server from before it, has 0 there and an agent, which
+        // `addToken` checks; one with neither is refused.
+        if (row.registers !== 1 && row.agent_id === null) return { refused: true };
+        const issued =
+          row.registers === 1 ? addToken(db, row.account, false, true, undefined, undefined, true) : addToken(db, row.account, false, true, row.agent_id!);
         // The client row may be forgotten later (pruneClients), so what the account's approvals show is kept on the token.
         recordClient(db, issued.id, { name: row.client_name, host: isMetadataUrl(row.client_id) ? new URL(row.client_id).host : null });
         return { token: issued.token };

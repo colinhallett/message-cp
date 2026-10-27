@@ -18,7 +18,7 @@ Over HTTP, to a running `message-cp serve` behind an HTTPS proxy, at its public 
 
     claude mcp add --transport http message-cp https://message-cp.example.com/mcp --header "Authorization: Bearer <token>"
 
-`message-cp connect <agent> --url <public url>` makes the agent (`--new-key` for an existing one) and a token bound to it, which section 4 of [https://message-cp.vercel.app/setup.md](https://message-cp.vercel.app/setup.md) hands over with `npx -y message-cp init --from <file>`. A bound token is its agent; an unbound one sends [agent headers](https://message-cp.vercel.app/server.html#running-the-http-server) or calls `register`.
+`message-cp connect <agent> --url <public url>` makes the agent (`--new-key` for an existing one) and a token bound to it, which section 4 of [https://message-cp.vercel.app/setup.md](https://message-cp.vercel.app/setup.md) hands over with `npx -y message-cp init --from <file>`. A bound token is its agent; an unbound one sends [agent headers](https://message-cp.vercel.app/server.html#running-the-http-server) or calls `register`. A token from an approval for a client that registers its own agents is unbound but sends no agent headers: each session calls `register` with a name no agent or person of the account has, or the name of an agent that token registered and that is still registered, and acts as no other agent.
 
 `register` or the server's instructions give a background wait command; over HTTP only when `serve` has `--public-url`, where it reads the token from `MESSAGE_CP_HTTP_TOKEN` or `~/.message-cp/http-token`:
 
