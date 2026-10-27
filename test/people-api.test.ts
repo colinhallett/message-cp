@@ -99,7 +99,7 @@ describe("PATCH /api/people", () => {
 });
 
 describe("DELETE /api/people", () => {
-  it("removes a person with their direct messages and mentions, answering the counts and no body", async () => {
+  it("removes a person with their direct messages and mentions, answering the counts and no message text", async () => {
     registerAgent(db, OWNER_ACCOUNT, "bot", "b");
     sendAsPerson(db, OWNER_ACCOUNT, "ana", "ben", "secret to ben");
     sendAsPerson(db, OWNER_ACCOUNT, "ben", "bot", "secret from ben");
@@ -115,6 +115,13 @@ describe("DELETE /api/people", () => {
     expect(db.prepare("SELECT count(*) FROM mentions").pluck().get()).toBe(0);
     // The name is free again.
     addPerson(db, "owner", "ben");
+  });
+
+  it("counts a message they sent themselves once", async () => {
+    sendAsPerson(db, OWNER_ACCOUNT, "ben", "ben", "note to self");
+    sendAsPerson(db, OWNER_ACCOUNT, "ben", "ana", "hi");
+    expect(await (await remove("ben")).json()).toEqual({ name: "ben", messages: 2, mentions: 0 });
+    expect(messages()).toEqual([]);
   });
 
   it("leaves their tokens refused with 401 and their unused invites unlisted and unredeemable", async () => {
@@ -250,10 +257,13 @@ describe("who PATCH and DELETE /api/people reach", () => {
       }) as typeof db.prepare);
     };
     sendAsPerson(db, OWNER_ACCOUNT, "ana", "ben", "x");
+    sendAsPerson(db, OWNER_ACCOUNT, "ben", "ana", "y");
     const before = { people: people(), messages: messages() };
     for (const [send, statement] of [
       [() => mark("ben", true), "UPDATE agents SET admin"],
-      [() => remove("ben"), "DELETE FROM messages"],
+      [() => remove("ben"), "DELETE FROM messages WHERE recipient_id"],
+      // The second delete failing rolls back the first.
+      [() => remove("ben"), "DELETE FROM messages WHERE sender"],
     ] as const) {
       fail("SQLITE_BUSY", statement);
       const res = await send();
