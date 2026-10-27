@@ -27,7 +27,8 @@ export interface NewToken {
 /**
  * Who a bearer token acts as: its account, whether it may only read, and whether it may do what an agent does but not
  * act as a person (POST /api/send and /api/post). Never both, and neither for a person token, which reads what a
- * read-only token reads, sends and posts only as its person, and approves MCP clients (POST /oauth/approve).
+ * read-only token reads, sends and posts only as its person, approves MCP clients (POST /oauth/approve) and, while its
+ * person is an admin, deletes the account's conversations (DELETE /api/conversation).
  */
 export interface TokenAccess {
   account: AccountId;
@@ -39,10 +40,12 @@ export interface TokenAccess {
   person?: BoundPerson;
 }
 
-/** The person a person token acts as: their row in `agents` and their name. */
+/** The person a person token acts as: their row in `agents`, their name and, where read, whether they are an admin. */
 export interface BoundPerson {
   id: number;
   name: string;
+  /** Read from the person's row on each request by `accountForToken`, so marking or unmarking applies at once. */
+  admin?: boolean;
 }
 
 /** The agent a bound token acts as: its row in `agents`, the registration that row holds now, and its name. */
@@ -172,7 +175,8 @@ export function revokeToken(db: Db, id: number): string {
  * The account a bearer token belongs to: the owner's for `ownerToken` (MESSAGE_CP_HTTP_TOKEN, never read-only or
  * agent-only), else the account of a token created with `message-cp`, as long as it has not been revoked. A token bound
  * to an agent comes with that agent, and only while it is a live agent of the token's own account; a person token
- * comes with its person, only while that row is a live person of the token's own account. Undefined for anything
+ * comes with its person, only while that row is a live person of the token's own account, and with whether that row is
+ * marked admin now. Undefined for anything
  * else, a bound token whose agent or person has been removed included.
  */
 export function accountForToken(db: Db, token: string, ownerToken: string): TokenAccess | undefined {
@@ -187,7 +191,7 @@ export function accountForToken(db: Db, token: string, ownerToken: string): Toke
     .prepare(
       `SELECT tokens.account_id, tokens.read_only, tokens.agent_only, tokens.agent_id,
          agents.id, agents.registered_at, agents.instance, agents.name,
-         tokens.person_id, people.id AS person_row, people.name AS person_name
+         tokens.person_id, people.id AS person_row, people.name AS person_name, people.admin AS person_admin
        FROM tokens LEFT JOIN agents ON agents.id = tokens.agent_id AND agents.account_id = tokens.account_id
          AND agents.removed_at IS NULL AND agents.person = 0
        LEFT JOIN agents people ON people.id = tokens.person_id AND people.account_id = tokens.account_id
@@ -207,11 +211,13 @@ export function accountForToken(db: Db, token: string, ownerToken: string): Toke
         person_id: number | null;
         person_row: number | null;
         person_name: string | null;
+        person_admin: number | null;
       }
     | undefined;
   if (!row || (row.agent_id !== null && row.id === null) || (row.person_id !== null && row.person_row === null)) return undefined;
   if (row.person_row !== null && row.person_name !== null) {
-    return { account: row.account_id, readOnly: false, agentOnly: false, person: { id: row.person_row, name: row.person_name } };
+    const person: BoundPerson = { id: row.person_row, name: row.person_name, admin: row.person_admin === 1 };
+    return { account: row.account_id, readOnly: false, agentOnly: false, person };
   }
   // An agent token's row also has read_only set (see `issueToken`); it is agent-only here, never both.
   const access: TokenAccess = { account: row.account_id, readOnly: row.read_only === 1 && row.agent_only !== 1, agentOnly: row.agent_only === 1 };

@@ -136,7 +136,7 @@ describe("message-cp help", () => {
     let stdout = "";
     child.stdout.on("data", (d) => (stdout += d));
     expect(await new Promise((res) => child.on("close", res))).toBe(0);
-    for (const c of ["serve", "wait", "account add", "account list", "token add", "token list", "token revoke", "webhook add", "webhook list", "webhook remove", "person add", "person remove", "person list", "agent remove", "agent key reset", "connect"]) {
+    for (const c of ["serve", "wait", "account add", "account list", "token add", "token list", "token revoke", "webhook add", "webhook list", "webhook remove", "person add", "person admin", "person remove", "person list", "agent remove", "agent key reset", "connect"]) {
       expect(stdout).toMatch(new RegExp(`^ +message-cp ${c}( |$)`, "m"));
     }
   });
