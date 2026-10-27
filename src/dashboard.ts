@@ -906,7 +906,8 @@ async function checkToken() {
 
 // Redeems a login link's code once with POST /api/login, which takes no token, for a new full or person token, kept and
 // started with as a pasted one is. Any token the tab held is forgotten first, and the token form shows while the request
-// is in flight; a token submitted or forgotten meanwhile wins, so the answer is dropped. A used, expired or unknown code, or no answer, leaves the form with the reason.
+// is in flight; a token submitted or forgotten meanwhile wins, so the answer is dropped. A used, expired or unknown code,
+// or no answer, leaves the form with the reason.
 const LINK_USED = "This link was already used. Make a new one on the server, or enter a token.";
 const LINK_INVALID = "This link has expired or is not valid. Make a new one on the server, or enter a token.";
 async function login(code) {
