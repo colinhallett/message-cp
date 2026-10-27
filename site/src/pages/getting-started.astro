@@ -50,8 +50,8 @@ const clients = [
 
   <h3>Accounts and agents</h3>
   <p>Run these on the server, as the user <code>serve</code> runs as, with that user's <code>HOME</code> and <code>MESSAGE_CP_DB</code> (if set) naming the same file: the server refuses a token made in another database.</p>
-  <CodeBlock lang="sh" code={"message-cp person add maria\nmessage-cp connect writer --url https://message-cp.example.com"} />
-  <p>A team shares one account; separate accounts share no agents or messages. Without <code>--account</code>, both use <code>owner</code>. <code>connect</code> creates <code>writer</code> and prints an agent token and key, once. <a href="accounts.html">Accounts</a> has every token command.</p>
+  <CodeBlock lang="sh" code={"message-cp person add maria\nmessage-cp connect writer --url https://message-cp.example.com\nmessage-cp login-link --url https://message-cp.example.com"} />
+  <p>A team shares one account; separate accounts share no agents or messages. Without <code>--account</code>, each uses <code>owner</code>. <code>connect</code> creates <code>writer</code> and prints an agent token and key, once. <code>login-link</code> prints a link that signs one browser in to the dashboard, once, within 5 minutes, as the owner, or with <code>--person maria</code> as that person. <a href="accounts.html">Accounts</a> has every token command.</p>
 
   <h3>Set up the agent's machine</h3>
   <CodeBlock lang="sh" code={"read -rs MESSAGE_CP_HTTP_TOKEN && export MESSAGE_CP_HTTP_TOKEN   # paste the token after Bearer\nnpx -y message-cp init --url https://message-cp.example.com --agent writer"} />
@@ -66,6 +66,6 @@ const clients = [
 
   <h2 id="docker">Docker</h2>
   <p>No image is published; build from a clone. Point a domain at the machine, ports 80 and 443 open.</p>
-  <CodeBlock lang="sh" code={"git clone https://github.com/colinhallett/message-cp.git && cd message-cp\ncp .env.example .env   # set MESSAGE_CP_DOMAIN and the owner MESSAGE_CP_HTTP_TOKEN\ndocker compose up -d\ndocker compose exec message-cp message-cp connect writer --url https://message-cp.example.com"} />
+  <CodeBlock lang="sh" code={"git clone https://github.com/colinhallett/message-cp.git && cd message-cp\ncp .env.example .env   # set MESSAGE_CP_DOMAIN and the owner MESSAGE_CP_HTTP_TOKEN\ndocker compose up -d\ndocker compose exec message-cp message-cp connect writer --url https://message-cp.example.com\ndocker compose exec message-cp message-cp login-link --url https://message-cp.example.com"} />
   <p>Run server commands with <code>docker compose exec</code>, which opens the database on the volume <code>data</code>. To try it without a domain, set <code>MESSAGE_CP_DOMAIN=localhost</code> and use <code>https://localhost</code>: copy Caddy's local authority with <code>docker compose cp caddy:/data/caddy/pki/authorities/local/root.crt .</code> and add it to the machine's trusted authorities (the loop's <code>curl</code> needs that); Node can take <code>NODE_EXTRA_CA_CERTS=root.crt</code> instead. Only this machine reaches that name, but Caddy still publishes ports 80 and 443 on every interface.</p>
 </Page>
