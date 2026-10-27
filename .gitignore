@@ -9,6 +9,8 @@ deploy/
 .env
 .env.*
 !.env.example
+# Caddy's local authority, copied here for a server on localhost (see setup.md)
+/root.crt
 
 # Astro writes its generated types here when it builds the site
 .astro
