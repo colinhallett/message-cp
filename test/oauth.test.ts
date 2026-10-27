@@ -7,13 +7,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { addAccount, addToken, listAccounts, listTokens, revokeToken } from "../src/accounts.js";
-import { addPerson, purgeAgent, registerAgent, registerWithIdentity } from "../src/agents.js";
+import { addPerson, purgeAgent, registerAgent, registerWithIdentity, removePerson } from "../src/agents.js";
 import { OWNER_ACCOUNT, openDb, type AccountId, type Db } from "../src/db.js";
 import { startHttp, type HttpServer } from "../src/http.js";
 import { AUTHORIZATION_TTL_MS, CODE_TTL_MS, MAX_AUTHORIZATIONS, MAX_CLIENTS } from "../src/oauth.js";
 
 // MCP's authorization flow on `serve --public-url`: metadata, client registration, the approval page, approval with a
-// full token and the code exchange for an agent token, on a server with the owner's account and a friend's.
+// full or person token and the code exchange for an agent token, on a server with the owner's account and a friend's.
 const OWNER_TOKEN = "owner-token";
 const REDIRECT = "http://localhost:9999/callback";
 let db: Db;
@@ -525,17 +525,15 @@ describe("approval", () => {
     expect((await approve(ownerFull, { request, state: "s1", agent: "desk" })).status).toBe(200);
   });
 
-  it("refuses an agent-only, read-only or person token with 403 and no token with 401, changing nothing", async () => {
+  it("refuses an agent-only or read-only token with 403 and no token with 401, changing nothing", async () => {
     const clientId = await registered();
     const { request } = await pageFor(clientId, pkce().challenge);
     const before = stored();
     const agentOnly = addToken(db, "owner", false, true).token;
     const readOnly = addToken(db, "owner", true).token;
     const bound = addToken(db, "owner", false, true, registerWithIdentity(db, OWNER_ACCOUNT, "b").identity.id).token;
-    addPerson(db, "owner", "maria");
-    const person = addToken(db, "owner", false, false, undefined, "maria").token;
     const after = stored();
-    for (const token of [agentOnly, readOnly, bound, person]) {
+    for (const token of [agentOnly, readOnly, bound]) {
       const res = await approve(token, { request, state: "s1", agent: "desk" });
       expect(res.status).toBe(403);
       // Its body is left unread, so the connection is not kept for another request.
@@ -544,6 +542,48 @@ describe("approval", () => {
     expect((await approve("wrong", { request, state: "s1", agent: "desk" })).status).toBe(401);
     expect(stored()).toBe(after);
     expect(before).not.toBe(after);
+  });
+
+  it("approves with a person token: the code gives an agent token bound to a new agent of the person's account, working on /mcp", async () => {
+    addPerson(db, "owner", "maria");
+    const maria = addToken(db, "owner", false, false, undefined, "maria").token;
+    const { form } = await codeFor(maria, "desk");
+    const desk = db.prepare("SELECT id, account_id, person FROM agents WHERE name = 'desk' AND removed_at IS NULL").all();
+    expect(desk).toEqual([{ id: expect.any(Number), account_id: OWNER_ACCOUNT, person: 0 }]);
+    // The approved request names the agent until the code is exchanged.
+    expect(db.prepare("SELECT agent_id FROM mcp_authorizations WHERE code_hash IS NOT NULL").pluck().all()).toEqual([(desk[0] as { id: number }).id]);
+    const token = await accessToken(form);
+    const row = db.prepare("SELECT account_id, agent_only, agent_id, person_id FROM tokens WHERE id = (SELECT max(id) FROM tokens)").get();
+    expect(row).toEqual({ account_id: OWNER_ACCOUNT, agent_only: 1, agent_id: (desk[0] as { id: number }).id, person_id: null });
+    expect((await listAgents(token)).map((a) => a.name).sort()).toEqual(["desk", "maria"]);
+    // The person token itself still cannot act as an agent.
+    expect((await fetch(`${base()}/wait?agent=desk`, { headers: { Authorization: `Bearer ${maria}` } })).status).toBe(403);
+  });
+
+  it("approves with a person token of another account only into that account", async () => {
+    registerAgent(db, OWNER_ACCOUNT, "desk", "owner's desk");
+    addPerson(db, "friend", "dana");
+    const dana = addToken(db, "friend", false, false, undefined, "dana").token;
+    const token = await accessToken((await codeFor(dana, "desk")).form);
+    const row = db.prepare("SELECT account_id, agent_id FROM tokens WHERE id = (SELECT max(id) FROM tokens)").get() as { account_id: number; agent_id: number };
+    expect(row.account_id).toBe(friend);
+    expect(db.prepare("SELECT account_id FROM agents WHERE id = ?").pluck().get(row.agent_id)).toBe(friend);
+    expect((await listAgents(token)).map((a) => a.name).sort()).toEqual(["dana", "desk"]);
+    expect(db.prepare("SELECT bio FROM agents WHERE account_id = ? AND name = 'desk'").pluck().get(OWNER_ACCOUNT)).toBe("owner's desk");
+  });
+
+  it("refuses a removed person's token with 401, storing nothing", async () => {
+    const clientId = await registered();
+    const { request } = await pageFor(clientId, pkce().challenge);
+    addPerson(db, "owner", "maria");
+    const maria = addToken(db, "owner", false, false, undefined, "maria").token;
+    removePerson(db, "owner", "maria");
+    const before = stored();
+    expect((await approve(maria, { request, state: "s1", agent: "desk" })).status).toBe(401);
+    expect(stored()).toBe(before);
+    expect(db.prepare("SELECT 1 FROM agents WHERE name = 'desk'").get()).toBeUndefined();
+    // The request is still there for a working token to approve.
+    expect((await approve(ownerFull, { request, state: "s1", agent: "desk" })).status).toBe(200);
   });
 
   it("refuses a request handle it does not hold, a wrong state, an expired request, and a second approval", async () => {

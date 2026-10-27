@@ -3,10 +3,10 @@ import { STYLE } from "./dashboard.js";
 import { isLoopback, isMetadataUrl, type Authorization } from "./oauth.js";
 
 // The page a person approves an MCP client on, served at the authorization endpoint of `serve --public-url` without a
-// token, in the dashboard's look. It asks for a full token of the account and the agent the client should act as, and
-// sends them once to POST /oauth/approve; it keeps the token only in the form field, never in storage. On approval it
-// goes to the address the server answers with, the client's redirect URI with a code; refusing goes to the redirect URI
-// with error=access_denied. Client-supplied text is put on the page HTML-escaped by the server, never as markup.
+// token, in the dashboard's look. It asks for a full or person token of the account and the agent the client should act
+// as, and sends them once to POST /oauth/approve; it keeps the token only in the form field, never in storage. On
+// approval it goes to the address the server answers with, the client's redirect URI with a code; refusing goes to the
+// redirect URI with error=access_denied. Client-supplied text is put on the page HTML-escaped by the server, never as markup.
 
 const PAGE_STYLE = `${STYLE}
 main { margin: 10vh auto var(--s4); width: min(32rem, 100% - 2 * var(--s4)); display: flex; flex-direction: column; gap: var(--s3); }
@@ -71,8 +71,8 @@ form.addEventListener("submit", async (event) => {
     return location.assign(answer.location);
   }
   if (!res) return say("The server did not answer. Try again.", true);
-  if (res.status === 401) return say("The server refused that token. Enter a full token of the account.", true);
-  if (res.status === 403) return say("Only a full token can approve a client; agent and read-only tokens cannot.", true);
+  if (res.status === 401) return say("The server refused that token. Enter a full or person token of the account.", true);
+  if (res.status === 403) return say("Only a full or person token can approve a client; agent and read-only tokens cannot.", true);
   say(answer && typeof answer.message === "string" ? answer.message : "The server could not approve this (" + res.status + "). Try again.", true);
 });
 no.addEventListener("click", () => location.assign(no.dataset.location));
@@ -146,7 +146,7 @@ ${
 }
 <p class="dim">${from === undefined ? "The name is the client's own; this server has not checked it." : `The name is the client's own; this server has checked only that its description is at ${escape(from)}.`}</p>
 <form id="approve" data-request="${escape(a.request)}"${state}>
-<label for="approve-token">Full token of the account</label>
+<label for="approve-token">Full or person token of the account</label>
 <input id="approve-token" type="password" autocomplete="off" required>
 <label for="approve-agent">Agent name</label>
 <input id="approve-agent" type="text" autocomplete="off" required maxlength="32" pattern="[A-Za-z0-9_\\-]{1,32}" placeholder="for example claude-desktop">

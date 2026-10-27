@@ -5,9 +5,9 @@ import type { AccountId, Db } from "./db.js";
 
 // MCP's authorization flow for `serve --public-url`: a client registers itself (RFC 7591) or names the URL of its Client
 // ID Metadata Document as its `client_id`, which the authorization endpoint fetches, a person approves it in the
-// browser with a full token of their account, and the client exchanges the code it is sent back with for an agent token
-// bound to the approved agent (OAuth 2.1 authorization code with PKCE). Authorization requests and codes are stored only
-// as hashes, as is the client's `state`; nothing here logs anything.
+// browser with a full or person token of their account, and the client exchanges the code it is sent back with for an
+// agent token bound to the approved agent (OAuth 2.1 authorization code with PKCE). Authorization requests and codes are
+// stored only as hashes, as is the client's `state`; nothing here logs anything.
 
 export class OAuthError extends Error {
   constructor(
