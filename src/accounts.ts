@@ -27,7 +27,7 @@ export interface NewToken {
 /**
  * Who a bearer token acts as: its account, whether it may only read, and whether it may do what an agent does but not
  * act as a person (POST /api/send and /api/post). Never both, and neither for a person token, which reads what a
- * read-only token reads and sends and posts only as its person.
+ * read-only token reads, sends and posts only as its person, and approves MCP clients (POST /oauth/approve).
  */
 export interface TokenAccess {
   account: AccountId;

@@ -866,8 +866,8 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
   };
 
   /**
-   * POST /oauth/approve: `{ request, state, agent }` from the approval page, with a full token of the account the
-   * client's agent is made or found in. Answers `{ location }`, the redirect URI with the code, or 400 with the reason.
+   * POST /oauth/approve: `{ request, state, agent }` from the approval page, with a full or person token of the account
+   * the client's agent is made or found in. Answers `{ location }`, the redirect URI with the code, or 400 with the reason.
    */
   const oauthApprove = (req: IncomingMessage, res: ServerResponse, account: AccountId) =>
     withOAuthBody(req, res, (text) => {
@@ -953,10 +953,11 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
       return reply(res, 401, "Unauthorized", { "WWW-Authenticate": oauth ? oauth.challenge : "Bearer" });
     }
     const { account } = access;
-    // Only a full token approves a client: an agent, read-only or person token is refused before a slot is taken or a body read.
+    // A full or person token approves a client, into its own account: an agent or read-only token is refused before a slot is
+    // taken or a body read.
     if (oauth && path === "/oauth/approve") {
-      if (access.agentOnly || access.readOnly || access.person) {
-        return reply(res, 403, "Only a full token can approve a client", { Connection: "close" });
+      if (access.agentOnly || access.readOnly) {
+        return reply(res, 403, "Only a full or person token can approve a client", { Connection: "close" });
       }
       return oauthApprove(req, res, account);
     }
@@ -979,8 +980,8 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
     if (path === "/api/webhook-deliveries") return apiWebhookDeliveries(req, res, account);
     // A read-only token reaches the read-only endpoints above and nothing else: /mcp can write, and so can any path added later.
     if (access.readOnly) return reply(res, 403, "This token is read-only");
-    // A person token also sends and posts, only as its person (checked by row once the body is read), and reaches
-    // nothing else: not /mcp, /wait or a delete, nor any path added later. It is refused before a slot is taken or a body read.
+    // A person token also sends and posts, only as its person (checked by row once the body is read), approves clients
+    // (above), and reaches nothing else: not /mcp, /wait or a delete, nor any path added later. It is refused before a slot is taken or a body read.
     if (access.person && path !== "/api/send" && path !== "/api/post") {
       return reply(res, 403, "A person token only reads, sends and posts", { Connection: "close" });
     }
