@@ -250,7 +250,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 #people-list, #invites-title { flex: 1 1 100%; }
 #people-list { display: flex; flex-direction: column; gap: var(--s2); }
 #people-rows li { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2); padding: var(--s1) 0; border-bottom: 1px solid var(--border); }
-#people-rows li > .from { flex: 1 1 8rem; min-width: 0; overflow-wrap: anywhere; font-weight: 600; }
+#people-rows li > .from { flex: 1 1 4rem; min-width: 0; overflow-wrap: anywhere; font-weight: 600; }
 #remove-confirm { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2); }
 #remove-text { flex: 1 1 100%; margin: 0; }
 .entry.invite { grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "from cancel" "time cancel" "body cancel"; }
