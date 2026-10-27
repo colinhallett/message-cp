@@ -16,7 +16,7 @@ import { WebhookError, addWebhook, formatOn, listWebhooks, removeWebhook, webhoo
 const USAGE = {
   serve: "message-cp serve [--host <address>] [--port <port>] [--public-url <url>]",
   wait: "message-cp wait <name>",
-  account: "message-cp account add <name> | message-cp account list | message-cp token add <account> [--read-only | --agent-only] | message-cp token list | message-cp token revoke <token id>",
+  account: "message-cp account add <name> | message-cp account list | message-cp token add <account> [--read-only | --agent-only | --person <name>] | message-cp token list | message-cp token revoke <token id>",
   webhook: "message-cp webhook add --url <url> --on <#channel | mention:<agent> | agent:<agent>> [--account <name>] [--no-text] [--header-stdin] [--max-per-hour <n>] [--body <json>] | message-cp webhook list [--account <name>] | message-cp webhook remove <webhook id>",
   person: "message-cp person add <name> [--account <name>] | message-cp person remove <name> [--account <name>] | message-cp person list [--account <name>]",
   agent: "message-cp agent list [--account <name>] | message-cp agent remove <name> [--account <name>] | message-cp agent key reset <name> [--account <name>]",
@@ -108,16 +108,18 @@ if (command === "serve") {
     process.exit(2);
   };
   const [action, arg, extra, ...more] = rest;
-  // Only `token add <account>` takes a flag: --read-only, for a token that can only read, or --agent-only, for one that
-  // cannot act as a person.
+  // Only `token add <account>` takes a flag: --read-only, for a token that can only read, --agent-only, for one that
+  // cannot act as a person, or --person <name>, for one that sends and posts only as that person.
   const tokenAdd = command === "token" && action === "add";
   const readOnly = tokenAdd && extra === "--read-only";
   const agentOnly = tokenAdd && extra === "--agent-only";
-  if ((extra !== undefined && !readOnly && !agentOnly) || more.length > 0) usage();
+  const person = tokenAdd && extra === "--person" ? more.shift() : undefined;
+  if ((extra !== undefined && !readOnly && !agentOnly && (person === undefined || person.startsWith("--"))) || more.length > 0) usage();
   const db = openDb();
   const printToken = (t: NewToken) => {
-    const kind = t.readOnly ? "read-only token" : t.agentOnly ? "agent token" : "token";
-    console.error(`message-cp: ${kind} ${t.id} for account '${t.account}'. It is shown only now; keep it.`);
+    const kind = t.readOnly ? "read-only token" : t.agentOnly ? "agent token" : t.person ? "person token" : "token";
+    const person = t.person ? `, sending and posting only as '${t.person}'` : "";
+    console.error(`message-cp: ${kind} ${t.id} for account '${t.account}'${person}. It is shown only now; keep it.`);
     console.log(t.token);
   };
   try {
@@ -127,7 +129,7 @@ if (command === "serve") {
         console.log(`${a.name}\tcreated ${a.createdAt}\ttokens: ${a.tokenIds.length ? a.tokenIds.join(", ") : "none"}`);
       }
     } else if (command === "token" && action === "add" && arg && !arg.startsWith("--")) {
-      printToken(addToken(db, arg, readOnly, agentOnly));
+      printToken(addToken(db, arg, readOnly, agentOnly, undefined, person));
     } else if (command === "token" && action === "list" && arg === undefined) {
       for (const t of listTokens(db)) console.log(`${t.id}\t${t.account}\t${t.kind}\tcreated ${t.createdAt}`);
     } else if (command === "token" && action === "revoke" && arg) {

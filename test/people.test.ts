@@ -6,10 +6,11 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { addAccount, listAccounts } from "../src/accounts.js";
+import { accountForToken, addAccount, addToken, listAccounts } from "../src/accounts.js";
 import {
   PersonError,
   ToolError,
+  WrongPersonError,
   purgeAgent,
   addPerson,
   getAgent,
@@ -303,6 +304,22 @@ describe("removePerson", () => {
     const again = await agent("colin");
     expect((await call(again.client, "read_inbox", { unread_only: false })).json).toEqual([]);
     expect(getAgent(db, OWNER_ACCOUNT, "colin")).toMatchObject({ person: false });
+  });
+
+  it("leaves a person token unable to send or post as the removed person or a new person of the same name", () => {
+    addPerson(db, "owner", "colin");
+    const token = addToken(db, "owner", false, false, undefined, "colin");
+    const access = accountForToken(db, token.token, "owner-token")!;
+    expect(access.person?.name).toBe("colin");
+    removePerson(db, "owner", "colin");
+    expect(accountForToken(db, token.token, "owner-token")).toBeUndefined();
+    addPerson(db, "owner", "colin");
+    expect(accountForToken(db, token.token, "owner-token")).toBeUndefined();
+    // Even holding the removed row's id, a send or post finds the new colin is another row, and stores nothing.
+    expect(() => sendAsPerson(db, OWNER_ACCOUNT, "colin", "all", "hi", access.person!.id)).toThrow(WrongPersonError);
+    expect(() => postAsPerson(db, OWNER_ACCOUNT, "colin", "general", "hi", access.person!.id)).toThrow(WrongPersonError);
+    expect(db.prepare("SELECT COUNT(*) FROM messages WHERE body = 'hi'").pluck().get()).toBe(0);
+    expect(db.prepare("SELECT COUNT(*) FROM channel_posts WHERE body = 'hi'").pluck().get()).toBe(0);
   });
 
   it("refuses an agent, an unknown name, a removed person and an unknown account, and changes nothing", async () => {

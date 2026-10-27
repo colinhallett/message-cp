@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { addAccount, addToken, listAccounts, revokeToken } from "../src/accounts.js";
-import { STATUS_TTL_MS, addPerson, identityOf, registerAgent, removeAgent, setStatus } from "../src/agents.js";
+import { STATUS_TTL_MS, addPerson, identityOf, registerAgent, removeAgent, removePerson, setStatus } from "../src/agents.js";
 import { joinChannel, leaveChannel, post, readChannel, type Member } from "../src/channels.js";
 import { OWNER_ACCOUNT, openDb, type AccountId, type Db } from "../src/db.js";
 import { startHttp, type HttpServer } from "../src/http.js";
@@ -411,7 +411,7 @@ describe("message-cp token add", () => {
     ]) {
       const res = cli(...args);
       expect(res.status).toBe(2);
-      expect(res.stderr).toContain("[--read-only | --agent-only]");
+      expect(res.stderr).toContain("[--read-only | --agent-only | --person <name>]");
     }
   }, 30_000);
 
@@ -444,11 +444,67 @@ describe("message-cp token add", () => {
       const res = cli(...args);
       expect(res.status, args.join(" ")).toBe(2);
       expect(res.stdout).toBe("");
-      expect(res.stderr).toContain("[--read-only | --agent-only]");
+      expect(res.stderr).toContain("[--read-only | --agent-only | --person <name>]");
     }
     expect(tokens()).toBe(before);
     expect(listAccounts(db).map((a) => a.name)).toEqual(["owner", "friend"]);
   }, 30_000);
+
+  it("prints a person token with --person, which sends as that person only", async () => {
+    addPerson(db, "friend", "maria");
+    addPerson(db, "friend", "dana");
+    const res = cli("token", "add", "friend", "--person", "Maria");
+    expect(res.status).toBe(0);
+    expect(res.stderr).toContain("person token");
+    expect(res.stderr).toContain("only as 'maria'");
+    const token = res.stdout.trim();
+    expect(token).toMatch(/^[0-9a-f]{64}$/);
+    expect(res.stderr).not.toContain(token);
+    expect((await agents(token)).status).toBe(200);
+    expect(await initialize(token)).toHaveProperty("status", 403);
+    const as = (name: string) =>
+      fetch(`${base()}/api/send`, { method: "POST", headers: auth(token), body: JSON.stringify({ as: name, to: "all", body: "hi" }) });
+    expect((await as("maria")).status).toBe(200);
+    expect((await as("dana")).status).toBe(403);
+  }, 30_000);
+
+  it("refuses --person for an agent, an unknown or removed person or account, with another flag or without a name, making nothing", () => {
+    addPerson(db, "friend", "maria");
+    addPerson(db, "friend", "gone");
+    removePerson(db, "friend", "gone");
+    registerAgent(db, listAccounts(db)[1].id, "bob", "x");
+    const tokens = () => db.prepare("SELECT COUNT(*) FROM tokens").pluck().get();
+    const before = tokens();
+    for (const args of [
+      ["token", "add", "friend", "--person", "bob"],
+      ["token", "add", "friend", "--person", "nobody"],
+      ["token", "add", "friend", "--person", "gone"],
+      ["token", "add", "nobody", "--person", "maria"],
+    ]) {
+      const res = cli(...args);
+      expect(res.status, args.join(" ")).toBe(1);
+      expect(res.stdout).toBe("");
+      expect(res.stderr).toMatch(/^message-cp: No (person|account) named/);
+    }
+    for (const args of [
+      ["token", "add", "friend", "--person"],
+      ["token", "add", "friend", "--person", "--read-only"],
+      ["token", "add", "friend", "--person", "maria", "--read-only"],
+      ["token", "add", "friend", "--person", "maria", "--agent-only"],
+      ["token", "add", "friend", "--read-only", "--person", "maria"],
+      ["token", "add", "friend", "--agent-only", "--person", "maria"],
+      ["token", "add", "friend", "--person", "maria", "extra"],
+      ["token", "add", "--person", "maria"],
+      ["account", "add", "x", "--person", "maria"],
+      ["token", "list", "--person", "maria"],
+    ]) {
+      const res = cli(...args);
+      expect(res.status, args.join(" ")).toBe(2);
+      expect(res.stdout).toBe("");
+      expect(res.stderr).toContain("[--read-only | --agent-only | --person <name>]");
+    }
+    expect(tokens()).toBe(before);
+  }, 60_000);
 });
 
 describe("message-cp token list", () => {
@@ -461,6 +517,8 @@ describe("message-cp token list", () => {
 
   it("prints one line per working token with its id, account, kind and creation time, and never a token or hash", () => {
     const agent = addToken(db, "owner", false, true);
+    addPerson(db, "owner", "maria");
+    const person = addToken(db, "owner", false, false, undefined, "maria");
     const gone = addToken(db, "friend");
     revokeToken(db, gone.id);
     const res = cli("token", "list");
@@ -472,10 +530,11 @@ describe("message-cp token list", () => {
       `${ids[1]}\tfriend\tread-only\tcreated`,
       `${ids[2]}\towner\tread-only\tcreated`,
       `${agent.id}\towner\tagent\tcreated`,
+      `${person.id}\towner\tperson\tcreated`,
     ]);
     for (const l of lines) expect(l).toMatch(/\tcreated \d{4}-\d\d-\d\dT[\d:.]+Z$/);
     const out = res.stdout + res.stderr;
-    for (const secret of [friendToken, friendViewer, ownerViewer, agent.token, gone.token, OWNER_TOKEN]) expect(out).not.toContain(secret);
+    for (const secret of [friendToken, friendViewer, ownerViewer, agent.token, person.token, gone.token, OWNER_TOKEN]) expect(out).not.toContain(secret);
     expect(out).not.toMatch(/[0-9a-f]{64}/);
     expect(cli("token", "list", "extra").status).toBe(2);
   }, 30_000);

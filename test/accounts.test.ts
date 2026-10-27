@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { AccountError, accountForToken, addAccount, addToken, listAccounts, listTokens, revokeToken } from "../src/accounts.js";
+import { addPerson, registerAgent, removePerson } from "../src/agents.js";
 import { OWNER_ACCOUNT, openDb, type Db } from "../src/db.js";
 import { startHttp, type HttpServer } from "../src/http.js";
 
@@ -246,9 +247,46 @@ describe("account and token management", () => {
     expect(accountForToken(db, "nope", OWNER_TOKEN)).toBeUndefined();
   });
 
+  it("makes a person token for a live person of the account, which an older server reads as read-only", () => {
+    addPerson(db, "friend", "maria");
+    const friend = listAccounts(db)[1].id;
+    const maria = db.prepare("SELECT id FROM agents WHERE account_id = ? AND name = 'maria'").pluck().get(friend) as number;
+    const t = addToken(db, "friend", false, false, undefined, "MARIA");
+    expect(t).toMatchObject({ account: "friend", readOnly: false, agentOnly: false, person: "maria" });
+    expect(accountForToken(db, t.token, OWNER_TOKEN)).toEqual({ account: friend, readOnly: false, agentOnly: false, person: { id: maria, name: "maria" } });
+    // A server from before person tokens reads only read_only, agent_only and agent_id, and so sees a read-only token.
+    expect(db.prepare("SELECT read_only, agent_only, agent_id FROM tokens WHERE id = ?").get(t.id)).toEqual({ read_only: 1, agent_only: 0, agent_id: null });
+  });
+
+  it("refuses a person token for an agent, an unknown, removed or other account's person, or with another kind, making nothing", () => {
+    addPerson(db, "owner", "maria");
+    addPerson(db, "friend", "gone");
+    removePerson(db, "friend", "gone");
+    registerAgent(db, listAccounts(db)[1].id, "bob", "x");
+    const count = () => db.prepare("SELECT COUNT(*) FROM tokens").pluck().get();
+    const before = count();
+    for (const [account, person] of [["friend", "bob"], ["friend", "nobody"], ["friend", "gone"], ["friend", "maria"], ["nobody", "maria"]]) {
+      expect(() => addToken(db, account, false, false, undefined, person), `${account} ${person}`).toThrow(AccountError);
+    }
+    expect(() => addToken(db, "owner", true, false, undefined, "maria")).toThrow(AccountError);
+    expect(() => addToken(db, "owner", false, true, undefined, "maria")).toThrow(AccountError);
+    expect(count()).toBe(before);
+  });
+
+  it("stops resolving a person token once its person is removed, even when the name is added again", () => {
+    addPerson(db, "friend", "maria");
+    const t = addToken(db, "friend", false, false, undefined, "maria");
+    removePerson(db, "friend", "maria");
+    expect(accountForToken(db, t.token, OWNER_TOKEN)).toBeUndefined();
+    addPerson(db, "friend", "maria");
+    expect(accountForToken(db, t.token, OWNER_TOKEN)).toBeUndefined();
+  });
+
   it("lists every working token with its id, account, kind and creation time, and never a token or hash", () => {
     const viewer = addToken(db, "friend", true);
     const agent = addToken(db, "owner", false, true);
+    addPerson(db, "owner", "maria");
+    const person = addToken(db, "owner", false, false, undefined, "maria");
     const gone = addToken(db, "owner");
     revokeToken(db, gone.id);
     const first = listAccounts(db)[1].tokenIds[0];
@@ -257,10 +295,11 @@ describe("account and token management", () => {
       { id: first, account: "friend", kind: "full", createdAt: expect.any(String) },
       { id: viewer.id, account: "friend", kind: "read-only", createdAt: expect.any(String) },
       { id: agent.id, account: "owner", kind: "agent", createdAt: expect.any(String) },
+      { id: person.id, account: "owner", kind: "person", createdAt: expect.any(String) },
     ]);
     for (const t of listed) expect(new Date(t.createdAt).toISOString()).toBe(t.createdAt);
     const text = JSON.stringify(listed);
-    for (const secret of [friendToken, viewer.token, agent.token, gone.token]) expect(text).not.toContain(secret);
+    for (const secret of [friendToken, viewer.token, agent.token, person.token, gone.token]) expect(text).not.toContain(secret);
     expect(text).not.toMatch(/[0-9a-f]{64}/);
   });
 });

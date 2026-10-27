@@ -194,6 +194,19 @@ export function identityOf(db: Db, account: AccountId, name: string): Identity |
   return row && toIdentity(row);
 }
 
+/** Thrown, with nothing stored, when a person token sends or posts as anyone but its own person. */
+export class WrongPersonError extends Error {}
+
+/**
+ * The account's live person `name`, as `personOf` finds them. With `only`, the row id of a person token's person, any
+ * other row, or none, throws `WrongPersonError`: compared by row, so a removed person's name taken again is not theirs.
+ */
+export function actingPerson(db: Db, account: AccountId, name: string, only?: number): { id: number; name: string } | undefined {
+  const person = personOf(db, account, name);
+  if (only !== undefined && person?.id !== only) throw new WrongPersonError("This token sends and posts only as its own person");
+  return person;
+}
+
 /**
  * The row id and stored name of the account's live person `name` (any case), or undefined for an agent, a removed row
  * or no row at all. Only the HTTP routes that send and post as a person use it.

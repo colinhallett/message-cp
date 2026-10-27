@@ -5,7 +5,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
 import { LATEST_PROTOCOL_VERSION, isInitializeRequest, isJSONRPCRequest, type RequestId } from "@modelcontextprotocol/sdk/types.js";
 import { accountForToken, type BoundAgent, type TokenAccess } from "./accounts.js";
-import { DEFAULT_LIST_LIMIT, MAX_LIST_LIMIT, ToolError, registerWithIdentity, type Identity } from "./agents.js";
+import { DEFAULT_LIST_LIMIT, MAX_LIST_LIMIT, ToolError, WrongPersonError, registerWithIdentity, type Identity } from "./agents.js";
 import {
   DEFAULT_CHANNEL_LIMIT,
   MAX_CHANNEL_LIMIT,
@@ -535,11 +535,12 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
 
   /**
    * GET /api/token: whether the request's token is read-only and whether it is agent-only, so the dashboard offers
-   * posting only to a full token and tells an agent token that it cannot use the page. It gives nothing else about the token: no token, hash, id or account.
+   * posting only to a full token and tells an agent token that it cannot use the page, and for a person token the
+   * person's name. It gives nothing else about the token: no token, hash, id or account.
    */
   const apiToken = (req: IncomingMessage, res: ServerResponse, access: TokenAccess) => {
     if (req.method !== "GET") return reply(res, 405, "Method not allowed", { Allow: "GET" });
-    sendJson(res, { readOnly: access.readOnly, agentOnly: access.agentOnly });
+    sendJson(res, { readOnly: access.readOnly, agentOnly: access.agentOnly, ...(access.person && { person: access.person.name }) });
   };
 
   /**
@@ -689,8 +690,8 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
   /**
    * POST /api/send and /api/post: reads a JSON object whose `fields` are all strings and answers with what `act` returns
    * for it. A slot is taken before the body is read and given back at the end, so held bodies are capped like sessions.
-   * `act` answers undefined for an `as` that is not a live person of the account, which gets 404; a tool's refusal
-   * gets 400 with its message, which never quotes the body.
+   * `act` answers undefined for an `as` that is not a live person of the account, which gets 404; a person token's
+   * `as` that is not its own person gets 403; a tool's refusal gets 400 with its message, which never quotes the body.
    */
   const asPerson = async <K extends string>(
     req: IncomingMessage,
@@ -717,6 +718,7 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
         // null for no such person, kept apart from the undefined `unlessBusy` gives once it has answered 503.
         done = unlessBusy(res, () => act(input as Record<K, string>) ?? null);
       } catch (err) {
+        if (err instanceof WrongPersonError) return reply(res, 403, err.message);
         if (err instanceof ToolError) return reply(res, 400, err.message);
         throw err;
       }
@@ -728,17 +730,20 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
     }
   };
 
-  /** POST /api/send: `{ as, to, body }`, sent as `send_message` sends it, from the account's person `as`. */
-  const apiSend = (req: IncomingMessage, res: ServerResponse, account: AccountId) =>
+  /**
+   * POST /api/send: `{ as, to, body }`, sent as `send_message` sends it, from the account's person `as`; with a person
+   * token, only from that token's person.
+   */
+  const apiSend = (req: IncomingMessage, res: ServerResponse, account: AccountId, only?: number) =>
     asPerson(req, res, ["as", "to", "body"], (m) => {
       // The stored ids are send_message's alone: this answer stays `{ delivered, recipients }`.
-      const sent = sendAsPerson(db, account, m.as, m.to, m.body);
+      const sent = sendAsPerson(db, account, m.as, m.to, m.body, only);
       return sent && { delivered: sent.delivered, recipients: sent.recipients };
     });
 
-  /** POST /api/post: `{ as, channel, body }`, posted as `post` posts it, by the account's person `as`. */
-  const apiPost = (req: IncomingMessage, res: ServerResponse, account: AccountId) =>
-    asPerson(req, res, ["as", "channel", "body"], (m) => postAsPerson(db, account, m.as, m.channel, m.body));
+  /** POST /api/post: `{ as, channel, body }`, posted as `post` posts it, by the account's person `as`; as `apiSend` limits it. */
+  const apiPost = (req: IncomingMessage, res: ServerResponse, account: AccountId, only?: number) =>
+    asPerson(req, res, ["as", "channel", "body"], (m) => postAsPerson(db, account, m.as, m.channel, m.body, only));
 
   // MCP's authorization flow, served only with a public URL, from which every address it advertises is built: as
   // `mcpEndpoint` builds /mcp, each path is set on the parsed URL, never resolved as a reference.
@@ -947,9 +952,11 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
       return reply(res, 401, "Unauthorized", { "WWW-Authenticate": oauth ? oauth.challenge : "Bearer" });
     }
     const { account } = access;
-    // Only a full token approves a client: an agent or read-only token is refused before a slot is taken or a body read.
+    // Only a full token approves a client: an agent, read-only or person token is refused before a slot is taken or a body read.
     if (oauth && path === "/oauth/approve") {
-      if (access.agentOnly || access.readOnly) return reply(res, 403, "Only a full token can approve a client", { Connection: "close" });
+      if (access.agentOnly || access.readOnly || access.person) {
+        return reply(res, 403, "Only a full token can approve a client", { Connection: "close" });
+      }
       return oauthApprove(req, res, account);
     }
     // An agent token reaches /mcp and /wait, where it reads as its agent does, and of the /api paths only GET /api/token,
@@ -971,8 +978,13 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
     if (path === "/api/webhook-deliveries") return apiWebhookDeliveries(req, res, account);
     // A read-only token reaches the read-only endpoints above and nothing else: /mcp can write, and so can any path added later.
     if (access.readOnly) return reply(res, 403, "This token is read-only");
-    if (path === "/api/send") return apiSend(req, res, account);
-    if (path === "/api/post") return apiPost(req, res, account);
+    // A person token also sends and posts, only as its person (checked by row once the body is read), and reaches
+    // nothing else: not /mcp, /wait or a delete, nor any path added later. It is refused before a slot is taken or a body read.
+    if (access.person && path !== "/api/send" && path !== "/api/post") {
+      return reply(res, 403, "A person token only reads, sends and posts", { Connection: "close" });
+    }
+    if (path === "/api/send") return apiSend(req, res, account, access.person?.id);
+    if (path === "/api/post") return apiPost(req, res, account, access.person?.id);
     if (path === "/api/conversation") return apiConversation(req, res, account);
     if (path === "/wait") return wait(req, res, account, access.agent);
     if (path !== "/mcp") return reply(res, 404, "Not found");

@@ -97,6 +97,31 @@ describe("openDb", () => {
     db.close();
   });
 
+  it("adds person tokens to a database from before them, with every existing token keeping its kind", () => {
+    const file = join(mkdtempSync(join(tmpdir(), "message-cp-")), "db.sqlite");
+    const old = new Database(file);
+    const hash = (t: string) => createHash("sha256").update(t).digest("hex");
+    old.exec(`CREATE TABLE accounts (id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE COLLATE NOCASE, created_at INTEGER NOT NULL);
+      CREATE TABLE tokens (id INTEGER PRIMARY KEY, account_id INTEGER NOT NULL REFERENCES accounts(id), hash TEXT NOT NULL UNIQUE,
+        created_at INTEGER NOT NULL, revoked_at INTEGER, read_only INTEGER NOT NULL DEFAULT 0, agent_only INTEGER NOT NULL DEFAULT 0,
+        agent_id INTEGER);
+      INSERT INTO accounts VALUES (1, 'owner', 0), (2, 'friend', 0);
+      INSERT INTO tokens VALUES (1, 2, '${hash("full-token")}', 0, NULL, 0, 0, NULL), (2, 2, '${hash("viewer-token")}', 0, NULL, 1, 0, NULL),
+        (3, 2, '${hash("agent-token")}', 0, NULL, 1, 1, NULL);`);
+    old.close();
+    const db = openDb(file);
+    expect(db.prepare("SELECT id, read_only, agent_only, person_id FROM tokens ORDER BY id").all()).toEqual([
+      { id: 1, read_only: 0, agent_only: 0, person_id: null },
+      { id: 2, read_only: 1, agent_only: 0, person_id: null },
+      { id: 3, read_only: 1, agent_only: 1, person_id: null },
+    ]);
+    expect(accountForToken(db, "full-token", "owner-token")).toEqual({ account: 2, readOnly: false, agentOnly: false });
+    expect(accountForToken(db, "viewer-token", "owner-token")).toEqual({ account: 2, readOnly: true, agentOnly: false });
+    expect(accountForToken(db, "agent-token", "owner-token")).toEqual({ account: 2, readOnly: false, agentOnly: true });
+    expect(accountForToken(db, "owner-token", "owner-token")).toEqual({ account: 1, readOnly: false, agentOnly: false });
+    db.close();
+  });
+
   it("makes no copy for a new database", () => {
     const file = join(mkdtempSync(join(tmpdir(), "message-cp-")), "db.sqlite");
     openDb(file).close();
