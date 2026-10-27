@@ -8,7 +8,7 @@ import { runInNewContext } from "node:vm";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { addAccount, addToken, listAccounts, revokeToken } from "../src/accounts.js";
 import { OWNER_ACCOUNT, openDb, type Db } from "../src/db.js";
-import { addPerson, identityOf, registerAgent, removeAgent, setStatus } from "../src/agents.js";
+import { addPerson, identityOf, registerAgent, removeAgent, removePerson, setStatus } from "../src/agents.js";
 import { joinChannel, leaveChannel, post } from "../src/channels.js";
 import { MAX_BODY_LENGTH, readInbox, sendMessage, unreadSummary } from "../src/messages.js";
 import { startHttp, type HttpServer } from "../src/http.js";
@@ -4856,6 +4856,144 @@ describe("the page's posting", () => {
       expect(page.elements["log-title"].textContent).toBe("bob ↔ colin");
       expect(page.elements["log-status"].hidden).toBe(false);
       expect(page.elements["log-status"].textContent).toBe("bob: reading Linear");
+    });
+  });
+
+  describe("with a person token", () => {
+    // maria's own token, as `message-cp token add owner --person maria` makes it, in an account where dana is a person too.
+    let maria: string;
+    const seedPeople = () => {
+      seed();
+      addPerson(db, "owner", "maria");
+      addPerson(db, "owner", "dana");
+      sendMessage(db, OWNER_ACCOUNT, "bob", "maria", "hi @maria");
+      maria = addToken(db, "owner", false, false, undefined, "maria").token;
+    };
+    const ready = async (page: Awaited<ReturnType<typeof load>>) => {
+      await page.until(
+        () => !page.elements["new-message"].hidden && page.elements["new-from"].children.length > 0 && page.elements["pair-rows"].children.length === 2,
+      );
+    };
+    const names = (select: Stub) => select.children.map((o) => o.value);
+
+    it("names the token's person in place of the picker, and posts and replies only as them", async () => {
+      seedPeople();
+      const page = await load(maria);
+      await ready(page);
+      open(page.elements["channel-rows"], "build");
+      expect(page.elements["as-box"].hidden).toBe(true);
+      expect(page.elements["as"].children).toEqual([]);
+      expect(page.elements["writer"].hidden).toBe(false);
+      expect(page.elements["as-note"].textContent).toBe("Posting as maria");
+      expect(page.elements["compose"].hidden).toBe(false);
+      expect(page.elements["compose-label"].textContent).toBe("Post in #build as maria");
+      const rows = page.elements["post-rows"];
+      await page.until(() => rows.children.length === 1);
+      page.send("from maria");
+      await page.until(() => rows.children.length === 2);
+      // A pair that is not maria's offers no compose box, and names no one.
+      open(page.elements["pair-rows"], "bob ↔ colin");
+      expect(page.elements["compose"].hidden).toBe(true);
+      expect(page.elements["as-note"].textContent).toBe("");
+      expect(page.elements["delete-pair"].hidden).toBe(true);
+      open(page.elements["pair-rows"], "bob ↔ maria");
+      expect(page.elements["as-note"].textContent).toBe("Posting as maria");
+      expect(page.elements["compose-label"].textContent).toBe("Reply to bob as maria");
+      // A person token cannot delete a conversation, so the button never shows, even in the person's own.
+      await page.poll();
+      expect(page.elements["delete-pair"].hidden).toBe(true);
+      // maria's name in a message is marked as hers.
+      const mention = page.elements["post-rows"].children[0].children
+        .find((c) => c.className === "body")!
+        .children.find((c) => c.className.startsWith("mention"))!;
+      expect(mention.className).toBe("mention me");
+      page.send("on it");
+      await page.until(() => page.posts().length === 2);
+      expect(page.posts().map((r) => [r.url, JSON.parse(r.body!)])).toEqual([
+        ["/api/post", { as: "maria", channel: "build", body: "from maria" }],
+        ["/api/send", { as: "maria", to: "bob", body: "on it" }],
+      ]);
+      await page.until(() => db.prepare("SELECT COUNT(*) AS n FROM messages WHERE body = 'on it'").get()!.n === 1);
+      expect(db.prepare("SELECT sender FROM channel_posts WHERE body = 'from maria'").all()).toEqual([{ sender: "maria" }]);
+      expect(db.prepare("SELECT sender FROM messages WHERE body = 'on it'").all()).toEqual([{ sender: "maria" }]);
+      // The name came from GET /api/token and reached the page only as text.
+      for (const stub of page.made) expect(stub.html).toEqual([]);
+    });
+
+    it("offers only the token's person, already chosen, under From in New message and New channel", async () => {
+      seedPeople();
+      const page = await load(maria);
+      await ready(page);
+      page.elements["new-message"].on.click();
+      expect(names(page.elements["new-from"])).toEqual(["maria"]);
+      expect(page.elements["new-from"].value).toBe("maria");
+      // Choosing another by hand opens nothing.
+      page.elements["new-from"].value = "dana";
+      page.elements["new-to"].value = "bob";
+      page.elements["new-form"].on.submit({ preventDefault() {} });
+      expect(page.elements["log"].hidden).toBe(true);
+      page.elements["new-from"].value = "maria";
+      page.elements["new-from"].on.change();
+      page.elements["new-to"].value = "dana";
+      page.elements["new-form"].on.submit({ preventDefault() {} });
+      expect(page.elements["log-title"].textContent).toBe("dana ↔ maria");
+      expect(page.elements["compose-label"].textContent).toBe("Reply to dana as maria");
+      page.elements["new-channel"].on.click();
+      expect(names(page.elements["channel-from"])).toEqual(["maria"]);
+      expect(page.elements["channel-from"].value).toBe("maria");
+      page.elements["channel-name"].value = "launch";
+      page.elements["channel-body"].value = "first";
+      page.elements["channel-form"].on.submit({ preventDefault() {} });
+      await page.until(() => page.elements["log-title"].textContent === "launch");
+      expect(page.posts().map((r) => JSON.parse(r.body!))).toEqual([{ as: "maria", channel: "launch", body: "first" }]);
+      expect(page.elements["as-note"].textContent).toBe("Posting as maria");
+    });
+
+    it("posts as no one once the person is removed, and asks for another token when the server refuses this one", async () => {
+      seedPeople();
+      const page = await load(maria);
+      await ready(page);
+      open(page.elements["channel-rows"], "build");
+      expect(page.elements["compose"].hidden).toBe(false);
+      await page.until(() => page.elements["post-rows"].children.length === 1 && page.scheduled());
+      removePerson(db, "owner", "maria");
+      // A person token whose person GET /api/agents no longer lists posts as no one. (The server refuses a removed
+      // person's token everywhere, so this page reads with the full token and is told it holds maria's.)
+      const unlisted = await load(OWNER_TOKEN, (url) =>
+        url === "/api/token" ? { status: 200, body: '{"readOnly":false,"agentOnly":false,"person":"maria"}' } : undefined,
+      );
+      await unlisted.until(() => unlisted.elements["channel-rows"].children.length === 1 && !unlisted.elements["new-message"].hidden);
+      open(unlisted.elements["channel-rows"], "build");
+      expect(unlisted.elements["compose"].hidden).toBe(true);
+      expect(unlisted.elements["as-box"].hidden).toBe(true);
+      expect(unlisted.elements["as-note"].textContent).toBe("");
+      unlisted.elements["new-message"].on.click();
+      expect(unlisted.elements["new-note"].textContent).toBe("maria is no longer a person in this account.");
+      expect(unlisted.elements["new-fields"].hidden).toBe(true);
+      unlisted.send("should not go");
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(unlisted.posts()).toEqual([]);
+      // The real server refuses the token of a removed person, and the page forgets it and its person.
+      await page.poll();
+      await page.until(() => page.elements["status-line"].textContent === "The server refused that token. Enter another.");
+      expect(page.store.has("message-cp-token")).toBe(false);
+      expect(page.elements["compose"].hidden).toBe(true);
+      expect(page.elements["as-note"].textContent).toBe("");
+      expect(page.elements["new-message"].hidden).toBe(true);
+    });
+
+    it("keeps the choice of every person for a full token", async () => {
+      seedPeople();
+      const page = await load(OWNER_TOKEN);
+      await page.until(() => page.picker().length === 3 && page.elements["pair-rows"].children.length === 2);
+      expect(page.picker()).toEqual(["colin", "dana", "maria"]);
+      open(page.elements["channel-rows"], "build");
+      expect(page.elements["as-box"].hidden).toBe(false);
+      expect(page.elements["as-note"].textContent).toBe("");
+      page.elements["new-message"].on.click();
+      expect(names(page.elements["new-from"])).toEqual(["", "colin", "dana", "maria"]);
+      open(page.elements["pair-rows"], "bob ↔ maria");
+      await page.until(() => !page.elements["delete-pair"].hidden);
     });
   });
 
