@@ -546,7 +546,7 @@ describe("the page's channels and messages", () => {
     registerAgent(db, OWNER_ACCOUNT, "bob", "x");
     sendMessage(db, OWNER_ACCOUNT, "bob", "bob", "private <b>note</b>");
     const page = await load(agentToken);
-    const said = "That is an agent token, and agent tokens cannot use the dashboard. Enter a full or read-only token.";
+    const said = "That is an agent token, and agent tokens cannot use the dashboard. Enter a full, read-only or person token.";
     await page.until(() => page.elements["status-line"].textContent === said);
     expect(page.store.size).toBe(0);
     expect(page.elements["login"].hidden).toBe(false);
@@ -4941,8 +4941,14 @@ describe("the page's posting", () => {
       page.elements["new-channel"].on.click();
       expect(names(page.elements["channel-from"])).toEqual(["maria"]);
       expect(page.elements["channel-from"].value).toBe("maria");
+      // Another person set by hand under From is refused before anything is sent.
+      page.elements["channel-from"].value = "dana";
       page.elements["channel-name"].value = "launch";
       page.elements["channel-body"].value = "first";
+      page.elements["channel-form"].on.submit({ preventDefault() {} });
+      expect(page.elements["channel-note"].textContent).toBe("Choose who you are under From.");
+      expect(page.posts()).toEqual([]);
+      page.elements["channel-from"].value = "maria";
       page.elements["channel-form"].on.submit({ preventDefault() {} });
       await page.until(() => page.elements["log-title"].textContent === "launch");
       expect(page.posts().map((r) => JSON.parse(r.body!))).toEqual([{ as: "maria", channel: "launch", body: "first" }]);

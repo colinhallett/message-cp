@@ -15,9 +15,9 @@ import { MAX_BODY_LENGTH } from "./messages.js";
 // start one with anyone in the account from "New message", with POST /api/send, or create a channel from "New channel" by
 // its first post, with POST /api/post, and delete an open direct conversation, after confirming, with
 // DELETE /api/conversation; that is all it ever writes. With a person token it is that person: it names them in place of
-// the choice and does the same, except deleting, only as them. With a read-only token it only reads. An agent token, which the server refuses on every /api path but GET /api/token, it
-// forgets, saying that agent tokens cannot use it. It puts agent- and person-supplied text on the page with textContent, never
-// as HTML.
+// the choice and does the same, except deleting, only as them. With a read-only token it only reads. An agent token,
+// which the server refuses on every /api path but GET /api/token, it forgets, saying that agent tokens cannot use it. It
+// puts agent- and person-supplied text on the page with textContent, never as HTML.
 
 // The faces the page's CSS uses, each served at /fonts/<file> by `message-cp serve` from the package that ships it, so the
 // page loads no font from another host. Read once here, never on a request.
@@ -859,7 +859,7 @@ function start() {
 // a person, as that person only, with no picker. A read-only token, a failure or an answer this page cannot read leaves
 // the page read-only. An agent token, which the server refuses on every other /api path, is forgotten and another asked
 // for.
-const AGENT_TOKEN = "That is an agent token, and agent tokens cannot use the dashboard. Enter a full or read-only token.";
+const AGENT_TOKEN = "That is an agent token, and agent tokens cannot use the dashboard. Enter a full, read-only or person token.";
 async function checkToken() {
   const token = sessionStorage.getItem(KEY);
   if (!token) return;
@@ -911,8 +911,8 @@ function senders() {
 }
 
 // What the "New message" and "New channel" forms say when there is no one to send as.
-function noSenders(none) {
-  return me !== undefined ? me + " is no longer a person in this account." : none;
+function noSenders(fallback) {
+  return me !== undefined ? me + " is no longer a person in this account." : fallback;
 }
 
 // Shows the "New message" and "New channel" buttons only with a token that may post, and closes their forms without one.
@@ -963,9 +963,11 @@ function closeNew(refocus) {
 }
 
 // Builds the "New message" form's selects from the last GET /api/agents: From lists the account's people (with a person
-// token, only its person, already chosen, as senders gives them), and To its agents and people, each person marked as one, without "all" or the From name, compared without case. Each select
-// keeps its choice while that name is still listed, and is rebuilt only when its list changes. When the chosen name
-// goes, the select falls back to its empty first option rather than another name, so a refresh never retargets it.
+// token, only its person, already chosen, as senders gives them), and To its agents and people, each person marked as
+// one, without "all" or the From name, compared without case. Each select keeps its choice while that name is still
+// listed, and is rebuilt only when its list changes. When the chosen name goes, the select falls back to its empty first
+// option (with a person token, its form says the person is gone) rather than another name, so a refresh never retargets
+// it.
 function fillNew() {
   const listed = senders();
   const known = listed ?? [];
@@ -1041,8 +1043,8 @@ function fillChannel() {
   }
 }
 
-// A From select's options: the empty "Choose a person" and then known, or, with a person token, only its person, so
-// there is nothing else to choose.
+// A From select's options: the empty "Choose a person" and then known, or, with a person token whose person is listed,
+// only that person, so there is nothing else to choose.
 function fromOptions(known) {
   const options = known.map((name) => {
     const option = document.createElement("option");
@@ -1050,7 +1052,7 @@ function fromOptions(known) {
     option.textContent = name;
     return option;
   });
-  return me !== undefined ? options : [choose("Choose a person"), ...options];
+  return me !== undefined && known.length > 0 ? options : [choose("Choose a person"), ...options];
 }
 
 // Why the "New channel" form cannot create a channel from what it holds, or undefined if it can.
