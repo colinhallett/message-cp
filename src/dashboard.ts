@@ -255,6 +255,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 #remove-text { flex: 1 1 100%; margin: 0; }
 .entry.invite { grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "from cancel" "time cancel" "body cancel"; }
 .entry.invite > button { grid-area: cancel; align-self: center; }
+.entry.approval > .agents { grid-column: 1 / -1; overflow-wrap: anywhere; }
 .delivery.failed .tag { color: var(--error); background: var(--error-bg); }
 .item { display: flex; align-items: center; gap: var(--s2); text-align: left; background: none; border: 0; border-radius: var(--radius); padding: var(--s1) var(--s2); margin: 1px var(--s2); width: calc(100% - 2 * var(--s2)); }
 .item.current { background: var(--active); font-weight: 600; box-shadow: inset 3px 0 0 var(--accent); }
@@ -563,8 +564,9 @@ const NO_MESSAGES_FULL = ' You can also start one from "New message" above.';
 const NO_DELIVERIES =
   "No webhook deliveries yet: add a webhook on the server with message-cp webhook add --url <url> --on <#channel | mention:<agent> | agent:<agent>>, and its deliveries show here once it fires.";
 const NO_APPROVALS =
-  "No approved clients yet: a client approved as one named agent appears here once it connects through the server's " +
-  "authorization flow (serve --public-url), and its token is revoked on the server with message-cp token revoke <id>.";
+  "No approved clients yet: a client approved as one named agent, or as one that registers its own agents, appears here " +
+  "once it connects through the server's authorization flow (serve --public-url), and its token is revoked on the server " +
+  "with message-cp token revoke <id>.";
 // The note showChannels put in an empty channel list, or undefined, so showNewButton can make it follow canPost.
 let noChannels;
 // The tokenGeneration a "New channel" post is in flight for, or undefined, as sending is for the compose box.
@@ -2449,7 +2451,8 @@ async function readDeliveries(token, signal, gen) {
 }
 
 // Reads the newest PAGE approvals and replaces the ones the log holds, as readDeliveries does: they come newest first, and
-// one goes when its token is revoked or its agent removed. Any failure but a refused token goes in the log's note.
+// one goes when its token is revoked or, for a single-agent approval, its agent removed. Any failure but a refused token
+// goes in the log's note.
 async function readApprovals(token, signal, gen) {
   let page;
   try {
@@ -3103,15 +3106,19 @@ function showApprovalEntry() {
 }
 
 // An approval: its agent, the token's id, which message-cp token revoke takes, when it was issued, and the client (its
-// name, else its metadata host, else "unnamed client"). The client chose its name, so it goes in with textContent and,
-// as token list prints it, with control and format characters (a newline, a direction override) replaced, so it cannot
-// pass for another token's id; the id has its own element. Never a token, hash, code or redirect URI, which
-// GET /api/approvals does not give. Throws on an entry that is not an approval as GET /api/approvals gives one, so
-// readApprovals shows the answer as unreadable.
+// name, else its metadata host, else "unnamed client"). One that registers its own agents says so in the agent's place
+// and lists the agents it registered, or says it has registered none yet. The client chose its name, so it goes in with
+// textContent and, as token list prints it, with control and format characters (a newline, a direction override)
+// replaced, so it cannot pass for another token's id; the id has its own element. Agent names go in with textContent
+// too. Never a token, hash, code or redirect URI, which GET /api/approvals does not give. Throws on an entry that is
+// neither shape GET /api/approvals gives, so readApprovals shows the answer as unreadable.
 function approvalRow(a) {
+  const single = a && a.registers === false && typeof a.agent === "string" && a.agents === undefined;
+  const registering =
+    a && a.registers === true && a.agent === null && Array.isArray(a.agents) && a.agents.every((n) => typeof n === "string");
   if (
+    !(single || registering) ||
     !Number.isInteger(a.id) ||
-    typeof a.agent !== "string" ||
     !(a.clientName === null || typeof a.clientName === "string") ||
     !(a.clientHost === null || typeof a.clientHost === "string") ||
     typeof a.issuedAt !== "string"
@@ -3123,7 +3130,11 @@ function approvalRow(a) {
   const time = part("time", "time", "issued " + when(a.issuedAt));
   time.title = a.issuedAt;
   const client = (a.clientName || a.clientHost || "unnamed client").replace(/[\\p{Cc}\\p{Cf}]/gu, "\\uFFFD");
-  li.append(part("span", "from", a.agent), part("span", "tag", "token " + a.id), time, part("div", "body", client));
+  const who = single ? a.agent : "registers its own agents";
+  li.append(part("span", "from", who), part("span", "tag", "token " + a.id), time, part("div", "body", client));
+  if (registering) {
+    li.append(part("div", "agents", a.agents.length > 0 ? "agents: " + a.agents.join(", ") : "has registered no agents yet"));
+  }
   return li;
 }
 

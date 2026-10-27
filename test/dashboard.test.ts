@@ -9,7 +9,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { accountForToken, addAccount, addToken, listAccounts, recordClient, revokeToken } from "../src/accounts.js";
 import { cancelInvite, makeInvite, makeLoginCode, redeemLoginCode } from "../src/login.js";
 import { OWNER_ACCOUNT, openDb, type Db } from "../src/db.js";
-import { addPerson, identityOf, registerAgent, removeAgent, removePerson, setPersonAdmin, setStatus } from "../src/agents.js";
+import { addPerson, identityOf, registerAgent, registerWithIdentity, removeAgent, removePerson, setPersonAdmin, setStatus } from "../src/agents.js";
 import { joinChannel, leaveChannel, post } from "../src/channels.js";
 import { MAX_BODY_LENGTH, readInbox, sendMessage, unreadSummary } from "../src/messages.js";
 import { startHttp, type HttpServer } from "../src/http.js";
@@ -46,7 +46,7 @@ const NO_DELIVERIES =
   "No webhook deliveries yet: add a webhook on the server with message-cp webhook add --url <url> --on <#channel | mention:<agent> | agent:<agent>>, and its deliveries show here once it fires.";
 const NO_INVITES = "No unused invites. One is listed here from when it is made until it is used, cancelled or expires.";
 const NO_APPROVALS =
-  "No approved clients yet: a client approved as one named agent appears here once it connects through the server's authorization flow (serve --public-url), and its token is revoked on the server with message-cp token revoke <id>.";
+  "No approved clients yet: a client approved as one named agent, or as one that registers its own agents, appears here once it connects through the server's authorization flow (serve --public-url), and its token is revoked on the server with message-cp token revoke <id>.";
 
 const base = () => `http://127.0.0.1:${http.port}`;
 
@@ -3317,6 +3317,8 @@ describe("the page's approved clients", () => {
   };
   // An approval row's agent, token id, issue time and client.
   const approval = (row: Stub) => [field(row, "from"), field(row, "tag"), field(row, "time"), field(row, "body")];
+  // An approval row's line of registered agents, undefined for a single-agent approval's.
+  const registered = (row: Stub) => field(row, "agents");
 
   // An approval as the OAuth code exchange records it: an agent token bound to the agent, with its client.
   const approve = (account: string, agent: string, client: { name: string | null; host: string | null }) => {
@@ -3326,14 +3328,23 @@ describe("the page's approved clients", () => {
     recordClient(db, issued.id, client);
     return issued;
   };
+  // An approval of a client that registers its own agents: an agent token bound to no agent, with its client.
+  const approveRegistering = (account: string, client: { name: string | null; host: string | null }) => {
+    const issued = addToken(db, account, false, true, undefined, undefined, true);
+    recordClient(db, issued.id, client);
+    return issued;
+  };
   const issued = (id: number) => new Date(db.prepare("SELECT created_at FROM tokens WHERE id = ?").pluck().get(id) as number).toLocaleString();
 
   // Runs the served script with the given token, as the webhook deliveries tests do. refuse, when it returns a status,
   // answers a request with that status; "hang" answers only by failing when it is aborted, "fail" rejects, "junk"
   // answers 200 with a body this page cannot read, "nulls" a list it cannot read, "unnamed" an approval whose
-  // clientName is missing, "numbered" one whose agent is a number, and "held" waits for release() to answer as the
-  // server does.
-  type Refusal = number | "hang" | "fail" | "junk" | "nulls" | "unnamed" | "numbered" | "held";
+  // clientName is missing, "numbered" one whose agent is a number, "unflagged" a single-agent one without registers,
+  // "listing" a single-agent one with agents, "bound" a registering one with an agent, "unlisted" a registering one
+  // without agents, "mixed" a registering one whose agents include a number, and "held" waits for release() to answer
+  // as the server does.
+  type Odd = "unnamed" | "numbered" | "unflagged" | "listing" | "bound" | "unlisted" | "mixed";
+  type Refusal = number | "hang" | "fail" | "junk" | "nulls" | Odd | "held";
   async function load(token: string, refuse: (url: string) => Refusal | undefined = () => undefined) {
     const html = await (await fetch(`${base()}/`)).text();
     const script = /<script>([\s\S]*?)<\/script>/.exec(html)![1];
@@ -3361,9 +3372,18 @@ describe("the page's approved clients", () => {
         if (status === "fail") return Promise.reject(new TypeError("fetch failed"));
         if (status === "junk") return Promise.resolve(new Response("{", { status: 200 }));
         if (status === "nulls") return Promise.resolve(Response.json([null]));
-        const odd = { id: 1, agent: "desk", clientName: "Cursor", clientHost: null, issuedAt: new Date(0).toISOString() };
-        if (status === "unnamed") return Promise.resolve(Response.json([{ ...odd, clientName: undefined }]));
-        if (status === "numbered") return Promise.resolve(Response.json([{ ...odd, agent: 7 }]));
+        const single = { id: 1, registers: false, agent: "desk", clientName: "Cursor", clientHost: null, issuedAt: new Date(0).toISOString() };
+        const own = { ...single, registers: true, agent: null, agents: ["codex-1"] };
+        const odd: Record<Odd, unknown> = {
+          unnamed: { ...single, clientName: undefined },
+          numbered: { ...single, agent: 7 },
+          unflagged: { ...single, registers: undefined },
+          listing: { ...single, agents: ["desk"] },
+          bound: { ...own, agent: "desk" },
+          unlisted: { ...own, agents: undefined },
+          mixed: { ...own, agents: ["codex-1", 7] },
+        };
+        if (typeof status === "string" && status in odd) return Promise.resolve(Response.json([odd[status as Odd]]));
         return status === undefined ? fetch(`${base()}${url}`, init) : Promise.resolve(new Response(null, { status }));
       },
     });
@@ -3435,6 +3455,33 @@ describe("the page's approved clients", () => {
     expect(approvalUrls(page.urls)).toEqual([]);
   });
 
+  it("shows a client that registers its own agents in the agent's place, with the agents it registered or none yet", async () => {
+    const desk = approve("owner", "desk", { name: "Cursor", host: null });
+    const codex = approveRegistering("owner", { name: "Codex", host: null });
+    // Another account's agent of the same name, registered by its own registering token, never shows.
+    addAccount(db, "other");
+    const theirs = approveRegistering("other", { name: "Other's client", host: null });
+    registerWithIdentity(db, listAccounts(db).find((a) => a.name === "other")!.id, "codex-1", "x", undefined, theirs.id);
+    const page = await load(viewer);
+    await page.openApprovals();
+    const rows = page.elements["post-rows"];
+    await page.until(() => rows.children.length === 2);
+    expect(rows.children.map(approval)).toEqual([
+      ["registers its own agents", `token ${codex.id}`, `issued ${issued(codex.id)}`, "Codex"],
+      ["desk", `token ${desk.id}`, `issued ${issued(desk.id)}`, "Cursor"],
+    ]);
+    expect(rows.children.map(registered)).toEqual(["has registered no agents yet", undefined]);
+
+    for (const name of ["codex-2", "codex-1"]) registerWithIdentity(db, OWNER_ACCOUNT, name, "x", undefined, codex.id);
+    await page.poll();
+    await page.until(() => registered(rows.children[0]) === "agents: codex-1, codex-2");
+    expect(rows.children.map(approval)[0]).toEqual(["registers its own agents", `token ${codex.id}`, `issued ${issued(codex.id)}`, "Codex"]);
+    expect(registered(rows.children[1])).toBeUndefined();
+    expect(item(page)).toEqual(["Approved clients", "2"]);
+    const shown = JSON.stringify(rows.children.map((row) => [...approval(row), registered(row)]));
+    for (const hidden of [codex.token, desk.token, theirs.token, viewer, "Other's client"]) expect(shown).not.toContain(hidden);
+  });
+
   it("shows the view to a full and a person token too", async () => {
     const cursor = approve("owner", "desk", { name: "Cursor", host: null });
     addPerson(db, "owner", "maria");
@@ -3468,6 +3515,11 @@ describe("the page's approved clients", () => {
     ["nulls", "The server sent an answer this page cannot read. Retrying…"],
     ["unnamed", "The server sent an answer this page cannot read. Retrying…"],
     ["numbered", "The server sent an answer this page cannot read. Retrying…"],
+    ["unflagged", "The server sent an answer this page cannot read. Retrying…"],
+    ["listing", "The server sent an answer this page cannot read. Retrying…"],
+    ["bound", "The server sent an answer this page cannot read. Retrying…"],
+    ["unlisted", "The server sent an answer this page cannot read. Retrying…"],
+    ["mixed", "The server sent an answer this page cannot read. Retrying…"],
     ["fail", "Cannot reach the server. Retrying…"],
   ] as const)("shows a %s in the view's note and keeps the rest of the page refreshing", async (failure, note) => {
     for (const name of ["alice", "bob"]) registerAgent(db, OWNER_ACCOUNT, name, "x");

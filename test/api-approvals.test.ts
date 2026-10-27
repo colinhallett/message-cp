@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { addAccount, addToken, listAccounts, listApprovals, listTokens, revokeToken } from "../src/accounts.js";
-import { addPerson, purgeAgent, registerAgent } from "../src/agents.js";
+import { addPerson, purgeAgent, registerAgent, registerWithIdentity, removeAgent } from "../src/agents.js";
 import { connectAgent } from "../src/connect.js";
 import { makeLoginCode, redeemLoginCode } from "../src/login.js";
 import { OWNER_ACCOUNT, openDb, type AccountId, type Db } from "../src/db.js";
@@ -57,7 +57,9 @@ afterEach(async () => {
 
 interface ApprovalJson {
   id: number;
-  agent: string;
+  registers: boolean;
+  agent: string | null;
+  agents?: string[];
   clientName: string | null;
   clientHost: string | null;
   issuedAt: string;
@@ -76,10 +78,11 @@ const client = (id: number) =>
 const lastTokenId = () => db.prepare("SELECT max(id) FROM tokens").pluck().get() as number;
 
 /**
- * Runs the whole flow, approved with `token` as `agent`, for a client registered with `name` (none for undefined), or
- * for the metadata client with `metadata`. Returns the issued token and its row id.
+ * Runs the whole flow, approved with `token` as `agent`, or as a client that registers its own agents for null, for a
+ * client registered with `name` (none for undefined), or for the metadata client with `metadata`. Returns the issued
+ * token and its row id.
  */
-const connectClient = async (token: string, agent: string, options: { name?: string; metadata?: boolean } = {}) => {
+const connectClient = async (token: string, agent: string | null, options: { name?: string; metadata?: boolean } = {}) => {
   let clientId = METADATA;
   let redirect = CALLBACK;
   if (!options.metadata) {
@@ -110,7 +113,7 @@ const connectClient = async (token: string, agent: string, options: { name?: str
   const approved = await fetch(`${publicUrl}/oauth/approve`, {
     method: "POST",
     headers: { ...auth(token), "Content-Type": "application/json" },
-    body: JSON.stringify({ request, state: "s1", agent }),
+    body: JSON.stringify({ request, state: "s1", ...(agent === null ? { registers: true } : { agent }) }),
   });
   expect(approved.status).toBe(200);
   const code = new URL(((await approved.json()) as { location: string }).location).searchParams.get("code")!;
@@ -178,8 +181,8 @@ describe("GET /api/approvals", () => {
     const person = addToken(db, "owner", false, false, undefined, "maria").token;
     const issued = (id: number) => new Date(db.prepare("SELECT created_at FROM tokens WHERE id = ?").pluck().get(id) as number).toISOString();
     const expected = [
-      { id: claude.id, agent: "claude", clientName: "Claude", clientHost: "claude.ai", issuedAt: issued(claude.id) },
-      { id: cursor.id, agent: "desk", clientName: "Cursor", clientHost: null, issuedAt: issued(cursor.id) },
+      { id: claude.id, registers: false, agent: "claude", clientName: "Claude", clientHost: "claude.ai", issuedAt: issued(claude.id) },
+      { id: cursor.id, registers: false, agent: "desk", clientName: "Cursor", clientHost: null, issuedAt: issued(cursor.id) },
     ];
     for (const token of [ownerFull, OWNER_TOKEN, viewer, person]) expect(await approvals(token)).toEqual(expected);
     const text = await (await get("/api/approvals", ownerFull)).text();
@@ -217,6 +220,69 @@ describe("GET /api/approvals", () => {
     purgeAgent(db, "owner", "gone-agent");
     expect((await get("/mcp", removed.token)).status).toBe(401);
     expect((await approvals(ownerFull)).map((a) => a.id)).toEqual([kept.id]);
+  });
+
+  it("lists a token that registers its own agents, with none yet and then with two in name order, among the others", async () => {
+    const desk = await connectClient(ownerFull, "desk", { name: "Cursor" });
+    const codex = await connectClient(ownerFull, null, { name: "Codex" });
+    const later = await connectClient(ownerFull, "laptop", { name: "Zed" });
+    const issued = (id: number) => new Date(db.prepare("SELECT created_at FROM tokens WHERE id = ?").pluck().get(id) as number).toISOString();
+    const entry = { id: codex.id, registers: true, agent: null, clientName: "Codex", clientHost: null, issuedAt: issued(codex.id) };
+    expect(await approvals(ownerFull)).toEqual([
+      { id: later.id, registers: false, agent: "laptop", clientName: "Zed", clientHost: null, issuedAt: issued(later.id) },
+      { ...entry, agents: [] },
+      { id: desk.id, registers: false, agent: "desk", clientName: "Cursor", clientHost: null, issuedAt: issued(desk.id) },
+    ]);
+    for (const name of ["codex-b", "codex-a"]) registerWithIdentity(db, OWNER_ACCOUNT, name, "x", undefined, codex.id);
+    // Agents and people of the account that the token did not register are not its agents, nor is a person, even
+    // through a bad row that records the person as the token's.
+    registerAgent(db, OWNER_ACCOUNT, "plain", "x");
+    addPerson(db, "owner", "maria");
+    db.prepare("UPDATE agents SET token_id = ? WHERE name = 'maria'").run(codex.id);
+    const listed = await approvals(ownerFull);
+    expect(listed[1]).toEqual({ ...entry, agents: ["codex-a", "codex-b"] });
+    expect(listed[0]).not.toHaveProperty("agents");
+    expect(listed[2]).not.toHaveProperty("agents");
+    // Paging counts it as one entry like any other.
+    expect((await approvals(ownerFull, "?limit=1&offset=1")).map((a) => a.id)).toEqual([codex.id]);
+    const text = await (await get("/api/approvals", ownerFull)).text();
+    for (const secret of [codex.token, codex.code, codex.request, codex.verifier, codex.clientId]) expect(text).not.toContain(secret);
+    expect(text).not.toMatch(/[0-9a-f]{64}/);
+  });
+
+  it("drops a removed agent from a registering token's agents, and keeps the token listed once it has none", async () => {
+    const codex = await connectClient(ownerFull, null, { name: "Codex" });
+    for (const name of ["codex-1", "codex-2"]) registerWithIdentity(db, OWNER_ACCOUNT, name, "x", undefined, codex.id);
+    removeAgent(db, OWNER_ACCOUNT, "codex-1", undefined, undefined, codex.id);
+    expect((await approvals(ownerFull)).map((a) => a.agents)).toEqual([["codex-2"]]);
+    purgeAgent(db, "owner", "codex-2");
+    expect((await approvals(ownerFull)).map((a) => [a.id, a.agents])).toEqual([[codex.id, []]]);
+  });
+
+  it("never lists an agent of the same name registered by another token or in another account", async () => {
+    const first = await connectClient(ownerFull, null, { name: "First" });
+    const second = await connectClient(ownerFull, null, { name: "Second" });
+    const theirs = await connectClient(friendFull, null, { name: "Theirs" });
+    registerWithIdentity(db, OWNER_ACCOUNT, "codex-1", "x", undefined, first.id);
+    removeAgent(db, OWNER_ACCOUNT, "codex-1", undefined, undefined, first.id);
+    // The name is free again, and the second token takes it.
+    registerWithIdentity(db, OWNER_ACCOUNT, "codex-1", "x", undefined, second.id);
+    registerWithIdentity(db, friend, "codex-1", "x", undefined, theirs.id);
+    registerWithIdentity(db, friend, "codex-2", "x", undefined, theirs.id);
+    // A bad row: another account's agent recorded as the owner's token's. It still never shows.
+    db.prepare("UPDATE agents SET token_id = ? WHERE account_id = ? AND name = 'codex-2'").run(first.id, friend);
+    expect((await approvals(ownerFull)).map((a) => [a.id, a.agents])).toEqual([
+      [second.id, ["codex-1"]],
+      [first.id, []],
+    ]);
+    expect((await approvals(friendFull)).map((a) => [a.id, a.agents])).toEqual([[theirs.id, ["codex-1"]]]);
+  });
+
+  it("leaves out a revoked token that registers its own agents", async () => {
+    const codex = await connectClient(ownerFull, null, { name: "Codex" });
+    registerWithIdentity(db, OWNER_ACCOUNT, "codex-1", "x", undefined, codex.id);
+    revokeToken(db, codex.id);
+    expect(await approvals(ownerFull)).toEqual([]);
   });
 
   it("does not list an OAuth token issued before the client was recorded", async () => {
@@ -257,7 +323,7 @@ describe("GET /api/approvals", () => {
     expect(await approvals(ownerFull)).toHaveLength(1);
   });
 
-  it("reads the account's tokens through the agents primary key, searching agents rather than scanning them", () => {
+  it("reads the account's tokens through the agents primary key, and a registering token's agents through agents_by_token, searching agents rather than scanning them", () => {
     const prepare = db.prepare.bind(db);
     const sql: string[] = [];
     const spy = vi.spyOn(db, "prepare").mockImplementation(((s: string) => {
@@ -271,7 +337,8 @@ describe("GET /api/approvals", () => {
       (r) => r.detail,
     );
     expect(plan.some((d) => /SEARCH agents USING INTEGER PRIMARY KEY/.test(d))).toBe(true);
-    expect(plan.some((d) => /SCAN agents/.test(d))).toBe(false);
+    expect(plan.some((d) => /SEARCH own USING INDEX agents_by_token \(token_id=\?\)/.test(d))).toBe(true);
+    expect(plan.some((d) => /SCAN (agents|own)\b/.test(d))).toBe(false);
   });
 });
 

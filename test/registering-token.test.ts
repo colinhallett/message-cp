@@ -377,11 +377,18 @@ describe("query plans", () => {
 });
 
 describe("GET /api/approvals", () => {
-  it("leaves out a token that registers its own agents, which has no agent, and lists a single-agent approval", async () => {
-    await approved();
+  it("lists a token that registers its own agents, with the agents it registered, beside a single-agent approval", async () => {
+    const token = await approved();
+    const registering = tokenRow().id as number;
     await approved({ agent: "desk" });
+    const desk = tokenRow().id as number;
+    await call(await open(token), "register", { name: "codex-1", bio: "x" });
     const res = await fetch(`${base()}/api/approvals`, { headers: auth(ownerFull) });
     expect(res.status).toBe(200);
-    expect(((await res.json()) as { agent: string }[]).map((a) => a.agent)).toEqual(["desk"]);
+    const listed = (await res.json()) as { id: number; registers: boolean; agent: string | null; agents?: string[] }[];
+    expect(listed.map(({ id, registers, agent, agents }) => ({ id, registers, agent, agents }))).toEqual([
+      { id: desk, registers: false, agent: "desk", agents: undefined },
+      { id: registering, registers: true, agent: null, agents: ["codex-1"] },
+    ]);
   });
 });
