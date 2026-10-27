@@ -384,8 +384,8 @@ export function createServer(db: Db, session = new Session(OWNER_ACCOUNT), optio
       const release = hold();
       if (!release) throw new ToolError(WAIT_FOR_MAIL_FULL);
       holding = true;
-      markWaiting(db, account, own);
       try {
+        markWaiting(db, account, own);
         return (await poll(deadline, ended(extra), answer)) ?? { unread: null };
       } finally {
         release();

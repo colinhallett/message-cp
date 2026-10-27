@@ -152,6 +152,16 @@ describe("wait_for_mail", () => {
     expect((await again).json).toEqual({ unread: null });
   });
 
+  it("frees its slot when marking the caller waiting fails with an error other than busy", async () => {
+    const { slots, hold } = counted(1);
+    const alice = await agent("alice", { hold });
+    db.exec("CREATE TRIGGER no_mark BEFORE UPDATE OF waiting_until ON agents BEGIN SELECT RAISE(ABORT, 'no mark'); END");
+    expect((await call(alice, "wait_for_mail", { timeout_seconds: 1 })).isError).toBe(true);
+    expect(slots.taken).toBe(0);
+    db.exec("DROP TRIGGER no_mark");
+    expect((await call(alice, "wait_for_mail", { timeout_seconds: 1 })).json).toEqual({ unread: null });
+  });
+
   it("ends the hold and frees its slot within about a second when the client cancels", async () => {
     const { slots, hold } = counted(5);
     const alice = await agent("alice", { hold });
