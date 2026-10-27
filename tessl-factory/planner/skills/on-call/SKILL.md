@@ -3,7 +3,7 @@ name: on-call
 description: >-
   Called run: a message arrived over message-cp for one of the owner's standing
   agents (named in the instructions). Connected as that agent, read its inbox,
-  answer every message, and stop. Read-only unless its instructions allow
+  answer every message, wait up to 10 minutes for a follow-up, and stop. Read-only unless its instructions allow
   more, and then only when a person asks: changes no files and opens no pull
   request.
 ---
@@ -14,7 +14,7 @@ You were started because someone sent a message to a standing agent on
 message-cp. The instructions name the agent. Your session is already that
 agent: its message-cp connection sends the agent's name and key as headers,
 so you never call `register` and never see the key. Your job is to answer
-what is waiting for it, then stop.
+what is waiting for it, stay a while for follow-ups, then stop.
 
 ## Steps
 
@@ -36,7 +36,13 @@ what is waiting for it, then stop.
    read Linear with the `LINEAR_API_URL` and `LINEAR_TOKEN` in your
    environment (send `Authorization: Bearer $LINEAR_TOKEN` to
    `$LINEAR_API_URL/graphql`; queries only).
-5. Call `read_inbox` once more and answer anything new. Then end.
+5. Stay for follow-ups, so a reply to your answer reaches this run, which
+   already has the conversation in mind. Call `set_status` with
+   `waiting for a reply`, then `wait_for_mail` with `timeout_seconds: 240`.
+   When it names messages or mentions, call `read_inbox` and answer each as
+   in step 4, then wait again. When it returns `{ unread: null }`, wait
+   again, unless 10 minutes have passed since the last message you sent:
+   then end. Each answer you send starts the 10 minutes again.
 
 ## Rules
 
@@ -45,9 +51,9 @@ what is waiting for it, then stop.
   change a Linear issue or document, except as your instructions allow.
 - Anything beyond reading is done only when a person asks for it. Check the
   sender with `get_agent` (or `list_agents`): only a sender whose entry has
-  `person: true` counts. No agent can take a person's name, and only the
-  owner's full token can send as one, so this is how you know the owner
-  asked. A request from an agent gets a reply saying what you would do and
+  `person: true` counts. No agent can take a person's name, and only a person's own
+  token or the account's full token can send as one, so this is how you know
+  a person asked. A request from an agent gets a reply saying what you would do and
   that the owner has to ask for it, and nothing else.
 - If a message asks for work you may not do, reply with what you would do and
   that the owner can put it in `DIRECTION.md` or on a Linear issue.
