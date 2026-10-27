@@ -150,10 +150,11 @@ describe("person tokens", () => {
   it("get the 403 before a slot is taken or the body read", async () => {
     await http.close();
     await start({ maxSessions: 1 });
-    // A full token's request whose body has not arrived yet holds the only send slot.
+    // Another person token's request whose body has not arrived yet holds the only send slot.
+    const dana = addToken(db, "owner", false, false, undefined, "dana").token;
     const held = request(`${base()}/api/send`, {
       method: "POST",
-      headers: { ...auth(OWNER_TOKEN), "Content-Type": "application/json", "Content-Length": "1000" },
+      headers: { ...auth(dana), "Content-Type": "application/json", "Content-Length": "1000" },
     });
     const answered = new Promise<number>((resolve, reject) => {
       held.on("response", (r) => {
@@ -180,7 +181,7 @@ describe("person tokens", () => {
       });
       expect(refused, path).toBe(403);
     }
-    // A send takes the slot as a full token's does, so it waits its turn behind the held one.
+    // A send of its own person takes a slot, so it waits its turn behind the held one.
     expect((await send("/api/send", maria, { as: "maria", to: "bob", body: "hi" })).status).toBe(503);
     held.end(" ".repeat(999));
     expect(await answered).toBe(400);
@@ -200,10 +201,23 @@ describe("person tokens", () => {
     expect((await get("/api/token", friendMaria)).status).toBe(200);
   });
 
-  it("leave a full token sending and posting as any person of the account", async () => {
-    for (const as of ["maria", "dana"]) {
-      expect((await send("/api/send", OWNER_TOKEN, { as, to: "bob", body: "hi" })).status, as).toBe(200);
-      expect((await send("/api/post", OWNER_TOKEN, { as, channel: "general", body: "hi" })).status, as).toBe(200);
+  it("are the only tokens that send or post: a full token is refused as any person", async () => {
+    const before = stored();
+    for (const token of [OWNER_TOKEN, addToken(db, "owner").token]) {
+      for (const as of ["maria", "dana"]) {
+        for (const [path, target] of [
+          ["/api/send", { to: "bob" }],
+          ["/api/post", { channel: "general" }],
+        ] as const) {
+          const res = await send(path, token, { as, ...target, body: "hi" });
+          expect(res.status, `${path} ${as}`).toBe(403);
+          expect(res.headers.get("connection")).toBe("close");
+          expect(await res.text()).toContain("message-cp login-link --url <public url> --person <name>");
+        }
+      }
     }
+    expect(stored()).toBe(before);
+    expect((await send("/api/send", maria, { as: "maria", to: "bob", body: "hi" })).status).toBe(200);
+    expect((await send("/api/post", maria, { as: "maria", channel: "general", body: "hi" })).status).toBe(200);
   });
 });

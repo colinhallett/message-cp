@@ -59,6 +59,9 @@ const MAX_BODY_BYTES = 4 * 1024 * 1024;
  * escaped astral character), so this fits any valid request, and a full cap of them buffers at most 16 MiB.
  */
 const MAX_PERSON_BODY_BYTES = 64 * 1024;
+/** What POST /api/send and /api/post answer a full token, which acts as no person, with its 403. */
+const FULL_TOKEN_SENDS =
+  "A full token cannot send or post as a person. Sign in as a person to send: run message-cp login-link --url <public url> --person <name> on the server";
 /** The body limit for the OAuth registration, approval and token endpoints, which take a few short fields. */
 const MAX_OAUTH_BODY_BYTES = 16 * 1024;
 /** An agent seen this recently counts as online in GET /api/agents, as does one with a GET /wait held now. */
@@ -535,11 +538,11 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
   };
 
   /**
-   * GET /api/token: whether the request's token is read-only and whether it is agent-only, so the dashboard offers
-   * posting only to a token that may post and tells an agent token that it cannot use the page, and for a person token
-   * the person's name, which the dashboard then posts and sends as in place of offering a choice of person (the server
-   * still refuses any other), and `admin: true` while that person is an admin, so the dashboard offers Delete. It gives
-   * nothing else about the token: no token, hash, id or account.
+   * GET /api/token: whether the request's token is read-only and whether it is agent-only, so the dashboard tells an
+   * agent token that it cannot use the page, and for a person token the person's name, which the dashboard then posts
+   * and sends as (the server still refuses any other), and `admin: true` while that person is an admin, so the dashboard
+   * offers Delete. A full token is neither and has no person: the dashboard offers it Delete but no posting, which the
+   * server refuses it. It gives nothing else about the token: no token, hash, id or account.
    */
   const apiToken = (req: IncomingMessage, res: ServerResponse, access: TokenAccess) => {
     if (req.method !== "GET") return reply(res, 405, "Method not allowed", { Allow: "GET" });
@@ -713,8 +716,9 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
   /**
    * POST /api/send and /api/post: reads a JSON object whose `fields` are all strings and answers with what `act` returns
    * for it. A slot is taken before the body is read and given back at the end, so held bodies are capped like sessions.
-   * `act` answers undefined for an `as` that is not a live person of the account, which gets 404; a person token's
-   * `as` that is not its own person gets 403; a tool's refusal gets 400 with its message, which never quotes the body.
+   * Only a person token reaches it. `act` answers undefined for an `as` that is not a live person of the account, which
+   * gets 404; an `as` that is not the token's own person gets 403; a tool's refusal gets 400 with its message, which
+   * never quotes the body.
    */
   const asPerson = async <K extends string>(
     req: IncomingMessage,
@@ -754,10 +758,10 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
   };
 
   /**
-   * POST /api/send: `{ as, to, body }`, sent as `send_message` sends it, from the account's person `as`; with a person
-   * token, only from that token's person.
+   * POST /api/send: `{ as, to, body }`, sent as `send_message` sends it, from the account's person `as`, who must be
+   * `only`, the person token's person.
    */
-  const apiSend = (req: IncomingMessage, res: ServerResponse, account: AccountId, only?: number) =>
+  const apiSend = (req: IncomingMessage, res: ServerResponse, account: AccountId, only: number) =>
     asPerson(req, res, ["as", "to", "body"], (m) => {
       // The stored ids are send_message's alone: this answer stays `{ delivered, recipients }`.
       const sent = sendAsPerson(db, account, m.as, m.to, m.body, only);
@@ -765,7 +769,7 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
     });
 
   /** POST /api/post: `{ as, channel, body }`, posted as `post` posts it, by the account's person `as`; as `apiSend` limits it. */
-  const apiPost = (req: IncomingMessage, res: ServerResponse, account: AccountId, only?: number) =>
+  const apiPost = (req: IncomingMessage, res: ServerResponse, account: AccountId, only: number) =>
     asPerson(req, res, ["as", "channel", "body"], (m) => postAsPerson(db, account, m.as, m.channel, m.body, only));
 
   // MCP's authorization flow, served only with a public URL, from which every address it advertises is built: as
@@ -1035,8 +1039,12 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
     if (access.person && path !== "/api/send" && path !== "/api/post" && !(access.person.admin && path === "/api/conversation")) {
       return reply(res, 403, access.person.admin ? "An admin person token only reads, sends, posts and deletes" : "A person token only reads, sends and posts", { Connection: "close" });
     }
-    if (path === "/api/send") return apiSend(req, res, account, access.person?.id);
-    if (path === "/api/post") return apiPost(req, res, account, access.person?.id);
+    // Only a person token sends and posts, as its own person, so nobody acts as another person: a full token, which has
+    // no person, is refused before a slot is taken or a body read.
+    if (path === "/api/send" || path === "/api/post") {
+      if (!access.person) return reply(res, 403, FULL_TOKEN_SENDS, { Connection: "close" });
+      return (path === "/api/send" ? apiSend : apiPost)(req, res, account, access.person.id);
+    }
     if (path === "/api/conversation") return apiConversation(req, res, account);
     if (path === "/wait") return wait(req, res, account, access.agent);
     if (path !== "/mcp") return reply(res, 404, "Not found");
