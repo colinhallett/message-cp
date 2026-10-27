@@ -315,6 +315,25 @@ describe("a registering token on the other paths", () => {
     expect((await toolsList(await sessionOf(token), token)).status).toBe(200);
   });
 
+  it("keeps using a session after its agent unregisters, which registers again, and still refuses one whose name is now another's", async () => {
+    const token = await approved();
+    const session = await open(token);
+    await call(session, "register", { name: "codex-1", bio: "x" });
+    expect(JSON.parse((await call(session, "unregister")).text)).toMatchObject({ removed: "codex-1" });
+    expect(JSON.parse((await call(session, "register", { name: "codex-2", bio: "x" })).text)).toMatchObject({ name: "codex-2" });
+    // A session whose agent was removed by another token, and whose name is now another live agent's, is still the token's
+    // own unregistered session: it acts as no one until it registers, and cannot take the new agent's name.
+    const other = await sessionOf(token, "codex-3");
+    removeAgent(db, OWNER_ACCOUNT, "codex-3", undefined, identityOf(db, OWNER_ACCOUNT, "codex-3"));
+    registerAgent(db, OWNER_ACCOUNT, "codex-3", "someone else");
+    const res = await mcpPost(
+      { ...auth(token), "mcp-session-id": other },
+      { jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "register", arguments: { name: "codex-3", bio: "x" } } },
+    );
+    expect(res.status).toBe(200);
+    expect(await res.text()).toContain("already registered");
+  });
+
   it("restores only a session of an agent it registered", async () => {
     const token = await approved();
     registerAgent(db, OWNER_ACCOUNT, "other", "x");

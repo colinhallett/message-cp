@@ -5,7 +5,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
 import { LATEST_PROTOCOL_VERSION, isInitializeRequest, isJSONRPCRequest, type RequestId } from "@modelcontextprotocol/sdk/types.js";
 import { accountForToken, accountName, listApprovals, type BoundAgent, type TokenAccess } from "./accounts.js";
-import { DEFAULT_LIST_LIMIT, MAX_LIST_LIMIT, PersonError, ToolError, WrongPersonError, markWaiting, ownAgentOf, registerWithIdentity, registeredBy, type Identity } from "./agents.js";
+import { DEFAULT_LIST_LIMIT, MAX_LIST_LIMIT, PersonError, ToolError, WrongPersonError, markWaiting, nameOfIdentity, ownAgentOf, registerWithIdentity, registeredBy, type Identity } from "./agents.js";
 import {
   DEFAULT_CHANNEL_LIMIT,
   MAX_CHANNEL_LIMIT,
@@ -209,11 +209,14 @@ const isAgent = (identity: Identity | undefined, agent: BoundAgent) =>
 /**
  * Whether a request with `access` may act through a session registered as `identity` (undefined for none yet): a bound
  * token only as its agent; a token that registers its own agents only as one it registered, or through a session not yet
- * registered, where its `register` is checked; any other token as any agent of its account.
+ * registered or whose registration was removed, which `Session.current()` treats as unregistered and where its
+ * `register` is checked; any other token as any agent of its account.
  */
 const mayActAs = (db: Db, access: TokenAccess, identity: Identity | undefined) => {
   if (access.agent) return isAgent(identity, access.agent);
-  if (access.registers !== undefined) return identity === undefined || registeredBy(db, access.account, identity, access.registers);
+  if (access.registers !== undefined) {
+    return identity === undefined || nameOfIdentity(db, access.account, identity) === undefined || registeredBy(db, access.account, identity, access.registers);
+  }
   return true;
 };
 
