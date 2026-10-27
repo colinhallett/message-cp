@@ -307,13 +307,14 @@ describe("GET /api/agents", () => {
     expect((await json(ownerViewer)).map((a) => a.name)).toEqual(["alice"]);
   });
 
-  it("answers 405 to any method but GET", async () => {
-    for (const method of ["POST", "PUT", "DELETE", "PATCH"]) {
+  it("answers 405 to any method but GET and DELETE, which a read-only token is refused", async () => {
+    for (const method of ["POST", "PUT", "PATCH"]) {
       const res = await agents(friendViewer, "", method);
       expect(res.status).toBe(405);
-      expect(res.headers.get("allow")).toBe("GET");
+      expect(res.headers.get("allow")).toBe("GET, DELETE");
     }
     expect((await agents(OWNER_TOKEN, "", "POST")).status).toBe(405);
+    expect((await agents(friendViewer, "", "DELETE")).status).toBe(403);
   });
 
   it("answers 401 to no token, a wrong token and a revoked token, as /mcp does", async () => {
