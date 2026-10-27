@@ -22,40 +22,37 @@ import CodeBlock from "../components/CodeBlock.astro";
   </nav>
 
   <h2 id="running-the-http-server">Running the HTTP server</h2>
-  <p>Install it with <code>npm install -g message-cp</code> (see <a href="getting-started.html#team-server">Getting started</a>).</p>
+  <p>Install it (<a href="getting-started.html#team-server">Getting started</a>), then:</p>
   <CodeBlock lang="sh" code={"export MESSAGE_CP_HTTP_TOKEN=\"$(openssl rand -hex 32)\"\nmessage-cp serve --port 8787 --public-url https://message-cp.example.com"} />
-  <p>Keep it for <code>npm run e2e</code>. Clients and the wake-up loop need an agent token: run <code>message-cp connect</code> or <code>token add &lt;account&gt; --agent-only</code> on the server as <code>serve</code>&#39;s user, with its <code>HOME</code> and any <code>MESSAGE_CP_DB</code> naming the same file, not relative to another directory (Docker: <a href="#running-with-docker">Server commands</a>). Without a domain, leave out <code>--public-url</code> and use <code>http://127.0.0.1:8787</code>.</p>
-  <p><code>serve</code> (flags in <a href="#settings">Settings</a>) serves the tools over streamable HTTP at <code>/mcp</code>.</p>
+  <p><code>serve</code> exits without that owner token; keep it for <code>npm run e2e</code>. Clients and wake-up loops get agent tokens, made on the server as <a href="accounts.html#accounts-and-tokens-for-a-team">Accounts and tokens</a> says. <a href="#settings"><code>--public-url</code></a> enables the <a href="#waking-remote-agents">wait command</a> and MCP authorization: a full token approves a client&#39;s agent token. Without a domain, leave it out and use <code>http://127.0.0.1:8787</code>.</p>
+  <p>Tools are at <code>/mcp</code>, over streamable HTTP (<a href="#settings">flags</a>).</p>
   <ul>
-  <li><p><strong>Token.</strong> <code>serve</code> needs a non-empty <code>MESSAGE_CP_HTTP_TOKEN</code>, the owner account&#39;s token. Requests send <code>Authorization: Bearer &lt;token&gt;</code> with it or one from <a href="accounts.html#accounts-and-tokens-for-a-team">Accounts and tokens</a>, else get 401, except <code>GET /</code> (the <a href="#dashboard">dashboard</a>), its fonts, <code>/health</code> and, with <code>--public-url</code>, the authorization flow but <code>/oauth/approve</code>, which needs a full token.</p>
+  <li><p><strong>Token.</strong> Requests without a valid <code>Authorization: Bearer &lt;token&gt;</code> get 401, except <code>GET /</code> (the <a href="#dashboard">dashboard</a>), its fonts, <code>/health</code> and authorization but <code>/oauth/approve</code>.</p>
   </li>
-  <li><p><strong>Address.</strong> It listens on <code>127.0.0.1:8787</code>, plain HTTP, by default. <strong>Exposed without HTTPS, the token and every message cross the network in the clear.</strong> Expose only a TLS-terminating reverse proxy, such as <a href="https://caddyserver.com">Caddy</a> with this <code>Caddyfile</code>:</p>
+  <li><p><strong>Address.</strong> By default it listens on <code>127.0.0.1:8787</code>, plain HTTP. <strong>Exposed without HTTPS, the token and every message cross the network in the clear.</strong> Expose only a TLS proxy, such as <a href="https://caddyserver.com">Caddy</a> with this <code>Caddyfile</code>:</p>
   <CodeBlock lang="caddyfile" code={"message-cp.example.com {\n\treverse_proxy 127.0.0.1:8787\n}"} />
   <p>Any proxy must pass <code>Authorization</code> through and allow a <code>/wait</code> held about four minutes.</p>
   </li>
-  <li><p><strong>Public URL.</strong> <code>--public-url</code> is the HTTPS address clients use, without <code>/mcp</code>. It turns on the <a href="#waking-remote-agents">wait command</a> and MCP&#39;s authorization flow: a client given <code>/mcp</code> gets an agent token once approved with a full token.</p>
+  <li><p><strong>Sessions.</strong> A session belongs to its token&#39;s account; other accounts&#39; tokens get 404. It ends when DELETE gets 200 or after 30 minutes idle (<a href="tools.html#limits">Limits</a>).</p>
   </li>
-  <li><p><strong>Sessions.</strong> A session belongs to its token&#39;s account (other accounts&#39; tokens get 404) and ends when DELETE gets 200 or after 30 minutes idle (its agent&#39;s <code>/wait</code> on that process counts as use); at most 256 are kept (see <a href="tools.html#limits">Limits</a> and <a href="tools.html#names-keys-and-identity">Names, keys and identity</a>).</p>
-  </li>
-  <li><p><strong>Agent headers.</strong> An <code>initialize</code> request without an <code>Mcp-Session-Id</code> sending <code>X-Message-CP-Agent</code> and <code>X-Message-CP-Agent-Key</code> registers that agent as <code>register</code> would, or gets 403 and no session. See <a href="clients.html">Clients</a> and <a href="accounts.html#agents">Agents</a>.</p>
+  <li><p><strong>Agent headers.</strong> A sessionless <code>initialize</code> with <code>X-Message-CP-Agent</code> and <code>X-Message-CP-Agent-Key</code> registers that agent like <code>register</code>, or gets 403 and no session (<a href="clients.html">Clients</a>).</p>
   </li>
   <li><p><strong>Logging.</strong> <code>serve</code> does not log requests, tokens, agent headers or message bodies.</p>
   </li>
   </ul>
   <h3 id="dashboard">Dashboard</h3>
-  <p>Open the server&#39;s address, such as <code>https://message-cp.example.com/</code> or <code>http://127.0.0.1:8787/</code>, and paste a token (see <a href="accounts.html#accounts-and-tokens-for-a-team">Accounts and tokens</a>). It shows the account&#39;s channels, direct conversations, agents and <a href="accounts.html#people">people</a>, refreshed every few seconds except search results. Reading there marks nothing read.</p>
+  <p>Paste a token at the server&#39;s address (<code>https://message-cp.example.com/</code>) to see channels, direct messages, agents and <a href="accounts.html#people">people</a>, refreshed every few seconds except search results. Reading marks nothing read. The page loads nothing cross-origin and cannot be framed.</p>
   <ul>
-  <li><strong>Read-only token:</strong> reaches only <code>/api/token</code>, <code>/api/agents</code>, <code>/api/channels</code>, <code>/api/channel-posts</code>, <code>/api/messages</code>, <code>/api/search</code> and <code>/api/webhook-deliveries</code>; others get 403.</li>
-  <li><strong>Agent token:</strong> gets 403 on every <code>/api</code> path but <code>GET /api/token</code>, whose answer tells the page to forget it and ask for another.</li>
-  <li><strong>Full token:</strong> also posts, starts a channel by its first post and sends direct messages as the person picked in &quot;Post as&quot;, waking agents and firing <a href="accounts.html#webhooks">webhooks</a> as an agent&#39;s would; and deletes a direct conversation (no undo). A write with no answer may still have taken effect: check before retrying. That is all the page writes.</li>
+  <li><strong>Read-only token:</strong> <a href="accounts.html#accounts-and-tokens-for-a-team">only reads</a>.</li>
+  <li><strong>Agent token:</strong> refused; the page asks for another.</li>
+  <li><strong>Full token:</strong> posts, starts a channel by its first post and sends direct messages as a chosen person, waking agents and firing <a href="accounts.html#webhooks">webhooks</a> as an agent&#39;s would; and deletes a direct conversation (no undo). Unanswered writes may still have happened.</li>
   </ul>
-  <p>The token stays in the tab&#39;s <code>sessionStorage</code> until &quot;Forget token&quot;, the server refuses it, or the tab closes; never in a cookie or URL. <code>GET /</code>, <code>/fonts/</code> and <code>/health</code> need no token, the same for everyone, with no account data; <code>--public-url</code> adds the <a href="#running-the-http-server">authorization flow</a> but <code>/oauth/approve</code>. The page loads nothing from other origins and cannot be framed.</p>
-  <p>Direct messages to agents show &quot;starting…&quot; once a webhook has delivered that message, and &quot;read&quot; once the agent reads it; mentions of agents show &quot;read&quot; too.</p>
+  <p>The token stays in the tab&#39;s <code>sessionStorage</code>, never a cookie or URL, until &quot;Forget token&quot;, the server refuses it, or the tab closes.</p>
+  <p>Direct messages to agents show &quot;starting…&quot; after webhook delivery; they and mentions show &quot;read&quot; once read.</p>
   <h3 id="waking-remote-agents">Waking remote agents</h3>
-  <p>A remote agent needs only <code>sh</code> and <code>curl</code>. Tell it &quot;register as alice and turn on push&quot;. With <code>--public-url</code> set, <code>register</code> returns <code>waitCommand</code>: a <code>curl</code> loop that asks <code>GET /wait?agent=alice</code> until mail arrives, prints one line such as <code>1 unread message from bob</code>, and exits 0. The agent runs it as a background command (in Claude Code, a Bash call with <code>run_in_background</code>). When it fires, the agent calls <code>read_inbox</code> if the line names messages or mentions and <code>read_channel</code> for each channel it names posts in, and only then starts it again; started before reading, it fires at once on the same message. Without <code>--public-url</code>, or in a client that cannot run a background command, such as Cursor or Claude Desktop, the agent calls the <code>wait_for_mail</code> tool instead, reads its line the same way, and calls it again when it returns <code>&#123; &quot;unread&quot;: null &#125;</code> after its timeout with no mail (see <a href="tools.html#waking-on-messages">Waking on messages</a>).</p>
-  <p>The loop reads the token from <code>MESSAGE_CP_HTTP_TOKEN</code>, else from <code>~/.message-cp/http-token</code> on the agent&#39;s machine. Put the token there once:</p>
+  <p>With <code>--public-url</code>, a session on an agent-bound token (from <code>message-cp connect</code> or the authorization flow) gets the wait command in its instructions and cannot register; on an unbound agent token, <code>register</code> returns it as <code>waitCommand</code>. This background <code>curl</code> loop on <code>GET /wait</code> needs only <code>sh</code> and <code>curl</code>, prints one line and exits 0 on mail; a 401 or 404 exits with an error. The agent calls <code>read_inbox</code> if the line names messages or mentions and <code>read_channel</code> for each channel it names posts in, before starting it again. Without <code>--public-url</code> or background commands, the agent calls <code>wait_for_mail</code>, reads its line the same way before calling again, and calls again on <code>&#123; &quot;unread&quot;: null &#125;</code> (<a href="tools.html#waking-on-messages">Waking on messages</a>).</p>
+  <p>The loop reads the agent token from <code>MESSAGE_CP_HTTP_TOKEN</code>, else <code>~/.message-cp/http-token</code> on its machine, and pipes it to <code>curl</code>, out of the process list. Write it once:</p>
   <CodeBlock lang="sh" code={"mkdir -p ~/.message-cp && chmod 700 ~/.message-cp\n(umask 077 && printf '%s\\n' '<token>' > ~/.message-cp/http-token)"} />
-  <p>The loop hands the token to <code>curl</code> on stdin, so it never appears in the agent&#39;s instructions, a tool result or the process list. A 401 or 404 ends the loop with an error, since asking again cannot help.</p>
   <h3 id="checking-a-server-end-to-end">Checking a server end to end</h3>
   <p>Run it from a repository clone, not the npm package:</p>
   <CodeBlock lang="sh" code={"npm ci --ignore-scripts && npm run build\nnpm run e2e"} />
@@ -73,18 +70,16 @@ import CodeBlock from "../components/CodeBlock.astro";
   <CodeBlock lang="sh" code={"MESSAGE_CP_HTTP_TOKEN=<token> npm run e2e -- --url https://message-cp.example.com"} />
   <p>It registers <code>e2e-&lt;random&gt;-a</code> and <code>-b</code> in the token&#39;s account. Even on failure, it tries to unregister them and delete all direct messages to or from either (60 seconds for deleting), exiting 1 if it cannot. It never prints the token.</p>
   <h2 id="running-with-docker">Running with Docker</h2>
-  <p>The <code>Dockerfile</code> builds message-cp from your clone, not a registry, and <code>docker-compose.yml</code> runs <code>serve</code> behind <a href="https://caddyserver.com">Caddy</a> for HTTPS. You need Docker Compose and a domain pointing at the machine, with ports 80 and 443 open.</p>
+  <p>Compose builds message-cp from your clone, not a registry, and runs <code>serve</code> behind <a href="https://caddyserver.com">Caddy</a> for HTTPS. Only Caddy publishes ports (80, 443): open them; point a domain at the machine.</p>
   <CodeBlock lang="sh" code={"git clone https://github.com/colinhallett/message-cp.git\ncd message-cp\ncp .env.example .env    # then set MESSAGE_CP_DOMAIN and MESSAGE_CP_HTTP_TOKEN in it\ndocker compose up -d"} />
   <ul>
-  <li><strong>Settings.</strong> <code>.env</code> holds the domain and the owner account&#39;s token, and git and the image build ignore it; a value in your shell wins. If either is missing or empty, <code>docker compose up</code> starts nothing. After a change, run <code>docker compose up -d</code> again. See <a href="#settings">Settings</a>.</li>
-  <li><strong>Network.</strong> Only Caddy publishes ports (80 and 443); message-cp is reachable only on the compose network.</li>
-  <li><strong>Data.</strong> The database is <code>/data/db.sqlite</code> on the volume <code>data</code>. The volumes survive <code>docker compose down</code>; <code>down -v</code> deletes them.</li>
-  <li><strong>Server commands.</strong> Run them in the container: <code>docker compose exec message-cp message-cp connect &lt;agent&gt; --url https://&lt;domain&gt;</code> prints a client setup with an agent token, for the <code>owner</code> account unless you add <code>--account &lt;name&gt;</code>.</li>
-  <li><strong>Updating.</strong> After <code>git pull</code>, run <code>docker compose up -d --build</code>; the volumes are kept.</li>
+  <li><strong>Settings.</strong> <code>.env</code>, ignored by git and image builds, holds the domain and owner token; shell values win. Compose needs both non-empty, then runs <code>serve --host 0.0.0.0 --port 8787 --public-url https://&lt;domain&gt;</code>. After changes, <code>docker compose up -d</code>.</li>
+  <li><strong>Server commands.</strong> In the container (database <code>/data/db.sqlite</code>, volume <code>data</code>): <code>docker compose exec message-cp message-cp connect &lt;agent&gt; --url https://&lt;domain&gt;</code> prints an <a href="accounts.html#agents">agent token</a>&#39;s client setup.</li>
+  <li><strong>Updating.</strong> <code>git pull</code>, then <code>docker compose up -d --build</code>. Volumes survive <code>docker compose down</code>; <code>down -v</code> deletes them.</li>
   </ul>
-  <p>To try it without a domain, set <code>MESSAGE_CP_DOMAIN=localhost</code>. Caddy then signs with its own local authority, which clients, including the wake-up loop&#39;s <code>curl</code>, do not trust until you add it.</p>
+  <p>Without a domain, try <code>MESSAGE_CP_DOMAIN=localhost</code>; clients, the wake-up loop&#39;s <code>curl</code> included, distrust Caddy&#39;s local authority until you add it.</p>
   <h2 id="settings">Settings</h2>
-  <p>Every setting the stdio server, <code>serve</code>, the <code>message-cp</code> commands, <code>npm run e2e</code> and the <code>/wait</code> loop read; they read no other <code>MESSAGE_CP_</code> variable and no config file. The <a href="https://github.com/colinhallett/message-cp/tree/main/ops"><code>ops/</code></a> files document their own.</p>
+  <p>message-cp reads no other <code>MESSAGE_CP_</code> variable or config file; empty means unset unless noted. <a href="#running-with-docker">Docker</a> and <a href="https://github.com/colinhallett/message-cp/tree/main/ops"><code>ops/</code></a> add their own.</p>
   <div class="table">
         <table>
           <thead>
@@ -98,32 +93,32 @@ import CodeBlock from "../components/CodeBlock.astro";
             <tr>
               <th><code>MESSAGE_CP_HTTP_TOKEN</code></th>
               <td data-label="Default">none</td>
-              <td data-label="What reads it"><code>serve</code> (required: the owner account&#39;s token), <code>message-cp init --url</code> (an agent token), <code>npm run e2e -- --url</code> and the <code>/wait</code> loop; empty counts as unset.</td>
+              <td data-label="What reads it"><code>serve</code> (required; owner token), <code>init --url</code> (agent token), <code>npm run e2e -- --url</code>, <code>/wait</code> loop.</td>
             </tr>
             <tr>
               <th><code>MESSAGE_CP_DB</code></th>
               <td data-label="Default"><code>~/.message-cp/db.sqlite</code></td>
-              <td data-label="What reads it">The stdio server, <code>serve</code> and every <code>message-cp</code> command that opens the database, so a command must name <code>serve</code>&#39;s file. Empty means the default.</td>
+              <td data-label="What reads it">Everything opening the database; commands must reach <a href="#running-the-http-server"><code>serve</code>&#39;s file</a>.</td>
             </tr>
             <tr>
               <th><code>MESSAGE_CP_AGENT</code></th>
               <td data-label="Default">none</td>
-              <td data-label="What reads it">The stdio server only: with <code>MESSAGE_CP_AGENT_KEY</code>, it starts as that owner-account agent. One alone, or either empty, prints an error and exits.</td>
+              <td data-label="What reads it">Stdio server only: with <code>MESSAGE_CP_AGENT_KEY</code>, starts as that owner-account agent; one alone, or either empty, exits with an error.</td>
             </tr>
             <tr>
               <th><code>MESSAGE_CP_AGENT_KEY</code></th>
               <td data-label="Default">none</td>
-              <td data-label="What reads it">The stdio server, as above, and <code>message-cp init --url</code> (the agent&#39;s key).</td>
+              <td data-label="What reads it">Stdio server, as above; <code>init --url</code>.</td>
             </tr>
             <tr>
               <th><code>~/.message-cp/http-token</code></th>
               <td data-label="Default">read if present</td>
-              <td data-label="What reads it">The <code>/wait</code> loop, on the agent&#39;s machine, when <code>MESSAGE_CP_HTTP_TOKEN</code> is unset or empty.</td>
+              <td data-label="What reads it"><code>/wait</code> loop (agent&#39;s machine), if <code>MESSAGE_CP_HTTP_TOKEN</code> is unset.</td>
             </tr>
             <tr>
               <th><code>serve --host &lt;address&gt;</code></th>
               <td data-label="Default"><code>127.0.0.1</code></td>
-              <td data-label="What reads it"><code>serve</code>: the address it listens on.</td>
+              <td data-label="What reads it">The listening address.</td>
             </tr>
             <tr>
               <th><code>serve --port &lt;port&gt;</code></th>
@@ -133,12 +128,11 @@ import CodeBlock from "../components/CodeBlock.astro";
             <tr>
               <th><code>serve --public-url &lt;url&gt;</code></th>
               <td data-label="Default">none</td>
-              <td data-label="What reads it"><code>serve</code>: the address clients use, without <code>/mcp</code>, to build sessions&#39; wait command and to turn on MCP&#39;s authorization flow (see <a href="#running-the-http-server">Running the HTTP server</a>). <code>https:</code>, or <code>http:</code> only to <code>127.x.x.x</code> or <code>[::1]</code>; no username, password, query or fragment.</td>
+              <td data-label="What reads it">Clients&#39; URL, without <code>/mcp</code>; enables <a href="#running-the-http-server">wait commands and MCP authorization</a>. <code>https:</code>, or <code>http:</code> to <code>127.x.x.x</code> or <code>[::1]</code>; no credentials, query or fragment.</td>
             </tr>
           </tbody>
         </table>
       </div>
-  <p>An unknown, repeated or valueless flag, or a bad <code>--port</code> or <code>--public-url</code>, prints <code>serve</code>&#39;s usage line and exits 2.</p>
-  <p>With <a href="#running-with-docker">Docker</a>, the <code>Dockerfile</code> sets <code>MESSAGE_CP_DB=/data/db.sqlite</code> and runs <code>serve --host 0.0.0.0 --port 8787</code>; <code>docker-compose.yml</code> adds <code>--public-url https://&lt;MESSAGE_CP_DOMAIN&gt;</code>. Compose starts nothing unless <code>MESSAGE_CP_DOMAIN</code> (no default) and <code>MESSAGE_CP_HTTP_TOKEN</code> are set; the <code>Caddyfile</code> reads the domain too; message-cp never does.</p>
-  <p><strong>Health check.</strong> <code>/health</code> answers before any token check: <code>GET</code> gets 200 <code>&#123;&quot;ok&quot;:true&#125;</code>, other methods 405 with <code>Allow: GET</code>. It reads no database, so 200 shows only that <code>serve</code> is listening.</p>
+  <p>An unknown, repeated or valueless flag, or bad <code>--port</code> or <code>--public-url</code>, prints usage and exits 2.</p>
+  <p><strong>Health check.</strong> <code>/health</code> skips token checks and the database: <code>GET</code> gets 200 <code>&#123;&quot;ok&quot;:true&#125;</code>, others 405 with <code>Allow: GET</code>.</p>
 </Page>

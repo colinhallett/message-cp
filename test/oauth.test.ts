@@ -389,6 +389,57 @@ describe("authorization request", () => {
     expect(db.prepare("SELECT count(*) FROM mcp_authorizations").pluck().get()).toBe(0);
   });
 
+  it("accepts a loopback redirect URI on another port, sends the code there and exchanges it only for that URI", async () => {
+    const clientId = await registered();
+    const moved = "http://localhost:45678/callback";
+    const { verifier, challenge } = pkce();
+    const { request, html } = await pageFor(clientId, challenge, { redirect_uri: moved });
+    expect(html).toContain("localhost:45678");
+    expect(db.prepare("SELECT redirect_uri FROM mcp_authorizations").pluck().get()).toBe(moved);
+    const res = await approve(ownerFull, { request, state: "s1", agent: "desk" });
+    expect(res.status).toBe(200);
+    const location = new URL(((await res.json()) as { location: string }).location);
+    expect(`${location.origin}${location.pathname}`).toBe(moved);
+    const code = location.searchParams.get("code")!;
+    const form = { grant_type: "authorization_code", code, redirect_uri: moved, client_id: clientId, code_verifier: verifier, resource: mcp() };
+    const registeredUri = await exchange({ ...form, redirect_uri: REDIRECT });
+    expect(registeredUri.status).toBe(400);
+    expect(((await registeredUri.json()) as { error: string }).error).toBe("invalid_grant");
+  });
+
+  it("lets only the port of an http loopback redirect URI differ", async () => {
+    const clientId = await registered([REDIRECT, "https://client.example/cb", "http://127.0.0.1/cb", "http://[::1]:8000/cb"]);
+    const good = { response_type: "code", client_id: clientId, code_challenge: pkce().challenge, code_challenge_method: "S256" };
+    for (const redirect of ["http://localhost:1/callback", "http://localhost/callback", "http://127.0.0.1:5000/cb", "http://[::1]:9/cb"]) {
+      expect((await authorize({ ...good, redirect_uri: redirect })).status, redirect).toBe(200);
+    }
+    for (const redirect of [
+      "https://client.example:8443/cb",
+      "http://client.example/cb",
+      "https://localhost:9999/callback",
+      "http://127.0.0.1:9999/callback",
+      "http://localhost:5000/cb",
+      "http://127.0.0.2:5000/cb",
+      "http://localhost:5000/Callback",
+      "http://localhost:5000/callback/",
+      "http://localhost:5000/callback?x=1",
+      "http://localhost:5000/callback?",
+      "http://localhost:5000/callback#x",
+      "http://u:p@localhost:5000/callback",
+      "http://@localhost:5000/callback",
+      "http://LOCALHOST:5000/callback",
+      "http://localhost:5000/%63allback",
+      "http://localhost:5000/x/../callback",
+      "http://127.1:5000/cb",
+      "http://[::1]:9/cb/",
+    ]) {
+      const res = await authorize({ ...good, redirect_uri: redirect });
+      expect(res.status, redirect).toBe(400);
+      expect(res.headers.get("location")).toBeNull();
+    }
+    expect(db.prepare("SELECT count(*) FROM mcp_authorizations").pluck().get()).toBe(4);
+  });
+
   it("redirects any other bad parameter back with invalid_request and the state, storing nothing", async () => {
     const clientId = await registered();
     const good = { response_type: "code", client_id: clientId, redirect_uri: REDIRECT, code_challenge: pkce().challenge, code_challenge_method: "S256", state: "xyz" };
@@ -729,6 +780,24 @@ describe("Client ID Metadata Documents", () => {
     const html = await res.text();
     expect(html).toContain("Visual Studio Code</span>, from <span class=\"client\">vscode.dev</span>");
     expect(html).toContain('class="warn"');
+  });
+
+  it("accepts a portless loopback redirect URI the document lists on any port, as Codex asks", async () => {
+    const codex = "https://chatgpt.com/oauth/codex-client-metadata.json";
+    documents.set(codex, { client_id: codex, client_name: "Codex", redirect_uris: ["http://127.0.0.1/callback/x", "http://localhost/callback/x"] });
+    const moved = "http://127.0.0.1:44663/callback/x";
+    const { verifier, challenge } = pkce();
+    const res = await authorize(params({ client_id: codex, redirect_uri: moved, code_challenge: challenge }));
+    expect(res.status).toBe(200);
+    const request = /data-request="([0-9a-f]+)"/.exec(await res.text())![1];
+    const approved = await approve(ownerFull, { request, state: "s1", agent: "codex" });
+    const location = new URL(((await approved.json()) as { location: string }).location);
+    expect(`${location.origin}${location.pathname}`).toBe(moved);
+    const form = { grant_type: "authorization_code", code: location.searchParams.get("code")!, redirect_uri: moved, client_id: codex, code_verifier: verifier, resource: mcp() };
+    await accessToken(form);
+    for (const redirect of ["http://localhost:44663/callback/y", "https://127.0.0.1:44663/callback/x"]) {
+      expect((await authorize(params({ client_id: codex, redirect_uri: redirect, code_challenge: pkce().challenge }))).status, redirect).toBe(400);
+    }
   });
 
   it("shows the error page, never a redirect, for a redirect URI the document does not list", async () => {
