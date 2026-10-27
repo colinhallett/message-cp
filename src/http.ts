@@ -5,7 +5,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
 import { LATEST_PROTOCOL_VERSION, isInitializeRequest, isJSONRPCRequest, type RequestId } from "@modelcontextprotocol/sdk/types.js";
 import { accountForToken, listApprovals, type BoundAgent, type TokenAccess } from "./accounts.js";
-import { DEFAULT_LIST_LIMIT, MAX_LIST_LIMIT, ToolError, WrongPersonError, registerWithIdentity, type Identity } from "./agents.js";
+import { DEFAULT_LIST_LIMIT, MAX_LIST_LIMIT, ToolError, markWaiting, WrongPersonError, registerWithIdentity, type Identity } from "./agents.js";
 import {
   DEFAULT_CHANNEL_LIMIT,
   MAX_CHANNEL_LIMIT,
@@ -454,6 +454,8 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
    * time, as in `message-cp wait`.
    */
   const poll = (account: AccountId, reader: string | Identity): Unread | undefined => {
+    // Marked waiting first, as `wait_for_mail` does, so a message stored after the mark holds its webhook for this wait.
+    markWaiting(db, account, reader);
     try {
       return unreadSummary(db, account, reader);
     } catch (err) {

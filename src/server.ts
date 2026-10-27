@@ -11,6 +11,7 @@ import {
   ToolError,
   getAgent,
   listAgents,
+  markWaiting,
   nameOfIdentity,
   registerWithIdentity,
   removeAgent,
@@ -367,7 +368,9 @@ export function createServer(db: Db, session = new Session(OWNER_ACCOUNT), optio
       const own = session.requireAgent();
       const deadline = Date.now() + (timeout_seconds ?? DEFAULT_WAIT_FOR_MAIL_SECONDS) * 1000;
       // Each check finds the caller by its registration, so a removed agent, or another that took its name, ends the call.
+      // It marks the caller waiting first, so a message or mention stored after the mark holds its webhook for this wait.
       const answer = () => {
+        markWaiting(db, account, own);
         const unread = check(() => unreadSummary(db, account, own), NOTHING_UNREAD);
         if (!unread) throw new ToolError(NOT_REGISTERED);
         return hasUnread(unread) ? { unread: formatUnread(unread) } : undefined;

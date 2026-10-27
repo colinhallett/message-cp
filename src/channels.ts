@@ -178,7 +178,8 @@ function append(db: Db, account: AccountId, member: { id: number; name: string }
     );
     for (const name of names) mention.run(id, account, name, member.id);
   }
-  // Owed to every `#<channel>` webhook of the account, and to every `mention:<agent>` webhook of an agent it mentioned.
+  // Owed to every `#<channel>` webhook of the account, and to every `mention:<agent>` webhook of an agent it mentioned,
+  // held for that agent while it is waiting for mail (`markWaiting`), as a direct message is.
   // Mention rows only ever name agents of this account; the account check on `webhooks` says so where it matters.
   db.prepare(
     `INSERT INTO webhook_deliveries (webhook_id, post_id, created_at)
@@ -186,12 +187,12 @@ function append(db: Db, account: AccountId, member: { id: number; name: string }
   ).run(id, now, account, found.name);
   if (names.length > 0) {
     db.prepare(
-      `INSERT INTO webhook_deliveries (webhook_id, post_id, created_at)
-       SELECT webhooks.id, ?, ? FROM mentions
+      `INSERT INTO webhook_deliveries (webhook_id, post_id, created_at, held_for)
+       SELECT webhooks.id, ?, ?, CASE WHEN agents.waiting_until > ? THEN agents.id END FROM mentions
        JOIN agents ON agents.id = mentions.agent_id
        JOIN webhooks ON webhooks.account_id = agents.account_id AND webhooks.event = 'mention' AND webhooks.name = agents.name COLLATE NOCASE
        WHERE mentions.post_id = ? AND webhooks.account_id = ? ORDER BY webhooks.id`,
-    ).run(id, now, id, account);
+    ).run(id, now, now, id, account);
   }
   return { channel: found.name, id, sentAt: new Date(now).toISOString() };
 }

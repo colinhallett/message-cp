@@ -2,7 +2,7 @@
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { DEFAULT_HTTP_HOST, DEFAULT_HTTP_PORT, startHttp } from "./http.js";
-import { AgentListError, KeyResetError, PersonError, PurgeError, ToolError, addPerson, listPeople, listServerAgents, purgeAgent, removePerson, resetAgentKey, setPersonAdmin } from "./agents.js";
+import { AgentListError, KeyResetError, PersonError, PurgeError, ToolError, addPerson, listPeople, listServerAgents, markWaiting, purgeAgent, removePerson, resetAgentKey, setPersonAdmin } from "./agents.js";
 import { AccountError, addAccount, addToken, listAccounts, listTokens, revokeToken, type NewToken } from "./accounts.js";
 import { ConnectError, clientSetup, connectAgent, mcpEndpoint, publicUrl as checkedPublicUrl } from "./connect.js";
 import { OWNER_ACCOUNT, openDb } from "./db.js";
@@ -76,7 +76,9 @@ if (command === "serve") {
   for (;;) {
     let unread;
     try {
-      // `wait` reads the database file directly, so it is the owner's account, like stdio.
+      // `wait` reads the database file directly, so it is the owner's account, like stdio. Marked waiting first, as
+      // `wait_for_mail` does, so a message stored after the mark holds its webhook for this wait.
+      markWaiting(db, OWNER_ACCOUNT, name);
       unread = unreadSummary(db, OWNER_ACCOUNT, name);
     } catch (err) {
       // A lock held past the busy timeout is transient: try again at the next check.

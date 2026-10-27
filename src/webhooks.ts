@@ -5,7 +5,8 @@ import { MAX_INBOX_LIMIT } from "./messages.js";
 
 // Outgoing webhooks. The operator manages them with `message-cp webhook` on the server; no agent or token can.
 // Messages and posts a webhook is for are queued in `webhook_deliveries` when they are stored, and `serve` sends them
-// with `sendPending`: each body signed with the webhook's secret, a timeout and a few attempts. The stdio server and
+// with `sendPending`: each body signed with the webhook's secret, a timeout and a few attempts. A message or mention
+// queued while its agent is waiting for mail is held until that wait ends, and dropped if the agent has read it. The stdio server and
 // `message-cp wait` send nothing. A webhook's secret is shown once, when it is added, and stored as is so that
 // deliveries can sign with it. A webhook may also carry one header the owner sets, such as `Authorization`, sent on each
 // of its deliveries; its value is stored as is too, and never printed, logged or returned. And it may carry a limit on
@@ -356,6 +357,15 @@ export function deliveryBody(db: Db, id: number): DeliveryBody | undefined {
   };
 }
 
+/**
+ * True while the agent a held delivery is for (`held_for`) is still waiting for mail; its one parameter is the time now.
+ * A removed agent waits for nothing, so its held deliveries go out at once.
+ */
+const WAITING = "SELECT 1 FROM agents a WHERE a.id = held_for AND a.waiting_until > ? AND a.removed_at IS NULL";
+/** True once the agent a held delivery is for has read its message or mention; read_at is never cleared. */
+const READ = `(EXISTS (SELECT 1 FROM messages m WHERE m.id = message_id AND m.recipient_id = held_for AND m.read_at IS NOT NULL)
+  OR EXISTS (SELECT 1 FROM mentions x WHERE x.agent_id = held_for AND x.post_id = webhook_deliveries.post_id AND x.read_at IS NOT NULL))`;
+
 /** A delivery request not finished in this long is aborted and counts as a failed attempt. */
 export const WEBHOOK_TIMEOUT_MS = 5000;
 /** Attempts a delivery gets in all; after the last failed one it is left undelivered and not tried again. */
@@ -426,10 +436,12 @@ export async function sendPending(db: Db, options: SendOptions = {}): Promise<{ 
     allowance: number | null;
   }[];
   // A webhook's oldest claimable rows, through `webhook_deliveries_pending_by_webhook`; at most `LIMIT` are read, so a
-  // backlog held behind a limit costs nothing.
+  // backlog held behind a limit costs nothing. A row held for an agent that is still waiting is passed over until that
+  // agent reads it, when it is taken to be dropped, so what is passed over is only the waiting agent's unread mail.
   const pendingOf = db.prepare(
     `SELECT id, attempts FROM webhook_deliveries
      WHERE webhook_id = ? AND delivered_at IS NULL AND attempts < ? AND (claimed_until IS NULL OR claimed_until <= ?)
+       AND (held_for IS NULL OR NOT EXISTS (${WAITING}) OR ${READ})
      ORDER BY id LIMIT ?`,
   );
   const rows: {
@@ -445,7 +457,7 @@ export async function sendPending(db: Db, options: SendOptions = {}): Promise<{ 
   for (const w of webhooks) {
     const take = w.allowance === null ? batch : Math.min(w.allowance, batch);
     if (take <= 0) continue;
-    for (const d of pendingOf.all(w.id, maxAttempts, now, take) as { id: number; attempts: number }[]) {
+    for (const d of pendingOf.all(w.id, maxAttempts, now, now, take) as { id: number; attempts: number }[]) {
       rows.push({
         id: d.id,
         attempts: d.attempts,
@@ -464,14 +476,24 @@ export async function sendPending(db: Db, options: SendOptions = {}): Promise<{ 
     "UPDATE webhook_deliveries SET attempts = attempts + 1, claimed_until = ? WHERE id = ? AND attempts = ? AND delivered_at IS NULL",
   );
   const windowOf = db.prepare("SELECT max_per_hour, window_started_at, window_count FROM webhooks WHERE id = ?");
+  // A held row whose message or mention its agent has read, which nobody needs woken for any more, and a held row whose
+  // agent is still waiting. Neither is ever true of a row that was not held.
+  const dropRead = db.prepare(
+    `DELETE FROM webhook_deliveries WHERE id = ? AND attempts = ? AND delivered_at IS NULL AND held_for IS NOT NULL AND ${READ}`,
+  );
+  const stillHeld = db.prepare(`SELECT 1 FROM webhook_deliveries WHERE id = ? AND held_for IS NOT NULL AND EXISTS (${WAITING})`);
   const use = db.prepare("UPDATE webhooks SET window_started_at = ?, window_count = ? WHERE id = ?");
   // Claims the row if its webhook has allowance left, using one request of it. Counted at the claim, as
   // attempts are, so a claim that sends nothing (a stored URL that no longer passes, a deleted message) uses one too.
   // `fresh` must match the `allowance` CASE in the webhooks query above. Returns the claim's `claimed_until`, or null.
+  // A held row is deleted unsent once its agent has read it, and left alone while the agent still waits; in either case no
+  // attempt or allowance is used. Otherwise, the wait over and the mail unread, it is sent as any other row.
   const claimWithin = db.transaction((row: (typeof rows)[number]): number | null => {
     const w = windowOf.get(row.webhook_id) as { max_per_hour: number | null; window_started_at: number | null; window_count: number } | undefined;
     if (!w) return null;
     const at = Date.now();
+    if (dropRead.run(row.id, row.attempts).changes === 1) return null;
+    if (stillHeld.get(row.id, at)) return null;
     const fresh = w.window_started_at === null || w.window_started_at + WEBHOOK_WINDOW_MS <= at;
     if (w.max_per_hour !== null && !fresh && w.window_count >= w.max_per_hour) return null;
     const until = at + 2 * timeoutMs;
