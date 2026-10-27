@@ -11,7 +11,7 @@ import { startHttp, type HttpServer } from "../src/http.js";
 import { NotAdminError, OwnPersonError, listInvites, makeInvite, redeemLoginCode, removePersonBy, setAdminBy, LoginRefused } from "../src/login.js";
 import { sendAsPerson } from "../src/messages.js";
 
-// PATCH and DELETE /api/people: an admin person's token marks, unmarks and removes the other people of its own account,
+// GET, PATCH and DELETE /api/people: an admin person's token lists the people of its own account and marks, unmarks and removes the other people of its own account,
 // on a server with the owner's account and a friend's.
 const OWNER_TOKEN = "owner-token";
 let db: Db;
@@ -277,10 +277,10 @@ describe("who PATCH and DELETE /api/people reach", () => {
   });
 
   it("answer 405 with Allow to another method", async () => {
-    for (const method of ["GET", "PUT"]) {
+    for (const method of ["PUT"]) {
       const res = await call("/api/people?name=ben", ana, method);
       expect(res.status).toBe(405);
-      expect(res.headers.get("allow")).toBe("POST, PATCH, DELETE");
+      expect(res.headers.get("allow")).toBe("GET, POST, PATCH, DELETE");
     }
   });
 
@@ -310,6 +310,90 @@ describe("who PATCH and DELETE /api/people reach", () => {
     held.end(" ".repeat(999));
     expect(await answered).toBe(400);
     expect(accountForToken(db, ana, OWNER_TOKEN)?.person?.admin).toBe(true);
+  });
+});
+
+describe("GET /api/people", () => {
+  const list = async (query = "", token = ana) => {
+    const res = await call(`/api/people${query}`, token);
+    expect(res.status).toBe(200);
+    return (await res.json()) as { name: string; admin: boolean; addedAt: string }[];
+  };
+  const addedAt = (name: string) =>
+    new Date(db.prepare("SELECT registered_at FROM agents WHERE account_id = ? AND name = ?").pluck().get(OWNER_ACCOUNT, name) as number).toISOString();
+
+  it("lists the account's live people by name with their role and when they were added, never an agent, a removed person or another account's", async () => {
+    addPerson(db, "owner", "Cy");
+    addPerson(db, "owner", "dan");
+    removePerson(db, "owner", "dan");
+    registerAgent(db, OWNER_ACCOUNT, "bot", "");
+    addPerson(db, "friend", "fay", true);
+    addPerson(db, "friend", "aaron");
+    expect(await list()).toEqual([
+      { name: "ana", admin: true, addedAt: addedAt("ana") },
+      { name: "ben", admin: false, addedAt: addedAt("ben") },
+      { name: "Cy", admin: false, addedAt: addedAt("Cy") },
+    ]);
+    // The friend's admin sees only the friend's people.
+    expect((await list("", personToken("friend", "fay"))).map((p) => p.name)).toEqual(["aaron", "fay"]);
+    // A mark shows in the next list.
+    await mark("ben", true);
+    expect((await list()).find((p) => p.name === "ben")!.admin).toBe(true);
+  });
+
+  it("pages with limit and offset, and answers 400 to a bad one", async () => {
+    addPerson(db, "owner", "cy");
+    expect((await list("?limit=2")).map((p) => p.name)).toEqual(["ana", "ben"]);
+    expect((await list("?limit=2&offset=2")).map((p) => p.name)).toEqual(["cy"]);
+    for (const query of ["?limit=0", "?limit=201", "?offset=-1", "?limit=x"]) {
+      expect((await call(`/api/people${query}`, ana)).status, query).toBe(400);
+    }
+  });
+
+  it("refuses a plain person, read-only and agent token with 403, and a full token with its own 403", async () => {
+    const tokens = [
+      [personToken("owner", "ben"), "A person token only reads, sends and posts"],
+      [addToken(db, "owner", true).token, "This token is read-only"],
+      [addToken(db, "owner", false, true).token, "Agent tokens cannot use the dashboard API"],
+      [OWNER_TOKEN, /^A full token cannot add, mark or remove people or make invites\. Sign in as an admin person/],
+    ] as const;
+    for (const [token, expected] of tokens) {
+      const res = await call("/api/people", token);
+      expect(res.status).toBe(403);
+      const text = await message(res);
+      if (typeof expected === "string") expect(text).toBe(expected);
+      else expect(text).toMatch(expected);
+    }
+    expect((await call("/api/people", null)).status).toBe(401);
+  });
+
+  it("answers 503 with Retry-After when the database is busy, and takes no slot", async () => {
+    await http.close();
+    await start({ maxSessions: 1 });
+    const held = request(`${base()}/api/send`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${ana}`, "Content-Type": "application/json", "Content-Length": "1000" },
+    });
+    held.on("error", () => {});
+    held.write("{");
+    await new Promise((r) => setTimeout(r, 200));
+    expect((await list()).length).toBe(2);
+    held.destroy();
+    const prepare = db.prepare.bind(db);
+    vi.spyOn(db, "prepare").mockImplementation(((sql: string) => {
+      if (sql.includes("SELECT name, admin, registered_at FROM agents")) throw Object.assign(new Error("database is locked"), { code: "SQLITE_BUSY" });
+      return prepare(sql);
+    }) as typeof db.prepare);
+    const res = await call("/api/people", ana);
+    expect(res.status).toBe(503);
+    expect(res.headers.get("retry-after")).toBe("1");
+  });
+
+  it("is found by the account's index on agents", () => {
+    const plan = (db.prepare(
+      "EXPLAIN QUERY PLAN SELECT name, admin, registered_at FROM agents WHERE account_id = 1 AND person = 1 AND removed_at IS NULL ORDER BY name LIMIT 1 OFFSET 0",
+    ).all() as { detail: string }[]).map((p) => p.detail);
+    expect(plan.join("\n")).not.toMatch(/SCAN agents|TEMP B-TREE/);
   });
 });
 
