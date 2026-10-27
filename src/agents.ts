@@ -231,6 +231,31 @@ export function nameOfIdentity(db: Db, account: AccountId, identity: Identity): 
   return row?.name;
 }
 
+/** How long a wait's mark lasts after the check that last renewed it, so a waiter that crashed holds no delivery longer. */
+export const WAIT_MARK_MS = 30_000;
+/** A check renews the mark only once less than this is left, so a held wait writes about every 10 seconds, not every check. */
+const WAIT_MARK_RENEW_MS = 20_000;
+
+/**
+ * Marks `reader` (a name, or one registration) as waiting for mail until `WAIT_MARK_MS` from now, for `sendPending` in
+ * webhooks.ts, which holds the deliveries queued for its messages and mentions meanwhile. Each check of a held wait that
+ * finds nothing unread calls it, never one that finds mail, so an agent that keeps waiting without reading holds nothing.
+ * A person is never marked. It reads first and writes only when the mark needs renewing, so most checks take no write
+ * lock. Best effort: a lock held past the busy timeout leaves the mark as it was, and the next check tries again.
+ */
+export function markWaiting(db: Db, account: AccountId, reader: string | Identity, now = Date.now()): void {
+  const which = typeof reader === "string" ? "name = ?" : "id = ? AND registered_at = ? AND instance IS ?";
+  const args = typeof reader === "string" ? [reader] : [reader.id, reader.registeredAt, reader.instance];
+  const live = `account_id = ? AND ${which} AND removed_at IS NULL AND person = 0 AND (waiting_until IS NULL OR waiting_until < ?)`;
+  try {
+    if (!db.prepare(`SELECT 1 FROM agents WHERE ${live}`).get(account, ...args, now + WAIT_MARK_RENEW_MS)) return;
+    db.prepare(`UPDATE agents SET waiting_until = ? WHERE ${live}`).run(now + WAIT_MARK_MS, account, ...args, now + WAIT_MARK_RENEW_MS);
+  } catch (err) {
+    const code = (err as { code?: unknown } | null)?.code;
+    if (typeof code !== "string" || !code.startsWith("SQLITE_BUSY")) throw err;
+  }
+}
+
 export function touchAgent(db: Db, account: AccountId, name: string): void {
   db.prepare("UPDATE agents SET last_seen = ? WHERE account_id = ? AND name = ? AND removed_at IS NULL").run(Date.now(), account, name);
 }

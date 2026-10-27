@@ -11,6 +11,7 @@ import {
   ToolError,
   getAgent,
   listAgents,
+  markWaiting,
   nameOfIdentity,
   registerWithIdentity,
   removeAgent,
@@ -367,17 +368,24 @@ export function createServer(db: Db, session = new Session(OWNER_ACCOUNT), optio
       const own = session.requireAgent();
       const deadline = Date.now() + (timeout_seconds ?? DEFAULT_WAIT_FOR_MAIL_SECONDS) * 1000;
       // Each check finds the caller by its registration, so a removed agent, or another that took its name, ends the call.
+      // Once the call holds a slot, a check that finds nothing marks the caller waiting, so a message or mention stored
+      // until the mark ends holds its webhook; one that finds mail does not, so mail left unread is not held by it.
+      let holding = false;
       const answer = () => {
         const unread = check(() => unreadSummary(db, account, own), NOTHING_UNREAD);
         if (!unread) throw new ToolError(NOT_REGISTERED);
-        return hasUnread(unread) ? { unread: formatUnread(unread) } : undefined;
+        if (hasUnread(unread)) return { unread: formatUnread(unread) };
+        if (holding) markWaiting(db, account, own);
+        return undefined;
       };
       // Mail that is already there is answered at once, whatever the cap.
       const first = answer();
       if (first) return first;
       const release = hold();
       if (!release) throw new ToolError(WAIT_FOR_MAIL_FULL);
+      holding = true;
       try {
+        markWaiting(db, account, own);
         return (await poll(deadline, ended(extra), answer)) ?? { unread: null };
       } finally {
         release();

@@ -121,16 +121,18 @@ export function sendMessage(
       const insert = db.prepare(
         "INSERT INTO messages (recipient_id, sender, body, broadcast, created_at, in_reply_to) VALUES (?, ?, ?, ?, ?, ?)",
       );
-      // Each recipient's row is owed to every `agent:<recipient>` webhook of the account.
+      // Each recipient's row is owed to every `agent:<recipient>` webhook of the account, held for the recipient while
+      // it is waiting for mail (`markWaiting`), so `sendPending` leaves it to the waiting agent.
       const queue = db.prepare(
-        `INSERT INTO webhook_deliveries (webhook_id, message_id, created_at)
-         SELECT id, ?, ? FROM webhooks WHERE account_id = ? AND event = 'agent' AND name = ? COLLATE NOCASE ORDER BY id`,
+        `INSERT INTO webhook_deliveries (webhook_id, message_id, created_at, held_for)
+         SELECT id, ?, ?, (SELECT a.id FROM agents a WHERE a.id = ? AND a.waiting_until > ?)
+         FROM webhooks WHERE account_id = ? AND event = 'agent' AND name = ? COLLATE NOCASE ORDER BY id`,
       );
       const now = Date.now();
       const stored: SendResult["messages"] = [];
       for (const r of recipients) {
         const id = insert.run(r.id, from, body, broadcast ? 1 : 0, now, inReplyTo ?? null).lastInsertRowid;
-        queue.run(id, now, account, r.name);
+        queue.run(id, now, r.id, now, account, r.name);
         stored.push({ id: Number(id), to: r.name });
       }
       // Sending clears the sender's status line, on its own registration only, so a send from a session whose agent was

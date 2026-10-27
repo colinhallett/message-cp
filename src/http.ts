@@ -5,7 +5,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
 import { LATEST_PROTOCOL_VERSION, isInitializeRequest, isJSONRPCRequest, type RequestId } from "@modelcontextprotocol/sdk/types.js";
 import { accountForToken, accountName, listApprovals, type BoundAgent, type TokenAccess } from "./accounts.js";
-import { DEFAULT_LIST_LIMIT, MAX_LIST_LIMIT, PersonError, ToolError, WrongPersonError, registerWithIdentity, type Identity } from "./agents.js";
+import { DEFAULT_LIST_LIMIT, MAX_LIST_LIMIT, PersonError, ToolError, WrongPersonError, markWaiting, registerWithIdentity, type Identity } from "./agents.js";
 import {
   DEFAULT_CHANNEL_LIMIT,
   MAX_CHANNEL_LIMIT,
@@ -573,6 +573,8 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
         res.writeHead(204);
         return void res.end();
       }
+      // A held check that found nothing marks the agent waiting, as `wait_for_mail` does.
+      markWaiting(db, account, reader);
       // Sleep a second, or until the client goes away; the timer is cleared either way.
       await new Promise<void>((resolve) => {
         const timer = setTimeout(resolve, Math.min(1000, left));

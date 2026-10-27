@@ -5061,6 +5061,39 @@ describe("the page's posting", () => {
     expect(signins()).toEqual(["POST", "DELETE"]);
   });
 
+  it("says so when its clean-up after another tab's sign-out is not confirmed, and signs out again on the button", async () => {
+    seed();
+    let answer!: () => void;
+    const held = new Promise<void>((resolve) => (answer = resolve));
+    let refuse = true;
+    const channels: { onmessage?: () => void }[] = [];
+    class Channel {
+      onmessage?: () => void;
+      constructor() {
+        channels.push(this);
+      }
+      postMessage() {}
+    }
+    const page = await load(
+      colinToken(),
+      (url, method) =>
+        url === "oauth/signin" ? (method === "POST" ? { status: 204, hold: held } : refuse ? { status: 503 } : { status: 204 }) : undefined,
+      { BroadcastChannel: Channel },
+    );
+    const signins = () => page.requests.filter((r) => r.url === "oauth/signin").map((r) => r.method);
+    await page.until(() => signins().length === 1);
+    channels[0].onmessage!();
+    answer();
+    await page.until(() => page.elements["signout-retry"].hidden === false);
+    expect(signins()).toEqual(["POST", "DELETE"]);
+    expect(page.elements["status-line"].textContent).toContain("did not confirm signing this browser out");
+    refuse = false;
+    page.elements["signout-retry"].on.click();
+    await page.until(() => signins().length === 3);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(page.elements["signout-retry"].hidden).toBe(true);
+  });
+
   it("does not clear the sign-in on another tab's sign-out when it has none in flight", async () => {
     seed();
     const channels: { onmessage?: () => void }[] = [];

@@ -410,12 +410,14 @@ function signout() {
   signing = done;
   return done;
 }
-// Forgets this tab's token, clears the sign-in cookie, and, if the server does not confirm that, says so on the token
-// form with a button to try again, while the token form is still showing and no newer sign-out has been asked for.
-function forget() {
+// Forgets this tab's token and, unless clear is false, clears the sign-in cookie; if the server does not confirm that,
+// says so on the token form with a button to try again, while the token form is still showing and no newer token has
+// been entered.
+function forget(clear = true) {
   ask();
   const gen = tokenGeneration;
   signoutRetry.hidden = true;
+  if (!clear) return;
   signout().then((ok) => {
     if (ok || gen !== tokenGeneration || form.hidden) return;
     say("The server did not confirm signing this browser out of the page that approves clients, so it may still approve until the browser closes.", true);
@@ -610,14 +612,9 @@ document.getElementById("forget").addEventListener("click", () => {
 });
 signoutRetry.addEventListener("click", () => forget());
 // Another tab signed out: forget this tab's token too. A sign-in this tab sent that is still unanswered could set the
-// cookie again after the other tab's DELETE, so this tab clears it again once its own requests are answered.
-if (signouts) {
-  signouts.onmessage = () => {
-    const pending = signinsPending > 0;
-    ask();
-    if (pending) signout();
-  };
-}
+// cookie again after the other tab's DELETE, so this tab clears it again once its own requests are answered, and says
+// so if the server does not confirm it, as its own "Forget token" does.
+if (signouts) signouts.onmessage = () => forget(signinsPending > 0);
 document.getElementById("close-log").addEventListener("click", () => {
   closeLog();
   markOpen();
