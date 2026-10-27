@@ -538,11 +538,17 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
    * GET /api/token: whether the request's token is read-only and whether it is agent-only, so the dashboard offers
    * posting only to a token that may post and tells an agent token that it cannot use the page, and for a person token
    * the person's name, which the dashboard then posts and sends as in place of offering a choice of person (the server
-   * still refuses any other). It gives nothing else about the token: no token, hash, id or account.
+   * still refuses any other), and `admin: true` while that person is an admin, so the dashboard offers Delete. It gives
+   * nothing else about the token: no token, hash, id or account.
    */
   const apiToken = (req: IncomingMessage, res: ServerResponse, access: TokenAccess) => {
     if (req.method !== "GET") return reply(res, 405, "Method not allowed", { Allow: "GET" });
-    sendJson(res, { readOnly: access.readOnly, agentOnly: access.agentOnly, ...(access.person && { person: access.person.name }) });
+    sendJson(res, {
+      readOnly: access.readOnly,
+      agentOnly: access.agentOnly,
+      ...(access.person && { person: access.person.name }),
+      ...(access.person?.admin && { admin: true }),
+    });
   };
 
   /**
@@ -1024,9 +1030,10 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
     // A read-only token reaches the read-only endpoints above and nothing else: /mcp can write, and so can any path added later.
     if (access.readOnly) return reply(res, 403, "This token is read-only");
     // A person token also sends and posts, only as its person (checked by row once the body is read), approves clients
-    // (above), and reaches nothing else: not /mcp, /wait or a delete, nor any path added later. It is refused before a slot is taken or a body read.
-    if (access.person && path !== "/api/send" && path !== "/api/post") {
-      return reply(res, 403, "A person token only reads, sends and posts", { Connection: "close" });
+    // (above), and, while its person is an admin, deletes the account's conversations as a full token does. It reaches
+    // nothing else: not /mcp, /wait, nor any path added later. It is refused before a slot is taken or a body read.
+    if (access.person && path !== "/api/send" && path !== "/api/post" && !(access.person.admin && path === "/api/conversation")) {
+      return reply(res, 403, access.person.admin ? "An admin person token only reads, sends, posts and deletes" : "A person token only reads, sends and posts", { Connection: "close" });
     }
     if (path === "/api/send") return apiSend(req, res, account, access.person?.id);
     if (path === "/api/post") return apiPost(req, res, account, access.person?.id);

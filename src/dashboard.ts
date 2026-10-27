@@ -16,7 +16,8 @@ import { MAX_BODY_LENGTH } from "./messages.js";
 // start one with anyone in the account from "New message", with POST /api/send, or create a channel from "New channel" by
 // its first post, with POST /api/post, and delete an open direct conversation, after confirming, with
 // DELETE /api/conversation; that is all it ever writes. With a person token it is that person: it names them in place of
-// the choice and does the same, except deleting, only as them. With a read-only token it only reads. An agent token,
+// the choice and does the same only as them, except deleting, which it offers only when GET /api/token says the person
+// is an admin. With a read-only token it only reads. An agent token,
 // which the server refuses on every /api path but GET /api/token, it forgets, saying that agent tokens cannot use it. It
 // puts agent- and person-supplied text on the page with textContent, never as HTML.
 
@@ -364,9 +365,11 @@ let searchController;
 // Whether GET /api/token said this token is a full or a person token, which alone shows the compose box, and for a
 // person token the name of its person (undefined otherwise), whom the page then posts and sends as in place of a
 // choice; the server's 403 is still what keeps a read-only token from posting, and a person token from posting as anyone
-// else. tokenGeneration drops an answer to GET /api/token, or to a send, that comes after the token was forgotten.
+// else. meAdmin is whether GET /api/token said that person is an admin, which lets them delete as a full token does.
+// tokenGeneration drops an answer to GET /api/token, or to a send, that comes after the token was forgotten.
 let canPost = false;
 let me;
+let meAdmin = false;
 let tokenGeneration = 0;
 let tokenController;
 // The names whose details the agents panel shows open, kept across polls; a name no longer listed is dropped, and ask()
@@ -477,6 +480,7 @@ function ask(message) {
   if (tokenController) tokenController.abort();
   canPost = false;
   me = undefined;
+  meAdmin = false;
   people = undefined;
   pickerKey = "";
   person = undefined;
@@ -870,6 +874,7 @@ async function checkToken() {
   const deadline = setTimeout(() => ac.abort(), TIMEOUT_MS);
   let full = false;
   let own;
+  let admin = false;
   let refused = false;
   let agent = false;
   try {
@@ -885,11 +890,13 @@ async function checkToken() {
       const answer = await res.json();
       full = answer.readOnly === false && answer.agentOnly === false;
       own = full && typeof answer.person === "string" ? answer.person : undefined;
+      admin = own !== undefined && answer.admin === true;
       agent = answer.agentOnly === true;
     }
   } catch {
     full = false;
     own = undefined;
+    admin = false;
   } finally {
     clearTimeout(deadline);
   }
@@ -898,6 +905,7 @@ async function checkToken() {
   if (agent) return ask(AGENT_TOKEN);
   canPost = full;
   me = own;
+  meAdmin = admin;
   showPicker();
   fillNew();
   fillChannel();
@@ -1435,11 +1443,11 @@ async function send() {
   composeSend.disabled = false;
 }
 
-// The open pair, while its Delete button may show: a full token, not a person token, and a direct conversation with
-// messages in it.
+// The open pair, while its Delete button may show: a full token with no person, or an admin person's token, and a direct
+// conversation with messages in it.
 function deletable() {
   const pair = openPair !== undefined ? pairs.get(openPair) : undefined;
-  return canPost && me === undefined && pair && pair.count > 0 ? pair : undefined;
+  return canPost && (me === undefined || meAdmin) && pair && pair.count > 0 ? pair : undefined;
 }
 
 // The keys of the held pairs that DELETE /api/conversation with key's two names deletes too: the server matches names

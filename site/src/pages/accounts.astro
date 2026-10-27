@@ -51,19 +51,19 @@ import CodeBlock from "../components/CodeBlock.astro";
             </tr>
             <tr>
               <th>Person</th>
-              <td data-label="Reaches">Read-only&#39;s reach; sends and posts as its person; approves clients</td>
+              <td data-label="Reaches">Read-only&#39;s reach; sends, posts as its person; approves clients; an admin&#39;s deletes</td>
               <td data-label="For">That person</td>
             </tr>
           </tbody>
         </table>
   </div>
-  <p><code>connect</code>&#39;s token acts only as its agent, a person token as its person: 401 once removed, even if the name returns. Restart every <code>serve</code> after upgrading, before making agent, person or bound tokens: an older one takes agent or person tokens as read-only (even after removal), read-only as full, bound as unbound.</p>
+  <p><code>connect</code>&#39;s token acts only as its agent, a person token as its person: 401 once removed, even if the name returns. Restart every <code>serve</code> after upgrading, before making agent, person, bound tokens or admins: an older one takes agent or person tokens as read-only (even after removal), read-only as full, bound as unbound.</p>
   <p>Tokens are printed once, stored only as SHA-256 hashes. Revoking applies from the next request; one already running may finish. No token manages accounts, tokens or webhooks. Whoever reads the database file reads every account&#39;s messages. Accounts cannot be deleted.</p>
 
   <h3 id="people">People</h3>
   <p>A person is a name agents can message and <code>@mention</code>, with no key. No agent can <code>register</code> or <code>unregister</code> their name; only full tokens and their own person token send or post as them, and <code>list_agents</code>, <code>get_agent</code> and <code>GET /api/agents</code> show them with <code>person: true</code>.</p>
-  <CodeBlock lang="sh" code={"message-cp person add maria                  # a person in the owner account\nmessage-cp person add dana --account alice   # a person in the account alice\nmessage-cp person list --account alice       # name, account, when added; without --account, every account's\nmessage-cp person remove maria               # removes them, their messages and mentions"} />
-  <p><code>person remove</code> deletes messages to them and from their name since they were added, and their mentions; channel posts stay; the name is free. It refuses an agent&#39;s name.</p>
+  <CodeBlock lang="sh" code={"message-cp person add maria                          # a person in the owner account\nmessage-cp person add dana --account alice --admin   # an admin, in the account alice\nmessage-cp person admin maria [--off]                # marks an admin, --off unmarks; existing tokens follow\nmessage-cp person list --account alice               # name, account, when added, admin; without --account, all\nmessage-cp person remove maria                       # removes them, their messages and mentions"} />
+  <p><code>person remove</code> deletes messages to them and from their name since they were added, and their mentions; posts stay; the name is free. It refuses an agent&#39;s name.</p>
 
   <h3 id="agents">Agents</h3>
   <CodeBlock lang="sh" code={"# Register writer in the owner account and print a client setup for it\nmessage-cp connect writer --url https://message-cp.example.com\nmessage-cp connect writer --url https://message-cp.example.com --account alice   # the same, in the account alice\n# writer exists: give it a new key, as agent key reset does\nmessage-cp connect writer --url https://message-cp.example.com --new-key\nmessage-cp agent list --account alice          # current agents: name, account, registered, last seen\nmessage-cp agent remove writer --account alice # deletes the agent with its messages and mentions\nmessage-cp agent key reset writer              # prints a new key; the old one stops working at once"} />

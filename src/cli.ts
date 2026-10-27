@@ -2,7 +2,7 @@
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { DEFAULT_HTTP_HOST, DEFAULT_HTTP_PORT, startHttp } from "./http.js";
-import { AgentListError, KeyResetError, PersonError, PurgeError, ToolError, addPerson, listPeople, listServerAgents, purgeAgent, removePerson, resetAgentKey } from "./agents.js";
+import { AgentListError, KeyResetError, PersonError, PurgeError, ToolError, addPerson, listPeople, listServerAgents, purgeAgent, removePerson, resetAgentKey, setPersonAdmin } from "./agents.js";
 import { AccountError, addAccount, addToken, listAccounts, listTokens, revokeToken, type NewToken } from "./accounts.js";
 import { ConnectError, clientSetup, connectAgent, mcpEndpoint, publicUrl as checkedPublicUrl } from "./connect.js";
 import { OWNER_ACCOUNT, openDb } from "./db.js";
@@ -19,7 +19,8 @@ const USAGE = {
   wait: "message-cp wait <name>",
   account: "message-cp account add <name> | message-cp account list | message-cp token add <account> [--read-only | --agent-only | --person <name>] | message-cp token list | message-cp token revoke <token id>",
   webhook: "message-cp webhook add --url <url> --on <#channel | mention:<agent> | agent:<agent>> [--account <name>] [--no-text] [--header-stdin] [--max-per-hour <n>] [--body <json>] | message-cp webhook list [--account <name>] | message-cp webhook remove <webhook id>",
-  person: "message-cp person add <name> [--account <name>] | message-cp person remove <name> [--account <name>] | message-cp person list [--account <name>]",
+  person:
+    "message-cp person add <name> [--account <name>] [--admin] | message-cp person admin <name> [--off] [--account <name>] | message-cp person remove <name> [--account <name>] | message-cp person list [--account <name>]",
   agent: "message-cp agent list [--account <name>] | message-cp agent remove <name> [--account <name>] | message-cp agent key reset <name> [--account <name>]",
   connect: "message-cp connect <agent> --url <public url> [--account <name>] [--new-key]",
   "login-link": "message-cp login-link --url <public url> [--account <name>] [--person <name>]",
@@ -222,9 +223,14 @@ if (command === "serve") {
     process.exit(2);
   };
   const [action, ...args] = rest;
-  const named = action === "add" || action === "remove";
+  const named = action === "add" || action === "admin" || action === "remove";
   const name = named ? args.shift() : undefined;
   if ((!named && action !== "list") || (named && (!name || name.startsWith("--")))) usage();
+  // `--admin` on `add` and `--off` on `admin` take no value, and may come once, anywhere among the arguments; it is taken
+  // out before the `--account` pair is read, so `--account --admin owner` reads as `--account owner --admin`.
+  const flag = action === "add" ? "--admin" : action === "admin" ? "--off" : undefined;
+  const flagged = flag !== undefined && args.includes(flag);
+  if (flagged) args.splice(args.indexOf(flag!), 1);
   const opts = new Map<string, string>();
   for (let i = 0; i < args.length; i += 2) {
     const option = args[i]!;
@@ -235,15 +241,19 @@ if (command === "serve") {
   const db = openDb();
   try {
     if (action === "add") {
-      const p = addPerson(db, opts.get("--account") ?? "owner", name!);
-      console.error(`message-cp: person '${p.name}' in account '${p.account}'. Agents there can message and @mention them.`);
+      const p = addPerson(db, opts.get("--account") ?? "owner", name!, flagged);
+      const admin = p.admin ? ", an admin," : "";
+      console.error(`message-cp: person '${p.name}'${admin} in account '${p.account}'. Agents there can message and @mention them.`);
+    } else if (action === "admin") {
+      const p = setPersonAdmin(db, opts.get("--account") ?? "owner", name!, !flagged);
+      console.error(`message-cp: person '${p.name}' of account '${p.account}' is ${p.admin ? "now an admin" : "no longer an admin"}.`);
     } else if (action === "remove") {
       const p = removePerson(db, opts.get("--account") ?? "owner", name!);
       console.error(
         `message-cp: removed person '${p.name}' of account '${p.account}', with ${p.messages} direct message(s) and ${p.mentions} mention(s). The name is free.`,
       );
     } else {
-      for (const p of listPeople(db, opts.get("--account"))) console.log(`${p.name}\t${p.account}\tadded ${p.addedAt}`);
+      for (const p of listPeople(db, opts.get("--account"))) console.log(`${p.name}\t${p.account}\tadded ${p.addedAt}${p.admin ? "\tadmin" : ""}`);
     }
   } catch (err) {
     if (!(err instanceof PersonError)) throw err;

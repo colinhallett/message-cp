@@ -9,7 +9,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { accountForToken, addAccount, addToken, listAccounts, revokeToken } from "../src/accounts.js";
 import { makeLoginCode, redeemLoginCode } from "../src/login.js";
 import { OWNER_ACCOUNT, openDb, type Db } from "../src/db.js";
-import { addPerson, identityOf, registerAgent, removeAgent, removePerson, setStatus } from "../src/agents.js";
+import { addPerson, identityOf, registerAgent, removeAgent, removePerson, setPersonAdmin, setStatus } from "../src/agents.js";
 import { joinChannel, leaveChannel, post } from "../src/channels.js";
 import { MAX_BODY_LENGTH, readInbox, sendMessage, unreadSummary } from "../src/messages.js";
 import { startHttp, type HttpServer } from "../src/http.js";
@@ -5122,6 +5122,39 @@ describe("the page's posting", () => {
       expect(names(page.elements["new-from"])).toEqual(["", "colin", "dana", "maria"]);
       open(page.elements["pair-rows"], "bob ↔ maria");
       await page.until(() => !page.elements["delete-pair"].hidden);
+    });
+
+    it("shows Delete to an admin person's token as to a full token, follows the mark at the next token check, and deletes", async () => {
+      seedPeople();
+      setPersonAdmin(db, "owner", "maria", true);
+      const page = await load(maria);
+      await ready(page);
+      // Any open pair with messages, not only the person's own, as a full token sees it.
+      open(page.elements["pair-rows"], "bob ↔ colin");
+      await page.until(() => !page.elements["delete-pair"].hidden);
+      page.elements["delete-pair"].on.click();
+      page.elements["delete-yes"].on.click();
+      await page.until(() => db.prepare("SELECT COUNT(*) AS n FROM messages WHERE body = 'hi colin'").get()!.n === 0);
+      const [request] = page.requests.filter((r) => r.method === "DELETE");
+      expect(request.url).toBe("/api/conversation?a=bob&b=colin");
+      expect(db.prepare("SELECT sender, body FROM messages").all()).toEqual([{ sender: "bob", body: "hi @maria" }]);
+      // Forgetting the admin's token and entering a plain person token on the same page shows no Delete.
+      const dana = addToken(db, "owner", false, false, undefined, "dana").token;
+      page.elements["forget"].on.click();
+      expect(page.elements["delete-pair"].hidden).toBe(true);
+      page.elements["token"].value = dana;
+      page.elements["login"].on.submit({ preventDefault() {} } as never);
+      await page.until(() => !page.elements["new-message"].hidden && page.elements["pair-rows"].children.length === 1);
+      open(page.elements["pair-rows"], "bob ↔ maria");
+      await page.poll();
+      expect(page.elements["delete-pair"].hidden).toBe(true);
+      // Unmarked, the same token is a plain person token once the page asks again: no Delete, even in maria's own pair.
+      setPersonAdmin(db, "owner", "maria", false);
+      const plain = await load(maria);
+      await plain.until(() => !plain.elements["new-message"].hidden && plain.elements["pair-rows"].children.length === 1);
+      open(plain.elements["pair-rows"], "bob ↔ maria");
+      await plain.poll();
+      expect(plain.elements["delete-pair"].hidden).toBe(true);
     });
   });
 
