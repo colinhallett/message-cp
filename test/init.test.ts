@@ -998,6 +998,7 @@ describe("checkRemote and proveRemote", () => {
       [{ token: readOnly }, /^the server refused the token in MESSAGE_CP_HTTP_TOKEN \(403\): This token is read-only$/],
       [{ key: "wrong-key" }, /^the server refused agent 'writer' with the key in MESSAGE_CP_AGENT_KEY \(403\): /],
       [{ agent: "nobody" }, /^the server has no agent named 'nobody'/],
+      [{ agent: "a b" }, /^the server has no agent named 'a b'; make it on the server with: message-cp connect 'a b' --url <public url>$/],
     ] as const) {
       const err = await failure(checkRemote(r(over)));
       expect(err, JSON.stringify(over)).toBeInstanceOf(InitError);
