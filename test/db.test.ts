@@ -377,7 +377,11 @@ describe("openDb", () => {
 
     const kept = (db: Database.Database) => ({
       messages: db.prepare("SELECT * FROM messages ORDER BY id").all(),
-      deliveries: db.prepare("SELECT * FROM webhook_deliveries ORDER BY id").all(),
+      // Without `held_for`, which `migrate` adds after the rebuild, null on every row from before it.
+      deliveries: (db.prepare("SELECT * FROM webhook_deliveries ORDER BY id").all() as { held_for?: unknown }[]).map(({ held_for, ...d }) => {
+        expect(held_for ?? null).toBeNull();
+        return d;
+      }),
       indexes: db.prepare("SELECT name, sql FROM sqlite_master WHERE type = 'index' AND tbl_name = 'messages' ORDER BY name").all(),
     });
     const messagesSql = (db: Database.Database) =>

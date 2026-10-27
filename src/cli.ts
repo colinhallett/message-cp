@@ -2,7 +2,7 @@
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { DEFAULT_HTTP_HOST, DEFAULT_HTTP_PORT, startHttp } from "./http.js";
-import { AgentListError, KeyResetError, PersonError, PurgeError, ToolError, addPerson, listPeople, listServerAgents, purgeAgent, removePerson, resetAgentKey, setPersonAdmin } from "./agents.js";
+import { AgentListError, KeyResetError, PersonError, PurgeError, ToolError, addPerson, listPeople, listServerAgents, markWaiting, purgeAgent, removePerson, resetAgentKey, setPersonAdmin } from "./agents.js";
 import { AccountError, addAccount, addToken, listAccounts, listTokens, revokeToken, type NewToken } from "./accounts.js";
 import { ConnectError, clientSetup, connectAgent, mcpEndpoint, publicUrl as checkedPublicUrl } from "./connect.js";
 import { OWNER_ACCOUNT, openDb } from "./db.js";
@@ -101,6 +101,8 @@ if (command === "serve") {
       if (err) console.error(`message-cp wait: could not write the summary: ${err.message}`);
       process.exit(err ? 1 : 0);
     }
+    // A check that found nothing marks the agent waiting, as `wait_for_mail` does.
+    markWaiting(db, OWNER_ACCOUNT, name);
     await new Promise((r) => setTimeout(r, 1000));
   }
 } else if (command === "account" || command === "token") {

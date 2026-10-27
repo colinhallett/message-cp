@@ -487,6 +487,12 @@ function migrate(db: Db, path: string): void {
   db.exec(DROP_REMOVED);
   db.prepare("INSERT OR IGNORE INTO accounts (id, name, created_at) VALUES (?, 'owner', ?)").run(OWNER_ACCOUNT, Date.now());
   addAccounts(db, path);
+  // Until when an agent counts as waiting for mail (`markWaiting` in agents.ts, renewed while a wait is held), in ms; null
+  // for never. Added after addAccounts(), whose rebuild of `agents` does not carry it. A delivery queued for an agent's
+  // message or mention while it is marked records the agent's id in `held_for`; `sendPending` sends it only once the mark
+  // has ended, and drops it instead if the agent has read the message or mention by then.
+  addColumn(db, "waiting_until", "INTEGER");
+  addColumn(db, "held_for", "INTEGER", "webhook_deliveries");
   // Broadcast reads every live agent of one account in name order; this keeps it from scanning the removed rows too.
   db.exec("CREATE INDEX IF NOT EXISTS agents_live ON agents (account_id, name) WHERE removed_at IS NULL");
 }
