@@ -502,8 +502,10 @@ function migrate(db: Db, path: string): void {
   addColumn(db, "held_for", "INTEGER", "webhook_deliveries");
   // The registering token (`tokens.registers`) whose session registered the agent, null for every other agent and every
   // one from before it. That token may act again as the agent; nothing else follows from it. Added after addAccounts(),
-  // like waiting_until. Tokens are revoked, never deleted, so nothing looks agents up by it.
+  // like waiting_until.
   addColumn(db, "token_id", "INTEGER REFERENCES tokens(id)");
+  // The foreign key's check when a token row is added or changed finds its agents through this, not by scanning agents.
+  db.exec("CREATE INDEX IF NOT EXISTS agents_by_token ON agents (token_id)");
   // Broadcast reads every live agent of one account in name order; this keeps it from scanning the removed rows too.
   db.exec("CREATE INDEX IF NOT EXISTS agents_live ON agents (account_id, name) WHERE removed_at IS NULL");
 }
