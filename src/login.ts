@@ -3,6 +3,7 @@ import { issueToken } from "./accounts.js";
 import { KeyResetError, PersonError, PurgeError, addPerson, purgeAgent, removePerson, resetAgentKey, setPersonAdmin, type Purged } from "./agents.js";
 import { publicUrl } from "./connect.js";
 import type { AccountId, Db } from "./db.js";
+import { formatOn, type WebhookEvent } from "./webhooks.js";
 
 // `message-cp login-link`: a dashboard link carrying a one-time code, made on the server, that signs a browser in as the
 // account's owner (a full token) or as one of its people (a person token), so nobody copies a token. The code is
@@ -300,6 +301,69 @@ export const resetAgentKeyBy = (db: Db, account: AccountId, by: number, name: st
       if (err instanceof KeyResetError) return undefined;
       throw err;
     }
+  }).immediate();
+
+/**
+ * A webhook as GET /api/webhooks lists it: its URL's origin only, since the path can carry a credential, and never its
+ * secret, header value or fixed body.
+ */
+export interface AccountWebhook {
+  id: number;
+  /** As `formatOn` prints it. */
+  on: string;
+  origin: string;
+  includeText: boolean;
+  headerName: string | null;
+  maxPerHour: number | null;
+  fixedBody: boolean;
+}
+
+/**
+ * For GET /api/webhooks: one page of the account's webhooks, oldest first. `by` is the row of the admin person asking.
+ * Throws `NotAdminError` unless they are still a live admin of the account.
+ */
+export const listWebhooksBy = (db: Db, account: AccountId, by: number, limit: number, offset: number): AccountWebhook[] =>
+  db.transaction(() => {
+    requireAdmin(db, account, by);
+    const rows = db
+      .prepare(
+        `SELECT id, url, event, name, include_text, header_name, max_per_hour, fixed_body IS NOT NULL AS fixed
+         FROM webhooks WHERE account_id = ? ORDER BY id LIMIT ? OFFSET ?`,
+      )
+      .all(account, limit, offset) as {
+      id: number;
+      url: string;
+      event: WebhookEvent;
+      name: string;
+      include_text: number;
+      header_name: string | null;
+      max_per_hour: number | null;
+      fixed: number;
+    }[];
+    return rows.map((r) => ({
+      id: r.id,
+      on: formatOn(r),
+      origin: new URL(r.url).origin,
+      includeText: r.include_text === 1,
+      headerName: r.header_name,
+      maxPerHour: r.max_per_hour,
+      fixedBody: r.fixed === 1,
+    }));
+  }).immediate();
+
+/**
+ * For DELETE /api/webhooks: deletes the account's webhook `id`, its queued and past deliveries going with it through
+ * `ON DELETE CASCADE`, and answers its id and how many deliveries went, or undefined, changing nothing, for an id the
+ * account has no webhook with, another account's included. `by` is the row of the admin person asking. Throws
+ * `NotAdminError` unless they are still a live admin of the account.
+ */
+export const removeWebhookBy = (db: Db, account: AccountId, by: number, id: number): { id: number; deliveries: number } | undefined =>
+  db.transaction(() => {
+    requireAdmin(db, account, by);
+    if (!db.prepare("SELECT 1 FROM webhooks WHERE id = ? AND account_id = ?").get(id, account)) return undefined;
+    const deliveries = db.prepare("SELECT count(*) FROM webhook_deliveries WHERE webhook_id = ?").pluck().get(id) as number;
+    db.prepare("DELETE FROM webhooks WHERE id = ? AND account_id = ?").run(id, account);
+    return { id, deliveries };
   }).immediate();
 
 /** An unused invite as GET /api/invites lists it: never its code or hash. */
