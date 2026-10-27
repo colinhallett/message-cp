@@ -108,6 +108,15 @@ describe("held deliveries", () => {
     expect(WAIT_MARK_MS).toBeLessThanOrEqual(60_000);
   });
 
+  it("holds nothing for a mark further ahead than WAIT_MARK_MS, as after the clock was put back", async () => {
+    const r = await receiver();
+    addWebhook(db, "owner", r.url, "agent:bob", true);
+    markWaiting(db, OWNER_ACCOUNT, "bob");
+    sendMessage(db, OWNER_ACCOUNT, "alice", "bob", "held");
+    db.prepare("UPDATE agents SET waiting_until = ? WHERE name = 'bob'").run(Date.now() + 60 * 60 * 1000);
+    expect(await sendPending(db)).toEqual({ delivered: 1, failed: 0 });
+  });
+
   it("holds a mention of a waiting agent the same way, and never a #channel webhook", async () => {
     const r = await receiver();
     addWebhook(db, "owner", r.url, "mention:bob", true);
@@ -164,7 +173,7 @@ describe("held deliveries", () => {
     const pending = plan(
       `SELECT id, attempts FROM webhook_deliveries
        WHERE webhook_id = 1 AND delivered_at IS NULL AND attempts < 3 AND (claimed_until IS NULL OR claimed_until <= 0)
-         AND (held_for IS NULL OR NOT EXISTS (SELECT 1 FROM agents a WHERE a.id = held_for AND a.waiting_until > 0 AND a.removed_at IS NULL)
+         AND (held_for IS NULL OR NOT EXISTS (SELECT 1 FROM agents a WHERE a.id = held_for AND a.waiting_until > 0 AND a.waiting_until <= 1 AND a.removed_at IS NULL)
            OR EXISTS (SELECT 1 FROM messages m WHERE m.id = message_id AND m.recipient_id = held_for AND m.read_at IS NOT NULL)
            OR EXISTS (SELECT 1 FROM mentions x WHERE x.agent_id = held_for AND x.post_id = webhook_deliveries.post_id AND x.read_at IS NOT NULL))
        ORDER BY id LIMIT 20`,
@@ -212,6 +221,19 @@ describe("over HTTP", () => {
     await new Promise((res) => setTimeout(res, 200));
     expect(r.got).toEqual([]);
     expect(deliveries()).toEqual([]);
+  });
+
+  it("never holds mail for a wait that finds it unread, so waiting again without reading does not keep it held", async () => {
+    const r = await receiver();
+    addWebhook(db, "owner", r.url, "agent:bob", true);
+    sendMessage(db, OWNER_ACCOUNT, "alice", "bob", "unread");
+    const bob = await client("bob");
+    for (let i = 0; i < 3; i++) {
+      expect(await text(bob, "wait_for_mail", { timeout_seconds: 5 })).toEqual({ unread: "1 unread message from alice" });
+      expect((await fetch(`http://127.0.0.1:${http.port}/wait?agent=bob`, { headers: auth })).status).toBe(200);
+    }
+    expect(db.prepare("SELECT waiting_until FROM agents WHERE name = 'bob'").get()).toEqual({ waiting_until: null });
+    await vi.waitFor(() => expect(r.got.map((g) => g.text)).toEqual(["unread"]));
   });
 
   it("holds a message that reaches a held GET /wait, and sends it once that wait has ended unread", async () => {

@@ -76,9 +76,7 @@ if (command === "serve") {
   for (;;) {
     let unread;
     try {
-      // `wait` reads the database file directly, so it is the owner's account, like stdio. Marked waiting first, as
-      // `wait_for_mail` does, so a message stored after the mark holds its webhook for this wait.
-      markWaiting(db, OWNER_ACCOUNT, name);
+      // `wait` reads the database file directly, so it is the owner's account, like stdio.
       unread = unreadSummary(db, OWNER_ACCOUNT, name);
     } catch (err) {
       // A lock held past the busy timeout is transient: try again at the next check.
@@ -103,6 +101,8 @@ if (command === "serve") {
       if (err) console.error(`message-cp wait: could not write the summary: ${err.message}`);
       process.exit(err ? 1 : 0);
     }
+    // A check that found nothing marks the agent waiting, as `wait_for_mail` does.
+    markWaiting(db, OWNER_ACCOUNT, name);
     await new Promise((r) => setTimeout(r, 1000));
   }
 } else if (command === "account" || command === "token") {

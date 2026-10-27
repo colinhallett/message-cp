@@ -238,7 +238,8 @@ const WAIT_MARK_RENEW_MS = 20_000;
 
 /**
  * Marks `reader` (a name, or one registration) as waiting for mail until `WAIT_MARK_MS` from now, for `sendPending` in
- * webhooks.ts, which holds the deliveries queued for its messages and mentions meanwhile. Each check of a wait calls it.
+ * webhooks.ts, which holds the deliveries queued for its messages and mentions meanwhile. Each check of a held wait that
+ * finds nothing unread calls it, never one that finds mail, so an agent that keeps waiting without reading holds nothing.
  * A person is never marked. It reads first and writes only when the mark needs renewing, so most checks take no write
  * lock. Best effort: a lock held past the busy timeout leaves the mark as it was, and the next check tries again.
  */

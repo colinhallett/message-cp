@@ -454,8 +454,6 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
    * time, as in `message-cp wait`.
    */
   const poll = (account: AccountId, reader: string | Identity): Unread | undefined => {
-    // Marked waiting first, as `wait_for_mail` does, so a message stored after the mark holds its webhook for this wait.
-    markWaiting(db, account, reader);
     try {
       return unreadSummary(db, account, reader);
     } catch (err) {
@@ -528,6 +526,8 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
         res.writeHead(204);
         return void res.end();
       }
+      // A held check that found nothing marks the agent waiting, as `wait_for_mail` does.
+      markWaiting(db, account, reader);
       // Sleep a second, or until the client goes away; the timer is cleared either way.
       await new Promise<void>((resolve) => {
         const timer = setTimeout(resolve, Math.min(1000, left));

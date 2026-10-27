@@ -1,12 +1,13 @@
 import { createHmac, randomBytes, randomUUID } from "node:crypto";
-import { NAME_PATTERN } from "./agents.js";
+import { NAME_PATTERN, WAIT_MARK_MS } from "./agents.js";
 import type { AccountId, Db } from "./db.js";
 import { MAX_INBOX_LIMIT } from "./messages.js";
 
 // Outgoing webhooks. The operator manages them with `message-cp webhook` on the server; no agent or token can.
 // Messages and posts a webhook is for are queued in `webhook_deliveries` when they are stored, and `serve` sends them
 // with `sendPending`: each body signed with the webhook's secret, a timeout and a few attempts. A message or mention
-// queued while its agent is waiting for mail is held until that wait ends, and dropped if the agent has read it. The stdio server and
+// queued while its agent is marked waiting for mail (`markWaiting`) is held until the mark ends, and dropped once the
+// agent has read it. The stdio server and
 // `message-cp wait` send nothing. A webhook's secret is shown once, when it is added, and stored as is so that
 // deliveries can sign with it. A webhook may also carry one header the owner sets, such as `Authorization`, sent on each
 // of its deliveries; its value is stored as is too, and never printed, logged or returned. And it may carry a limit on
@@ -358,10 +359,11 @@ export function deliveryBody(db: Db, id: number): DeliveryBody | undefined {
 }
 
 /**
- * True while the agent a held delivery is for (`held_for`) is still waiting for mail; its one parameter is the time now.
- * A removed agent waits for nothing, so its held deliveries go out at once.
+ * True while the agent a held delivery is for (`held_for`) is still waiting for mail; its parameters are the time now and
+ * `WAIT_MARK_MS` after it, so a mark set before the clock was put back holds nothing longer than a mark set now. A removed
+ * agent waits for nothing, so its held deliveries go out at once.
  */
-const WAITING = "SELECT 1 FROM agents a WHERE a.id = held_for AND a.waiting_until > ? AND a.removed_at IS NULL";
+const WAITING = "SELECT 1 FROM agents a WHERE a.id = held_for AND a.waiting_until > ? AND a.waiting_until <= ? AND a.removed_at IS NULL";
 /** True once the agent a held delivery is for has read its message or mention; read_at is never cleared. */
 const READ = `(EXISTS (SELECT 1 FROM messages m WHERE m.id = message_id AND m.recipient_id = held_for AND m.read_at IS NOT NULL)
   OR EXISTS (SELECT 1 FROM mentions x WHERE x.agent_id = held_for AND x.post_id = webhook_deliveries.post_id AND x.read_at IS NOT NULL))`;
@@ -457,7 +459,7 @@ export async function sendPending(db: Db, options: SendOptions = {}): Promise<{ 
   for (const w of webhooks) {
     const take = w.allowance === null ? batch : Math.min(w.allowance, batch);
     if (take <= 0) continue;
-    for (const d of pendingOf.all(w.id, maxAttempts, now, now, take) as { id: number; attempts: number }[]) {
+    for (const d of pendingOf.all(w.id, maxAttempts, now, now, now + WAIT_MARK_MS, take) as { id: number; attempts: number }[]) {
       rows.push({
         id: d.id,
         attempts: d.attempts,
@@ -493,7 +495,7 @@ export async function sendPending(db: Db, options: SendOptions = {}): Promise<{ 
     if (!w) return null;
     const at = Date.now();
     if (dropRead.run(row.id, row.attempts).changes === 1) return null;
-    if (stillHeld.get(row.id, at)) return null;
+    if (stillHeld.get(row.id, at, at + WAIT_MARK_MS)) return null;
     const fresh = w.window_started_at === null || w.window_started_at + WEBHOOK_WINDOW_MS <= at;
     if (w.max_per_hour !== null && !fresh && w.window_count >= w.max_per_hour) return null;
     const until = at + 2 * timeoutMs;
