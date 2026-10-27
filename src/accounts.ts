@@ -234,8 +234,7 @@ export function revokeToken(db: Db, id: number): string {
  * agent-only), else the account of a token created with `message-cp`, as long as it has not been revoked. A token bound
  * to an agent comes with that agent, and only while it is a live agent of the token's own account; a person token
  * comes with its person, only while that row is a live person of the token's own account, and with whether that row is
- * marked admin now. Undefined for anything
- * else, a bound token whose agent or person has been removed included.
+ * marked admin now. Undefined for anything else, a bound token whose agent or person has been removed included.
  */
 export function accountForToken(db: Db, token: string, ownerToken: string): TokenAccess | undefined {
   const hash = hashToken(token);

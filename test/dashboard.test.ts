@@ -5138,6 +5138,16 @@ describe("the page's posting", () => {
       const [request] = page.requests.filter((r) => r.method === "DELETE");
       expect(request.url).toBe("/api/conversation?a=bob&b=colin");
       expect(db.prepare("SELECT sender, body FROM messages").all()).toEqual([{ sender: "bob", body: "hi @maria" }]);
+      // Forgetting the admin's token and entering a plain person token on the same page shows no Delete.
+      const dana = addToken(db, "owner", false, false, undefined, "dana").token;
+      page.elements["forget"].on.click();
+      expect(page.elements["delete-pair"].hidden).toBe(true);
+      page.elements["token"].value = dana;
+      page.elements["login"].on.submit({ preventDefault() {} } as never);
+      await page.until(() => !page.elements["new-message"].hidden && page.elements["pair-rows"].children.length === 1);
+      open(page.elements["pair-rows"], "bob ↔ maria");
+      await page.poll();
+      expect(page.elements["delete-pair"].hidden).toBe(true);
       // Unmarked, the same token is a plain person token once the page asks again: no Delete, even in maria's own pair.
       setPersonAdmin(db, "owner", "maria", false);
       const plain = await load(maria);

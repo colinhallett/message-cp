@@ -226,7 +226,8 @@ if (command === "serve") {
   const named = action === "add" || action === "admin" || action === "remove";
   const name = named ? args.shift() : undefined;
   if ((!named && action !== "list") || (named && (!name || name.startsWith("--")))) usage();
-  // `--admin` on `add` and `--off` on `admin` take no value, and may come once, anywhere among the options.
+  // `--admin` on `add` and `--off` on `admin` take no value, and may come once, anywhere among the arguments; it is taken
+  // out before the `--account` pair is read, so `--account --admin owner` reads as `--account owner --admin`.
   const flag = action === "add" ? "--admin" : action === "admin" ? "--off" : undefined;
   const flagged = flag !== undefined && args.includes(flag);
   if (flagged) args.splice(args.indexOf(flag!), 1);

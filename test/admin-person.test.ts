@@ -8,6 +8,7 @@ import { accountForToken, addAccount, addToken, listAccounts } from "../src/acco
 import { PersonError, addPerson, listPeople, registerAgent, removePerson, setPersonAdmin } from "../src/agents.js";
 import { OWNER_ACCOUNT, openDb, type AccountId, type Db } from "../src/db.js";
 import { startHttp, type HttpServer } from "../src/http.js";
+import { makeLoginCode, redeemLoginCode } from "../src/login.js";
 import { sendMessage } from "../src/messages.js";
 
 // Admin persons (`person add --admin`, `person admin`): their person tokens also delete the account's conversations,
@@ -140,6 +141,23 @@ describe("an admin person's token", () => {
     expect(messagesOf(OWNER_ACCOUNT)).toEqual([]);
   });
 
+  it("passes the person check on /api/conversation only, so a GET there gets 405, and a login link's token is the same", async () => {
+    addPerson(db, "owner", "maria", true);
+    expect((await call("/api/conversation?a=bob&b=carol", personToken("owner", "maria"))).status).toBe(405);
+    const linked = redeemLoginCode(db, makeLoginCode(db, "owner", "maria").code);
+    expect(await (await call("/api/token", linked)).json()).toEqual({ readOnly: false, agentOnly: false, person: "maria", admin: true });
+    expect((await del(linked)).status).toBe(200);
+    expect(messagesOf(OWNER_ACCOUNT)).toEqual([]);
+  });
+
+  it("leaves a read-only token unable to delete while a person of its account is an admin", async () => {
+    addPerson(db, "owner", "maria", true);
+    const viewer = addToken(db, "owner", true).token;
+    expect(await (await call("/api/token", viewer)).json()).toEqual({ readOnly: true, agentOnly: false });
+    expect((await del(viewer)).status).toBe(403);
+    expect(messagesOf(OWNER_ACCOUNT)).toHaveLength(1);
+  });
+
   it("still gets 403 on /mcp, /wait and any other path, and changes nothing", async () => {
     addPerson(db, "owner", "maria", true);
     const token = personToken("owner", "maria");
@@ -155,6 +173,7 @@ describe("an admin person's token", () => {
       const res = await call(path, token, method);
       expect(res.status, `${method} ${path}`).toBe(403);
       expect(res.headers.get("connection"), `${method} ${path}`).toBe("close");
+      expect(((await res.json()) as { error: { message: string } }).error.message).toBe("An admin person token only reads, sends, posts and deletes");
     }
     expect(db.prepare("SELECT * FROM messages ORDER BY id").all()).toEqual(before);
   });

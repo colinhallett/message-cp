@@ -1033,7 +1033,7 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
     // (above), and, while its person is an admin, deletes the account's conversations as a full token does. It reaches
     // nothing else: not /mcp, /wait, nor any path added later. It is refused before a slot is taken or a body read.
     if (access.person && path !== "/api/send" && path !== "/api/post" && !(access.person.admin && path === "/api/conversation")) {
-      return reply(res, 403, "A person token only reads, sends and posts", { Connection: "close" });
+      return reply(res, 403, access.person.admin ? "An admin person token only reads, sends, posts and deletes" : "A person token only reads, sends and posts", { Connection: "close" });
     }
     if (path === "/api/send") return apiSend(req, res, account, access.person?.id);
     if (path === "/api/post") return apiPost(req, res, account, access.person?.id);
