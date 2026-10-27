@@ -6,7 +6,9 @@ import { agentNameBase, isLoopback, isMetadataUrl, type Authorization } from "./
 // token, in the dashboard's look. It first asks GET /oauth/signin whether this browser is signed in to the dashboard
 // (the sign-in cookie, which no page script can read). Signed in, it says who approves ("Approving as maria"), hides the
 // token field and offers an agent name no live agent of the account has, made from the client's name, so one click
-// approves; POST /oauth/approve then carries no token and the server signs it in by the cookie. Not signed in, it links
+// approves; POST /oauth/approve then carries no token, the server signs it in by the cookie, and refuses it (409) if the
+// cookie now signs in as someone other than the page showed. Only under an https public URL; elsewhere GET /oauth/signin
+// is 404 and the page stays signed out. Not signed in, it links
 // to the dashboard in a new tab, checks again when the page regains focus or on "Check again", and meanwhile asks for a
 // full or person token of the account, sent once in the Authorization header and kept only in the form field, never in
 // storage. On approval it goes to the address the server answers with, the client's redirect URI with a code; refusing
@@ -42,8 +44,11 @@ const yes = document.getElementById("approve-yes");
 const no = document.getElementById("approve-no");
 const note = document.getElementById("approve-note");
 let busy = false;
-// Whether the last GET /oauth/signin found a sign-in, and the agent name it offered, if any.
+// Whether the last GET /oauth/signin found a sign-in, who it signs in as ({ account, person? }, sent back with an approval
+// so the server refuses one whose sign-in changed since), and the agent name it offered, if the field still holds it as
+// offered: any edit by the person clears it, so a name they type, even the same one, is theirs.
 let cookie = false;
+let who;
 let suggested;
 // Bumped by each check, so only the newest check's answer changes the page.
 let checks = 0;
@@ -51,10 +56,11 @@ function say(text, error) {
   note.textContent = text;
   note.classList.toggle("error", error);
 }
-// Shows the page signed in as who, or, for undefined, signed out with the token field.
-function show(who) {
-  cookie = who !== undefined;
-  signedIn.textContent = cookie ? who : "";
+// Shows the page signed in, saying \`text\`, or, for undefined, signed out with the token field.
+function show(text) {
+  cookie = text !== undefined;
+  if (!cookie) who = undefined;
+  signedIn.textContent = cookie ? text : "";
   signedIn.hidden = !cookie;
   signedOut.hidden = cookie;
   tokenField.hidden = cookie;
@@ -84,7 +90,8 @@ async function check() {
   }
   if (n !== checks || busy || !res) return;
   if (res.ok && answer && typeof answer.account === "string") {
-    show(typeof answer.person === "string" ? "Approving as " + answer.person : "Approving with a full token of account " + answer.account);
+    who = typeof answer.person === "string" ? { account: answer.account, person: answer.person } : { account: answer.account };
+    show(who.person !== undefined ? "Approving as " + who.person : "Approving with a full token of account " + who.account);
     if (typeof answer.name === "string" && (agent.value.trim() === "" || agent.value.trim() === suggested)) {
       agent.value = answer.name;
       suggested = answer.name;
@@ -103,6 +110,7 @@ form.addEventListener("submit", async (event) => {
   const ac = new AbortController();
   const deadline = setTimeout(() => ac.abort(), TIMEOUT_MS);
   const signed = cookie;
+  const as = who;
   const name = agent.value.trim();
   let res;
   let answer;
@@ -117,6 +125,7 @@ form.addEventListener("submit", async (event) => {
         state: form.dataset.state === undefined ? null : form.dataset.state,
         agent: name,
         fresh: suggested !== undefined && name === suggested,
+        ...(signed && { as }),
       }),
       cache: "no-store",
       credentials: signed ? "same-origin" : "omit",
@@ -141,15 +150,26 @@ form.addEventListener("submit", async (event) => {
     show(undefined);
     return say("This browser is no longer signed in. Sign in on the dashboard and check again, or enter a full or person token of the account.", true);
   }
+  // The browser's sign-in changed since the page showed it: show who it is now before anyone approves.
+  if (signed && res.status === 409) {
+    say(answer && typeof answer.message === "string" ? answer.message : "This browser is now signed in as someone else.", true);
+    return check();
+  }
   if (res.status === 401) return say("The server refused that token. Enter a full or person token of the account.", true);
   if (res.status === 403) return say("Only a full or person token can approve a client; agent and read-only tokens cannot.", true);
   say(answer && typeof answer.message === "string" ? answer.message : "The server could not approve this (" + res.status + "). Try again.", true);
 });
 no.addEventListener("click", () => location.assign(no.dataset.location));
-again.addEventListener("click", () => check());
-// Coming back from signing in on the dashboard in another tab checks again.
-addEventListener("focus", () => check());
-check();
+agent.addEventListener("input", () => {
+  suggested = undefined;
+});
+// Without the sign-in (no https public URL) the page only takes a typed token.
+if (form.dataset.signin !== undefined) {
+  again.addEventListener("click", () => check());
+  // Coming back from signing in on the dashboard in another tab checks again.
+  addEventListener("focus", () => check());
+  check();
+}
 `;
 
 const hash = (text: string) => `'sha256-${createHash("sha256").update(text, "utf8").digest("base64")}'`;
@@ -203,7 +223,7 @@ export const errorPage = (message: string) => page(`<p role="alert">${escape(mes
  * It shows the client's name as it registered it, or as its metadata document gives it with the host of that document's
  * URL, and the redirect URI's host, and warns when that host is this machine.
  */
-export function approvePage(a: Authorization, deny: string): string {
+export function approvePage(a: Authorization, deny: string, signin: boolean): string {
   const host = new URL(a.redirectUri).host;
   const loopback = isLoopback(new URL(a.redirectUri));
   const name = a.client.clientName ? escape(a.client.clientName) : "An unnamed client";
@@ -219,9 +239,9 @@ ${
     : ""
 }
 <p class="dim">${from === undefined ? "The name is the client's own; this server has not checked it." : `The name is the client's own; this server has checked only that its description is at ${escape(from)}.`}</p>
-<form id="approve" data-request="${escape(a.request)}"${state} data-base="${escape(agentNameBase(a.client.clientName))}">
+<form id="approve" data-request="${escape(a.request)}"${state} data-base="${escape(agentNameBase(a.client.clientName))}"${signin ? " data-signin" : ""}>
 <p id="signed-in" role="status" hidden></p>
-<div id="signed-out">
+<div id="signed-out"${signin ? "" : " hidden"}>
 <p>This browser is not signed in to message-cp. <a href="../" target="_blank" rel="noopener">Sign in on the dashboard</a> in a new tab, which leaves this page open, then come back here or <button id="signin-again" type="button">Check again</button>. Or enter a token below.</p>
 </div>
 <div id="token-field">

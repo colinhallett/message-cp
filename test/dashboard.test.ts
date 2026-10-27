@@ -3699,8 +3699,9 @@ describe("the page's posting", () => {
   // answers it with that status (and a JSON error with message, for a 400) instead of the server; with hold, it answers
   // only once hold settles (and from the server when there is no status), or fails it when hold rejects; with lose, it
   // lets the server take the request and then fails it as a dropped connection would.
+  // globals, when given, adds to the script's globals, such as a BroadcastChannel.
   type Answer = { status?: number; body?: string; hold?: Promise<void>; lose?: boolean };
-  async function load(token: string, answer: (url: string, method: string) => Answer | undefined = () => undefined) {
+  async function load(token: string, answer: (url: string, method: string) => Answer | undefined = () => undefined, globals: Record<string, unknown> = {}) {
     const html = await (await fetch(`${base()}/`)).text();
     const script = /<script>([\s\S]*?)<\/script>/.exec(html)![1];
     const elements: Record<string, Stub> = {};
@@ -3740,6 +3741,7 @@ describe("the page's posting", () => {
         if (given) return Promise.resolve(reply());
         return fetch(`${base()}${url}`, init);
       },
+      ...globals,
     });
     const until = async (done: () => boolean) => {
       for (let i = 0; i < 200 && !done(); i++) await new Promise((resolve) => setTimeout(resolve, 5));
@@ -5009,6 +5011,73 @@ describe("the page's posting", () => {
     const full = await load(OWNER_TOKEN);
     await full.until(() => full.requests.some((r) => r.url === "oauth/signin"));
     expect(full.requests.filter((r) => r.url === "oauth/signin").map((r) => r.method)).toEqual(["POST"]);
+  });
+
+  it("says when the server does not confirm a sign-out, and signs out again on the button", async () => {
+    seed();
+    let refuse = true;
+    const page = await load(colinToken(), (url, method) =>
+      url === "oauth/signin" ? (method === "DELETE" && refuse ? { status: 503 } : { status: 204 }) : undefined,
+    );
+    const signins = () => page.requests.filter((r) => r.url === "oauth/signin").map((r) => r.method);
+    await page.until(() => signins().length === 1);
+    page.elements["forget"].on.click();
+    await page.until(() => page.elements["signout-retry"].hidden === false);
+    expect(page.elements["status-line"].textContent).toContain("did not confirm signing this browser out");
+    expect(page.elements["login"].hidden).toBe(false);
+    refuse = false;
+    page.elements["signout-retry"].on.click();
+    expect(page.elements["signout-retry"].hidden).toBe(true);
+    await page.until(() => signins().length === 3);
+    expect(signins()).toEqual(["POST", "DELETE", "DELETE"]);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(page.elements["signout-retry"].hidden).toBe(true);
+  });
+
+  it("clears the sign-in again after its own unanswered sign-in when another tab signs out", async () => {
+    seed();
+    let answer!: () => void;
+    const held = new Promise<void>((resolve) => (answer = resolve));
+    const channels: { onmessage?: () => void }[] = [];
+    class Channel {
+      onmessage?: () => void;
+      constructor() {
+        channels.push(this);
+      }
+      postMessage() {}
+    }
+    const page = await load(colinToken(), (url, method) => (url === "oauth/signin" ? (method === "POST" ? { status: 204, hold: held } : { status: 204 }) : undefined), {
+      BroadcastChannel: Channel,
+    });
+    const signins = () => page.requests.filter((r) => r.url === "oauth/signin").map((r) => r.method);
+    await page.until(() => signins().length === 1);
+    // Another tab's Forget token: this tab forgets its token, and its POST, still unanswered, could set the cookie again.
+    channels[0].onmessage!();
+    expect(page.store.has("message-cp-token")).toBe(false);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(signins()).toEqual(["POST"]);
+    answer();
+    await page.until(() => signins().length === 2);
+    expect(signins()).toEqual(["POST", "DELETE"]);
+  });
+
+  it("does not clear the sign-in on another tab's sign-out when it has none in flight", async () => {
+    seed();
+    const channels: { onmessage?: () => void }[] = [];
+    class Channel {
+      onmessage?: () => void;
+      constructor() {
+        channels.push(this);
+      }
+      postMessage() {}
+    }
+    const page = await load(colinToken(), (url) => (url === "oauth/signin" ? { status: 204 } : undefined), { BroadcastChannel: Channel });
+    const signins = () => page.requests.filter((r) => r.url === "oauth/signin").map((r) => r.method);
+    await page.until(() => signins().length === 1);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    channels[0].onmessage!();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(signins()).toEqual(["POST"]);
   });
 
   it("clears the approval page's sign-in with a read-only token, and never sends it there", async () => {
