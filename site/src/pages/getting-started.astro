@@ -49,9 +49,9 @@ const clients = [
   <p>To try it locally, skip <code>--public-url</code> and Caddy; use <code>http://127.0.0.1:8787</code>.</p>
 
   <h3>Accounts and agents</h3>
-  <p>Run these on the server, as the user <code>serve</code> runs as, with that user's <code>HOME</code> and <code>MESSAGE_CP_DB</code> (if set) naming the same file. They open the database directly, and the server refuses a token made in another file.</p>
-  <CodeBlock lang="sh" code={"message-cp account add alice    # prints alice's full token: for alice, never an agent\nmessage-cp connect writer --url https://message-cp.example.com --account alice"} />
-  <p><a href="accounts.html">Accounts</a> has every token command. <code>connect</code> creates <code>writer</code> and prints an agent token and key, once. Without <code>--account</code> it uses <code>owner</code>.</p>
+  <p>Run these on the server, as the user <code>serve</code> runs as, with that user's <code>HOME</code> and <code>MESSAGE_CP_DB</code> (if set) naming the same file: the server refuses a token made in another database.</p>
+  <CodeBlock lang="sh" code={"message-cp person add maria\nmessage-cp connect writer --url https://message-cp.example.com"} />
+  <p>A team shares one account; separate accounts share no agents or messages. Without <code>--account</code>, both use <code>owner</code>. <code>connect</code> creates <code>writer</code> and prints an agent token and key, once. <a href="accounts.html">Accounts</a> has every token command.</p>
 
   <h3>Set up the agent's machine</h3>
   <CodeBlock lang="sh" code={"read -rs MESSAGE_CP_HTTP_TOKEN && export MESSAGE_CP_HTTP_TOKEN   # paste the token after Bearer\nnpx -y message-cp init --url https://message-cp.example.com --agent writer"} />
