@@ -6,7 +6,7 @@ import { request } from "node:http";
 import { createRequire } from "node:module";
 import { runInNewContext } from "node:vm";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { accountForToken, addAccount, addToken, listAccounts, revokeToken } from "../src/accounts.js";
+import { accountForToken, addAccount, addToken, listAccounts, recordClient, revokeToken } from "../src/accounts.js";
 import { makeLoginCode, redeemLoginCode } from "../src/login.js";
 import { OWNER_ACCOUNT, openDb, type Db } from "../src/db.js";
 import { addPerson, identityOf, registerAgent, removeAgent, removePerson, setPersonAdmin, setStatus } from "../src/agents.js";
@@ -44,6 +44,8 @@ const NO_MESSAGES = "No direct messages yet: they appear here when an agent send
 const NEW_MESSAGE = ' You can also start one from "New message" above.';
 const NO_DELIVERIES =
   "No webhook deliveries yet: add a webhook on the server with message-cp webhook add --url <url> --on <#channel | mention:<agent> | agent:<agent>>, and its deliveries show here once it fires.";
+const NO_APPROVALS =
+  "No approved clients yet: a client appears here once it connects through the server's authorization flow (serve --public-url), and its token is revoked on the server with message-cp token revoke <id>.";
 
 const base = () => `http://127.0.0.1:${http.port}`;
 
@@ -3274,6 +3276,345 @@ describe("the page's webhook deliveries", () => {
     await page.until(() => page.elements["log-note"].textContent === NO_DELIVERIES);
     expect(page.elements["post-rows"].children).toHaveLength(0);
     expect(item(page)).toEqual(["Webhook deliveries", "0"]);
+  });
+});
+
+describe("the page's approved clients", () => {
+  // A stub DOM element, as in the webhook deliveries tests above.
+  interface Stub {
+    on: Record<string, () => void>;
+    hidden: boolean;
+    value: string;
+    textContent: string;
+    className: string;
+    title: string;
+    scrollTop: number;
+    scrollHeight: number;
+    children: Stub[];
+    append(...children: Stub[]): void;
+    replaceChildren(...children: Stub[]): void;
+    addEventListener(type: string, fn: () => void): void;
+    setAttribute(name: string, value: string): void;
+    focus(): void;
+  }
+  const el = (): Stub => ({
+    on: {},
+    hidden: true,
+    value: "",
+    textContent: "",
+    className: "",
+    title: "",
+    scrollTop: 0,
+    scrollHeight: 0,
+    children: [],
+    append(...children) {
+      this.children.push(...children);
+    },
+    replaceChildren(...children) {
+      this.children = children;
+    },
+    addEventListener(type, fn) {
+      this.on[type] = fn;
+    },
+    setAttribute() {},
+    focus() {},
+  });
+  const text = (node: Stub): string => (node.children.length > 0 ? node.children.map(text).join("") : node.textContent);
+  const field = (row: Stub, name: string) => {
+    const node = row.children.find((c) => c.className === name);
+    return node && text(node);
+  };
+  // An approval row's agent, token id, issue time and client.
+  const approval = (row: Stub) => [field(row, "from"), field(row, "tag"), field(row, "time"), field(row, "body")];
+
+  // An approval as the OAuth code exchange records it: an agent token bound to the agent, with its client.
+  const approve = (account: string, agent: string, client: { name: string | null; host: string | null }) => {
+    const id = listAccounts(db).find((a) => a.name === account)!.id;
+    if (!identityOf(db, id, agent)) registerAgent(db, id, agent, "x");
+    const issued = addToken(db, account, false, true, identityOf(db, id, agent)!.id);
+    recordClient(db, issued.id, client);
+    return issued;
+  };
+  const issued = (id: number) => new Date(db.prepare("SELECT created_at FROM tokens WHERE id = ?").pluck().get(id) as number).toLocaleString();
+
+  // Runs the served script with the given token, as the webhook deliveries tests do. refuse, when it returns a status,
+  // answers a request with that status; "hang" answers only by failing when it is aborted, "fail" rejects, "junk"
+  // answers 200 with a body this page cannot read, "nulls" a list it cannot read, "unnamed" an approval whose
+  // clientName is missing, "numbered" one whose agent is a number, and "held" waits for release() to answer as the
+  // server does.
+  type Refusal = number | "hang" | "fail" | "junk" | "nulls" | "unnamed" | "numbered" | "held";
+  async function load(token: string, refuse: (url: string) => Refusal | undefined = () => undefined) {
+    const html = await (await fetch(`${base()}/`)).text();
+    const script = /<script>([\s\S]*?)<\/script>/.exec(html)![1];
+    const elements: Record<string, Stub> = {};
+    const urls: string[] = [];
+    const timers = handTimers();
+    const store = new Map([["message-cp-token", token]]);
+    const held: (() => void)[] = [];
+    runInNewContext(script, {
+      AbortController,
+      location: { hash: "", pathname: "/", search: "" },
+      history: { replaceState() {} },
+      addEventListener() {},
+      URLSearchParams,
+      document: { getElementById: (id: string) => (elements[id] ??= el()), createElement: el, addEventListener() {} },
+      sessionStorage: { getItem: (k: string) => store.get(k) ?? null, setItem: (k: string, v: string) => store.set(k, v), removeItem: (k: string) => store.delete(k) },
+      setTimeout: timers.set,
+      clearTimeout: timers.clear,
+      fetch: (url: string, init: RequestInit) => {
+        urls.push(url);
+        const status = refuse(url);
+        if (status === "hang") return new Promise<Response>((_resolve, reject) => init.signal!.addEventListener("abort", () => reject(new Error("aborted"))));
+        // The server's answer, even once the page has aborted the request, as one already on its way would arrive.
+        if (status === "held") return new Promise<Response>((resolve) => held.push(() => resolve(fetch(`${base()}${url}`, { headers: init.headers }))));
+        if (status === "fail") return Promise.reject(new TypeError("fetch failed"));
+        if (status === "junk") return Promise.resolve(new Response("{", { status: 200 }));
+        if (status === "nulls") return Promise.resolve(Response.json([null]));
+        const odd = { id: 1, agent: "desk", clientName: "Cursor", clientHost: null, issuedAt: new Date(0).toISOString() };
+        if (status === "unnamed") return Promise.resolve(Response.json([{ ...odd, clientName: undefined }]));
+        if (status === "numbered") return Promise.resolve(Response.json([{ ...odd, agent: 7 }]));
+        return status === undefined ? fetch(`${base()}${url}`, init) : Promise.resolve(new Response(null, { status }));
+      },
+    });
+    const until = async (done: () => boolean) => {
+      for (let i = 0; i < 200 && !done(); i++) await new Promise((resolve) => setTimeout(resolve, 5));
+      expect(done()).toBe(true);
+    };
+    const entry = () => elements["approval-entry"].children[0]?.children[0] as Stub;
+    const openApprovals = async () => {
+      await until(() => entry() !== undefined);
+      entry().on.click();
+    };
+    const release = () => held.splice(0).forEach((answer) => answer());
+    return { elements, urls, store, polls: timers.polls, deadlines: timers.deadlines, until, poll: timers.poll, entry, openApprovals, held, release };
+  }
+
+  // The sidebar entry's label and count.
+  const item = (page: Awaited<ReturnType<typeof load>>) => page.entry().children.map((c) => c.textContent);
+  const approvalUrls = (urls: string[]) => urls.filter((url) => url.startsWith("/api/approvals"));
+
+  it("shows this account's approvals newest first, by name, host or neither, and never another account's", async () => {
+    const cursor = approve("owner", "desk", { name: "Cursor", host: null });
+    const claude = approve("owner", "claude", { name: null, host: "claude.ai" });
+    const bare = approve("owner", "desk", { name: null, host: null });
+    // Tokens made otherwise are not approvals, and another account's approval on the same agent name never shows.
+    addToken(db, "owner", false, true);
+    addAccount(db, "other");
+    approve("other", "desk", { name: "Other's client", host: null });
+
+    const page = await load(viewer);
+    // Until the view is opened the entry has no count, and the approvals are not read.
+    await page.until(() => page.entry() !== undefined);
+    expect(item(page)).toEqual(["Approved clients", ""]);
+    expect(approvalUrls(page.urls)).toEqual([]);
+    await page.openApprovals();
+    const rows = page.elements["post-rows"];
+    await page.until(() => rows.children.length === 3);
+    expect(approvalUrls(page.urls)).toEqual(["/api/approvals?limit=200&offset=0"]);
+    for (const url of page.urls) expect(url).not.toContain(viewer);
+    expect(page.elements["log"].hidden).toBe(false);
+    expect(page.elements["log-title"].textContent).toBe("Approved clients");
+    expect(page.elements["log-note"].textContent).toBe("");
+    expect(rows.children.map(approval)).toEqual([
+      ["desk", `token ${bare.id}`, `issued ${issued(bare.id)}`, "unnamed client"],
+      ["claude", `token ${claude.id}`, `issued ${issued(claude.id)}`, "claude.ai"],
+      ["desk", `token ${cursor.id}`, `issued ${issued(cursor.id)}`, "Cursor"],
+    ]);
+    expect(item(page)).toEqual(["Approved clients", "3"]);
+    expect(page.entry().className).toBe("item current");
+    // Nothing private reached the page, and nothing of the other account.
+    const shown = JSON.stringify(rows.children.map(approval));
+    for (const hidden of [cursor.token, claude.token, bare.token, viewer, "Other's client"]) expect(shown).not.toContain(hidden);
+
+    // The next poll replaces the rows with the page as it is now, without a reload: a revoked token goes.
+    revokeToken(db, claude.id);
+    page.urls.length = 0;
+    await page.poll();
+    await page.until(() => rows.children.length === 2);
+    expect(approvalUrls(page.urls)).toEqual(["/api/approvals?limit=200&offset=0"]);
+    expect(rows.children.map((row) => field(row, "tag"))).toEqual([`token ${bare.id}`, `token ${cursor.id}`]);
+
+    // Closing the view stops reading it.
+    page.elements["close-log"].on.click();
+    expect(page.elements["log"].hidden).toBe(true);
+    expect(rows.children).toHaveLength(0);
+    page.urls.length = 0;
+    await page.poll();
+    await page.until(() => page.polls.size === 1);
+    expect(approvalUrls(page.urls)).toEqual([]);
+  });
+
+  it("shows the view to a full and a person token too", async () => {
+    const cursor = approve("owner", "desk", { name: "Cursor", host: null });
+    addPerson(db, "owner", "maria");
+    for (const token of [OWNER_TOKEN, addToken(db, "owner").token, addToken(db, "owner", false, false, undefined, "maria").token]) {
+      const page = await load(token);
+      await page.openApprovals();
+      await page.until(() => page.elements["post-rows"].children.length === 1);
+      expect(page.elements["post-rows"].children.map(approval)).toEqual([["desk", `token ${cursor.id}`, `issued ${issued(cursor.id)}`, "Cursor"]]);
+    }
+  });
+
+  it("says when there are no approvals and when only the newest 200 are shown", async () => {
+    const page = await load(viewer);
+    await page.openApprovals();
+    await page.until(() => page.elements["log-note"].textContent === NO_APPROVALS);
+    expect(page.elements["post-rows"].children).toHaveLength(0);
+    expect(item(page)).toEqual(["Approved clients", "0"]);
+
+    for (let i = 0; i < 201; i++) approve("owner", "desk", { name: `c${i}`, host: null });
+    await page.poll();
+    await page.until(() => page.elements["post-rows"].children.length === 200);
+    expect(page.elements["log-note"].textContent).toBe("Only the newest 200 approvals are shown.");
+    expect(field(page.elements["post-rows"].children[0], "body")).toBe("c200");
+    expect(item(page)).toEqual(["Approved clients", "200"]);
+  });
+
+  it.each([
+    [403, "This token cannot read approved clients (403). Retrying…"],
+    [503, "The server is busy (503). Retrying…"],
+    ["junk", "The server sent an answer this page cannot read. Retrying…"],
+    ["nulls", "The server sent an answer this page cannot read. Retrying…"],
+    ["unnamed", "The server sent an answer this page cannot read. Retrying…"],
+    ["numbered", "The server sent an answer this page cannot read. Retrying…"],
+    ["fail", "Cannot reach the server. Retrying…"],
+  ] as const)("shows a %s in the view's note and keeps the rest of the page refreshing", async (failure, note) => {
+    for (const name of ["alice", "bob"]) registerAgent(db, OWNER_ACCOUNT, name, "x");
+    post(db, OWNER_ACCOUNT, { ...identityOf(db, OWNER_ACCOUNT, "alice")!, name: "alice" }, "build", "hello");
+    const page = await load(viewer, (url) => (url.startsWith("/api/approvals") ? failure : undefined));
+    await page.until(() => page.polls.size === 1);
+    // Opening the view drops the poll scheduled before it; wait for the one it starts to schedule the next.
+    await page.openApprovals();
+    expect(page.polls.size).toBe(0);
+    await page.until(() => page.elements["log-note"].textContent === note && page.polls.size === 1);
+    expect(page.elements["post-rows"].children).toHaveLength(0);
+    expect(page.elements["status-line"].textContent).toBe("");
+    expect(page.store.size).toBe(1);
+
+    // The agents, channels and messages still refresh.
+    sendMessage(db, OWNER_ACCOUNT, "alice", "bob", "hi");
+    joinChannel(db, OWNER_ACCOUNT, { ...identityOf(db, OWNER_ACCOUNT, "alice")!, name: "alice" }, "ops");
+    await page.poll();
+    await page.until(() => page.elements["pair-rows"].children.length === 1 && page.elements["channel-rows"].children.length === 2);
+    expect(page.elements["log-note"].textContent).toBe(note);
+  });
+
+  it("keeps the rest of the page refreshing while the approvals time out", async () => {
+    for (const name of ["alice", "bob"]) registerAgent(db, OWNER_ACCOUNT, name, "x");
+    sendMessage(db, OWNER_ACCOUNT, "alice", "bob", "hi");
+    const page = await load(viewer, (url) => (url.startsWith("/api/approvals") ? "hang" : undefined));
+    await page.openApprovals();
+    await page.until(() => page.elements["pair-rows"].children.length === 1 && approvalUrls(page.urls).length === 1);
+    expect(page.polls.size).toBe(0);
+    // Only the hung request's deadline is left: the poll's deadline aborts it, and the next poll is still scheduled.
+    expect(page.deadlines.size).toBe(1);
+    const deadlines = [...page.deadlines.values()];
+    page.deadlines.clear();
+    deadlines.forEach((abort) => abort());
+    await page.until(() => page.elements["log-note"].textContent === "The server did not answer in time. Retrying…");
+    await page.until(() => page.polls.size === 1);
+    expect(page.elements["pair-rows"].children).toHaveLength(1);
+    expect(page.store.size).toBe(1);
+  });
+
+  it("asks for the token again and clears the view when the server refuses the token", async () => {
+    approve("owner", "desk", { name: "Cursor", host: null });
+    const ticket = addToken(db, "owner", true);
+    let refused = false;
+    // Only the approvals are refused, so the 401 can only come from them.
+    const page = await load(ticket.token, (url) => (refused && url.startsWith("/api/approvals") ? 401 : undefined));
+    await page.openApprovals();
+    await page.until(() => page.elements["post-rows"].children.length === 1);
+    refused = true;
+    await page.poll();
+    await page.until(() => page.elements["status-line"].textContent.startsWith("The server refused"));
+    expect(page.elements["post-rows"].children).toHaveLength(0);
+    expect(page.elements["log"].hidden).toBe(true);
+    expect(page.elements["log-title"].textContent).toBe("");
+    expect(item(page)).toEqual(["Approved clients", ""]);
+    expect(page.store.size).toBe(0);
+    expect(page.elements["login"].hidden).toBe(false);
+  });
+
+  it("clears the view when the token is forgotten, and shows the next token only its own account's approvals", async () => {
+    approve("owner", "desk", { name: "Cursor", host: null });
+    addAccount(db, "other");
+    const theirs = approve("other", "laptop", { name: "Other's client", host: null });
+    const otherViewer = addToken(db, "other", true).token;
+    const page = await load(viewer);
+    await page.openApprovals();
+    await page.until(() => page.elements["post-rows"].children.length === 1);
+
+    page.elements["forget"].on.click();
+    expect(page.elements["post-rows"].children).toHaveLength(0);
+    expect(page.elements["log"].hidden).toBe(true);
+    expect(item(page)).toEqual(["Approved clients", ""]);
+    expect(page.store.size).toBe(0);
+
+    page.elements["token"].value = otherViewer;
+    page.elements["login"].on.submit({ preventDefault() {} } as never);
+    await page.openApprovals();
+    await page.until(() => page.elements["post-rows"].children.length === 1);
+    expect(page.elements["post-rows"].children.map(approval)).toEqual([
+      ["laptop", `token ${theirs.id}`, `issued ${issued(theirs.id)}`, "Other's client"],
+    ]);
+    expect(item(page)).toEqual(["Approved clients", "1"]);
+  });
+
+  it("shows a client's name with its control and format characters replaced, so it cannot pass for another token", async () => {
+    const odd = approve("owner", "desk", { name: "Cursor · token 1\n\u202Eevil", host: null });
+    const page = await load(viewer);
+    await page.openApprovals();
+    await page.until(() => page.elements["post-rows"].children.length === 1);
+    expect(page.elements["post-rows"].children.map(approval)).toEqual([
+      ["desk", `token ${odd.id}`, `issued ${issued(odd.id)}`, "Cursor · token 1\uFFFD\uFFFDevil"],
+    ]);
+  });
+
+  it("drops an answer for the view that arrives after the view was closed", async () => {
+    approve("owner", "desk", { name: "Cursor", host: null });
+    const page = await load(viewer, (url) => (url.startsWith("/api/approvals") ? "held" : undefined));
+    await page.openApprovals();
+    await page.until(() => page.held.length === 1);
+    // Close calls closeLog() without cancel(), so the poll's answer still comes; only openApprovals drops it.
+    page.elements["close-log"].on.click();
+    page.release();
+    await page.until(() => page.polls.size === 1);
+    expect(page.elements["log"].hidden).toBe(true);
+    expect(page.elements["post-rows"].children).toHaveLength(0);
+    expect(page.elements["log-note"].textContent).toBe("");
+    expect(item(page)).toEqual(["Approved clients", ""]);
+  });
+
+  it("drops an answer for the view that arrives after a channel or the webhook deliveries were opened", async () => {
+    approve("owner", "desk", { name: "Cursor", host: null });
+    for (const name of ["alice", "bob"]) registerAgent(db, OWNER_ACCOUNT, name, "x");
+    post(db, OWNER_ACCOUNT, { ...identityOf(db, OWNER_ACCOUNT, "alice")!, name: "alice" }, "build", "hello");
+    let hold = true;
+    const page = await load(viewer, (url) => (hold && url.startsWith("/api/approvals") ? "held" : undefined));
+    await page.until(() => page.elements["channel-rows"].children.length === 1);
+    for (const other of ["channel", "deliveries"]) {
+      hold = true;
+      await page.openApprovals();
+      await page.until(() => page.held.length === 1);
+      // Another view opens while the approvals are read; their answer then comes, and is dropped.
+      if (other === "channel") page.elements["channel-rows"].children[0].children[0].on.click();
+      else page.elements["delivery-entry"].children[0].children[0].on.click();
+      hold = false;
+      page.release();
+      if (other === "channel") {
+        await page.until(() => page.elements["post-rows"].children.length === 1 && page.polls.size === 1);
+        expect(page.elements["log-title"].textContent).toBe("build");
+        expect(field(page.elements["post-rows"].children[0], "from")).toBe("alice");
+      } else {
+        await page.until(() => page.elements["log-note"].textContent === NO_DELIVERIES && page.polls.size === 1);
+        expect(page.elements["log-title"].textContent).toBe("Webhook deliveries");
+        expect(page.elements["post-rows"].children).toHaveLength(0);
+      }
+      // The approvals were never shown, nor counted.
+      expect(item(page)).toEqual(["Approved clients", ""]);
+      expect(page.entry().className).toBe("item");
+    }
   });
 });
 
