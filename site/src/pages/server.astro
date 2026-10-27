@@ -24,7 +24,7 @@ import CodeBlock from "../components/CodeBlock.astro";
   <h2 id="running-the-http-server">Running the HTTP server</h2>
   <p>Install it (<a href="getting-started.html#team-server">Getting started</a>), then:</p>
   <CodeBlock lang="sh" code={"export MESSAGE_CP_HTTP_TOKEN=\"$(openssl rand -hex 32)\"\nmessage-cp serve --port 8787 --public-url https://message-cp.example.com"} />
-  <p><code>serve</code> exits without that owner token; keep it for <code>npm run e2e</code>. Clients and wake-up loops get agent tokens, made on the server as <a href="accounts.html#accounts-and-tokens-for-a-team">Accounts and tokens</a> says. <a href="#settings"><code>--public-url</code></a> enables the <a href="#waking-remote-agents">wait command</a> and MCP authorization: a full token approves a client&#39;s agent token. Without a domain, leave it out and use <code>http://127.0.0.1:8787</code>.</p>
+  <p><code>serve</code> exits without that owner token; keep it for <code>npm run e2e</code>. Clients and wake-up loops get agent tokens, made on the server as <a href="accounts.html#accounts-and-tokens-for-a-team">Accounts and tokens</a> says. <a href="#settings"><code>--public-url</code></a> enables the <a href="#waking-remote-agents">wait command</a> and MCP authorization: a full or person token approves clients. Without a domain, leave it out and use <code>http://127.0.0.1:8787</code>.</p>
   <p>Tools are at <code>/mcp</code>, over streamable HTTP (<a href="#settings">flags</a>).</p>
   <ul>
   <li><p><strong>Token.</strong> Requests without a valid <code>Authorization: Bearer &lt;token&gt;</code> get 401, except <code>GET /</code> (the <a href="#dashboard">dashboard</a>), its fonts, <code>/health</code> and authorization but <code>/oauth/approve</code>.</p>
