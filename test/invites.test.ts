@@ -506,7 +506,7 @@ describe("who reaches the invite routes", () => {
   });
 
   it("answers 405 for another method", async () => {
-    expect((await call("/api/people", ana)).status).toBe(405);
+    expect((await call("/api/people", ana, "PUT")).status).toBe(405);
     expect((await call("/api/invites", ana, "PUT")).status).toBe(405);
   });
 
@@ -534,7 +534,8 @@ describe("who reaches the invite routes", () => {
     expect((await call("/api/invites", ana)).status).toBe(200);
     expect((await call("/api/people", OWNER_TOKEN, "POST", {})).status).toBe(403);
     expect((await call("/api/people", null, "POST", {})).status).toBe(401);
-    expect((await call("/api/people", ana)).status).toBe(405);
+    // GET /api/people takes no slot, so it is answered past the cap.
+    expect((await call("/api/people", ana)).status).toBe(200);
     held.end(" ".repeat(999));
     expect(await answered).toBe(400);
     expect((await call("/api/invites", ana, "POST", { person: "ana" })).status).toBe(200);
