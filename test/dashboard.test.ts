@@ -34,7 +34,7 @@ afterEach(async () => {
   db.close();
 });
 
-// What the page's empty panels say, and the sentence a full token adds to the channel list and the direct messages.
+// What the page's empty panels say, and the sentence a person token adds to the channel list and the direct messages.
 const NO_AGENTS =
   'No agents yet: one appears here once it registers with the register tool, using message-cp as an MCP server (the reference page "Add it to an MCP client", https://message-cp.vercel.app/clients.html#add-it-to-an-mcp-client, says how). ' +
   "Add a person on the server with: message-cp person add <name> --account <account>";
@@ -1639,7 +1639,7 @@ describe("the page's channels and messages", () => {
     it("shows none on a pair started from New message", async () => {
       setup();
       addPerson(db, "owner", "colin");
-      const page = await load(OWNER_TOKEN);
+      const page = await load(addToken(db, "owner", false, false, undefined, "colin").token);
       const pairs = page.elements["pair-rows"];
       await page.until(() => page.scheduled() && pairs.children.length === 2 && !page.elements["new-message"].hidden);
       page.elements["new-message"].on.click();
@@ -2089,79 +2089,58 @@ describe("the page's channels and messages", () => {
       expect(html).toContain(server);
     });
 
-    it("marks the chosen person's own mentions, and re-marks them when the person changes or is cleared", async () => {
+    it("marks the token's person's own mentions, without case, in the log and in entries that arrive later", async () => {
       registerAgent(db, OWNER_ACCOUNT, "bob", "x");
       addPerson(db, "owner", "colin");
       addPerson(db, "owner", "dana");
       const bob = { ...identityOf(db, OWNER_ACCOUNT, "bob")!, name: "bob" };
       post(db, OWNER_ACCOUNT, bob, "build", "@Colin and @dana, see @bob");
-      const page = await load(OWNER_TOKEN);
-      await page.until(() => page.elements["as"].children.length === 3 && page.elements["channel-rows"].children.length === 1);
+      const page = await load(addToken(db, "owner", false, false, undefined, "colin").token);
+      await page.until(() => page.elements["channel-rows"].children.length === 1 && page.scheduled());
       open(page.elements["channel-rows"].children[0]);
       const log = page.elements["post-rows"];
-      await page.until(() => log.children.length === 1);
+      await page.until(() => log.children.length === 1 && mentions(log.children[0])[0][1] === "mention me");
       const row = log.children[0];
-      expect(mentions(row)).toEqual([
-        ["@Colin", "mention"],
-        ["@dana", "mention"],
-        ["@bob", "mention"],
-      ]);
-      const choose = (name: string) => {
-        page.elements["as"].value = name;
-        page.elements["as"].on.change();
-      };
-      choose("colin");
-      // Compared without case, and in place: the row is the same one.
-      expect(log.children[0]).toBe(row);
+      // Compared without case.
       expect(mentions(row)).toEqual([
         ["@Colin", "mention me"],
         ["@dana", "mention"],
         ["@bob", "mention"],
       ]);
-      choose("dana");
-      expect(mentions(row).map(([, c]) => c)).toEqual(["mention", "mention me", "mention"]);
       // An entry that arrives later is marked as it is made.
-      post(db, OWNER_ACCOUNT, bob, "build", "@dana again");
+      post(db, OWNER_ACCOUNT, bob, "build", "@colin again");
       await page.poll();
       await page.until(() => log.children.length === 2);
-      expect(mentions(log.children[1])).toEqual([["@dana", "mention me"]]);
-      choose("");
+      expect(mentions(log.children[1])).toEqual([["@colin", "mention me"]]);
       expect(log.children[0]).toBe(row);
-      expect([...mentions(row), ...mentions(log.children[1])].map(([, c]) => c)).toEqual(["mention", "mention", "mention", "mention"]);
     });
 
-    it("marks no mention as the reader's with a read-only token", async () => {
+    it("marks no mention as the reader's with a read-only or full token", async () => {
       registerAgent(db, OWNER_ACCOUNT, "bob", "x");
       addPerson(db, "owner", "colin");
       post(db, OWNER_ACCOUNT, { ...identityOf(db, OWNER_ACCOUNT, "bob")!, name: "bob" }, "build", "@colin");
-      const page = await load(viewer);
-      await page.until(() => page.elements["channel-rows"].children.length === 1);
-      open(page.elements["channel-rows"].children[0]);
-      const log = page.elements["post-rows"];
-      await page.until(() => log.children.length === 1);
-      page.elements["as"].value = "colin";
-      page.elements["as"].on.change();
-      expect(mentions(log.children[0])).toEqual([["@colin", "mention"]]);
+      for (const token of [viewer, OWNER_TOKEN]) {
+        const page = await load(token);
+        await page.until(() => page.elements["channel-rows"].children.length === 1 && page.scheduled());
+        open(page.elements["channel-rows"].children[0]);
+        const log = page.elements["post-rows"];
+        await page.until(() => log.children.length === 1);
+        expect(mentions(log.children[0])).toEqual([["@colin", "mention"]]);
+      }
     });
 
-    it("highlights mentions in search results, and the chosen person's own there too", async () => {
+    it("highlights mentions in search results, and the token's person's own there too", async () => {
       for (const name of ["alice", "bob"]) registerAgent(db, OWNER_ACCOUNT, name, "x");
       addPerson(db, "owner", "colin");
       sendMessage(db, OWNER_ACCOUNT, "alice", "bob", "deploy @bob <i>now</i>");
       post(db, OWNER_ACCOUNT, { ...identityOf(db, OWNER_ACCOUNT, "alice")!, name: "alice" }, "build", "deploy, @colin");
-      const page = await load(OWNER_TOKEN);
-      await page.until(() => page.elements["as"].children.length === 2);
+      const page = await load(addToken(db, "owner", false, false, undefined, "colin").token);
+      await page.until(() => page.elements["channel-rows"].children.length === 1 && page.scheduled());
       page.elements["search-text"].value = "deploy";
       page.elements["search"].on.submit({ preventDefault() {} } as never);
       const found = page.elements["result-rows"];
       await page.until(() => found.children.length === 2);
       expect(found.children.map((r) => field(r, "body")).sort()).toEqual(["deploy @bob <i>now</i>", "deploy, @colin"]);
-      expect(found.children.flatMap(mentions).sort()).toEqual([
-        ["@bob", "mention"],
-        ["@colin", "mention"],
-      ]);
-      page.elements["as"].value = "colin";
-      page.elements["as"].on.change();
       expect(found.children.flatMap(mentions).sort()).toEqual([
         ["@bob", "mention"],
         ["@colin", "mention me"],
@@ -2234,23 +2213,20 @@ describe("the page's channels and messages", () => {
       expect(pieces(log.children[ends.length + 1])).toEqual([plain("(see "), link("https://en.wikipedia.org/wiki/Foo_(bar)"), plain(")")]);
     });
 
-    it("keeps @name outside an address a mention, re-marked with the person, and an @ inside an address part of the link", async () => {
+    it("keeps @name outside an address a mention, marked for the token's person, and an @ inside an address part of the link", async () => {
       addPerson(db, "owner", "colin");
       const body = "@colin see https://example.com/@colin, @bob";
-      const { page, log } = await postAll(OWNER_TOKEN, body);
-      await page.until(() => page.elements["as"].children.length === 2);
+      const { page, log } = await postAll(addToken(db, "owner", false, false, undefined, "colin").token, body);
+      await page.until(() => mentions(log.children[0])[0][1] === "mention me");
       const row = log.children[0];
       expect(entries(log)).toEqual([["bob", body]]);
       expect(pieces(row)).toEqual([
-        ["SPAN", "@colin", "mention"],
+        ["SPAN", "@colin", "mention me"],
         plain(" see "),
         link("https://example.com/@colin"),
         plain(", "),
         ["SPAN", "@bob", "mention"],
       ]);
-      page.elements["as"].value = "colin";
-      page.elements["as"].on.change();
-      expect(log.children[0]).toBe(row);
       expect(mentions(row)).toEqual([
         ["@colin", "mention me"],
         ["@bob", "mention"],
@@ -3619,6 +3595,12 @@ describe("the page's approved clients", () => {
 });
 
 describe("the page's posting", () => {
+  // colin's own person token, the only kind of token that posts and sends, making colin a person of the account first
+  // if a test has not.
+  const colinToken = () => {
+    if (!db.prepare("SELECT 1 FROM agents WHERE name = 'colin' AND person = 1 AND removed_at IS NULL").get()) addPerson(db, "owner", "colin");
+    return addToken(db, "owner", false, false, undefined, "colin").token;
+  };
   // A stub DOM element, as in the channels and messages tests above, that records any HTML set on it.
   interface Stub {
     on: Record<string, (event?: unknown) => void>;
@@ -3749,19 +3731,16 @@ describe("the page's posting", () => {
       for (let i = 0; i < 200 && !done(); i++) await new Promise((resolve) => setTimeout(resolve, 5));
       expect(done()).toBe(true);
     };
-    const choose = (name: string) => {
-      elements["as"].value = name;
-      elements["as"].on.change();
-    };
     let prevented = 0;
     const send = (text: string) => {
       elements["compose-text"].value = text;
       elements["compose"].on.submit({ preventDefault: () => prevented++ });
     };
     const posts = () => requests.filter((r) => r.method !== "GET");
-    // The names the person picker offers, without its first "Choose who you are" entry.
-    const picker = () => elements["as"].children.slice(1).map((o) => o.value);
-    return { elements, made, requests, store, documentOn, until, choose, send, posts, picker, poll: timers.poll, scheduled: timers.scheduled, prevented: () => prevented };
+    // The people the page may post as, as "New message" offers them under From: a person token's person once
+    // GET /api/agents lists them, and no one for any other token.
+    const picker = () => (elements["new-from"]?.children ?? []).map((o) => o.value).filter((v) => v !== "");
+    return { elements, made, requests, store, documentOn, until, send, posts, picker, poll: timers.poll, scheduled: timers.scheduled, prevented: () => prevented };
   }
 
   const seed = () => {
@@ -3772,40 +3751,61 @@ describe("the page's posting", () => {
     sendMessage(db, OWNER_ACCOUNT, "bob", "colin", "hi colin");
   };
 
-  it("asks GET /api/token once, with the token only in its header, and shows a full token the account's people", async () => {
+  // What a full token sees where a person token's compose box would be.
+  const SIGN_IN = "To send, sign in as a person: run message-cp login-link --url <public url> --account <account> --person <name> on the server.";
+
+  it("asks GET /api/token once, with the token only in its header", async () => {
     seed();
-    addPerson(db, "owner", "dana");
     const page = await load(OWNER_TOKEN);
-    await page.until(() => page.picker().length === 2 && page.elements["channel-rows"].children.length === 1);
-    expect(page.picker()).toEqual(["colin", "dana"]);
-    // The picker sits beside the compose box, so it shows only under an open conversation.
-    expect(page.elements["as-box"].hidden).toBe(true);
+    await page.until(() => page.elements["channel-rows"].children.length === 1 && page.scheduled());
     await page.poll();
     await page.until(() => page.requests.filter((r) => r.url.startsWith("/api/agents")).length === 2);
     const asks = page.requests.filter((r) => r.url === "/api/token");
     expect(asks).toHaveLength(1);
     expect(asks[0].headers).toEqual({ Authorization: `Bearer ${OWNER_TOKEN}` });
     for (const r of page.requests) expect(r.url).not.toContain(OWNER_TOKEN);
-    open(page.elements["channel-rows"], "build");
-    expect(page.elements["as-box"].hidden).toBe(false);
-    expect(page.elements["writer"].hidden).toBe(false);
-    expect(page.elements["as-note"].textContent).toBe("");
-    expect(page.elements["compose"].hidden).toBe(true);
   });
 
-  it("with a full token and no people, names message-cp person add under an open conversation", async () => {
-    registerAgent(db, OWNER_ACCOUNT, "bob", "x");
-    joinChannel(db, OWNER_ACCOUNT, { ...identityOf(db, OWNER_ACCOUNT, "bob")!, name: "bob" }, "build");
-    const page = await load(OWNER_TOKEN);
-    await page.until(() => page.elements["channel-rows"].children.length === 1);
-    open(page.elements["channel-rows"], "build");
-    await page.until(() => page.elements["as-note"].textContent !== "");
-    expect(page.elements["writer"].hidden).toBe(false);
-    expect(page.elements["as-note"].textContent).toContain("message-cp person add");
-    expect(page.elements["as-box"].hidden).toBe(true);
+  it("with a full token, reads but offers no posting or New buttons, and says under a conversation how to sign in as a person", async () => {
+    seed();
+    addPerson(db, "owner", "dana");
+    for (const token of [OWNER_TOKEN, addToken(db, "owner").token]) {
+      const page = await load(token);
+      await page.until(() => page.elements["channel-rows"].children.length === 1 && page.elements["pair-rows"].children.length === 1 && page.scheduled());
+      expect(page.elements["new-message"].hidden).toBe(true);
+      expect(page.elements["new-channel"].hidden).toBe(true);
+      expect(page.picker()).toEqual([]);
+      // Nothing is open yet, so nothing is said.
+      expect(page.elements["writer"].hidden).toBe(true);
+      open(page.elements["channel-rows"], "build");
+      await page.until(() => page.elements["post-rows"].children.length === 1);
+      expect(entries(page.elements["post-rows"])).toEqual([["bob", "hello"]]);
+      expect(page.elements["compose"].hidden).toBe(true);
+      expect(page.elements["writer"].hidden).toBe(false);
+      expect(page.elements["as-note"].textContent).toBe(SIGN_IN);
+      // In a pair too, even one with a person in it, and a submit or Enter sends nothing.
+      open(page.elements["pair-rows"], "bob ↔ colin");
+      expect(page.elements["compose"].hidden).toBe(true);
+      expect(page.elements["as-note"].textContent).toBe(SIGN_IN);
+      page.send("should not go");
+      page.elements["compose-text"].value = "should not go";
+      page.elements["compose-text"].on.keydown({ key: "Enter", shiftKey: false, isComposing: false, preventDefault() {} });
+      page.elements["new-message"].on.click();
+      expect(page.elements["new-form"].hidden).not.toBe(false);
+      page.elements["new-channel"].on.click();
+      expect(page.elements["channel-form"].hidden).not.toBe(false);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(page.posts()).toEqual([]);
+      // No mention is marked as the reader's: a full token is no one.
+      expect(page.elements["post-rows"].children.flatMap((row) => row.children).filter((c) => c.className === "mention me")).toEqual([]);
+      // Leaving the conversation takes the note with it.
+      page.elements["close-log"].on.click();
+      expect(page.elements["writer"].hidden).toBe(true);
+      expect(page.elements["as-note"].textContent).toBe("");
+    }
   });
 
-  it("with a read-only token, or an answer it cannot read, shows no picker or compose box and never posts", async () => {
+  it("with a read-only token, or an answer it cannot read, shows no compose box or sign-in note and never posts", async () => {
     seed();
     for (const [token, answer] of [
       [viewer, () => undefined],
@@ -3817,11 +3817,8 @@ describe("the page's posting", () => {
       const page = await load(token, answer);
       await page.until(() => page.elements["channel-rows"].children.length === 1 && page.elements["pair-rows"].children.length === 1);
       await new Promise((resolve) => setTimeout(resolve, 20));
-      expect(page.elements["as-box"].hidden).toBe(true);
-      expect(page.elements["as"].children).toHaveLength(0);
       expect(page.elements["as-note"].textContent).toBe("");
-      // Even a name chosen by hand opens no compose box, and a submit sends nothing.
-      page.choose("colin");
+      // A conversation opens no compose box, and a submit sends nothing.
       open(page.elements["channel-rows"], "build");
       expect(page.elements["compose"].hidden).toBe(true);
       page.send("should not go");
@@ -3830,8 +3827,7 @@ describe("the page's posting", () => {
       page.send("should not go");
       await new Promise((resolve) => setTimeout(resolve, 20));
       expect(page.posts()).toEqual([]);
-      // Nor does a conversation open the picker or the row it sits in, and Enter sends nothing.
-      expect(page.elements["as-box"].hidden).toBe(true);
+      // Nor does a conversation open the row the compose box sits in or say how to sign in, and Enter sends nothing.
       expect(page.elements["writer"].hidden).toBe(true);
       page.elements["compose-text"].value = "should not go";
       page.elements["compose-text"].on.keydown({ key: "Enter", shiftKey: false, isComposing: false, preventDefault() {} });
@@ -3840,14 +3836,12 @@ describe("the page's posting", () => {
     }
   });
 
-  it("posts in the open channel as the chosen person, shows the post at once, and @bob gives bob a mention", async () => {
+  it("posts in the open channel as the token's person, shows the post at once, and @bob gives bob a mention", async () => {
     seed();
-    const page = await load(OWNER_TOKEN);
+    const token = colinToken();
+    const page = await load(token);
     await page.until(() => page.picker().length === 1 && page.elements["channel-rows"].children.length === 1);
     open(page.elements["channel-rows"], "build");
-    // No person chosen yet: no compose box.
-    expect(page.elements["compose"].hidden).toBe(true);
-    page.choose("colin");
     expect(page.elements["compose"].hidden).toBe(false);
     expect(page.elements["compose-label"].textContent).toBe("Post in #build as colin");
     const rows = page.elements["post-rows"];
@@ -3863,7 +3857,7 @@ describe("the page's posting", () => {
     const sent = page.posts();
     expect(sent).toHaveLength(1);
     expect(sent[0].url).toBe("/api/post");
-    expect(sent[0].headers).toEqual({ Authorization: `Bearer ${OWNER_TOKEN}`, "Content-Type": "application/json" });
+    expect(sent[0].headers).toEqual({ Authorization: `Bearer ${token}`, "Content-Type": "application/json" });
     expect(JSON.parse(sent[0].body!)).toEqual({ as: "colin", channel: "build", body: "ship it @bob <b>now</b>" });
     expect(page.elements["compose-text"].value).toBe("");
     const stored = db.prepare("SELECT sender, body FROM channel_posts ORDER BY id DESC LIMIT 1").get();
@@ -3873,13 +3867,12 @@ describe("the page's posting", () => {
     for (const stub of page.made) expect(stub.html).toEqual([]);
   });
 
-  it("replies in an open conversation of the chosen person's, and shows no compose box in one between two others", async () => {
+  it("replies in an open conversation of the token's person's, and shows no compose box in one between two others", async () => {
     seed();
     registerAgent(db, OWNER_ACCOUNT, "alice", "x");
     sendMessage(db, OWNER_ACCOUNT, "alice", "bob", "between agents");
-    const page = await load(OWNER_TOKEN);
+    const page = await load(colinToken());
     await page.until(() => page.picker().length === 1 && page.elements["pair-rows"].children.length === 2);
-    page.choose("colin");
     open(page.elements["pair-rows"], "alice ↔ bob");
     expect(page.elements["compose"].hidden).toBe(true);
     open(page.elements["pair-rows"], "bob ↔ colin");
@@ -3905,32 +3898,35 @@ describe("the page's posting", () => {
       page.elements["messages-note"].textContent,
     ];
 
-    it("say what fills them, naming New channel and New message only with a full token", async () => {
-      const readOnly = await load(viewer);
-      await readOnly.until(() => readOnly.elements["messages-note"].textContent !== "");
-      expect(texts(readOnly)).toEqual([[NO_AGENTS], [NO_CHANNELS], NO_MESSAGES]);
-      expect(readOnly.elements["new-channel"].hidden).toBe(true);
+    it("say what fills them, naming New channel and New message only with a person token", async () => {
+      for (const token of [viewer, OWNER_TOKEN]) {
+        const page = await load(token);
+        await page.until(() => page.elements["messages-note"].textContent !== "");
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        expect(texts(page)).toEqual([[NO_AGENTS], [NO_CHANNELS], NO_MESSAGES]);
+        expect(page.elements["new-channel"].hidden).toBe(true);
+      }
 
-      const full = await load(OWNER_TOKEN);
-      await full.until(() => full.elements["messages-note"].textContent !== "" && !full.elements["new-channel"].hidden);
-      expect(texts(full)).toEqual([[NO_AGENTS], [NO_CHANNELS + NEW_CHANNEL], NO_MESSAGES + NEW_MESSAGE]);
+      const person = await load(colinToken());
+      await person.until(() => person.elements["messages-note"].textContent !== "" && !person.elements["new-channel"].hidden);
+      expect(texts(person).slice(1)).toEqual([[NO_CHANNELS + NEW_CHANNEL], NO_MESSAGES + NEW_MESSAGE]);
     });
 
     it("name neither button with an answer to GET /api/token it cannot read, or before it answers", async () => {
-      const unreadable = await load(OWNER_TOKEN, (url) => (url === "/api/token" ? { status: 503 } : undefined));
+      const unreadable = await load(colinToken(), (url) => (url === "/api/token" ? { status: 503 } : undefined));
       await unreadable.until(() => unreadable.elements["messages-note"].textContent !== "");
       await new Promise((resolve) => setTimeout(resolve, 20));
-      expect(texts(unreadable)).toEqual([[NO_AGENTS], [NO_CHANNELS], NO_MESSAGES]);
+      expect(texts(unreadable).slice(1)).toEqual([[NO_CHANNELS], NO_MESSAGES]);
 
-      // Once the held answer says the token is full, the notes name the buttons without waiting for a poll.
+      // Once the held answer says the token is a person's, the notes name the buttons without waiting for a poll.
       let release!: () => void;
       const hold = new Promise<void>((resolve) => (release = resolve));
-      const page = await load(OWNER_TOKEN, (url) => (url === "/api/token" ? { hold } : undefined));
+      const page = await load(colinToken(), (url) => (url === "/api/token" ? { hold } : undefined));
       await page.until(() => page.elements["messages-note"].textContent !== "");
-      expect(texts(page)).toEqual([[NO_AGENTS], [NO_CHANNELS], NO_MESSAGES]);
+      expect(texts(page).slice(1)).toEqual([[NO_CHANNELS], NO_MESSAGES]);
       release();
       await page.until(() => !page.elements["new-channel"].hidden);
-      expect(texts(page)).toEqual([[NO_AGENTS], [NO_CHANNELS + NEW_CHANNEL], NO_MESSAGES + NEW_MESSAGE]);
+      expect(texts(page).slice(1)).toEqual([[NO_CHANNELS + NEW_CHANNEL], NO_MESSAGES + NEW_MESSAGE]);
 
       // A read-only token after it starts with notes that name neither button.
       page.elements["forget"].on.click();
@@ -3939,7 +3935,7 @@ describe("the page's posting", () => {
       page.elements["login"].on.submit({ preventDefault() {} } as never);
       await page.until(() => page.elements["messages-note"].textContent !== "");
       await new Promise((resolve) => setTimeout(resolve, 20));
-      expect(texts(page)).toEqual([[NO_AGENTS], [NO_CHANNELS], NO_MESSAGES]);
+      expect(texts(page).slice(1)).toEqual([[NO_CHANNELS], NO_MESSAGES]);
     });
 
     it("are fixed texts that name no account, agent, token or server address", () => {
@@ -4003,7 +3999,7 @@ describe("the page's posting", () => {
         await new Promise((resolve) => setTimeout(resolve, 20));
         expect(page.posts()).toEqual([]);
       }
-      const page = await load(OWNER_TOKEN);
+      const page = await load(colinToken());
       await ready(page);
       expect(page.elements["new-message"].hidden).toBe(false);
       page.elements["new-message"].on.click();
@@ -4011,28 +4007,20 @@ describe("the page's posting", () => {
       expect(page.elements["new-message"].attributes["aria-expanded"]).toBe("true");
     });
 
-    it("offers the account's people as From and its agents and people as To, minus all and the From name without case", async () => {
+    it("offers the token's person as From and the account's agents and people as To, minus all and the From name without case", async () => {
       // The server reserves all and keeps names unique without case, so the answer is stubbed to hold them anyway.
       const agent = (name: string, person: boolean) => ({ name, bio: "x", person, online: false, lastSeen: new Date().toISOString(), unreadMessages: 0, unreadPosts: 0, unreadMentions: 0 });
       const body = JSON.stringify([agent("all", false), agent("bob", false), agent("Colin", false), agent("colin", true), agent("dana", true)]);
-      const page = await load(OWNER_TOKEN, (url) => (url.startsWith("/api/agents") ? { status: 200, body } : undefined));
-      await page.until(() => page.picker().length === 2 && page.elements["rows"].children.length === 5 && !page.elements["new-message"].hidden);
-      // With a person chosen in Post as, From starts at them.
-      page.choose("dana");
+      const page = await load(colinToken(), (url) => (url.startsWith("/api/agents") ? { status: 200, body } : undefined));
+      await page.until(() => page.picker().length === 1 && page.elements["rows"].children.length === 5 && !page.elements["new-message"].hidden);
       page.elements["new-message"].on.click();
-      expect(options(page.elements["new-from"])).toEqual([
-        ["colin", "colin"],
-        ["dana", "dana"],
-      ]);
-      expect(page.elements["new-from"].value).toBe("dana");
+      // Only the token's person, already chosen, though dana is a person too.
+      expect(options(page.elements["new-from"])).toEqual([["colin", "colin"]]);
+      expect(page.elements["new-from"].value).toBe("colin");
       const names = (select: Stub) => options(select).map(([value]) => value).sort();
-      expect(names(page.elements["new-to"])).toEqual(["Colin", "bob", "colin"].sort());
-      expect(options(page.elements["new-to"])).toContainEqual(["colin", "colin (person)"]);
-      expect(options(page.elements["new-to"])).toContainEqual(["bob", "bob"]);
-      page.elements["new-from"].value = "colin";
-      page.elements["new-from"].on.change();
       expect(names(page.elements["new-to"])).toEqual(["bob", "dana"]);
       expect(options(page.elements["new-to"])).toContainEqual(["dana", "dana (person)"]);
+      expect(options(page.elements["new-to"])).toContainEqual(["bob", "bob"]);
       // A poll with the same names leaves the selects as they are, so an open one is not closed under the reader.
       const to = page.elements["new-to"].children;
       await page.poll();
@@ -4042,46 +4030,33 @@ describe("the page's posting", () => {
       for (const stub of page.made) expect(stub.html).toEqual([]);
     });
 
-    it("names message-cp person add in the form when the account has no people", async () => {
-      registerAgent(db, OWNER_ACCOUNT, "bob", "x");
-      const page = await load(OWNER_TOKEN);
-      await page.until(() => page.elements["rows"].children.length === 1 && !page.elements["new-message"].hidden);
-      page.elements["new-message"].on.click();
-      expect(page.elements["new-note"].textContent).toContain("message-cp person add");
-      expect(page.elements["new-fields"].hidden).toBe(true);
-      expect(options(page.elements["new-from"])).toEqual([]);
-    });
-
     it("asks for a new choice, never another name, when the chosen From or To leaves the list while the form is open", async () => {
       // The answer to GET /api/agents is stubbed, so a name can leave it between polls.
       const agent = (name: string, person: boolean) => ({ name, bio: "x", person, online: false, lastSeen: new Date().toISOString(), unreadMessages: 0, unreadPosts: 0, unreadMentions: 0 });
       let listed = [agent("bob", false), agent("zed", false), agent("colin", true), agent("dana", true)];
-      const page = await load(OWNER_TOKEN, (url) => (url.startsWith("/api/agents") ? { status: 200, body: JSON.stringify(listed) } : undefined));
-      await page.until(() => page.picker().length === 2 && page.elements["rows"].children.length === 4 && !page.elements["new-message"].hidden);
+      const page = await load(colinToken(), (url) => (url.startsWith("/api/agents") ? { status: 200, body: JSON.stringify(listed) } : undefined));
+      await page.until(() => page.picker().length === 1 && page.elements["rows"].children.length === 4 && !page.elements["new-message"].hidden);
       page.elements["new-message"].on.click();
-      // With no "Post as" person, both selects start at their empty first option.
-      expect(page.elements["new-from"].children[0].value).toBe("");
-      expect(page.elements["new-from"].value).toBe("");
+      // From starts at the token's person, and To at its empty first option.
+      expect(page.elements["new-from"].value).toBe("colin");
       expect(page.elements["new-to"].children[0].value).toBe("");
       expect(page.elements["new-to"].value).toBe("");
-      page.elements["new-from"].value = "dana";
-      page.elements["new-from"].on.change();
       page.elements["new-to"].value = "zed";
       // zed leaves while the form is open: To asks again rather than taking bob, and Open opens nothing.
       listed = listed.filter((a) => a.name !== "zed");
       await page.poll();
       await page.until(() => page.elements["rows"].children.length === 3);
-      expect(options(page.elements["new-to"]).map(([value]) => value).sort()).toEqual(["bob", "colin"]);
+      expect(options(page.elements["new-to"]).map(([value]) => value).sort()).toEqual(["bob", "dana"]);
       expect(page.elements["new-to"].value).toBe("");
-      expect(page.elements["new-from"].value).toBe("dana");
+      expect(page.elements["new-from"].value).toBe("colin");
       page.elements["new-form"].on.submit({ preventDefault() {} });
       expect(page.elements["log"].hidden).toBe(true);
       expect(page.elements["new-form"].hidden).toBe(false);
       expect(page.elements["pair-rows"].children).toEqual([]);
-      // dana leaves: From asks again rather than taking colin, so even a To still listed opens nothing.
-      listed = listed.filter((a) => a.name !== "dana");
+      // colin leaves the list: From asks again rather than taking dana, so even a To still listed opens nothing.
+      listed = listed.filter((a) => a.name !== "colin");
       await page.poll();
-      await page.until(() => page.picker().length === 1);
+      await page.until(() => page.picker().length === 0);
       expect(page.elements["new-from"].value).toBe("");
       page.elements["new-to"].value = "bob";
       page.elements["new-form"].on.submit({ preventDefault() {} });
@@ -4096,7 +4071,7 @@ describe("the page's posting", () => {
       registerAgent(db, OWNER_ACCOUNT, "zed", "x");
       addPerson(db, "owner", "colin");
       sendMessage(db, OWNER_ACCOUNT, "bob", "zed", "one");
-      const page = await load(OWNER_TOKEN);
+      const page = await load(colinToken());
       await ready(page);
       await page.until(() => page.elements["pair-rows"].children.length === 1);
       start(page, "colin", "zed");
@@ -4121,7 +4096,7 @@ describe("the page's posting", () => {
       registerAgent(db, OWNER_ACCOUNT, "zed", "x");
       addPerson(db, "owner", "colin");
       sendMessage(db, OWNER_ACCOUNT, "bob", "zed", "between agents");
-      const page = await load(OWNER_TOKEN);
+      const page = await load(colinToken());
       await ready(page);
       await page.until(() => page.elements["pair-rows"].children.length === 1);
       expect(start(page, "colin", "zed")).toBe(1);
@@ -4136,7 +4111,7 @@ describe("the page's posting", () => {
       expect(page.elements["log-title"].textContent).toBe("colin ↔ zed");
       expect(page.elements["log-note"].textContent).toBe("No messages yet.");
       expect(page.elements["post-rows"].children).toEqual([]);
-      expect(page.elements["as"].value).toBe("colin");
+      expect(page.elements["as-note"].textContent).toBe("Posting as colin");
       expect(page.elements["compose"].hidden).toBe(false);
       expect(page.elements["compose-label"].textContent).toBe("Reply to zed as colin");
       const before = unreadSummary(db, OWNER_ACCOUNT, "zed")!;
@@ -4159,7 +4134,7 @@ describe("the page's posting", () => {
     it("opens a pair that already has messages with them, and never opens one with a name it did not offer", async () => {
       seed();
       addPerson(db, "owner", "dana");
-      const page = await load(OWNER_TOKEN);
+      const page = await load(colinToken());
       await ready(page);
       await page.until(() => page.elements["pair-rows"].children.length === 1);
       start(page, "colin", "bob");
@@ -4187,7 +4162,7 @@ describe("the page's posting", () => {
 
     it("closes on Escape, on Cancel, on opening another conversation, and on ask(), which drops an empty pair", async () => {
       seed();
-      const page = await load(OWNER_TOKEN);
+      const page = await load(colinToken());
       await ready(page);
       await page.until(() => page.elements["channel-rows"].children.length === 1);
       const form = page.elements["new-form"];
@@ -4292,7 +4267,7 @@ describe("the page's posting", () => {
         expect(page.posts()).toEqual([]);
         expect(page.elements["log"].hidden).toBe(true);
       }
-      const page = await load(OWNER_TOKEN);
+      const page = await load(colinToken());
       await ready(page);
       page.elements["new-channel"].on.click();
       expect(page.elements["channel-form"].hidden).toBe(false);
@@ -4300,24 +4275,24 @@ describe("the page's posting", () => {
       expect(page.elements["channel-from"].children.filter((o) => o.value !== "").map((o) => o.textContent)).toEqual(["colin"]);
     });
 
-    it("starts From at the Post as person, and names message-cp person add when there are no people", async () => {
+    it("starts From at the token's person, and says they are gone when GET /api/agents no longer lists them", async () => {
       seed();
-      const page = await load(OWNER_TOKEN);
+      const page = await load(colinToken());
       await ready(page);
-      page.choose("colin");
       page.elements["new-channel"].on.click();
       expect(page.elements["channel-from"].value).toBe("colin");
-      const empty = await load(OWNER_TOKEN, (url) => (url.startsWith("/api/agents") ? { status: 200, body: "[]" } : undefined));
+      const empty = await load(colinToken(), (url) => (url.startsWith("/api/agents") ? { status: 200, body: "[]" } : undefined));
       await empty.until(() => empty.elements["channel-rows"].children.length === 1 && !empty.elements["new-channel"].hidden);
       empty.elements["new-channel"].on.click();
-      expect(empty.elements["channel-note"].textContent).toContain("message-cp person add");
+      expect(empty.elements["channel-note"].textContent).toBe("colin is no longer a person in this account.");
       expect(empty.elements["channel-fields"].hidden).toBe(true);
       expect(empty.elements["channel-create"].hidden).toBe(true);
     });
 
-    it("sends nothing and says why for a bad name, an existing name in another case, a non-person and a blank post", async () => {
+    it("sends nothing and says why for a bad name, an existing name in another case, a non-person, another person and a blank post", async () => {
       seed();
-      const page = await load(OWNER_TOKEN);
+      addPerson(db, "owner", "dana");
+      const page = await load(colinToken());
       await ready(page);
       const note = () => page.elements["channel-note"].textContent;
       for (const [from, name, body, says] of [
@@ -4326,6 +4301,7 @@ describe("the page's posting", () => {
         ["colin", "x".repeat(33), "hi", "1 to 32"],
         ["colin", "BUILD", "hi", "already exists"],
         ["bob", "fresh", "hi", "From"],
+        ["dana", "fresh", "hi", "From"],
         ["", "fresh", "hi", "From"],
         ["colin", "fresh", " \n\t", "first post"],
         ["colin", "fresh", "😀".repeat(MAX_BODY_LENGTH + 1), String(MAX_BODY_LENGTH)],
@@ -4344,13 +4320,12 @@ describe("the page's posting", () => {
 
     it("posts { as, channel, body } to /api/post once, then opens the channel with the compose box for that person", async () => {
       seed();
-      addPerson(db, "owner", "dana");
       let release!: () => void;
       const hold = new Promise<void>((resolve) => (release = resolve));
-      const page = await load(OWNER_TOKEN, (url, method) => (url === "/api/post" && method === "POST" ? { hold } : undefined));
+      const token = colinToken();
+      const page = await load(token, (url, method) => (url === "/api/post" && method === "POST" ? { hold } : undefined));
       await ready(page);
-      page.choose("colin");
-      expect(create(page, "dana", "fresh", "first <b>post</b>")).toBe(1);
+      expect(create(page, "colin", "fresh", "first <b>post</b>")).toBe(1);
       expect(page.elements["channel-create"].disabled).toBe(true);
       // A second submit while the first is in flight sends nothing.
       page.elements["channel-form"].on.submit({ preventDefault() {} });
@@ -4360,24 +4335,24 @@ describe("the page's posting", () => {
       const sent = page.posts();
       expect(sent).toHaveLength(1);
       expect(sent[0].url).toBe("/api/post");
-      expect(sent[0].headers).toEqual({ Authorization: `Bearer ${OWNER_TOKEN}`, "Content-Type": "application/json" });
-      expect(JSON.parse(sent[0].body!)).toEqual({ as: "dana", channel: "fresh", body: "first <b>post</b>" });
+      expect(sent[0].headers).toEqual({ Authorization: `Bearer ${token}`, "Content-Type": "application/json" });
+      expect(JSON.parse(sent[0].body!)).toEqual({ as: "colin", channel: "fresh", body: "first <b>post</b>" });
       expect(page.elements["channel-form"].hidden).toBe(true);
       expect(page.elements["channel-create"].disabled).toBe(false);
       expect(page.elements["channel-name"].value).toBe("");
       expect(page.elements["channel-body"].value).toBe("");
       expect(page.elements["log-title"].textContent).toBe("fresh");
-      expect(page.elements["as"].value).toBe("dana");
+      expect(page.elements["as-note"].textContent).toBe("Posting as colin");
       expect(page.elements["compose"].hidden).toBe(false);
-      expect(page.elements["compose-label"].textContent).toBe("Post in #fresh as dana");
+      expect(page.elements["compose-label"].textContent).toBe("Post in #fresh as colin");
       // The poll openLog starts lists the channel, marks it open and shows the first post.
       await page.until(() => page.elements["post-rows"].children.length === 1 && page.elements["channel-rows"].children.length === 2);
-      expect(entries(page.elements["post-rows"])).toEqual([["dana", "first <b>post</b>"]]);
+      expect(entries(page.elements["post-rows"])).toEqual([["colin", "first <b>post</b>"]]);
       const row = page.elements["channel-rows"].children.find((r) => label(r) === "fresh")!;
       expect(row.children[0].className).toBe("item current");
-      expect(db.prepare("SELECT sender, body FROM channel_posts ORDER BY id DESC LIMIT 1").get()).toEqual({ sender: "dana", body: "first <b>post</b>" });
+      expect(db.prepare("SELECT sender, body FROM channel_posts ORDER BY id DESC LIMIT 1").get()).toEqual({ sender: "colin", body: "first <b>post</b>" });
       // The same name in another case is now refused, so nothing more is posted.
-      create(page, "dana", "FRESH", "again");
+      create(page, "colin", "FRESH", "again");
       expect(page.elements["channel-note"].textContent).toContain("already exists");
       expect(page.posts()).toHaveLength(1);
       for (const stub of page.made) expect(stub.html).toEqual([]);
@@ -4386,7 +4361,7 @@ describe("the page's posting", () => {
     it("keeps the text and shows the server's reason on a 400, a note for other refusals and no answer, and asks again on a 401", async () => {
       seed();
       let answer: { status?: number; body?: string; lose?: boolean } = { status: 400, body: JSON.stringify({ error: { message: "Channel names are reserved" } }) };
-      const page = await load(OWNER_TOKEN, (url, method) => (url === "/api/post" && method === "POST" ? answer : undefined));
+      const page = await load(colinToken(), (url, method) => (url === "/api/post" && method === "POST" ? answer : undefined));
       await ready(page);
       const note = () => page.elements["channel-note"].textContent;
       create(page, "colin", "fresh", "first");
@@ -4422,7 +4397,7 @@ describe("the page's posting", () => {
       seed();
       let release!: () => void;
       const hold = new Promise<void>((resolve) => (release = resolve));
-      const page = await load(OWNER_TOKEN, (url, method) => (url === "/api/post" && method === "POST" ? { hold } : undefined));
+      const page = await load(colinToken(), (url, method) => (url === "/api/post" && method === "POST" ? { hold } : undefined));
       await ready(page);
       create(page, "colin", "fresh", "first");
       page.elements["forget"].on.click();
@@ -4435,7 +4410,7 @@ describe("the page's posting", () => {
 
     it("opens the channel under the name the server stored, when one was made elsewhere since the list was read", async () => {
       seed();
-      const page = await load(OWNER_TOKEN);
+      const page = await load(colinToken());
       await ready(page);
       // Another dashboard creates Fresh after this page read the channel list, so the page cannot refuse it.
       post(db, OWNER_ACCOUNT, { ...identityOf(db, OWNER_ACCOUNT, "bob")!, name: "bob" }, "Fresh", "first elsewhere");
@@ -4449,7 +4424,7 @@ describe("the page's posting", () => {
       seed();
       let release!: () => void;
       const hold = new Promise<void>((resolve) => (release = resolve));
-      const page = await load(OWNER_TOKEN, (url, method) => (url === "/api/post" && method === "POST" ? { hold } : undefined));
+      const page = await load(colinToken(), (url, method) => (url === "/api/post" && method === "POST" ? { hold } : undefined));
       await ready(page);
       create(page, "colin", "fresh", "first");
       page.elements["channel-cancel"].on.click();
@@ -4457,7 +4432,7 @@ describe("the page's posting", () => {
       await page.until(() => page.elements["channel-create"].disabled === false);
       expect(page.elements["log"].hidden).toBe(true);
       expect(page.elements["channel-form"].hidden).toBe(true);
-      expect(page.elements["as"].value).not.toBe("colin");
+      expect(page.elements["as-note"].textContent).toBe("");
       // The post was stored, so the name is refused from now on.
       create(page, "colin", "fresh", "again");
       expect(page.elements["channel-note"].textContent).toContain("already exists");
@@ -4466,7 +4441,7 @@ describe("the page's posting", () => {
 
     it("refuses the name after no answer, even once a channel list that leaves it out is read, so a retry adds no second first post", async () => {
       seed();
-      const page = await load(OWNER_TOKEN, (url, method) => (url === "/api/post" && method === "POST" ? { lose: true } : undefined));
+      const page = await load(colinToken(), (url, method) => (url === "/api/post" && method === "POST" ? { lose: true } : undefined));
       await ready(page);
       create(page, "colin", "fresh", "first");
       await page.until(() => page.elements["channel-note"].textContent.includes("check the channel list"));
@@ -4488,7 +4463,7 @@ describe("the page's posting", () => {
 
     it("closes on Escape, Cancel, another conversation and ask(), and only one of New message and New channel is open", async () => {
       seed();
-      const page = await load(OWNER_TOKEN);
+      const page = await load(colinToken());
       await ready(page);
       const form = page.elements["channel-form"];
       page.elements["new-channel"].on.click();
@@ -4545,28 +4520,24 @@ describe("the page's posting", () => {
     const ready = async (page: Awaited<ReturnType<typeof load>>) => {
       await page.until(() => page.picker().length === 1 && page.elements["channel-rows"].children.length === 1);
       open(page.elements["channel-rows"], "build");
-      // The picker shows under the open channel before a person is chosen, so one can be chosen there.
-      expect(page.elements["as-box"].hidden).toBe(false);
       expect(page.elements["writer"].hidden).toBe(false);
-      expect(page.elements["compose"].hidden).toBe(true);
-      page.choose("colin");
       expect(page.elements["compose"].hidden).toBe(false);
     };
 
     it("says in the placeholder that Enter sends and Shift+Enter adds a line", async () => {
       const html = await (await fetch(`${base()}/`)).text();
       expect(html).toMatch(/<textarea id="compose-text" rows="2"[^>]*placeholder="Enter sends, Shift\+Enter adds a line"/);
-      // The picker is no longer in the top bar, but in the log beside the compose box.
-      const bar = /<header class="bar">([\s\S]*?)<\/header>/.exec(html)![1];
-      expect(bar).not.toContain('id="as-box"');
+      // There is no person picker: the note on who the page posts as sits in the log above the compose box.
+      expect(html).not.toContain('id="as-box"');
+      expect(html).not.toContain("Post as");
       const log = /<section id="log"[^>]*>([\s\S]*?)<\/section>/.exec(html)![1];
-      expect(log).toMatch(/<div id="writer" hidden>\s*<span id="as-box" hidden>[\s\S]*<p id="as-note"[\s\S]*<form id="compose" hidden>[\s\S]*<\/form>\s*<p id="compose-note"/);
+      expect(log).toMatch(/<div id="writer" hidden>\s*<p id="as-note"[\s\S]*<form id="compose" hidden>[\s\S]*<\/form>\s*<p id="compose-note"/);
       expect(html).not.toMatch(/ style=|\.style\s*[.=[]/);
     });
 
     it("sends once on Enter and prevents its newline", async () => {
       seed();
-      const page = await load(OWNER_TOKEN);
+      const page = await load(colinToken());
       await ready(page);
       expect(key(page, "by enter")).toBe(1);
       await page.until(() => page.elements["compose-send"].disabled === false && page.elements["compose-text"].value === "");
@@ -4576,7 +4547,7 @@ describe("the page's posting", () => {
 
     it("sends nothing on Shift+Enter, on an Enter while composing, or on an Enter in a box of only whitespace", async () => {
       seed();
-      const page = await load(OWNER_TOKEN);
+      const page = await load(colinToken());
       await ready(page);
       // Shift+Enter and an IME's Enter keep their default, so the line is added or the composition ends.
       expect(key(page, "two\nlines", { shiftKey: true })).toBe(0);
@@ -4596,7 +4567,7 @@ describe("the page's posting", () => {
       seed();
       let release!: () => void;
       const hold = new Promise<void>((resolve) => (release = resolve));
-      const page = await load(OWNER_TOKEN, (url, method) => (method === "POST" ? { hold } : undefined));
+      const page = await load(colinToken(), (url, method) => (method === "POST" ? { hold } : undefined));
       await ready(page);
       key(page, "only once");
       expect(page.elements["compose-send"].disabled).toBe(true);
@@ -4610,7 +4581,7 @@ describe("the page's posting", () => {
 
     it("grows the box with its text up to 10 rows, shrinks it back and resets it after a 200", async () => {
       seed();
-      const page = await load(OWNER_TOKEN);
+      const page = await load(colinToken());
       await ready(page);
       // A textarea as a browser lays it out: each line of text and each row is 20px high.
       const box = page.elements["compose-text"] as Stub & { rows: number };
@@ -4658,15 +4629,14 @@ describe("the page's posting", () => {
       seed();
       for (const name of ["Bobby", "alice"]) registerAgent(db, OWNER_ACCOUNT, name, "x");
       addPerson(db, "owner", "dana");
-      const page = await load(OWNER_TOKEN, answer);
-      await page.until(() => page.picker().length === 2 && page.elements["channel-rows"].children.length === 1);
+      const page = await load(colinToken(), answer);
+      await page.until(() => page.picker().length === 1 && page.elements["channel-rows"].children.length === 1);
       open(page.elements["channel-rows"], "build");
-      page.choose("colin");
       expect(page.elements["compose"].hidden).toBe(false);
       return page;
     };
 
-    it("opens on @ with the account's agents and people, minus the chosen person and all, and narrows ignoring case", async () => {
+    it("opens on @ with the account's agents and people, minus the token's person and all, and narrows ignoring case", async () => {
       const page = await ready();
       expect(list(page).hidden).toBe(true);
       type(page, "@");
@@ -4694,7 +4664,7 @@ describe("the page's posting", () => {
       page.elements["compose-text"].value = "@bob";
       page.elements["compose-text"].on.input();
       expect(list(page).hidden).toBe(true);
-      // The chosen person is never offered.
+      // The token's person is never offered.
       type(page, "@c");
       expect(list(page).hidden).toBe(true);
       // The names went on the page only as text.
@@ -4871,10 +4841,9 @@ describe("the page's posting", () => {
 
   it("caps the compose box at MAX_BODY_LENGTH characters, counted as the server counts them", async () => {
     seed();
-    const page = await load(OWNER_TOKEN);
+    const page = await load(colinToken());
     await page.until(() => page.picker().length === 1 && page.elements["channel-rows"].children.length === 1);
     open(page.elements["channel-rows"], "build");
-    page.choose("colin");
     // An astral character is two UTF-16 units but one character, so this is at the limit and goes.
     const astral = "\u{1F680}".repeat(MAX_BODY_LENGTH);
     page.send(astral);
@@ -4893,10 +4862,9 @@ describe("the page's posting", () => {
     seed();
     let release!: () => void;
     const hold = new Promise<void>((resolve) => (release = resolve));
-    const page = await load(OWNER_TOKEN, (url, method) => (method === "POST" ? { hold } : undefined));
+    const page = await load(colinToken(), (url, method) => (method === "POST" ? { hold } : undefined));
     await page.until(() => page.picker().length === 1 && page.elements["channel-rows"].children.length === 1);
     open(page.elements["channel-rows"], "build");
-    page.choose("colin");
     page.send("once");
     expect(page.elements["compose-send"].disabled).toBe(true);
     // While the send is held, a second submit sends nothing.
@@ -4914,10 +4882,9 @@ describe("the page's posting", () => {
   it("with no answer, keeps the text, says it may have been sent and reads the conversation again", async () => {
     seed();
     // The POST is stored and its connection then fails, so the page cannot know it went.
-    const page = await load(OWNER_TOKEN, (url, method) => (method === "POST" ? { lose: true } : undefined));
+    const page = await load(colinToken(), (url, method) => (method === "POST" ? { lose: true } : undefined));
     await page.until(() => page.picker().length === 1 && page.elements["channel-rows"].children.length === 1);
     open(page.elements["channel-rows"], "build");
-    page.choose("colin");
     const reads = () => page.requests.filter((r) => r.url.startsWith("/api/channel-posts")).length;
     await page.until(() => reads() > 0 && page.elements["post-rows"].children.length === 1);
     const before = reads();
@@ -4936,9 +4903,8 @@ describe("the page's posting", () => {
     for (const status of [undefined, 503]) {
       let release!: () => void;
       const hold = new Promise<void>((resolve) => (release = resolve));
-      const page = await load(OWNER_TOKEN, (url, method) => (method === "POST" ? { status, hold } : undefined));
+      const page = await load(colinToken(), (url, method) => (method === "POST" ? { status, hold } : undefined));
       await page.until(() => page.picker().length === 1 && page.elements["pair-rows"].children.length === 1);
-      page.choose("colin");
       open(page.elements["channel-rows"], "build");
       page.send("same text");
       // The reader moves to the pair and types the same text there before the post is answered.
@@ -4956,19 +4922,17 @@ describe("the page's posting", () => {
     seed();
     let release!: () => void;
     const hold = new Promise<void>((resolve) => (release = resolve));
-    const page = await load(OWNER_TOKEN, (url, method) => (method === "POST" && page.posts().length === 1 ? { hold } : undefined));
+    const page = await load(colinToken(), (url, method) => (method === "POST" && page.posts().length === 1 ? { hold } : undefined));
     await page.until(() => page.picker().length === 1 && page.elements["channel-rows"].children.length === 1);
     open(page.elements["channel-rows"], "build");
-    page.choose("colin");
     page.send("slow");
     expect(page.elements["compose-send"].disabled).toBe(true);
     page.elements["forget"].on.click();
     expect(page.elements["compose-send"].disabled).toBe(false);
-    page.elements["token"].value = OWNER_TOKEN;
+    page.elements["token"].value = colinToken();
     page.elements["login"].on.submit({ preventDefault() {} });
     await page.until(() => page.picker().length === 1 && page.elements["channel-rows"].children.length === 1);
     open(page.elements["channel-rows"], "build");
-    page.choose("colin");
     page.send("fast");
     await page.until(() => page.posts().length === 2 && page.elements["compose-text"].value === "");
     // The old send's answer comes after, and changes nothing on the new token's box.
@@ -4988,12 +4952,11 @@ describe("the page's posting", () => {
     [503, "The server is busy (503). Send again in a moment."],
   ] as const)("shows a %i under the compose box and keeps the text", async (status, note) => {
     seed();
-    const page = await load(OWNER_TOKEN, (url, method) =>
+    const page = await load(colinToken(), (url, method) =>
       method === "POST" && status !== 400 ? { status } : undefined,
     );
     await page.until(() => page.picker().length === 1 && page.elements["channel-rows"].children.length === 1);
     open(page.elements["channel-rows"], "build");
-    page.choose("colin");
     // A 400 comes from the server itself, for a body that is only whitespace.
     const text = status === 400 ? "   " : "keep me";
     page.send(text);
@@ -5004,9 +4967,8 @@ describe("the page's posting", () => {
 
   it("keeps typed text when the conversation is left, until a 200", async () => {
     seed();
-    const page = await load(OWNER_TOKEN);
+    const page = await load(colinToken());
     await page.until(() => page.picker().length === 1 && page.elements["pair-rows"].children.length === 1);
-    page.choose("colin");
     open(page.elements["channel-rows"], "build");
     page.elements["compose-text"].value = "a draft";
     open(page.elements["channel-rows"], "build");
@@ -5017,32 +4979,38 @@ describe("the page's posting", () => {
 
   it("clears the page and asks for a token on a 401", async () => {
     seed();
-    const page = await load(OWNER_TOKEN, (url, method) => (method === "POST" ? { status: 401 } : undefined));
+    const page = await load(colinToken(), (url, method) => (method === "POST" ? { status: 401 } : undefined));
     await page.until(() => page.picker().length === 1 && page.elements["channel-rows"].children.length === 1);
     open(page.elements["channel-rows"], "build");
-    page.choose("colin");
     page.send("hello");
     await page.until(() => page.elements["status-line"].textContent.startsWith("The server refused"));
     expect(page.store.size).toBe(0);
-    expect(page.elements["as-box"].hidden).toBe(true);
-    expect(page.elements["as"].children).toHaveLength(0);
+    expect(page.elements["as-note"].textContent).toBe("");
     expect(page.elements["compose"].hidden).toBe(true);
     expect(page.elements["compose-text"].value).toBe("");
   });
 
-  it("clears the choice when the chosen person disappears from GET /api/agents", async () => {
+  it("posts as no one when the token's person disappears from GET /api/agents, and re-marks their mentions in place", async () => {
     seed();
-    const page = await load(OWNER_TOKEN);
+    post(db, OWNER_ACCOUNT, { ...identityOf(db, OWNER_ACCOUNT, "bob")!, name: "bob" }, "build", "@colin look");
+    // The answer to GET /api/agents is stubbed, so colin can leave it while the token still works.
+    let gone = false;
+    const page = await load(colinToken(), (url) => (gone && url.startsWith("/api/agents") ? { status: 200, body: "[]" } : undefined));
     await page.until(() => page.picker().length === 1 && page.elements["channel-rows"].children.length === 1);
     open(page.elements["channel-rows"], "build");
-    page.choose("colin");
     expect(page.elements["compose"].hidden).toBe(false);
-    // There is no person remove yet, so the person goes as a removed registration does.
-    db.prepare("UPDATE agents SET removed_at = ? WHERE name = 'colin'").run(Date.now());
+    const rows = page.elements["post-rows"];
+    await page.until(() => rows.children.length === 2);
+    const row = rows.children[1];
+    const mark = () => row.children.find((c) => c.className === "body")!.children.find((c) => c.className.startsWith("mention"))!.className;
+    expect(mark()).toBe("mention me");
+    gone = true;
     await page.poll();
     await page.until(() => page.elements["compose"].hidden);
     expect(page.picker()).toEqual([]);
-    expect(page.elements["as-note"].textContent).toContain("message-cp person add");
+    expect(page.elements["as-note"].textContent).toBe("");
+    expect(rows.children[1]).toBe(row);
+    expect(mark()).toBe("mention");
   });
 
   describe("deleting a direct conversation", () => {
@@ -5078,10 +5046,10 @@ describe("the page's posting", () => {
       expect(res.headers.get("content-security-policy") ?? "").not.toContain("unsafe-inline");
     });
 
-    it("shows Delete only with a full token and an open pair that has messages", async () => {
+    it("shows Delete only with a full or admin person's token and an open pair that has messages", async () => {
       seedPairs();
-      // A read-only token never sees it, and a click by hand sends nothing.
-      for (const token of [viewer]) {
+      // A read-only token and a plain person token never see it, and a click by hand sends nothing.
+      for (const token of [viewer, colinToken()]) {
         const reader = await load(token);
         await ready(reader);
         open(reader.elements["pair-rows"], "bob ↔ colin");
@@ -5106,18 +5074,19 @@ describe("the page's posting", () => {
       expect(page.elements["delete-pair"].hidden).toBe(true);
       page.elements["close-results"].on.click();
       expect(page.elements["delete-pair"].hidden).toBe(true);
-      // Nor for a pair started from New message with no messages yet.
-      await page.until(() => !page.elements["new-message"].hidden && page.elements["rows"].children.length === 3);
-      page.elements["new-message"].on.click();
-      page.elements["new-from"].value = "colin";
-      page.elements["new-from"].on.change();
-      page.elements["new-to"].value = "dana";
-      page.elements["new-form"].on.submit({ preventDefault() {} });
-      expect(page.elements["log-note"].textContent).toBe("No messages yet.");
-      expect(page.elements["delete-pair"].hidden).toBe(true);
-      page.elements["delete-pair"].on.click();
-      expect(page.elements["delete-confirm"].hidden).toBe(true);
-      expect(deletes(page)).toEqual([]);
+      // Nor for a pair an admin person started from New message, with no messages yet.
+      setPersonAdmin(db, "owner", "colin", true);
+      const admin = await load(colinToken());
+      await openReady(admin, "bob ↔ colin");
+      await admin.until(() => !admin.elements["new-message"].hidden && admin.elements["rows"].children.length === 3);
+      admin.elements["new-message"].on.click();
+      admin.elements["new-to"].value = "dana";
+      admin.elements["new-form"].on.submit({ preventDefault() {} });
+      expect(admin.elements["log-note"].textContent).toBe("No messages yet.");
+      expect(admin.elements["delete-pair"].hidden).toBe(true);
+      admin.elements["delete-pair"].on.click();
+      expect(admin.elements["delete-confirm"].hidden).toBe(true);
+      expect(deletes(admin)).toEqual([]);
     });
 
     it("asks first, naming both sides and the count, and Cancel, Escape, another conversation, Close or a new token send nothing", async () => {
@@ -5227,16 +5196,15 @@ describe("the page's posting", () => {
       seedPairs();
       let release!: () => void;
       const hold = new Promise<void>((resolve) => (release = resolve));
-      const page = await load(OWNER_TOKEN, (url, method) => (method === "DELETE" ? { hold } : undefined));
+      // An admin person both deletes and sends.
+      setPersonAdmin(db, "owner", "colin", true);
+      const page = await load(colinToken(), (url, method) => (method === "DELETE" ? { hold } : undefined));
       await openReady(page, "bob ↔ colin");
       confirmDelete(page);
       await page.until(() => !page.elements["new-message"].hidden && page.elements["rows"].children.length === 3);
       page.elements["new-message"].on.click();
-      page.elements["new-from"].value = "colin";
-      page.elements["new-from"].on.change();
       page.elements["new-to"].value = "dana";
       page.elements["new-form"].on.submit({ preventDefault() {} });
-      page.choose("colin");
       expect(page.elements["compose"].hidden).toBe(false);
       release();
       await page.until(() => page.elements["pair-rows"].children.length === 2 && stored().length === 1);
@@ -5339,13 +5307,11 @@ describe("the page's posting", () => {
     };
     const names = (select: Stub) => select.children.map((o) => o.value);
 
-    it("names the token's person in place of the picker, and posts and replies only as them", async () => {
+    it("names the token's person above the compose box, and posts and replies only as them", async () => {
       seedPeople();
       const page = await load(maria);
       await ready(page);
       open(page.elements["channel-rows"], "build");
-      expect(page.elements["as-box"].hidden).toBe(true);
-      expect(page.elements["as"].children).toEqual([]);
       expect(page.elements["writer"].hidden).toBe(false);
       expect(page.elements["as-note"].textContent).toBe("Posting as maria");
       expect(page.elements["compose"].hidden).toBe(false);
@@ -5427,14 +5393,13 @@ describe("the page's posting", () => {
       await page.until(() => page.elements["post-rows"].children.length === 1 && page.scheduled());
       removePerson(db, "owner", "maria");
       // A person token whose person GET /api/agents no longer lists posts as no one. (The server refuses a removed
-      // person's token everywhere, so this page reads with the full token and is told it holds maria's.)
-      const unlisted = await load(OWNER_TOKEN, (url) =>
+      // person's token everywhere, so this page reads with a read-only token and is told it holds maria's.)
+      const unlisted = await load(viewer, (url) =>
         url === "/api/token" ? { status: 200, body: '{"readOnly":false,"agentOnly":false,"person":"maria"}' } : undefined,
       );
       await unlisted.until(() => unlisted.elements["channel-rows"].children.length === 1 && !unlisted.elements["new-message"].hidden);
       open(unlisted.elements["channel-rows"], "build");
       expect(unlisted.elements["compose"].hidden).toBe(true);
-      expect(unlisted.elements["as-box"].hidden).toBe(true);
       expect(unlisted.elements["as-note"].textContent).toBe("");
       unlisted.elements["new-message"].on.click();
       expect(unlisted.elements["new-note"].textContent).toBe("maria is no longer a person in this account.");
@@ -5451,18 +5416,17 @@ describe("the page's posting", () => {
       expect(page.elements["new-message"].hidden).toBe(true);
     });
 
-    it("keeps the choice of every person for a full token", async () => {
+    it("gives a full token no choice of person, but Delete, in a pair of any of them", async () => {
       seedPeople();
       const page = await load(OWNER_TOKEN);
-      await page.until(() => page.picker().length === 3 && page.elements["pair-rows"].children.length === 2);
-      expect(page.picker()).toEqual(["colin", "dana", "maria"]);
-      open(page.elements["channel-rows"], "build");
-      expect(page.elements["as-box"].hidden).toBe(false);
-      expect(page.elements["as-note"].textContent).toBe("");
+      await page.until(() => page.elements["pair-rows"].children.length === 2 && page.scheduled());
+      expect(page.elements["new-message"].hidden).toBe(true);
       page.elements["new-message"].on.click();
-      expect(names(page.elements["new-from"])).toEqual(["", "colin", "dana", "maria"]);
+      expect(names(page.elements["new-from"])).toEqual([]);
       open(page.elements["pair-rows"], "bob ↔ maria");
       await page.until(() => !page.elements["delete-pair"].hidden);
+      expect(page.elements["compose"].hidden).toBe(true);
+      expect(page.elements["as-note"].textContent).toContain("message-cp login-link");
     });
 
     it("shows Delete to an admin person's token as to a full token, follows the mark at the next token check, and deletes", async () => {
@@ -5501,10 +5465,12 @@ describe("the page's posting", () => {
 
   it("never sends as a name GET /api/agents did not give as a person", async () => {
     seed();
-    const page = await load(OWNER_TOKEN);
-    await page.until(() => page.picker().length === 1 && page.elements["channel-rows"].children.length === 1);
+    // GET /api/token is stubbed to name bob, an agent, as the token's person.
+    const page = await load(colinToken(), (url) =>
+      url === "/api/token" ? { status: 200, body: '{"readOnly":false,"agentOnly":false,"person":"bob"}' } : undefined,
+    );
+    await page.until(() => page.elements["channel-rows"].children.length === 1 && !page.elements["new-message"].hidden);
     open(page.elements["channel-rows"], "build");
-    page.choose("bob");
     expect(page.elements["compose"].hidden).toBe(true);
     page.send("as an agent");
     await new Promise((resolve) => setTimeout(resolve, 20));

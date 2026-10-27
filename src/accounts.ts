@@ -25,10 +25,11 @@ export interface NewToken {
 }
 
 /**
- * Who a bearer token acts as: its account, whether it may only read, and whether it may do what an agent does but not
- * act as a person (POST /api/send and /api/post). Never both, and neither for a person token, which reads what a
- * read-only token reads, sends and posts only as its person, approves MCP clients (POST /oauth/approve) and, while its
- * person is an admin, deletes the account's conversations (DELETE /api/conversation).
+ * Who a bearer token acts as: its account, whether it may only read, and whether it may do only what an agent does
+ * (/mcp, /wait and GET /api/token). Never both, and neither for a full token or a person token. A full token acts as no
+ * person, so it never sends or posts as one (POST /api/send and /api/post). A person token reads what a read-only token
+ * reads, sends and posts only as its person, approves MCP clients (POST /oauth/approve) and, while its person is an
+ * admin, deletes the account's conversations (DELETE /api/conversation).
  */
 export interface TokenAccess {
   account: AccountId;

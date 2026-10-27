@@ -11,14 +11,15 @@ import { startHttp, type HttpServer } from "../src/http.js";
 import { readInbox } from "../src/messages.js";
 import { addWebhook, deliveryBody } from "../src/webhooks.js";
 
-// POST /api/send and /api/post, on a server with the owner's account and a friend's.
+// POST /api/send and /api/post, on a server with the owner's account and a friend's, sent with a person token, the only
+// kind that sends or posts.
 const OWNER_TOKEN = "owner-token";
 let db: Db;
 let http: HttpServer;
 let friend: AccountId;
 let friendToken: string;
 let ownerViewer: string;
-let ownerFull: string;
+let colin: string;
 
 const start = async (options: { maxSessions?: number; waitHoldMs?: number } = {}) => {
   http = await startHttp(db, { token: OWNER_TOKEN, port: 0, waitHoldMs: 0, ...options });
@@ -29,8 +30,8 @@ beforeEach(async () => {
   friendToken = addAccount(db, "friend").token;
   friend = listAccounts(db).find((a) => a.name === "friend")!.id;
   ownerViewer = addToken(db, "owner", true).token;
-  ownerFull = addToken(db, "owner").token;
   addPerson(db, "owner", "colin");
+  colin = addToken(db, "owner", false, false, undefined, "colin").token;
   registerAgent(db, OWNER_ACCOUNT, "bob", "x");
   registerAgent(db, OWNER_ACCOUNT, "carol", "x");
   await start();
@@ -75,7 +76,7 @@ describe("POST /api/send", () => {
     const waiting = fetch(`${base()}/wait?agent=bob`, { headers: auth(OWNER_TOKEN) });
     await new Promise((r) => setTimeout(r, 200));
     // The person's stored name is the sender, whatever case `as` is given in.
-    expect(await ok("/api/send", ownerFull, { as: "Colin", to: "BOB", body: "hello bob" })).toEqual({ delivered: 1, recipients: ["bob"] });
+    expect(await ok("/api/send", colin, { as: "Colin", to: "BOB", body: "hello bob" })).toEqual({ delivered: 1, recipients: ["bob"] });
     const woke = await waiting;
     expect(woke.status).toBe(200);
     expect(await woke.text()).toBe("1 unread message from colin\n");
@@ -87,7 +88,7 @@ describe("POST /api/send", () => {
   it("broadcasts to every other agent and person of the account, and only that account", async () => {
     addPerson(db, "owner", "dana");
     registerAgent(db, friend, "erin", "x");
-    expect(await ok("/api/send", OWNER_TOKEN, { as: "colin", to: "all", body: "hi all" })).toEqual({
+    expect(await ok("/api/send", colin, { as: "colin", to: "all", body: "hi all" })).toEqual({
       delivered: 3,
       recipients: ["bob", "carol", "dana"],
     });
@@ -104,7 +105,7 @@ describe("POST /api/post", () => {
     await start({ waitHoldMs: 3000 });
     const waiting = fetch(`${base()}/wait?agent=bob`, { headers: auth(OWNER_TOKEN) });
     await new Promise((r) => setTimeout(r, 200));
-    const result = await ok<{ channel: string; id: number; sentAt: string }>("/api/post", ownerFull, {
+    const result = await ok<{ channel: string; id: number; sentAt: string }>("/api/post", colin, {
       as: "colin",
       channel: "general",
       body: "@bob and @colin, look",
@@ -114,10 +115,10 @@ describe("POST /api/post", () => {
     expect(woke.status).toBe(200);
     expect(await woke.text()).toContain("mention");
     // The person mentioning themselves gets no mention, as an agent would not.
-    const colin = db.prepare("SELECT id FROM agents WHERE name = 'colin'").pluck().get();
+    const colinId = db.prepare("SELECT id FROM agents WHERE name = 'colin'").pluck().get();
     const bob = db.prepare("SELECT id FROM agents WHERE name = 'bob'").pluck().get();
     expect(db.prepare("SELECT agent_id FROM mentions").pluck().all()).toEqual([bob]);
-    expect(db.prepare("SELECT sender_id, sender FROM channel_posts").all()).toEqual([{ sender_id: colin, sender: "colin" }]);
+    expect(db.prepare("SELECT sender_id, sender FROM channel_posts").all()).toEqual([{ sender_id: colinId, sender: "colin" }]);
     const deliveries = db.prepare("SELECT id, webhook_id FROM webhook_deliveries ORDER BY id").all() as { id: number; webhook_id: number }[];
     expect(deliveries.map((d) => [d.webhook_id, deliveryBody(db, d.id)?.event])).toEqual([
       [channelHook.id, "channel"],
@@ -134,7 +135,7 @@ describe("POST /api/post", () => {
 
   it("wakes an agent that joined the channel", async () => {
     joinChannel(db, OWNER_ACCOUNT, member(OWNER_ACCOUNT, "carol"), "general");
-    await ok("/api/post", OWNER_TOKEN, { as: "colin", channel: "general", body: "no mention" });
+    await ok("/api/post", colin, { as: "colin", channel: "general", body: "no mention" });
     const res = await fetch(`${base()}/wait?agent=carol`, { headers: auth(OWNER_TOKEN) });
     expect(await res.text()).toBe("1 unread post in #general\n");
   });
@@ -146,42 +147,66 @@ describe.each([
 ] as const)("%s", (path, target) => {
   const body = (fields: Record<string, unknown>) => ({ as: "colin", ...target, body: "hi", ...fields });
 
-  it("answers 404 for an agent's name, a removed person, an unknown name or another account's person, storing nothing", async () => {
+  it("answers 403 for an agent's name, a removed person, an unknown name, another person or another account's person, storing nothing", async () => {
     addPerson(db, "friend", "dana");
     registerAgent(db, OWNER_ACCOUNT, "gone", "x");
     db.prepare("UPDATE agents SET person = 1 WHERE name = 'gone'").run();
     db.prepare("UPDATE agents SET removed_at = 1, name = 'removed:x', removed_name = 'gone' WHERE name = 'gone'").run();
     const before = stored();
-    for (const as of ["bob", "gone", "removed:x", "nobody", "dana", "all"]) {
-      const res = await send(path, OWNER_TOKEN, body({ as }));
-      expect(res.status, as).toBe(404);
-      expect(await error(res)).toBe("No such person");
+    addPerson(db, "owner", "erin");
+    for (const as of ["bob", "gone", "removed:x", "nobody", "dana", "erin", "all"]) {
+      const res = await send(path, colin, body({ as }));
+      expect(res.status, as).toBe(403);
+      expect(await error(res)).toBe("This token sends and posts only as its own person");
     }
     expect(stored()).toBe(before);
   });
 
   it("keeps accounts apart: another account's token reaches neither this account's person nor its agents or channels", async () => {
     addPerson(db, "friend", "dana");
-    await ok("/api/post", OWNER_TOKEN, { as: "colin", channel: "general", body: "owner's post" });
+    const friendDana = addToken(db, "friend", false, false, undefined, "dana").token;
+    await ok("/api/post", colin, { as: "colin", channel: "general", body: "owner's post" });
     const before = stored();
-    // This account's person is unknown to the friend's token.
-    expect((await send(path, friendToken, body({}))).status).toBe(404);
+    // This account's person is not the friend's person token's, and the friend's full token acts as no one.
+    expect((await send(path, friendDana, body({}))).status).toBe(403);
+    expect((await send(path, friendToken, { ...body({}), as: "dana" })).status).toBe(403);
     expect(stored()).toBe(before);
     // The friend's person cannot reach this account's agent by name.
     if (path === "/api/send") {
-      const res = await send(path, friendToken, { as: "dana", to: "bob", body: "hi" });
+      const res = await send(path, friendDana, { as: "dana", to: "bob", body: "hi" });
       expect(res.status).toBe(400);
       expect(await error(res)).toBe("No agent named 'bob'.");
       expect(stored()).toBe(before);
-      expect(await ok(path, friendToken, { as: "dana", to: "all", body: "hi" })).toEqual({ delivered: 0, recipients: [] });
+      expect(await ok(path, friendDana, { as: "dana", to: "all", body: "hi" })).toEqual({ delivered: 0, recipients: [] });
     } else {
       // A channel of the same name is the friend's own, and this account's channel is untouched.
-      await ok(path, friendToken, { as: "dana", channel: "general", body: "friend's post" });
+      await ok(path, friendDana, { as: "dana", channel: "general", body: "friend's post" });
       const owner = readChannel(db, OWNER_ACCOUNT, member(OWNER_ACCOUNT, "bob"), "general", false).posts.map((p) => p.body);
       expect(owner).toEqual(["owner's post"]);
       expect(db.prepare("SELECT COUNT(*) FROM channels WHERE name = 'general'").pluck().get()).toBe(2);
     }
     expect(readInbox(db, OWNER_ACCOUNT, "bob").map((m) => m.body)).not.toContain("hi");
+  });
+
+  it("refuses a full token with 403 and a message saying to sign in as a person, storing nothing and queueing no delivery", async () => {
+    addWebhook(db, "owner", "https://example.com/", "agent:bob", true);
+    addWebhook(db, "owner", "https://example.com/", "#general", true);
+    joinChannel(db, OWNER_ACCOUNT, member(OWNER_ACCOUNT, "bob"), "general");
+    const before = stored();
+    for (const token of [OWNER_TOKEN, addToken(db, "owner").token]) {
+      const res = await send(path, token, body({ body: "secret @bob" }));
+      expect(res.status).toBe(403);
+      expect(res.headers.get("connection")).toBe("close");
+      const message = await error(res);
+      expect(message).toContain("Sign in as a person");
+      expect(message).toContain("message-cp login-link --url <public url> --account <account> --person <name>");
+      expect(message).not.toContain("secret");
+      expect(message).not.toContain(OWNER_TOKEN);
+    }
+    expect(stored()).toBe(before);
+    expect(db.prepare("SELECT COUNT(*) FROM webhook_deliveries").pluck().get()).toBe(0);
+    const res = await fetch(`${base()}/wait?agent=bob`, { headers: auth(OWNER_TOKEN) });
+    expect(res.status).toBe(204);
   });
 
   it("refuses a read-only token with 403, no token or a wrong or revoked one with 401", async () => {
@@ -204,7 +229,7 @@ describe.each([
 
   it("answers 405 with Allow: POST to any other method", async () => {
     for (const method of ["GET", "PUT", "DELETE", "PATCH"]) {
-      const res = await send(path, OWNER_TOKEN, body({}), method);
+      const res = await send(path, colin, body({}), method);
       expect(res.status, method).toBe(405);
       expect(res.headers.get("allow")).toBe("POST");
     }
@@ -213,13 +238,13 @@ describe.each([
   it("answers 400 for a body that is not JSON or lacks a string field, without echoing it", async () => {
     const before = stored();
     for (const raw of ["not json secret", "", "null", "[]", '"x"', "42"]) {
-      const res = await send(path, OWNER_TOKEN, raw);
+      const res = await send(path, colin, raw);
       expect(res.status, raw).toBe(400);
       expect(await res.text()).not.toContain("secret");
     }
     for (const key of ["as", ...Object.keys(target), "body"]) {
       for (const value of [undefined, 1, null, ["x"]]) {
-        const res = await send(path, OWNER_TOKEN, body({ [key]: value }));
+        const res = await send(path, colin, body({ [key]: value }));
         expect(res.status, `${key}=${JSON.stringify(value)}`).toBe(400);
       }
     }
@@ -237,7 +262,7 @@ describe.each([
         : [{ channel: "no spaces" }, "Invalid channel name: use 1-32 characters from letters, digits, '-' and '_'."],
     ];
     for (const [fields, message] of cases) {
-      const res = await send(path, OWNER_TOKEN, body(fields));
+      const res = await send(path, colin, body(fields));
       expect(res.status).toBe(400);
       expect(await error(res)).toBe(message);
     }
@@ -245,14 +270,14 @@ describe.each([
   });
 
   it("answers 413 for a body over the 64 KiB limit, and takes a longest body of escaped astral characters", async () => {
-    const res = await send(path, OWNER_TOKEN, body({ body: "x".repeat(64 * 1024 + 1) }));
+    const res = await send(path, colin, body({ body: "x".repeat(64 * 1024 + 1) }));
     expect(res.status).toBe(413);
     // 4000 characters of U+1F600, each escaped as \ud83d\ude00, is 48000 bytes of body text.
     const longest = JSON.stringify(body({ body: "\u{1F600}".repeat(4000) })).replace(/[\u{10000}-\u{10FFFF}]/gu, (c) =>
       c.split("").map((u) => "\\u" + u.charCodeAt(0).toString(16)).join(""),
     );
     expect(longest.length).toBeGreaterThan(48000);
-    expect((await send(path, OWNER_TOKEN, longest)).status).toBe(200);
+    expect((await send(path, colin, longest)).status).toBe(200);
   });
 
   it("answers 503 with Retry-After when the database is busy, and 500 for any other failure", async () => {
@@ -261,19 +286,19 @@ describe.each([
       vi.restoreAllMocks();
       let thrown = false;
       vi.spyOn(db, "prepare").mockImplementation(((sql: string) => {
-        if (thrown || !sql.includes("person = 1")) return prepare(sql);
+        if (thrown || !sql.includes("AND name = ? AND removed_at IS NULL AND person = 1")) return prepare(sql);
         thrown = true;
         throw Object.assign(new Error("database is locked"), { code });
       }) as typeof db.prepare);
     };
     fail("SQLITE_BUSY");
-    const res = await send(path, OWNER_TOKEN, body({}));
+    const res = await send(path, colin, body({}));
     expect(res.status).toBe(503);
     expect(res.headers.get("retry-after")).toBe("1");
     fail("SQLITE_CORRUPT");
-    expect((await send(path, OWNER_TOKEN, body({}))).status).toBe(500);
+    expect((await send(path, colin, body({}))).status).toBe(500);
     vi.restoreAllMocks();
-    expect((await send(path, OWNER_TOKEN, body({}))).status).toBe(200);
+    expect((await send(path, colin, body({}))).status).toBe(200);
   });
 
   it("takes a slot per request before reading its body, capped at maxSessions, and gives it back", async () => {
@@ -282,7 +307,7 @@ describe.each([
     // A request whose body has not arrived yet holds the only slot.
     const held = request(`${base()}${path}`, {
       method: "POST",
-      headers: { ...auth(OWNER_TOKEN), "Content-Type": "application/json", "Content-Length": "1000" },
+      headers: { ...auth(colin), "Content-Type": "application/json", "Content-Length": "1000" },
     });
     const answered = new Promise<number>((resolve, reject) => {
       held.on("response", (r) => {
@@ -294,17 +319,18 @@ describe.each([
     held.write("{");
     await new Promise((r) => setTimeout(r, 200));
     for (const p of ["/api/send", "/api/post"]) {
-      const refused = await send(p, OWNER_TOKEN, body({}));
+      const refused = await send(p, colin, body({}));
       expect(refused.status).toBe(503);
       expect(refused.headers.get("connection")).toBe("close");
     }
     // Answers that need no body come before the cap.
     expect((await send(path, ownerViewer, body({}))).status).toBe(403);
+    expect((await send(path, OWNER_TOKEN, body({}))).status).toBe(403);
     expect((await send(path, null, body({}))).status).toBe(401);
-    expect((await send(path, OWNER_TOKEN, body({}), "GET")).status).toBe(405);
+    expect((await send(path, colin, body({}), "GET")).status).toBe(405);
     held.end(" ".repeat(999));
     expect(await answered).toBe(400);
-    expect((await send(path, OWNER_TOKEN, body({}))).status).toBe(200);
+    expect((await send(path, colin, body({}))).status).toBe(200);
   });
 });
 

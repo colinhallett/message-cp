@@ -127,7 +127,8 @@ describe("agent tokens", () => {
       for (const token of [ownerFull, viewer]) expect((await get(path, token)).status, path).toBe(200);
     }
     expect(await (await get("/api/messages", viewer)).text()).toContain("hello carol");
-    // A read-only token is still refused where it was, and a full token still sends, posts and deletes.
+    // A read-only token is still refused where it was, and a full token still deletes but, acting as no person, is
+    // refused a send or post.
     for (const [path, method] of [
       ["/api/conversation?a=bob&b=carol", "DELETE"],
       ["/api/send", "POST"],
@@ -144,7 +145,7 @@ describe("agent tokens", () => {
         headers: { ...auth(ownerFull), "Content-Type": "application/json" },
         body: JSON.stringify({ as: "colin", ...target, body: "from a person" }),
       });
-      expect(full.status, path).toBe(200);
+      expect(full.status, path).toBe(403);
     }
     const res = await get("/api/conversation?a=bob&b=carol", ownerFull, "DELETE");
     expect(res.status).toBe(200);
@@ -178,10 +179,11 @@ describe("agent tokens", () => {
   it("get the 403 before a send or post slot is taken or the body read, on every path that reads a body", async () => {
     await http.close();
     await start({ maxSessions: 1 });
-    // A full token's request whose body has not arrived yet holds the only slot.
+    // A person token's request whose body has not arrived yet holds the only slot.
+    const colin = addToken(db, "owner", false, false, undefined, "colin").token;
     const held = request(`${base()}/api/send`, {
       method: "POST",
-      headers: { ...auth(OWNER_TOKEN), "Content-Type": "application/json", "Content-Length": "1000" },
+      headers: { ...auth(colin), "Content-Type": "application/json", "Content-Length": "1000" },
     });
     const answered = new Promise<number>((resolve, reject) => {
       held.on("response", (r) => {
@@ -192,7 +194,7 @@ describe("agent tokens", () => {
     });
     held.write("{");
     await new Promise((r) => setTimeout(r, 200));
-    expect((await fetch(`${base()}/api/send`, { method: "POST", headers: auth(OWNER_TOKEN), body: "{}" })).status).toBe(503);
+    expect((await fetch(`${base()}/api/send`, { method: "POST", headers: auth(colin), body: "{}" })).status).toBe(503);
     const before = stored();
     for (const path of ["/api/send", "/api/post", "/api/token", "/api/agents"]) {
       // An agent token's request is refused at once, with its body never read: none is ever sent.
