@@ -540,9 +540,9 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
   /**
    * GET /api/token: whether the request's token is read-only and whether it is agent-only, so the dashboard tells an
    * agent token that it cannot use the page, and for a person token the person's name, which the dashboard then posts
-   * and sends as (the server still refuses any other), and `admin: true` while that person is an admin, so the dashboard
-   * offers Delete. A full token is neither and has no person: the dashboard offers it Delete but no posting, which the
-   * server refuses it. It gives nothing else about the token: no token, hash, id or account.
+   * and sends as (the server still refuses any other), and `admin: true` while that person is an admin, so the
+   * dashboard offers Delete. A full token is neither and has no person: the dashboard offers it Delete but no posting,
+   * which the server refuses it. It gives nothing else about the token: no token, hash, id or account.
    */
   const apiToken = (req: IncomingMessage, res: ServerResponse, access: TokenAccess) => {
     if (req.method !== "GET") return reply(res, 405, "Method not allowed", { Allow: "GET" });
@@ -716,9 +716,9 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
   /**
    * POST /api/send and /api/post: reads a JSON object whose `fields` are all strings and answers with what `act` returns
    * for it. A slot is taken before the body is read and given back at the end, so held bodies are capped like sessions.
-   * Only a person token reaches it. `act` answers undefined for an `as` that is not a live person of the account, which
-   * gets 404; an `as` that is not the token's own person gets 403; a tool's refusal gets 400 with its message, which
-   * never quotes the body.
+   * Only a person token reaches it, and an `as` that is not the token's own live person, an unknown or removed name
+   * included, gets 403; `act` answers undefined, which gets 404, only when given no person to match, which no route does.
+   * A tool's refusal gets 400 with its message, which never quotes the body.
    */
   const asPerson = async <K extends string>(
     req: IncomingMessage,

@@ -876,8 +876,8 @@ function start() {
 // Asks GET /api/token once whether this token is read-only or agent-only, and whose person token it is. Only an answer
 // of readOnly and agentOnly both false with a person in it lets the page post, as that person only; both false with no
 // person is a full token, which may delete but not post. A read-only token, a failure or an answer this page cannot
-// read leaves the page read-only. An agent token, which the server refuses on every other /api path, is forgotten and another asked
-// for.
+// read leaves the page read-only. An agent token, which the server refuses on every other /api path, is forgotten and
+// another asked for.
 const AGENT_TOKEN = "That is an agent token, and agent tokens cannot use the dashboard. Enter a full, read-only or person token.";
 async function checkToken() {
   const token = sessionStorage.getItem(KEY);
@@ -1211,7 +1211,7 @@ async function createChannel() {
   } else if (answer.status === 403) {
     channelNote.textContent = "This token cannot post (403).";
   } else if (answer.status === 404) {
-    // POST /api/post answers 404 only for an "as" that is not a live person of the account.
+    // This server answers a person token's "as" that is not its live person with 403; a 404 says the same.
     channelNote.textContent = from + " is no longer a person in this account (404).";
   } else if (answer.status === 413) {
     channelNote.textContent = "This is too long for the server (413).";
@@ -1426,7 +1426,7 @@ async function send() {
   } else if (answer.status === 403) {
     composeNote.textContent = "This token cannot post or send (403).";
   } else if (answer.status === 404) {
-    // Both endpoints answer 404 only for an "as" that is not a live person of the account.
+    // This server answers a person token's "as" that is not its live person with 403; a 404 says the same.
     composeNote.textContent = target.fields.as + " is no longer a person in this account (404).";
   } else if (answer.status === 413) {
     composeNote.textContent = "This is too long for the server (413).";
