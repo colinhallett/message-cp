@@ -455,7 +455,8 @@ const NO_MESSAGES_FULL = ' You can also start one from "New message" above.';
 const NO_DELIVERIES =
   "No webhook deliveries yet: add a webhook on the server with message-cp webhook add --url <url> --on <#channel | mention:<agent> | agent:<agent>>, and its deliveries show here once it fires.";
 const NO_APPROVALS =
-  "No approved clients yet: they appear here when a client is connected through the server's authorization flow, and a token is revoked on the server with message-cp token revoke <id>.";
+  "No approved clients yet: a client appears here once it connects through the server's authorization flow " +
+  "(serve --public-url), and its token is revoked on the server with message-cp token revoke <id>.";
 // The note showChannels put in an empty channel list, or undefined, so showNewButton can make it follow canPost.
 let noChannels;
 // The tokenGeneration a "New channel" post is in flight for, or undefined, as sending is for the compose box.
@@ -1839,7 +1840,11 @@ async function readApprovals(token, signal, gen) {
     postRows.scrollTop = 0;
     approvalCount.textContent = String(shown.length);
     logNote.textContent =
-      shown.length === 0 ? NO_APPROVALS : shown.length === PAGE ? "Only the newest " + PAGE + " approvals are shown." : "";
+      shown.length === 0
+        ? NO_APPROVALS
+        : shown.length === PAGE
+          ? "Only the newest " + PAGE + " approvals are shown."
+          : "";
   } else if (page.status === 403) {
     logNote.textContent = "This token cannot read approved clients (403). Retrying…";
   } else if (page.status === 503) {
@@ -1864,9 +1869,9 @@ async function poll(gen) {
   try {
     result = await fetchView(token, ac.signal);
     // The agents and channels go up before the messages and the log are read, so a long or slow history never holds
-    // them back. The messages and the log (a channel's posts, the webhook deliveries or the approvals) are read side by side, so
-    // neither waits on the other or fails with it, and both have finished before the next poll can read past what they
-    // hold.
+    // them back. The messages and the log (a channel's posts, the webhook deliveries or the approvals) are read side by
+    // side, so neither waits on the other or fails with it, and both have finished before the next poll can read past
+    // what they hold.
     if (result.ok && gen === generation) {
       show(result.agents);
       refreshChat();
@@ -2189,7 +2194,8 @@ function showPairs() {
 function markOpen() {
   const key = openKey();
   if (shownTotals.has(key)) seen.set(key, shownTotals.get(key));
-  for (const li of [...channelRows.children, ...pairRows.children, ...deliveryEntry.children, ...approvalEntry.children]) {
+  const entries = [...channelRows.children, ...pairRows.children, ...deliveryEntry.children, ...approvalEntry.children];
+  for (const li of entries) {
     const button = li.children[0];
     if (!button) continue;
     const current = button.value === key;
@@ -2369,14 +2375,17 @@ function showDeliveryEntry() {
 // Makes the sidebar's one approved clients entry the first time the channels are shown, as showDeliveryEntry does.
 function showApprovalEntry() {
   if (approvalCount) return;
-  approvalEntry.append(sidebarItem("approvals", "Approved clients", "", part("span", "count", ""), openApprovalLog));
+  const count = part("span", "count", "");
+  approvalEntry.append(sidebarItem("approvals", "Approved clients", "", count, openApprovalLog));
   approvalCount = approvalEntry.children[0].children[0].children[1];
 }
 
-// An approval: its agent, when it was issued, the client (its name, else its metadata host, else "unnamed client") and
-// the token's id, which message-cp token revoke takes. The client chose its name, so it goes in with textContent. Never
-// a token, hash, code or redirect URI, which GET /api/approvals does not give. Throws on an entry that is not an
-// approval as GET /api/approvals gives one, so readApprovals shows the answer as unreadable.
+// An approval: its agent, the token's id, which message-cp token revoke takes, when it was issued, and the client (its
+// name, else its metadata host, else "unnamed client"). The client chose its name, so it goes in with textContent and,
+// as token list prints it, with control and format characters (a newline, a direction override) replaced, so it cannot
+// pass for another token's id; the id has its own element. Never a token, hash, code or redirect URI, which
+// GET /api/approvals does not give. Throws on an entry that is not an approval as GET /api/approvals gives one, so
+// readApprovals shows the answer as unreadable.
 function approvalRow(a) {
   if (
     !Number.isInteger(a.id) ||
@@ -2391,8 +2400,8 @@ function approvalRow(a) {
   li.className = "entry approval";
   const time = part("time", "time", "issued " + when(a.issuedAt));
   time.title = a.issuedAt;
-  const client = a.clientName || a.clientHost || "unnamed client";
-  li.append(part("span", "from", a.agent), time, part("div", "body", client + " · token " + a.id));
+  const client = (a.clientName || a.clientHost || "unnamed client").replace(/[\\p{Cc}\\p{Cf}]/gu, "\\uFFFD");
+  li.append(part("span", "from", a.agent), part("span", "tag", "token " + a.id), time, part("div", "body", client));
   return li;
 }
 

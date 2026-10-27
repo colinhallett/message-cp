@@ -45,7 +45,7 @@ const NEW_MESSAGE = ' You can also start one from "New message" above.';
 const NO_DELIVERIES =
   "No webhook deliveries yet: add a webhook on the server with message-cp webhook add --url <url> --on <#channel | mention:<agent> | agent:<agent>>, and its deliveries show here once it fires.";
 const NO_APPROVALS =
-  "No approved clients yet: they appear here when a client is connected through the server's authorization flow, and a token is revoked on the server with message-cp token revoke <id>.";
+  "No approved clients yet: a client appears here once it connects through the server's authorization flow (serve --public-url), and its token is revoked on the server with message-cp token revoke <id>.";
 
 const base = () => `http://127.0.0.1:${http.port}`;
 
@@ -3324,8 +3324,8 @@ describe("the page's approved clients", () => {
     const node = row.children.find((c) => c.className === name);
     return node && text(node);
   };
-  // An approval row's agent, issue time and client with its token id.
-  const approval = (row: Stub) => [field(row, "from"), field(row, "time"), field(row, "body")];
+  // An approval row's agent, token id, issue time and client.
+  const approval = (row: Stub) => [field(row, "from"), field(row, "tag"), field(row, "time"), field(row, "body")];
 
   // An approval as the OAuth code exchange records it: an agent token bound to the agent, with its client.
   const approve = (account: string, agent: string, client: { name: string | null; host: string | null }) => {
@@ -3416,9 +3416,9 @@ describe("the page's approved clients", () => {
     expect(page.elements["log-title"].textContent).toBe("Approved clients");
     expect(page.elements["log-note"].textContent).toBe("");
     expect(rows.children.map(approval)).toEqual([
-      ["desk", `issued ${issued(bare.id)}`, `unnamed client · token ${bare.id}`],
-      ["claude", `issued ${issued(claude.id)}`, `claude.ai · token ${claude.id}`],
-      ["desk", `issued ${issued(cursor.id)}`, `Cursor · token ${cursor.id}`],
+      ["desk", `token ${bare.id}`, `issued ${issued(bare.id)}`, "unnamed client"],
+      ["claude", `token ${claude.id}`, `issued ${issued(claude.id)}`, "claude.ai"],
+      ["desk", `token ${cursor.id}`, `issued ${issued(cursor.id)}`, "Cursor"],
     ]);
     expect(item(page)).toEqual(["Approved clients", "3"]);
     expect(page.entry().className).toBe("item current");
@@ -3432,7 +3432,7 @@ describe("the page's approved clients", () => {
     await page.poll();
     await page.until(() => rows.children.length === 2);
     expect(approvalUrls(page.urls)).toEqual(["/api/approvals?limit=200&offset=0"]);
-    expect(rows.children.map((row) => field(row, "body"))).toEqual([`unnamed client · token ${bare.id}`, `Cursor · token ${cursor.id}`]);
+    expect(rows.children.map((row) => field(row, "tag"))).toEqual([`token ${bare.id}`, `token ${cursor.id}`]);
 
     // Closing the view stops reading it.
     page.elements["close-log"].on.click();
@@ -3451,7 +3451,7 @@ describe("the page's approved clients", () => {
       const page = await load(token);
       await page.openApprovals();
       await page.until(() => page.elements["post-rows"].children.length === 1);
-      expect(page.elements["post-rows"].children.map(approval)).toEqual([["desk", `issued ${issued(cursor.id)}`, `Cursor · token ${cursor.id}`]]);
+      expect(page.elements["post-rows"].children.map(approval)).toEqual([["desk", `token ${cursor.id}`, `issued ${issued(cursor.id)}`, "Cursor"]]);
     }
   });
 
@@ -3466,7 +3466,7 @@ describe("the page's approved clients", () => {
     await page.poll();
     await page.until(() => page.elements["post-rows"].children.length === 200);
     expect(page.elements["log-note"].textContent).toBe("Only the newest 200 approvals are shown.");
-    expect(field(page.elements["post-rows"].children[0], "body")).toMatch(/^c200 · token /);
+    expect(field(page.elements["post-rows"].children[0], "body")).toBe("c200");
     expect(item(page)).toEqual(["Approved clients", "200"]);
   });
 
@@ -3556,9 +3556,34 @@ describe("the page's approved clients", () => {
     await page.openApprovals();
     await page.until(() => page.elements["post-rows"].children.length === 1);
     expect(page.elements["post-rows"].children.map(approval)).toEqual([
-      ["laptop", `issued ${issued(theirs.id)}`, `Other's client · token ${theirs.id}`],
+      ["laptop", `token ${theirs.id}`, `issued ${issued(theirs.id)}`, "Other's client"],
     ]);
     expect(item(page)).toEqual(["Approved clients", "1"]);
+  });
+
+  it("shows a client's name with its control and format characters replaced, so it cannot pass for another token", async () => {
+    const odd = approve("owner", "desk", { name: "Cursor · token 1\n\u202Eevil", host: null });
+    const page = await load(viewer);
+    await page.openApprovals();
+    await page.until(() => page.elements["post-rows"].children.length === 1);
+    expect(page.elements["post-rows"].children.map(approval)).toEqual([
+      ["desk", `token ${odd.id}`, `issued ${issued(odd.id)}`, "Cursor · token 1\uFFFD\uFFFDevil"],
+    ]);
+  });
+
+  it("drops an answer for the view that arrives after the view was closed", async () => {
+    approve("owner", "desk", { name: "Cursor", host: null });
+    const page = await load(viewer, (url) => (url.startsWith("/api/approvals") ? "held" : undefined));
+    await page.openApprovals();
+    await page.until(() => page.held.length === 1);
+    // Close calls closeLog() without cancel(), so the poll's answer still comes; only openApprovals drops it.
+    page.elements["close-log"].on.click();
+    page.release();
+    await page.until(() => page.polls.size === 1);
+    expect(page.elements["log"].hidden).toBe(true);
+    expect(page.elements["post-rows"].children).toHaveLength(0);
+    expect(page.elements["log-note"].textContent).toBe("");
+    expect(item(page)).toEqual(["Approved clients", ""]);
   });
 
   it("drops an answer for the view that arrives after a channel or the webhook deliveries were opened", async () => {
