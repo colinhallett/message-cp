@@ -17,7 +17,22 @@ import {
 import { APPROVE_HEADERS, approvePage, errorPage } from "./approve.js";
 import { mcpEndpoint } from "./connect.js";
 import { DASHBOARD_FONTS, DASHBOARD_HEADERS, DASHBOARD_HTML } from "./dashboard.js";
-import { LoginError, LoginRefused, NotAdminError, addInvitedPerson, cancelInvite, dashboardUrl, listInvites, loginLink, makeInvite, redeemLoginCode, type Invite } from "./login.js";
+import {
+  LoginError,
+  LoginRefused,
+  NotAdminError,
+  OwnPersonError,
+  addInvitedPerson,
+  cancelInvite,
+  dashboardUrl,
+  listInvites,
+  loginLink,
+  makeInvite,
+  redeemLoginCode,
+  removePersonBy,
+  setAdminBy,
+  type Invite,
+} from "./login.js";
 import type { AccountId, Db } from "./db.js";
 import {
   DEFAULT_INBOX_LIMIT,
@@ -63,9 +78,9 @@ const MAX_PERSON_BODY_BYTES = 64 * 1024;
 /** What POST /api/send and /api/post answer a full token, which acts as no person, with its 403. */
 const FULL_TOKEN_SENDS =
   "A full token cannot send or post as a person. Sign in as a person to send: run message-cp login-link --url <public url> --account <account> --person <name> on the server";
-/** What POST /api/people and the /api/invites routes answer a full token, which is no admin person, with its 403. */
+/** What the /api/people and /api/invites routes answer a full token, which is no admin person, with its 403. */
 const FULL_TOKEN_INVITES =
-  "A full token cannot add people or make invites. Sign in as an admin person: run message-cp login-link --url <public url> --account <account> --person <name> on the server";
+  "A full token cannot add, mark or remove people or make invites. Sign in as an admin person: run message-cp login-link --url <public url> --account <account> --person <name> on the server";
 /** The body limit for the OAuth registration, approval and token endpoints, which take a few short fields. */
 const MAX_OAUTH_BODY_BYTES = 16 * 1024;
 /** An agent seen this recently counts as online in GET /api/agents, as does one with a GET /wait held now. */
@@ -382,8 +397,8 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
   let waiting = 0;
   // POST /mcp requests for an existing session whose body is being read, so a session cannot buffer bodies unbounded.
   let reading = 0;
-  // POST /api/send, /api/post, /api/people and /api/invites requests between taking a slot and answering, so buffered
-  // bodies are bounded.
+  // POST /api/send, /api/post and /api/invites, and POST and PATCH /api/people, requests between taking a slot and
+  // answering, so buffered bodies are bounded.
   let actingAsPerson = 0;
   // Held GET /wait requests per account and agent name (lower-cased, as names are unique regardless of case).
   const held = new Map<AccountId, Map<string, number>>();
@@ -851,10 +866,11 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
   });
 
   /**
-   * POST /api/people and /api/invites: reads a JSON object and answers with what `act` makes of it, never cached, as it
-   * carries an invite's code. A slot is taken before the body is read and given back at the end, sharing `asPerson`'s
-   * count. `act` answers a string for 400, undefined for 404, and throws `PersonError` for 400, `LoginError` for 503 and
-   * `NotAdminError`, for a token's person removed or unmarked while the body was read, for 403.
+   * POST and PATCH /api/people and POST /api/invites: reads a JSON object and answers with what `act` makes of it, never
+   * cached, as it may carry an invite's code. A slot is taken before the body is read and given back at the end, sharing
+   * `asPerson`'s count. `act` answers a string for 400, undefined for 404, and throws `PersonError` for 400, `LoginError`
+   * for 503, `OwnPersonError` for 403 and `NotAdminError`, for a token's person removed or unmarked while the body was
+   * read, for 403.
    */
   const asAdmin = async (req: IncomingMessage, res: ServerResponse, act: (input: Record<string, unknown>) => unknown) => {
     if (actingAsPerson >= maxSessions) return reply(res, 503, "Too many requests", { Connection: "close" });
@@ -872,7 +888,7 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
         done = unlessBusy(res, () => act(typeof input === "object" && input !== null ? (input as Record<string, unknown>) : {}) ?? null);
       } catch (err) {
         if (err instanceof PersonError) return reply(res, 400, err.message);
-        if (err instanceof NotAdminError) return reply(res, 403, err.message);
+        if (err instanceof NotAdminError || err instanceof OwnPersonError) return reply(res, 403, err.message);
         if (err instanceof LoginError) return reply(res, 503, err.message);
         throw err;
       }
@@ -886,16 +902,44 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
   };
 
   /**
-   * POST /api/people: `{ name, admin }`, adds the person `name`, an admin with `admin` true, to the account and makes
+   * /api/people. POST `{ name, admin }`: adds the person `name`, an admin with `admin` true, to the account and makes
    * their first invite, as `addInvitedPerson` does. Answers `{ name, admin, invite: { id, code, expiresAt, link? } }`.
+   * PATCH `?name=<name>` with `{ admin }`: marks the account's live person `name` (any case) an admin, or unmarks them
+   * with `admin` false, as `setAdminBy` does, answering `{ name, admin }`. DELETE `?name=<name>`: removes them as
+   * `removePersonBy` does, answering `{ name, messages, mentions }`, the counts deleted. Both answer 404 for a name no
+   * live person of the account has, another account's included, and 403 to the token's own person unmarking or removing
+   * themselves. DELETE reads no body and takes no slot.
    */
   const apiPeople = (req: IncomingMessage, res: ServerResponse, account: AccountId, by: number) => {
-    if (req.method !== "POST") return reply(res, 405, "Method not allowed", { Allow: "POST" });
-    return asAdmin(req, res, (input) => {
-      if (typeof input.name !== "string" || typeof input.admin !== "boolean") return "Give name as a string and admin as true or false";
-      const added = addInvitedPerson(db, account, by, input.name, input.admin);
-      return { name: added.name, admin: added.admin, invite: inviteJson(added.invite) };
-    });
+    if (req.method === "POST") {
+      return asAdmin(req, res, (input) => {
+        if (typeof input.name !== "string" || typeof input.admin !== "boolean") return "Give name as a string and admin as true or false";
+        const added = addInvitedPerson(db, account, by, input.name, input.admin);
+        return { name: added.name, admin: added.admin, invite: inviteJson(added.invite) };
+      });
+    }
+    if (req.method !== "PATCH" && req.method !== "DELETE") return reply(res, 405, "Method not allowed", { Allow: "POST, PATCH, DELETE" });
+    const names = new URL(req.url ?? "", "http://x").searchParams.getAll("name");
+    // A PATCH's body is left unread, so its 400 closes the connection.
+    if (names.length !== 1 || names[0] === "") return reply(res, 400, "Give name once", req.method === "PATCH" ? { Connection: "close" } : {});
+    const name = names[0];
+    if (req.method === "PATCH") {
+      return asAdmin(req, res, (input) => {
+        if (typeof input.admin !== "boolean") return "Give admin as true or false";
+        return setAdminBy(db, account, by, name, input.admin);
+      });
+    }
+    let removed;
+    try {
+      // null for no such person, kept apart from the undefined `unlessBusy` gives once it has answered 503.
+      removed = unlessBusy(res, () => removePersonBy(db, account, by, name) ?? null);
+    } catch (err) {
+      if (err instanceof NotAdminError || err instanceof OwnPersonError) return reply(res, 403, err.message);
+      throw err;
+    }
+    if (removed === undefined) return;
+    if (removed === null) return reply(res, 404, "No such person");
+    return sendJson(res, { name: removed.name, messages: removed.messages, mentions: removed.mentions });
   };
 
   /**
@@ -1251,7 +1295,8 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
       return reply(res, 401, "Unauthorized", { "WWW-Authenticate": oauth ? oauth.challenge : "Bearer" });
     }
     const { account } = access;
-    // A POST to /api/people or /api/invites carries a body its 403 leaves unread, so their 403s close the connection.
+    // A POST or PATCH to /api/people or /api/invites carries a body its 403 leaves unread, so their 403s close the
+    // connection.
     const inviting = path === "/api/people" || path === "/api/invites";
     // An agent token reaches /mcp and /wait, where it reads as its agent does, and of the /api paths only GET /api/token,
     // so the dashboard can say why it will not work; it cannot read or delete the account's conversations there. It is
@@ -1274,11 +1319,11 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
     // A read-only token reaches the read-only endpoints above and nothing else: /mcp can write, and so can any path added later.
     if (access.readOnly) return reply(res, 403, "This token is read-only", inviting ? { Connection: "close" } : {});
     // A person token also sends and posts, only as its person (checked by row once the body is read), approves clients
-    // (above), and, while its person is an admin, deletes the account's conversations as a full token does, adds people
-    // and makes, lists and cancels invites. It reaches nothing else: not /mcp, /wait, nor any path added later. It is
-    // refused before a slot is taken or a body read.
+    // (above), and, while its person is an admin, deletes the account's conversations as a full token does, adds, marks,
+    // unmarks and removes people, and makes, lists and cancels invites. It reaches nothing else: not /mcp, /wait, nor any
+    // path added later. It is refused before a slot is taken or a body read.
     if (access.person && path !== "/api/send" && path !== "/api/post" && !(access.person.admin && (inviting || path === "/api/conversation"))) {
-      return reply(res, 403, access.person.admin ? "An admin person token only reads, sends, posts, deletes and invites" : "A person token only reads, sends and posts", { Connection: "close" });
+      return reply(res, 403, access.person.admin ? "An admin person token only reads, sends, posts, deletes, invites and changes people" : "A person token only reads, sends and posts", { Connection: "close" });
     }
     // Only a person token sends and posts, as its own person, so nobody acts as another person: a full token, which has
     // no person, is refused before a slot is taken or a body read.
@@ -1286,7 +1331,7 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
       if (!access.person) return reply(res, 403, FULL_TOKEN_SENDS, { Connection: "close" });
       return (path === "/api/send" ? apiSend : apiPost)(req, res, account, access.person.id);
     }
-    // Only an admin person adds people and makes invites: a full token, which is no person, is refused before a slot is
+    // Only an admin person adds, marks and removes people and makes invites: a full token, which is no person, is refused before a slot is
     // taken or a body read. A plain person token was refused above.
     if (inviting) {
       if (!access.person) return reply(res, 403, FULL_TOKEN_INVITES, { Connection: "close" });
