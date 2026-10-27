@@ -6128,6 +6128,29 @@ describe("the page's invites", () => {
       expect(onPage(page, "hi @ben")).toBe(false);
     });
 
+    it("reads the account's messages again from the start after a removal, so a later message is not skipped", async () => {
+      addPerson(db, "owner", "ben");
+      registerAgent(db, OWNER_ACCOUNT, "bot", "");
+      registerAgent(db, OWNER_ACCOUNT, "eve", "");
+      for (const body of ["a", "b", "c"]) sendMessage(db, OWNER_ACCOUNT, "bot", "ben", body);
+      sendMessage(db, OWNER_ACCOUNT, "bot", "eve", "first");
+      const page = await load(anaToken);
+      await page.openInvites();
+      await page.until(() => personRows(page).length === 2 && page.elements["pair-rows"].children.length === 2);
+      button(page, "ben", "Remove").on.click();
+      page.elements["remove-yes"].on.click();
+      await page.until(() => page.elements["people-note"].textContent === "Removed ben: 3 messages and 0 mentions deleted.");
+      // bot and eve's next message is read, though the three rows before it were deleted, and ben's pair is gone.
+      sendMessage(db, OWNER_ACCOUNT, "eve", "bot", "second");
+      for (let i = 0; i < 5 && !page.requests.some((r) => r.url.startsWith("/api/messages?") && r.url.includes("offset=0")); i++) await page.poll();
+      await page.poll();
+      await page.until(() => page.elements["pair-rows"].children.length === 1);
+      expect(text(page.elements["pair-rows"])).not.toContain("ben");
+      page.elements["pair-rows"].children[0].children[0].on.click();
+      await page.until(() => page.elements["post-rows"].children.length === 2);
+      expect(page.elements["post-rows"].children.map((r) => field(r, "body"))).toEqual(["first", "second"]);
+    });
+
     it("says each answer in the list's note, and reads the list again after a 200, 404 or no answer", async () => {
       addPerson(db, "owner", "ben");
       let next: Refusal | undefined;
