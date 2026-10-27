@@ -328,7 +328,8 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
   let waiting = 0;
   // POST /mcp requests for an existing session whose body is being read, so a session cannot buffer bodies unbounded.
   let reading = 0;
-  // POST /api/send and /api/post requests between taking a slot and answering, so buffered bodies are bounded.
+  // POST /api/send, /api/post, /api/people and /api/invites requests between taking a slot and answering, so buffered
+  // bodies are bounded.
   let actingAsPerson = 0;
   // Held GET /wait requests per account and agent name (lower-cased, as names are unique regardless of case).
   const held = new Map<AccountId, Map<string, number>>();
@@ -1033,7 +1034,7 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
     });
 
   /**
-   * POST /api/login: `{ code }`, a one-time code from a `message-cp login-link` link, with no token. Answers `{ token }`,
+   * POST /api/login: `{ code }`, a one-time code from a `message-cp login-link` link or an invite, with no token. Answers `{ token }`,
    * a new full or person token of the code's account, or 400 with `reason` "cancelled" (an invite an admin cancelled),
    * "used" or "invalid" and a message that never quotes the code.
    */
@@ -1096,7 +1097,7 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
       return reply(res, 401, "Unauthorized", { "WWW-Authenticate": oauth ? oauth.challenge : "Bearer" });
     }
     const { account } = access;
-    // POST /api/people and /api/invites carry a body their 403s leave unread, so those close the connection.
+    // A POST to /api/people or /api/invites carries a body its 403 leaves unread, so their 403s close the connection.
     const inviting = path === "/api/people" || path === "/api/invites";
     // A full or person token approves a client, into its own account: an agent or read-only token is refused before a slot is
     // taken or a body read.

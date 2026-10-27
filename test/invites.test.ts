@@ -7,7 +7,18 @@ import { accountForToken, addAccount, addToken, listAccounts } from "../src/acco
 import { addPerson, registerAgent, removePerson, setPersonAdmin } from "../src/agents.js";
 import { OWNER_ACCOUNT, openDb, type AccountId, type Db } from "../src/db.js";
 import { startHttp, type HttpServer } from "../src/http.js";
-import { INVITE_TTL_MS, LOGIN_CODE_TTL_MS, LoginRefused, MAX_LOGIN_CODES, makeInvite, makeLoginCode, redeemLoginCode } from "../src/login.js";
+import {
+  INVITE_TTL_MS,
+  LOGIN_CODE_TTL_MS,
+  LoginError,
+  LoginRefused,
+  MAX_INVITES_PER_ACCOUNT,
+  MAX_LOGIN_CODES,
+  cancelInvite,
+  makeInvite,
+  makeLoginCode,
+  redeemLoginCode,
+} from "../src/login.js";
 
 // Invites: an admin person's token adds people (POST /api/people) and makes (POST /api/invites), lists (GET) and cancels
 // (DELETE) one-time sign-in links lasting INVITE_TTL_MS, on a server with the owner's account and a friend's.
@@ -125,14 +136,13 @@ describe("POST /api/people", () => {
     expect(codes().map((c) => c.account_id)).toEqual([OWNER_ACCOUNT]);
   });
 
-  it("stores neither the person nor the invite past MAX_LOGIN_CODES", async () => {
-    const insert = db.prepare("INSERT INTO login_codes (code_hash, account_id, expires_at) VALUES (?, ?, ?)");
-    for (let i = 0; i < MAX_LOGIN_CODES; i++) insert.run(`h${i}`, OWNER_ACCOUNT, Date.now() + 60_000);
-    const before = people();
+  it("stores neither the person nor the invite past MAX_INVITES_PER_ACCOUNT", async () => {
+    for (let i = 0; i < MAX_INVITES_PER_ACCOUNT; i++) makeInvite(db, OWNER_ACCOUNT, "ana");
+    const before = { people: people(), codes: codes() };
     const res = await call("/api/people", ana, "POST", { name: "dee", admin: false });
     expect(res.status).toBe(503);
-    expect(people()).toEqual(before);
-    expect(codes()).toHaveLength(MAX_LOGIN_CODES);
+    expect(await message(res)).toBe(`This account has made ${MAX_INVITES_PER_ACCOUNT} invites in the last 7 days; try again once some expire.`);
+    expect({ people: people(), codes: codes() }).toEqual(before);
   });
 });
 
@@ -207,6 +217,29 @@ describe("invites and login-link codes", () => {
   });
 });
 
+describe("the invite cap", () => {
+  it("counts each account's invites apart, cancelled ones included, so a full account blocks no other account or login-link", () => {
+    addPerson(db, "friend", "fay");
+    for (let i = 0; i < MAX_INVITES_PER_ACCOUNT; i++) {
+      const { invite } = makeInvite(db, OWNER_ACCOUNT, "ana")!;
+      if (i % 2 === 0) cancelInvite(db, OWNER_ACCOUNT, invite.id);
+    }
+    expect(() => makeInvite(db, OWNER_ACCOUNT, "ana")).toThrow(LoginError);
+    expect(makeInvite(db, friend, "fay")).toMatchObject({ name: "fay" });
+    expect(makeLoginCode(db, "owner", "ana")).toMatchObject({ person: "ana" });
+    // Expired invites stop counting, and are deleted when the next code is made.
+    expect(makeInvite(db, OWNER_ACCOUNT, "ana", Date.now() + INVITE_TTL_MS)).toMatchObject({ name: "ana" });
+    expect(db.prepare("SELECT count(*) FROM login_codes WHERE account_id = ? AND invite = 1").pluck().get(OWNER_ACCOUNT)).toBe(1);
+  });
+
+  it("leaves login-link's MAX_LOGIN_CODES counting only login-link codes", () => {
+    const insert = db.prepare("INSERT INTO login_codes (code_hash, account_id, expires_at) VALUES (?, ?, ?)");
+    for (let i = 0; i < MAX_LOGIN_CODES; i++) insert.run(`h${i}`, OWNER_ACCOUNT, Date.now() + 60_000);
+    expect(() => makeLoginCode(db, "owner")).toThrow(LoginError);
+    expect(makeInvite(db, OWNER_ACCOUNT, "ana")).toMatchObject({ name: "ana" });
+  });
+});
+
 describe("GET /api/invites", () => {
   it("lists the account's unused invites newest first, paged, never a code, leaving out login-link codes and other accounts'", async () => {
     addPerson(db, "owner", "ben");
@@ -261,17 +294,20 @@ describe("DELETE /api/invites", () => {
     expect(db.prepare("SELECT count(*) FROM tokens WHERE person_id IS NOT NULL").pluck().get()).toBe(1);
   });
 
-  it("answers the same 404 for a used, expired, login-link, unknown or other account's id, changing nothing", async () => {
+  it("answers the same 404 for a used, expired, removed person's, login-link, unknown or other account's id, changing nothing", async () => {
     addPerson(db, "owner", "ben");
     addPerson(db, "friend", "fay");
     const used = makeInvite(db, OWNER_ACCOUNT, "ben")!.invite;
     redeemLoginCode(db, used.code);
     const expired = makeInvite(db, OWNER_ACCOUNT, "ben", Date.now() - INVITE_TTL_MS)!.invite;
     const theirs = makeInvite(db, friend, "fay")!.invite;
+    addPerson(db, "owner", "gone");
+    const gone = makeInvite(db, OWNER_ACCOUNT, "gone")!.invite;
+    removePerson(db, "owner", "gone");
     makeLoginCode(db, "owner", "ben");
     const link = db.prepare("SELECT id FROM login_codes WHERE invite = 0").pluck().get() as number;
     const before = codes();
-    for (const id of [used.id, expired.id, theirs.id, link, 9999]) {
+    for (const id of [used.id, expired.id, theirs.id, gone.id, link, 9999]) {
       const res = await call(`/api/invites?id=${id}`, ana, "DELETE");
       expect(res.status, String(id)).toBe(404);
       expect(await message(res)).toBe("No such invite");
@@ -384,7 +420,7 @@ describe("who reaches the invite routes", () => {
 });
 
 describe("the invite list's plan", () => {
-  it("pages an account's unused invites through login_codes_unused_invites, without scanning or sorting other codes", () => {
+  it("pages an account's unused invites through login_codes_invites, without scanning or sorting other codes", () => {
     const plan = db
       .prepare(
         `EXPLAIN QUERY PLAN SELECT login_codes.id, agents.name, login_codes.created_at, login_codes.expires_at
@@ -396,6 +432,16 @@ describe("the invite list's plan", () => {
       )
       .all(1, 0, 50, 0)
       .map((r) => (r as { detail: string }).detail);
-    expect(plan).toEqual(["SEARCH login_codes USING INDEX login_codes_unused_invites (account_id=?)", "SEARCH agents USING INTEGER PRIMARY KEY (rowid=?)"]);
+    expect(plan).toEqual(["SEARCH login_codes USING INDEX login_codes_invites (account_id=? AND used_at=?)", "SEARCH agents USING INTEGER PRIMARY KEY (rowid=?)"]);
+  });
+
+  it("counts invites and login-link codes for the cap through their indexes, not by scanning the table", () => {
+    const detail = (sql: string, ...p: unknown[]) => db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all(...p).map((r) => (r as { detail: string }).detail);
+    expect(detail("SELECT count(*) FROM login_codes WHERE invite = 1 AND account_id = ?", 1)).toEqual([
+      "SEARCH login_codes USING COVERING INDEX login_codes_invites (account_id=?)",
+    ]);
+    expect(detail("SELECT count(*) FROM login_codes WHERE invite = 0 AND used_at IS NULL")).toEqual([
+      "SEARCH login_codes USING COVERING INDEX login_codes_unused_links (used_at=?)",
+    ]);
   });
 });

@@ -62,7 +62,7 @@ import CodeBlock from "../components/CodeBlock.astro";
           <tbody>
             <tr>
               <th>Request body</th>
-              <td data-label="Limit">4 MB; <code>/oauth/register</code>, <code>/oauth/approve</code>, <code>/oauth/token</code>, <code>/api/login</code>: 16 KB; other <code>/api</code> POSTs: 64 KB; larger gets 413</td>
+              <td data-label="Limit">4 MB; <code>/oauth/register</code>, <code>/oauth/approve</code>, <code>/oauth/token</code>, <code>/api/login</code>: 16 KB; other <code>/api</code>: 64 KB; larger gets 413</td>
             </tr>
             <tr>
               <th>Bio, key, webhook <code>--body</code></th>
@@ -78,7 +78,7 @@ import CodeBlock from "../components/CodeBlock.astro";
             </tr>
             <tr>
               <th>Requests</th>
-              <td data-label="Limit">256 each: <code>/api</code> POSTs but <code>/api/login</code> together, and OAuth <code>register</code>, <code>approve</code>, <code>token</code> and <code>/api/login</code> together (with <code>Retry-After</code>), until answered; <code>POST /mcp</code> in a session, until its body is read</td>
+              <td data-label="Limit">256 each, until answered: other <code>/api</code> POSTs; OAuth <code>register</code>, <code>approve</code>, <code>token</code> and <code>/api/login</code> (with <code>Retry-After</code>); <code>POST /mcp</code> in a session, until its body is read</td>
             </tr>
             <tr>
               <th>OAuth</th>
@@ -86,7 +86,7 @@ import CodeBlock from "../components/CodeBlock.astro";
             </tr>
             <tr>
               <th>Login links</th>
-              <td data-label="Limit">1000 unused, unexpired, invites included; then refused</td>
+              <td data-label="Limit">1000 unused, unexpired; invites: 100 per account per 7 days</td>
             </tr>
             <tr>
               <th>OAuth metadata fetches</th>

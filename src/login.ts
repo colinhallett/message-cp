@@ -24,8 +24,14 @@ export class LoginRefused extends Error {
   }
 }
 
-/** Codes not yet used or expired, kept at once; past this a new one is refused. */
+/** `login-link` codes not yet used or expired, kept at once across the server; past this a new one is refused. */
 export const MAX_LOGIN_CODES = 1000;
+/**
+ * Invites one account has made that have not expired, used and cancelled ones included; past this its next is refused.
+ * Counted per account, apart from MAX_LOGIN_CODES, so no account's invites refuse another's or `login-link`, and counting
+ * cancelled ones too keeps a loop of making and cancelling from growing the table.
+ */
+export const MAX_INVITES_PER_ACCOUNT = 100;
 /** How long a link works once it is made. */
 export const LOGIN_CODE_TTL_MS = 5 * 60 * 1000;
 /** How long an invite works once it is made. */
@@ -84,13 +90,21 @@ export const makeLoginCode = (db: Db, account: string, person?: string, now = Da
   }).immediate();
 
 /**
- * Inside the caller's transaction: deletes expired codes, refuses past MAX_LOGIN_CODES, then stores the hash of a new
- * code for `account` (and `person`, if not null), an invite lasting INVITE_TTL_MS with `invite`, else LOGIN_CODE_TTL_MS.
+ * Inside the caller's transaction: deletes expired codes, then stores the hash of a new code for `account` (and
+ * `person`, if not null): with `invite`, an invite lasting INVITE_TTL_MS, refused past MAX_INVITES_PER_ACCOUNT; else a
+ * `login-link` code lasting LOGIN_CODE_TTL_MS, refused past MAX_LOGIN_CODES.
  */
 function storeCode(db: Db, account: AccountId, person: number | null, invite: boolean, now: number): { id: number; code: string; expiresAt: number } {
   db.prepare("DELETE FROM login_codes WHERE expires_at <= ?").run(now);
-  const pending = db.prepare("SELECT count(*) FROM login_codes WHERE used_at IS NULL").pluck().get() as number;
-  if (pending >= MAX_LOGIN_CODES) throw new LoginError(`There are already ${MAX_LOGIN_CODES} unused links; try again once some expire.`);
+  if (invite) {
+    const made = db.prepare("SELECT count(*) FROM login_codes WHERE invite = 1 AND account_id = ?").pluck().get(account) as number;
+    if (made >= MAX_INVITES_PER_ACCOUNT) {
+      throw new LoginError(`This account has made ${MAX_INVITES_PER_ACCOUNT} invites in the last 7 days; try again once some expire.`);
+    }
+  } else {
+    const pending = db.prepare("SELECT count(*) FROM login_codes WHERE invite = 0 AND used_at IS NULL").pluck().get() as number;
+    if (pending >= MAX_LOGIN_CODES) throw new LoginError(`There are already ${MAX_LOGIN_CODES} unused links; try again once some expire.`);
+  }
   const code = randomBytes(32).toString("hex");
   const expiresAt = now + (invite ? INVITE_TTL_MS : LOGIN_CODE_TTL_MS);
   const id = db
@@ -117,7 +131,7 @@ export interface InvitedPerson {
 /**
  * For POST /api/people: adds the person `name`, an admin with `admin`, to the account `account` as `addPerson` does,
  * and makes their first invite, in one transaction, so a refused name or a refused invite stores neither. Throws
- * `PersonError` as `addPerson` does and `LoginError` past MAX_LOGIN_CODES.
+ * `PersonError` as `addPerson` does and `LoginError` past MAX_INVITES_PER_ACCOUNT.
  */
 export const addInvitedPerson = (db: Db, account: AccountId, name: string, admin: boolean, now = Date.now()): InvitedPerson =>
   db.transaction((): InvitedPerson => {
@@ -136,7 +150,7 @@ export const addInvitedPerson = (db: Db, account: AccountId, name: string, admin
 /**
  * For POST /api/invites: a new invite for the live person `person` (any case) of the account `account`, or undefined,
  * storing nothing, for a name no live person of the account has, an agent's included. Earlier invites stay as they are.
- * Throws `LoginError` past MAX_LOGIN_CODES.
+ * Throws `LoginError` past MAX_INVITES_PER_ACCOUNT.
  */
 export const makeInvite = (db: Db, account: AccountId, person: string, now = Date.now()): InvitedPerson | undefined =>
   db.transaction(() => {
@@ -180,15 +194,17 @@ export function listInvites(db: Db, account: AccountId, limit: number, offset: n
 }
 
 /**
- * Cancels the account's invite `id` while it is not used, cancelled or expired, looked up by id and account together.
- * False for any other id, another account's included. It sets `used_at` as well (see `migrate` in db.ts), so a server
- * from before `cancelled_at` refuses it too.
+ * Cancels the account's invite `id` while `listInvites` would list it: not used, cancelled or expired, and its person
+ * live. Looked up by id and account together; false for any other id, another account's included. It sets `used_at` as
+ * well (see `migrate` in db.ts), so a server from before `cancelled_at` refuses it too.
  */
 export const cancelInvite = (db: Db, account: AccountId, id: number, now = Date.now()): boolean =>
   db
     .prepare(
       `UPDATE login_codes SET cancelled_at = ?, used_at = ?
-       WHERE id = ? AND account_id = ? AND invite = 1 AND used_at IS NULL AND cancelled_at IS NULL AND expires_at > ?`,
+       WHERE id = ? AND account_id = ? AND invite = 1 AND used_at IS NULL AND cancelled_at IS NULL AND expires_at > ?
+         AND EXISTS (SELECT 1 FROM agents WHERE agents.id = login_codes.person_id AND agents.account_id = login_codes.account_id
+           AND agents.removed_at IS NULL AND agents.person = 1)`,
     )
     .run(now, now, id, account, now).changes === 1;
 

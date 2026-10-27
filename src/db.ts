@@ -229,8 +229,9 @@ CREATE INDEX IF NOT EXISTS mcp_authorizations_by_client ON mcp_authorizations (c
 -- The same for an agent's row, should one ever be deleted.
 CREATE INDEX IF NOT EXISTS mcp_authorizations_by_agent ON mcp_authorizations (agent_id);
 
--- One-time dashboard sign-in codes from \`message-cp login-link\` (src/login.ts). Only the code's hash is kept. \`person_id\`
--- is set for a link that signs in as that person; \`used_at\` once it has given its token.
+-- One-time dashboard sign-in codes from \`message-cp login-link\`, and invites an admin person made (src/login.ts). Only
+-- the code's hash is kept. \`person_id\` is set for a link that signs in as that person; \`used_at\` once it has given its
+-- token or, for an invite, was cancelled. The invite columns are added in migrate.
 CREATE TABLE IF NOT EXISTS login_codes (
   id INTEGER PRIMARY KEY,
   code_hash TEXT NOT NULL UNIQUE,
@@ -441,8 +442,10 @@ function migrate(db: Db, path: string): void {
   addColumn(db, "invite", "INTEGER NOT NULL DEFAULT 0", "login_codes");
   addColumn(db, "created_at", "INTEGER", "login_codes");
   addColumn(db, "cancelled_at", "INTEGER", "login_codes");
-  // GET /api/invites pages an account's unused invites newest first through this, not by scanning used codes.
-  db.exec("CREATE INDEX IF NOT EXISTS login_codes_unused_invites ON login_codes (account_id, id) WHERE invite = 1 AND used_at IS NULL");
+  // GET /api/invites pages an account's unused invites newest first, and storeCode counts its invites, through this.
+  db.exec("CREATE INDEX IF NOT EXISTS login_codes_invites ON login_codes (account_id, used_at, id) WHERE invite = 1");
+  // storeCode counts the unused `login-link` codes through this, not by scanning invites.
+  db.exec("CREATE INDEX IF NOT EXISTS login_codes_unused_links ON login_codes (used_at) WHERE invite = 0 AND used_at IS NULL");
   rebuildMessages(db);
   db.exec(MESSAGES_REPLY_INDEXES);
   db.exec(DROP_REMOVED);
