@@ -525,15 +525,17 @@ describe("approval", () => {
     expect((await approve(ownerFull, { request, state: "s1", agent: "desk" })).status).toBe(200);
   });
 
-  it("refuses an agent-only or read-only token with 403 and no token with 401, changing nothing", async () => {
+  it("refuses an agent-only, read-only or person token with 403 and no token with 401, changing nothing", async () => {
     const clientId = await registered();
     const { request } = await pageFor(clientId, pkce().challenge);
     const before = stored();
     const agentOnly = addToken(db, "owner", false, true).token;
     const readOnly = addToken(db, "owner", true).token;
     const bound = addToken(db, "owner", false, true, registerWithIdentity(db, OWNER_ACCOUNT, "b").identity.id).token;
+    addPerson(db, "owner", "maria");
+    const person = addToken(db, "owner", false, false, undefined, "maria").token;
     const after = stored();
-    for (const token of [agentOnly, readOnly, bound]) {
+    for (const token of [agentOnly, readOnly, bound, person]) {
       const res = await approve(token, { request, state: "s1", agent: "desk" });
       expect(res.status).toBe(403);
       // Its body is left unread, so the connection is not kept for another request.

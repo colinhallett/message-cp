@@ -1,4 +1,4 @@
-import { NAME_PATTERN, STATUS_TTL_MS, ToolError, getAgent, personOf, type Identity } from "./agents.js";
+import { NAME_PATTERN, STATUS_TTL_MS, ToolError, actingPerson, getAgent, type Identity } from "./agents.js";
 import type { Member } from "./channels.js";
 import type { AccountId, Db } from "./db.js";
 
@@ -147,14 +147,15 @@ export function sendMessage(
 
 /**
  * `sendMessage` from the account's live person `as`, under the person's stored name. Undefined, with nothing stored,
- * if `as` is not a live person of the account, so an agent's name, a removed one and an unknown one are alike.
+ * if `as` is not a live person of the account, so an agent's name, a removed one and an unknown one are alike. With
+ * `only`, a person token's person's row id, throws `WrongPersonError`, storing nothing, unless `as` is that row.
  */
-export function sendAsPerson(db: Db, account: AccountId, as: string, to: string, body: string): SendResult | undefined {
+export function sendAsPerson(db: Db, account: AccountId, as: string, to: string, body: string, only?: number): SendResult | undefined {
   validateBody(body);
   // One transaction, so the person cannot be removed between the check and the send.
   return db
     .transaction((): SendResult | undefined => {
-      const person = personOf(db, account, as);
+      const person = actingPerson(db, account, as, only);
       return person && sendMessage(db, account, person.name, to, body);
     })
     .immediate();

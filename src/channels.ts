@@ -1,4 +1,4 @@
-import { NAME_PATTERN, NOT_REGISTERED, ToolError, nameOfIdentity, personOf, type Identity } from "./agents.js";
+import { NAME_PATTERN, NOT_REGISTERED, ToolError, actingPerson, nameOfIdentity, type Identity } from "./agents.js";
 import type { AccountId, Db } from "./db.js";
 import { DEFAULT_INBOX_LIMIT, MAX_INBOX_LIMIT, validateBody } from "./messages.js";
 
@@ -142,14 +142,15 @@ export function post(db: Db, account: AccountId, member: Member, channel: string
 
 /**
  * `post` from the account's live person `as`, under the person's stored name. Undefined, with nothing stored, if `as`
- * is not a live person of the account, so an agent's name, a removed one and an unknown one are alike.
+ * is not a live person of the account, so an agent's name, a removed one and an unknown one are alike. With `only`, a
+ * person token's person's row id, throws `WrongPersonError`, storing nothing, unless `as` is that row.
  */
-export function postAsPerson(db: Db, account: AccountId, as: string, channel: string, body: string): PostResult | undefined {
+export function postAsPerson(db: Db, account: AccountId, as: string, channel: string, body: string, only?: number): PostResult | undefined {
   validateChannelName(channel);
   validateBody(body, "Post");
   return db
     .transaction((): PostResult | undefined => {
-      const person = personOf(db, account, as);
+      const person = actingPerson(db, account, as, only);
       return person && append(db, account, person, channel, body);
     })
     .immediate();

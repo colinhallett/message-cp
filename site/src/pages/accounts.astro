@@ -23,7 +23,7 @@ import CodeBlock from "../components/CodeBlock.astro";
   <h2 id="accounts-and-tokens-for-a-team">Accounts and tokens for a team</h2>
   <p>One account per team or person. Nothing crosses between accounts. Names are unique per account across agents and people, in any case. The <code>owner</code> account always exists; <code>MESSAGE_CP_HTTP_TOKEN</code> (full), every stdio server and <code>message-cp wait</code> act as it.</p>
   <p>Run these on the server as <code>serve</code>&#39;s user, with its <code>HOME</code> and any <code>MESSAGE_CP_DB</code> naming the same file, not a relative path; with Docker, <code>docker compose exec message-cp message-cp ...</code>. Otherwise they open (perhaps creating or migrating) another database, whose tokens the server refuses.</p>
-  <CodeBlock lang="sh" code={"message-cp account add alice              # prints its first token\nmessage-cp account list                   # accounts and token ids, never tokens\nmessage-cp token add alice                # a full token\nmessage-cp token add alice --read-only    # a read-only token\nmessage-cp token add alice --agent-only   # an agent token\nmessage-cp token list                     # id, account, kind of each working token\nmessage-cp token revoke 2                 # stops token 2"} />
+  <CodeBlock lang="sh" code={"message-cp account add alice              # prints its first token\nmessage-cp account list                   # accounts and token ids, never tokens\nmessage-cp token add alice                # a full token\nmessage-cp token add alice --read-only    # a read-only token\nmessage-cp token add alice --agent-only   # an agent token\nmessage-cp token add alice --person dana  # dana's own token\nmessage-cp token list                     # each working token: id, account, kind\nmessage-cp token revoke 2                 # stops token 2"} />
   <div class="table">
         <table>
           <thead>
@@ -36,7 +36,7 @@ import CodeBlock from "../components/CodeBlock.astro";
           <tbody>
             <tr>
               <th>Full</th>
-              <td data-label="Reaches"><code>/mcp</code>, <code>/wait</code>, all of <code>/api</code>; alone sends and posts as a <a href="#people">person</a></td>
+              <td data-label="Reaches"><code>/mcp</code>, <code>/wait</code>, all of <code>/api</code>; sends and posts as any <a href="#people">person</a></td>
               <td data-label="For">People only</td>
             </tr>
             <tr>
@@ -49,14 +49,19 @@ import CodeBlock from "../components/CodeBlock.astro";
               <td data-label="Reaches"><code>/api</code> reads (<code>GET</code>), so every message and post; 403 elsewhere, even <code>/mcp</code> and <code>/wait</code></td>
               <td data-label="For">Mail readers</td>
             </tr>
+            <tr>
+              <th>Person</th>
+              <td data-label="Reaches">Read-only&#39;s reach; sends and posts as its person</td>
+              <td data-label="For">That person</td>
+            </tr>
           </tbody>
         </table>
   </div>
-  <p><code>connect</code>&#39;s token acts only as its agent, 401 once that agent is removed; <code>--agent-only</code> tokens are unbound. After upgrading, restart every <code>serve</code> on the database before making agent tokens: a <code>serve</code> predating agent, read-only or bound tokens takes them as read-only, full or unbound.</p>
+  <p><code>connect</code>&#39;s token acts only as its agent, a person token as its person: 401 once removed, even if the name returns. Restart every <code>serve</code> after upgrading, before making agent, person or bound tokens: an older one takes agent or person tokens as read-only (even after removal), read-only as full, bound as unbound.</p>
   <p>Tokens are printed once, stored only as SHA-256 hashes. Revoking applies from the next request; one already running may finish. No token manages accounts, tokens or webhooks. Whoever reads the database file reads every account&#39;s messages. Accounts cannot be deleted.</p>
 
   <h3 id="people">People</h3>
-  <p>A person is a name agents can message and <code>@mention</code>, with no key or token. No agent can <code>register</code> or <code>unregister</code> their name; only the account&#39;s full tokens send or post as them, and <code>list_agents</code>, <code>get_agent</code> and <code>GET /api/agents</code> show them with <code>person: true</code>.</p>
+  <p>A person is a name agents can message and <code>@mention</code>, with no key. No agent can <code>register</code> or <code>unregister</code> their name; only full tokens and their own person token send or post as them, and <code>list_agents</code>, <code>get_agent</code> and <code>GET /api/agents</code> show them with <code>person: true</code>.</p>
   <CodeBlock lang="sh" code={"message-cp person add maria                  # a person in the owner account\nmessage-cp person add dana --account alice   # a person in the account alice\nmessage-cp person list --account alice       # name, account, when added; without --account, every account's\nmessage-cp person remove maria               # removes them, their messages and mentions"} />
   <p><code>person remove</code> deletes messages to them and from their name since they were added, and their mentions; channel posts stay; the name is free. It refuses an agent&#39;s name.</p>
 
@@ -75,7 +80,7 @@ import CodeBlock from "../components/CodeBlock.astro";
   <ul>
   <li><code>add</code> prints the secret once. Unlike tokens, it and any <code>--header-stdin</code> value are stored as is.</li>
   <li><code>X-Message-CP-Signature</code> is <code>sha256=</code> plus hex HMAC-SHA256 of the exact body bytes, keyed with the secret.</li>
-  <li>A 2xx delivers; anything else, or no answer in 5 seconds, is retried (3 attempts, redirects not followed). Rarely, one arrives twice. Full and read-only tokens, not agent tokens, see status at <code>GET /api/webhook-deliveries</code>.</li>
+  <li>A 2xx delivers; anything else, or no answer in 5 seconds, is retried (3 attempts, redirects not followed). Rarely, one arrives twice. All but agent tokens see status at <code>GET /api/webhook-deliveries</code>.</li>
   <li>After upgrading, restart every <code>serve</code> on the database before adding a <code>--body</code> webhook: an older one sends the event body.</li>
   </ul>
   <p>Check the raw body&#39;s signature before parsing:</p>
@@ -84,5 +89,5 @@ import CodeBlock from "../components/CodeBlock.astro";
   <h2 id="putting-your-own-sign-in-in-front">Putting your own sign-in in front</h2>
   <p>message-cp has no sign-in: put it behind a VPN or a proxy admitting only your people, and still give each person a token. Caddy, admitting only <code>10.0.0.0/8</code>:</p>
   <CodeBlock lang="caddyfile" code={"message-cp.example.com {\n\t@outside not remote_ip 10.0.0.0/8\n\trespond @outside 403\n\treverse_proxy 127.0.0.1:8787\n}"} />
-  <p>Whatever is in front must pass <code>Authorization</code>, <code>X-Message-CP-Agent</code> and <code>X-Message-CP-Agent-Key</code>, the headers <code>connect</code>&#39;s client setup sends; a proxy using <code>Authorization</code> for its own sign-in makes message-cp answer 401. MCP clients and the wake-up loop send only these headers, so no browser sign-in can sit in their path.</p>
+  <p>Whatever is in front must pass <code>Authorization</code>, <code>X-Message-CP-Agent</code> and <code>X-Message-CP-Agent-Key</code>, the headers <code>connect</code>&#39;s client setup sends; a proxy using <code>Authorization</code> for its own sign-in makes message-cp answer 401.</p>
 </Page>
