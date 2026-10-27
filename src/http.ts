@@ -4,7 +4,7 @@ import { PassThrough } from "node:stream";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
 import { LATEST_PROTOCOL_VERSION, isInitializeRequest, isJSONRPCRequest, type RequestId } from "@modelcontextprotocol/sdk/types.js";
-import { accountForToken, listApprovals, type BoundAgent, type TokenAccess } from "./accounts.js";
+import { accountForToken, accountName, listApprovals, type BoundAgent, type TokenAccess } from "./accounts.js";
 import { DEFAULT_LIST_LIMIT, MAX_LIST_LIMIT, ToolError, WrongPersonError, registerWithIdentity, type Identity } from "./agents.js";
 import {
   DEFAULT_CHANNEL_LIMIT,
@@ -43,6 +43,7 @@ import {
   redirectTo,
   registerClient,
   startAuthorization,
+  freeAgentName,
   type Client,
 } from "./oauth.js";
 import { DEFAULT_MAX_SESSIONS, Session, createServer, type ServerOptions } from "./server.js";
@@ -301,13 +302,49 @@ function oauthUrls(publicUrl: string) {
       `/.well-known/oauth-protected-resource${prefix}/mcp`,
     ]),
     serverPaths: new Set(["/.well-known/oauth-authorization-server", `/.well-known/oauth-authorization-server${prefix}`]),
+    // The origin a browser names in Origin on a request from the approval page or the dashboard, and the path the
+    // sign-in cookie is sent under: the approval page's directory, /oauth/ under the public URL's path.
+    origin: base.origin,
+    cookiePath: `${prefix}/oauth/`,
+    secure: base.protocol === "https:",
   };
+}
+
+/** The cookie the approval page signs in with: the dashboard's token, set by POST /oauth/signin. */
+const SIGNIN_COOKIE = "message-cp-signin";
+
+/** The value of the sign-in cookie in `header`, or undefined for none or more than one. */
+function signinCookie(header: string | undefined): string | undefined {
+  const values = (header ?? "")
+    .split(";")
+    .map((part) => part.trim())
+    .filter((part) => part.startsWith(`${SIGNIN_COOKIE}=`))
+    .map((part) => part.slice(SIGNIN_COOKIE.length + 1));
+  if (values.length !== 1) return undefined;
+  try {
+    return decodeURIComponent(values[0]);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Whether `req` comes from a page of this server's own origin, as a browser says: Origin, which it sends on every
+ * POST and DELETE, equal to `origin`; or, without Origin (a same-origin GET), Sec-Fetch-Site "same-origin". A request
+ * with neither, as from a script outside a browser, is not.
+ */
+function sameOrigin(req: IncomingMessage, origin: string): boolean {
+  const named = req.headersDistinct.origin;
+  if (named !== undefined) return named.length === 1 && named[0] === origin;
+  const site = req.headersDistinct["sec-fetch-site"];
+  return site?.length === 1 && site[0] === "same-origin";
 }
 
 /**
  * Serves the MCP tools over streamable HTTP at /mcp, one `Session` per MCP session. Every request needs the token,
  * except GET / for the dashboard page, GET on each of the dashboard's font paths (`DASHBOARD_FONTS`), /health and, with
- * a public URL, the authorization flow's metadata, registration, authorization page and token endpoint.
+ * a public URL, the authorization flow's metadata, registration, authorization page and token endpoint, and
+ * /oauth/signin and a token-less /oauth/approve, which use the sign-in cookie from this server's own origin instead.
  */
 export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServer> {
   if (!options.token) throw new Error("an HTTP token is required");
@@ -893,8 +930,10 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
   };
 
   /**
-   * POST /oauth/approve: `{ request, state, agent }` from the approval page, with a full or person token of the account
-   * the client's agent is made or found in. Answers `{ location }`, the redirect URI with the code, or 400 with the reason.
+   * POST /oauth/approve: `{ request, state, agent, fresh }` from the approval page, with a full or person token of the
+   * account the client's agent is made or found in. `fresh: true` says `agent` is the name the page suggested, left as
+   * it was, so a live agent of that name is refused rather than connected as. Answers `{ location }`, the redirect URI
+   * with the code, or 400 with the reason.
    */
   const oauthApprove = (req: IncomingMessage, res: ServerResponse, account: AccountId) =>
     withOAuthBody(req, res, (text) => {
@@ -908,13 +947,63 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
       if (typeof input?.request !== "string" || typeof input.agent !== "string" || (state !== null && typeof state !== "string")) {
         return sendOAuthJson(res, 400, { message: "Give request, state and agent." });
       }
+      const fresh = input.fresh === true;
       try {
-        sendOAuthJson(res, 200, { location: approveAuthorization(db, account, input.request, state as string | null, input.agent) });
+        sendOAuthJson(res, 200, { location: approveAuthorization(db, account, input.request, state as string | null, input.agent, fresh) });
       } catch (err) {
         if (err instanceof OAuthError || err instanceof ToolError) return sendOAuthJson(res, 400, { message: err.message });
         throw err;
       }
     });
+
+  /**
+   * /oauth/signin: the approval page's sign-in, a cookie holding the dashboard's token, `HttpOnly` so no page script reads
+   * it, `SameSite=Strict` so the browser sends it only on requests from this site, `Secure` under an https public URL, and
+   * sent only under the approval page's path. Every method needs a request from this server's own origin (`sameOrigin`).
+   * POST, from the dashboard once a token is confirmed, sets it to the request's bearer token, which must be a full or
+   * person token (403 for any other, 401 for none). GET, from the approval page, answers who the cookie's token signs in
+   * as: `{ account, person? }`, with `name`, a name for the client's agent no live agent or person of the account has,
+   * made from the query's `base` when it gives one; a missing or refused cookie gets 401 (and a refused one is cleared).
+   * DELETE, from the dashboard's "Forget token", clears it. The token is checked afresh on each GET and approval, so a
+   * revoked token stops at the next request.
+   */
+  const oauthSignin = (req: IncomingMessage, res: ServerResponse, o: NonNullable<typeof oauth>) => {
+    if (req.method !== "GET" && req.method !== "POST" && req.method !== "DELETE") {
+      return reply(res, 405, "Method not allowed", { Allow: "GET, POST, DELETE" });
+    }
+    if (!sameOrigin(req, o.origin)) return reply(res, 403, "Only this server's own pages can sign in");
+    const attributes = `Path=${o.cookiePath}; HttpOnly; SameSite=Strict${o.secure ? "; Secure" : ""}`;
+    const clear = `${SIGNIN_COOKIE}=; ${attributes}; Max-Age=0`;
+    const noStore = { "Cache-Control": "no-store" };
+    if (req.method === "DELETE") {
+      res.writeHead(204, { "Set-Cookie": clear, ...noStore });
+      return void res.end();
+    }
+    if (req.method === "POST") {
+      const m = /^bearer +(.*)$/i.exec(req.headers.authorization ?? "");
+      const access = accountOf(db, req.headers.authorization, options.token);
+      if (!m || access === undefined) return reply(res, 401, "Unauthorized");
+      if (access.agentOnly || access.readOnly) return reply(res, 403, "Only a full or person token can approve a client");
+      res.writeHead(204, { "Set-Cookie": `${SIGNIN_COOKIE}=${encodeURIComponent(m[1])}; ${attributes}`, ...noStore });
+      return void res.end();
+    }
+    const token = signinCookie(req.headers.cookie);
+    const query = new URL(req.url ?? "", "http://x").searchParams;
+    const bases = query.getAll("base");
+    const base = bases.length === 1 && /^[a-z0-9_-]{1,24}$/.test(bases[0]) ? bases[0] : undefined;
+    const answer = unlessBusy(res, () => {
+      const access = token === undefined ? undefined : accountForToken(db, token, options.token);
+      if (access === undefined || access.agentOnly || access.readOnly) return null;
+      const name = base === undefined ? undefined : freeAgentName(db, access.account, base);
+      return { account: accountName(db, access.account), ...(access.person && { person: access.person.name }), ...(name !== undefined && { name }) };
+    });
+    if (answer === undefined) return;
+    if (answer === null) {
+      return reply(res, 401, "Not signed in", token === undefined ? noStore : { "Set-Cookie": clear, ...noStore });
+    }
+    res.writeHead(200, { "Content-Type": "application/json", ...noStore });
+    res.end(JSON.stringify(answer));
+  };
 
   /** POST /oauth/token: exchanges a code for an agent token, from a form-encoded body (`authorization_code` only). */
   const oauthToken = (req: IncomingMessage, res: ServerResponse) =>
@@ -996,6 +1085,21 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
     if (oauth && path === "/oauth/register") return oauthRegister(req, res);
     if (oauth && path === "/oauth/authorize") return oauthAuthorize(req, res, oauth.resource.resource);
     if (oauth && path === "/oauth/token") return oauthToken(req, res);
+    // The sign-in cookie is checked by its own route, which checks any token it is given itself.
+    if (oauth && path === "/oauth/signin") return oauthSignin(req, res, oauth);
+    // A full or person token approves a client, into its own account: an agent or read-only token is refused before a slot is
+    // taken or a body read. The token is the request's Authorization header, as for every other path; only a request with
+    // none, from a page of this server's own origin, is signed in by the sign-in cookie instead, so another site cannot make
+    // a signed-in browser approve, and a script's Bearer token works as before.
+    if (oauth && path === "/oauth/approve") {
+      const cookie = req.headers.authorization === undefined && sameOrigin(req, oauth.origin) ? signinCookie(req.headers.cookie) : undefined;
+      const access = cookie === undefined ? accountOf(db, req.headers.authorization, options.token) : accountForToken(db, cookie, options.token);
+      if (access === undefined) return reply(res, 401, "Unauthorized", { "WWW-Authenticate": oauth.challenge, Connection: "close" });
+      if (access.agentOnly || access.readOnly) {
+        return reply(res, 403, "Only a full or person token can approve a client", { Connection: "close" });
+      }
+      return oauthApprove(req, res, access.account);
+    }
     // A login link's code stands in for the token, and redeeming it reveals nothing of any account but to its holder, so
     // it too comes before the token, with or without a public URL.
     if (path === "/api/login") return apiLogin(req, res);
@@ -1005,14 +1109,6 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
       return reply(res, 401, "Unauthorized", { "WWW-Authenticate": oauth ? oauth.challenge : "Bearer" });
     }
     const { account } = access;
-    // A full or person token approves a client, into its own account: an agent or read-only token is refused before a slot is
-    // taken or a body read.
-    if (oauth && path === "/oauth/approve") {
-      if (access.agentOnly || access.readOnly) {
-        return reply(res, 403, "Only a full or person token can approve a client", { Connection: "close" });
-      }
-      return oauthApprove(req, res, account);
-    }
     // An agent token reaches /mcp and /wait, where it reads as its agent does, and of the /api paths only GET /api/token,
     // so the dashboard can say why it will not work; it cannot read or delete the account's conversations there. It is
     // refused before a slot is taken or a body read.

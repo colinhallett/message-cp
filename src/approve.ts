@@ -1,12 +1,17 @@
 import { createHash } from "node:crypto";
 import { STYLE } from "./dashboard.js";
-import { isLoopback, isMetadataUrl, type Authorization } from "./oauth.js";
+import { agentNameBase, isLoopback, isMetadataUrl, type Authorization } from "./oauth.js";
 
 // The page a person approves an MCP client on, served at the authorization endpoint of `serve --public-url` without a
-// token, in the dashboard's look. It asks for a full or person token of the account and the agent the client should act
-// as, and sends them once to POST /oauth/approve; it keeps the token only in the form field, never in storage. On
-// approval it goes to the address the server answers with, the client's redirect URI with a code; refusing goes to the
-// redirect URI with error=access_denied. Client-supplied text is put on the page HTML-escaped by the server, never as markup.
+// token, in the dashboard's look. It first asks GET /oauth/signin whether this browser is signed in to the dashboard
+// (the sign-in cookie, which no page script can read). Signed in, it says who approves ("Approving as maria"), hides the
+// token field and offers an agent name no live agent of the account has, made from the client's name, so one click
+// approves; POST /oauth/approve then carries no token and the server signs it in by the cookie. Not signed in, it links
+// to the dashboard in a new tab, checks again when the page regains focus or on "Check again", and meanwhile asks for a
+// full or person token of the account, sent once in the Authorization header and kept only in the form field, never in
+// storage. On approval it goes to the address the server answers with, the client's redirect URI with a code; refusing
+// goes to the redirect URI with error=access_denied. Client-supplied text is put on the page HTML-escaped by the server,
+// never as markup, and the server's answers with textContent.
 
 const PAGE_STYLE = `${STYLE}
 main { margin: 10vh auto var(--s4); width: min(32rem, 100% - 2 * var(--s4)); display: flex; flex-direction: column; gap: var(--s3); }
@@ -20,6 +25,7 @@ main h2, main p { margin: 0; }
 #approve-yes { background: var(--accent); border-color: var(--accent); color: var(--bg); font-weight: 600; }
 #approve-yes:hover:enabled { background: color-mix(in srgb, var(--accent) 85%, var(--text)); }
 #approve-note.error { color: var(--error); }
+#signed-in { font-weight: 600; }
 `;
 
 const SCRIPT = `
@@ -27,33 +33,93 @@ const SCRIPT = `
 const TIMEOUT_MS = 15000;
 const form = document.getElementById("approve");
 const token = document.getElementById("approve-token");
+const tokenField = document.getElementById("token-field");
+const signedIn = document.getElementById("signed-in");
+const signedOut = document.getElementById("signed-out");
+const again = document.getElementById("signin-again");
 const agent = document.getElementById("approve-agent");
 const yes = document.getElementById("approve-yes");
 const no = document.getElementById("approve-no");
 const note = document.getElementById("approve-note");
 let busy = false;
+// Whether the last GET /oauth/signin found a sign-in, and the agent name it offered, if any.
+let cookie = false;
+let suggested;
+// Bumped by each check, so only the newest check's answer changes the page.
+let checks = 0;
 function say(text, error) {
   note.textContent = text;
   note.classList.toggle("error", error);
 }
-form.addEventListener("submit", async (event) => {
-  event.preventDefault();
-  if (busy) return;
-  busy = true;
-  yes.disabled = true;
-  say("Approving…", false);
+// Shows the page signed in as who, or, for undefined, signed out with the token field.
+function show(who) {
+  cookie = who !== undefined;
+  signedIn.textContent = cookie ? who : "";
+  signedIn.hidden = !cookie;
+  signedOut.hidden = cookie;
+  tokenField.hidden = cookie;
+  token.required = !cookie;
+  if (cookie) token.value = "";
+}
+// Asks GET /oauth/signin, relative to this page as approve is, who this browser is signed in to the dashboard as. An
+// answer that comes after a newer check, or while an approval is in flight, is dropped; no answer leaves the page as it is.
+async function check() {
+  const n = ++checks;
   const ac = new AbortController();
   const deadline = setTimeout(() => ac.abort(), TIMEOUT_MS);
   let res;
   let answer;
   try {
-    // Relative to this page, /oauth/authorize under the public URL, so it stays under the public URL's path.
+    res = await fetch("signin?" + new URLSearchParams({ base: form.dataset.base }), {
+      cache: "no-store",
+      credentials: "same-origin",
+      referrerPolicy: "no-referrer",
+      signal: ac.signal,
+    });
+    answer = await res.json().catch(() => undefined);
+  } catch {
+    res = undefined;
+  } finally {
+    clearTimeout(deadline);
+  }
+  if (n !== checks || busy || !res) return;
+  if (res.ok && answer && typeof answer.account === "string") {
+    show(typeof answer.person === "string" ? "Approving as " + answer.person : "Approving with a full token of account " + answer.account);
+    if (typeof answer.name === "string" && (agent.value.trim() === "" || agent.value.trim() === suggested)) {
+      agent.value = answer.name;
+      suggested = answer.name;
+    }
+  } else if (res.status === 401 || res.status === 403) {
+    show(undefined);
+  }
+}
+form.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  if (busy) return;
+  busy = true;
+  checks++;
+  yes.disabled = true;
+  say("Approving…", false);
+  const ac = new AbortController();
+  const deadline = setTimeout(() => ac.abort(), TIMEOUT_MS);
+  const signed = cookie;
+  const name = agent.value.trim();
+  let res;
+  let answer;
+  try {
+    // Relative to this page, /oauth/authorize under the public URL, so it stays under the public URL's path. Signed in,
+    // it sends no token, and the server reads the sign-in cookie; otherwise only the typed token, and no cookie.
     res = await fetch("approve", {
       method: "POST",
-      headers: { Authorization: "Bearer " + token.value.trim(), "Content-Type": "application/json" },
-      body: JSON.stringify({ request: form.dataset.request, state: form.dataset.state === undefined ? null : form.dataset.state, agent: agent.value.trim() }),
+      headers: signed ? { "Content-Type": "application/json" } : { Authorization: "Bearer " + token.value.trim(), "Content-Type": "application/json" },
+      body: JSON.stringify({
+        request: form.dataset.request,
+        state: form.dataset.state === undefined ? null : form.dataset.state,
+        agent: name,
+        fresh: suggested !== undefined && name === suggested,
+      }),
       cache: "no-store",
-      credentials: "omit",
+      credentials: signed ? "same-origin" : "omit",
       referrerPolicy: "no-referrer",
       signal: ac.signal,
     });
@@ -71,11 +137,19 @@ form.addEventListener("submit", async (event) => {
     return location.assign(answer.location);
   }
   if (!res) return say("The server did not answer. Try again.", true);
+  if (signed && (res.status === 401 || res.status === 403)) {
+    show(undefined);
+    return say("This browser is no longer signed in. Sign in on the dashboard and check again, or enter a full or person token of the account.", true);
+  }
   if (res.status === 401) return say("The server refused that token. Enter a full or person token of the account.", true);
   if (res.status === 403) return say("Only a full or person token can approve a client; agent and read-only tokens cannot.", true);
   say(answer && typeof answer.message === "string" ? answer.message : "The server could not approve this (" + res.status + "). Try again.", true);
 });
 no.addEventListener("click", () => location.assign(no.dataset.location));
+again.addEventListener("click", () => check());
+// Coming back from signing in on the dashboard in another tab checks again.
+addEventListener("focus", () => check());
+check();
 `;
 
 const hash = (text: string) => `'sha256-${createHash("sha256").update(text, "utf8").digest("base64")}'`;
@@ -145,12 +219,18 @@ ${
     : ""
 }
 <p class="dim">${from === undefined ? "The name is the client's own; this server has not checked it." : `The name is the client's own; this server has checked only that its description is at ${escape(from)}.`}</p>
-<form id="approve" data-request="${escape(a.request)}"${state}>
+<form id="approve" data-request="${escape(a.request)}"${state} data-base="${escape(agentNameBase(a.client.clientName))}">
+<p id="signed-in" role="status" hidden></p>
+<div id="signed-out">
+<p>This browser is not signed in to message-cp. <a href="../" target="_blank" rel="noopener">Sign in on the dashboard</a> in a new tab, which leaves this page open, then come back here or <button id="signin-again" type="button">Check again</button>. Or enter a token below.</p>
+</div>
+<div id="token-field">
 <label for="approve-token">Full or person token of the account</label>
 <input id="approve-token" type="password" autocomplete="off" required>
+</div>
 <label for="approve-agent">Agent name</label>
 <input id="approve-agent" type="text" autocomplete="off" required maxlength="32" pattern="[A-Za-z0-9_\\-]{1,32}" placeholder="for example claude-desktop">
-<p class="dim">A new name makes that agent; an existing agent's name connects the client as it, leaving its key and sessions alone.</p>
+<p class="dim">A new name makes that agent; an existing agent's name, typed in, connects the client as it, leaving its key and sessions alone. A suggested name is never an existing agent's.</p>
 <div class="actions">
 <button id="approve-yes" type="submit">Approve</button>
 <button id="approve-no" type="button" data-location="${escape(deny)}">Refuse</button>

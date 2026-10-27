@@ -237,6 +237,10 @@ export function revokeToken(db: Db, id: number): string {
  * comes with its person, only while that row is a live person of the token's own account, and with whether that row is
  * marked admin now. Undefined for anything else, a bound token whose agent or person has been removed included.
  */
+/** The name of the account `account`. */
+export const accountName = (db: Db, account: AccountId): string =>
+  db.prepare("SELECT name FROM accounts WHERE id = ?").pluck().get(account) as string;
+
 export function accountForToken(db: Db, token: string, ownerToken: string): TokenAccess | undefined {
   const hash = hashToken(token);
   // Constant-time against the owner's token, as before accounts; created tokens are found by their hash.

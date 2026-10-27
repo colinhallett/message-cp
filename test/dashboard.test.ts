@@ -381,6 +381,7 @@ describe("the page's polling", () => {
       // GET /api/token answers at once, so only the polls' requests are left to hang.
       fetch: (url: string, init: { signal: AbortSignal }) => {
         if (url === "/api/token") return Promise.resolve(new Response(JSON.stringify({ readOnly: true })));
+        if (url === "oauth/signin") return Promise.resolve(new Response(null, { status: 404 }));
         signals.push(init.signal);
         return new Promise((_resolve, reject) => init.signal.addEventListener("abort", () => reject(new Error("aborted"))));
       },
@@ -3736,7 +3737,8 @@ describe("the page's posting", () => {
       elements["compose-text"].value = text;
       elements["compose"].on.submit({ preventDefault: () => prevented++ });
     };
-    const posts = () => requests.filter((r) => r.method !== "GET");
+    // The sign-in POST oauth/signin is not a post; the approval page tests check it.
+    const posts = () => requests.filter((r) => r.method !== "GET" && r.url !== "oauth/signin");
     // The people the page may post as, as "New message" offers them under From: a person token's person once
     // GET /api/agents lists them, and no one for any other token.
     const picker = () => (elements["new-from"]?.children ?? []).map((o) => o.value).filter((v) => v !== "");
@@ -4977,6 +4979,34 @@ describe("the page's posting", () => {
     expect(page.posts()).toEqual([]);
   });
 
+  it("signs the browser in to the approval page with a person or full token, and out with Forget token after it", async () => {
+    seed();
+    const token = colinToken();
+    const page = await load(token);
+    const signins = () => page.requests.filter((r) => r.url === "oauth/signin");
+    await page.until(() => signins().length === 1);
+    expect(signins()[0].method).toBe("POST");
+    expect(signins()[0].headers).toEqual({ Authorization: `Bearer ${token}` });
+    expect(signins()[0].init).toMatchObject({ credentials: "same-origin", referrerPolicy: "no-referrer", cache: "no-store" });
+    expect(signins()[0].init.signal).toBeInstanceOf(AbortSignal);
+    page.elements["forget"].on.click();
+    await page.until(() => signins().length === 2);
+    expect(signins()[1].method).toBe("DELETE");
+    expect(signins()[1].headers).toBeUndefined();
+    const full = await load(OWNER_TOKEN);
+    await full.until(() => full.requests.some((r) => r.url === "oauth/signin"));
+    expect(full.requests.filter((r) => r.url === "oauth/signin").map((r) => r.method)).toEqual(["POST"]);
+  });
+
+  it("clears the approval page's sign-in with a read-only token, and never sends it there", async () => {
+    seed();
+    const page = await load(viewer);
+    await page.until(() => page.requests.some((r) => r.url === "oauth/signin"));
+    const signins = page.requests.filter((r) => r.url === "oauth/signin");
+    expect(signins.map((r) => r.method)).toEqual(["DELETE"]);
+    expect(signins[0].headers).toBeUndefined();
+  });
+
   it("clears the page and asks for a token on a 401", async () => {
     seed();
     const page = await load(colinToken(), (url, method) => (method === "POST" ? { status: 401 } : undefined));
@@ -5021,7 +5051,7 @@ describe("the page's posting", () => {
       addPerson(db, "owner", "dana");
       sendMessage(db, OWNER_ACCOUNT, "bob", "dana", "hi dana");
     };
-    const deletes = (page: Awaited<ReturnType<typeof load>>) => page.requests.filter((r) => r.method === "DELETE");
+    const deletes = (page: Awaited<ReturnType<typeof load>>) => page.requests.filter((r) => r.method === "DELETE" && r.url !== "oauth/signin");
     const ready = async (page: Awaited<ReturnType<typeof load>>) => {
       await page.until(() => page.elements["pair-rows"].children.length === 2 && page.elements["channel-rows"].children.length === 1);
     };

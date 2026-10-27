@@ -311,10 +311,11 @@ export const startAuthorization = (db: Db, query: URLSearchParams, resource: str
  * agent of that name in the account is bound to as it is, with its key and sessions left alone; a new name makes that
  * agent, as `connectAgent` does. In one transaction it checks the request is unexpired and unused and that `state` is
  * the one it was made with, and stores a code bound to the account, agent, client, redirect URI, challenge and resource.
- * Returns where to send the person: the redirect URI with the code and state. A refusal throws `OAuthError` or
- * `ToolError` and stores nothing.
+ * Returns where to send the person: the redirect URI with the code and state. With `fresh` (a name the approval page
+ * suggested and the person left as it was), a live agent of that name is refused rather than bound to, so a suggested
+ * name never connects the client as an existing agent. A refusal throws `OAuthError` or `ToolError` and stores nothing.
  */
-export const approveAuthorization = (db: Db, account: AccountId, request: string, state: string | null, name: string): string =>
+export const approveAuthorization = (db: Db, account: AccountId, request: string, state: string | null, name: string, fresh = false): string =>
   db.transaction((): string => {
     const now = Date.now();
     const row = db
@@ -328,6 +329,7 @@ export const approveAuthorization = (db: Db, account: AccountId, request: string
       .prepare("SELECT id, name, person FROM agents WHERE account_id = ? AND name = ? AND removed_at IS NULL")
       .get(account, name) as { id: number; name: string; person: number } | undefined;
     if (live?.person === 1) throw new ToolError(`The name '${live.name}' belongs to a person, not an agent.`);
+    if (live && fresh) throw new ToolError(`An agent named '${live.name}' now exists. Choose another name, or type its name to connect the client as it.`);
     const agent = live ? live.id : registerWithIdentity(db, account, name).identity.id;
     const code = randomBytes(32).toString("hex");
     db.prepare("UPDATE mcp_authorizations SET code_hash = ?, account_id = ?, agent_id = ?, expires_at = ? WHERE id = ?").run(
@@ -406,4 +408,37 @@ export function exchangeCode(db: Db, exchange: CodeExchange): string {
     .immediate();
   if ("refused" in result) throw new OAuthError("invalid_grant", "The code is invalid, expired or already used, or does not match this request.");
   return result.token;
+}
+
+/** Suggestions tried for one approval before the page offers none. */
+const MAX_SUGGESTIONS = 100;
+/** The longest base `agentNameBase` gives, leaving room for a "-100" suffix within a name's 32 characters. */
+export const MAX_NAME_BASE = 24;
+
+/**
+ * The base of the agent name the approval page offers for a client named `clientName`: the name in lower case with each
+ * run of other characters made one "-", at most MAX_NAME_BASE characters, or "client" for none left (or "all").
+ */
+export function agentNameBase(clientName: string | null): string {
+  const slug = (clientName ?? "")
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, MAX_NAME_BASE)
+    .replace(/-+$/, "");
+  return slug === "" || slug === "all" ? "client" : slug;
+}
+
+/**
+ * A name made from `base` that no live agent or person of `account` has: `base`, else `base`-2, `base`-3 and so on;
+ * undefined if the first MAX_SUGGESTIONS are all taken. Read-only; `approveAuthorization` with `fresh` refuses it if it
+ * is taken by the time the person approves.
+ */
+export function freeAgentName(db: Db, account: AccountId, base: string): string | undefined {
+  const taken = db.prepare("SELECT 1 FROM agents WHERE account_id = ? AND name = ? AND removed_at IS NULL").pluck();
+  for (let n = 1; n <= MAX_SUGGESTIONS; n++) {
+    const name = n === 1 ? base : `${base}-${n}`;
+    if (!taken.get(account, name)) return name;
+  }
+  return undefined;
 }
