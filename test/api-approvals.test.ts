@@ -440,7 +440,7 @@ describe("DELETE /api/approvals", () => {
       [addToken(db, "owner", true).token, "This token is read-only"],
       [addToken(db, "owner", false, true).token, "Agent tokens cannot use the dashboard API"],
       [desk.token, "Agent tokens cannot use the dashboard API"],
-      [OWNER_TOKEN, /^A full token cannot revoke approved clients over the API\. Run message-cp token revoke on the server/],
+      [OWNER_TOKEN, /^A full token cannot revoke approved clients over the API\. Run message-cp token list, then message-cp token revoke <id>, on the server/],
       [ownerFull, /^A full token cannot revoke approved clients over the API\./],
     ] as const;
     const before = tokens();

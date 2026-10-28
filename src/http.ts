@@ -95,7 +95,7 @@ const FULL_TOKEN_WEBHOOKS =
   "A full token cannot list or remove webhooks over the API. Run message-cp webhook list or webhook remove on the server, or sign in as an admin person: run message-cp login-link --url <public url> --account <account> --person <name> on the server";
 /** What DELETE /api/approvals answers a full token, which is no admin person, with its 403. */
 const FULL_TOKEN_APPROVALS =
-  "A full token cannot revoke approved clients over the API. Run message-cp token revoke on the server, or sign in as an admin person: run message-cp login-link --url <public url> --account <account> --person <name> on the server";
+  "A full token cannot revoke approved clients over the API. Run message-cp token list, then message-cp token revoke <id>, on the server, or sign in as an admin person: run message-cp login-link --url <public url> --account <account> --person <name> on the server";
 /** The body limit for the OAuth registration, approval and token endpoints, which take a few short fields. */
 const MAX_OAUTH_BODY_BYTES = 16 * 1024;
 /** An agent seen this recently counts as online in GET /api/agents, as does one with a GET /wait held now. */
@@ -1456,8 +1456,8 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
     // A person token also sends and posts, only as its person (checked by row once the body is read), approves clients
     // (above), and, while its person is an admin, deletes the account's conversations as a full token does, lists, adds,
     // marks, unmarks and removes people, makes, lists and cancels invites, removes agents and resets their keys, lists
-    // and removes webhooks, and revokes approved clients. It reaches nothing else: not /mcp, /wait, nor any path added later. It is refused before a slot
-    // is taken or a body read.
+    // and removes webhooks, and revokes approved clients. It reaches nothing else: not /mcp, /wait, nor any path added
+    // later. It is refused before a slot is taken or a body read.
     if (
       access.person &&
       path !== "/api/send" &&
