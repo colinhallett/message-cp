@@ -81,24 +81,24 @@ import CodeBlock from "../components/CodeBlock.astro";
   </ul>
 
   <h3 id="webhooks">Webhooks</h3>
-  <p>A webhook POSTs signed JSON for each matching message or post, except a held one its agent reads. Deliveries queue in the database; only <code>serve</code> sends them.</p>
+  <p>A webhook POSTs signed JSON per matching message or post, except a held one its agent takes. Deliveries queue in the database; only <code>serve</code> sends them.</p>
   <CodeBlock lang="sh" code={"message-cp webhook add --url https://example.com/hook --on '#general'   # posts in #general, owner account\nmessage-cp webhook add --url https://example.com/hook --on mention:alice --account alice --no-text   # mentions of alice, without the text\nprintf 'Authorization: Bearer %s\\n' \"$API_KEY\" | message-cp webhook add --url https://example.com/hook --on agent:bob --header-stdin   # direct messages to bob, sending this header\nmessage-cp webhook add --url https://example.com/hook --on agent:carol --max-per-hour 30   # at most 30 requests per 60-minute window\nmessage-cp webhook add --url https://example.com/hook --on agent:dave --body '{\"requestId\":\"{{delivery}}\"}'   # sends this body, {{delivery}} (required once) replaced by an id each retry repeats\nmessage-cp webhook list --account alice   # each webhook; never a secret, header value or body\nmessage-cp webhook remove 3               # deletes webhook 3"} />
   <ul>
   <li><code>add</code> prints the secret once. Unlike tokens, it and any <code>--header-stdin</code> value are stored as is.</li>
   <li><code>X-Message-CP-Signature</code> is <code>sha256=</code> plus hex HMAC-SHA256 of the exact body bytes, keyed with the secret.</li>
   <li>Admin person tokens, own account only:
     <ul>
-    <li><code>GET /api/webhooks</code> lists webhooks, URL origins only. <code>POST /api/webhooks</code> adds one: JSON <code>url</code>, <code>on</code>, optional <code>includeText</code>, <code>header</code>, <code>maxPerHour</code>, <code>body</code>, with <code>webhook add</code>&#39;s rules, answering with the secret once, never the header. <code>DELETE /api/webhooks?id=</code> removes one and its deliveries.</li>
-    <li>The dashboard&#39;s &quot;Webhooks&quot; entry lists, adds, and removes after confirming. A new secret shows once, until you leave that view, add another, forget the token or the server says you are no longer an admin. If unanswered or the page moved on, none shows; remove and re-add it if listed.</li>
+    <li><code>GET /api/webhooks</code> lists them, URL origins only. <code>POST /api/webhooks</code> adds one from JSON <code>url</code>, <code>on</code>, optional <code>includeText</code>, <code>header</code>, <code>maxPerHour</code>, <code>body</code>, with <code>webhook add</code>&#39;s rules, answering with the secret once, never the header value. <code>DELETE /api/webhooks?id=</code> removes one and its deliveries.</li>
+    <li>The dashboard&#39;s &quot;Webhooks&quot; entry lists, adds, and removes after confirming. A new secret shows once, until you leave that view, add another, forget the token or the server says you&#39;re no longer an admin. Unanswered, or if the page moved on, no secret shows; if listed, remove and re-add it.</li>
     </ul></li>
   <li>A 2xx delivers; anything else, or no answer in 5 seconds, is retried (3 attempts, redirects not followed). Rarely, one arrives twice. Non-agent tokens see status at <code>GET /api/webhook-deliveries</code>.</li>
-  <li>Held deliveries (<code>agent:</code>/<code>mention:</code>, never <code>#channel</code>):
+  <li>Held deliveries (only <code>agent:</code>/<code>mention:</code>):
     <ul>
-    <li>Held: stored while its agent waits (a held <code>wait_for_mail</code>, <code>GET /wait</code>, <code>message-cp wait</code>). Each empty check, about once a second, keeps the agent waiting 30 more seconds at most; one finding mail does not. Nothing is sent; status shows pending.</li>
-    <li>Deleted (no further attempt), then unlisted: once taken with <code>read_inbox</code> (or <code>ask</code> as a reply), next pass with hourly room, unless out of attempts (stays failed). <code>read_conversation</code>/<code>read_channel</code> do not count.</li>
-    <li>Sent next pass: if the wait stops counting with it untaken, or the agent is removed. A wait finding the database busy for about 20 seconds may stop counting while held; deliveries stored then are not held.</li>
+    <li>Held: stored while its agent waits (a held <code>wait_for_mail</code>, <code>GET /wait</code>, <code>message-cp wait</code>). Each empty check, about once a second, marks the agent waiting up to 30 more seconds; one finding mail does not. No request goes out; it shows pending.</li>
+    <li>Deleted (no further attempt, so unlisted) once taken with <code>read_inbox</code> (or <code>ask</code> as a reply), next pass within <code>--max-per-hour</code>; one out of attempts stays failed. <code>read_conversation</code>/<code>read_channel</code> don&#39;t count.</li>
+    <li>Sent as usual next pass if untaken when the wait stops counting, or the agent is removed. A wait whose checks find the database busy ~20 seconds may stop counting early; one stored then is not held.</li>
     </ul></li>
-  <li>After upgrading, restart every <code>serve</code> on the database before adding a <code>--body</code> webhook or relying on held deliveries: an older one sends the event body and holds nothing.</li>
+  <li>After upgrading, restart every <code>serve</code> on the database before adding a <code>--body</code> webhook or relying on held deliveries: an older one sends the event body and sends held ones.</li>
   </ul>
   <p>Check the raw body&#39;s signature before parsing:</p>
   <CodeBlock lang="js" code={"import { createHmac, timingSafeEqual } from \"node:crypto\";\n\n// `raw` is the request body as a Buffer, `header` the X-Message-CP-Signature header, `secret` what `webhook add` printed.\nfunction signed(raw, header, secret) {\n  const expected = Buffer.from(`sha256=${createHmac(\"sha256\", secret).update(raw).digest(\"hex\")}`);\n  const given = Buffer.from(header ?? \"\");\n  return given.length === expected.length && timingSafeEqual(given, expected);\n}"} />
