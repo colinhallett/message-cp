@@ -23,6 +23,7 @@ import {
   NotAdminError,
   OwnPersonError,
   addInvitedPerson,
+  addTokenBy,
   cancelInvite,
   dashboardUrl,
   listAccountPeople,
@@ -98,9 +99,9 @@ const FULL_TOKEN_WEBHOOKS =
 /** What DELETE /api/approvals answers a full token, which is no admin person, with its 403. */
 const FULL_TOKEN_APPROVALS =
   "A full token cannot revoke approved clients over the API. Run message-cp token list, then message-cp token revoke <id>, on the server, or sign in as an admin person: run message-cp login-link --url <public url> --account <account> --person <name> on the server";
-/** What GET and DELETE /api/tokens answer a full token, which is no admin person, with its 403. */
+/** What /api/tokens answers a full token, which is no admin person, with its 403. */
 const FULL_TOKEN_TOKENS =
-  "A full token cannot list or revoke tokens over the API. Run message-cp token list or token revoke <id> on the server, or sign in as an admin person: run message-cp login-link --url <public url> --account <account> --person <name> on the server";
+  "A full token cannot list, make or revoke tokens over the API. Run message-cp token list, token add <account> --read-only or --agent-only, or token revoke <id> on the server, or sign in as an admin person: run message-cp login-link --url <public url> --account <account> --person <name> on the server";
 /** The body limit for the OAuth registration, approval and token endpoints, which take a few short fields. */
 const MAX_OAUTH_BODY_BYTES = 16 * 1024;
 /** An agent seen this recently counts as online in GET /api/agents, as does one with a GET /wait held now. */
@@ -420,8 +421,8 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
   let waiting = 0;
   // POST /mcp requests for an existing session whose body is being read, so a session cannot buffer bodies unbounded.
   let reading = 0;
-  // POST /api/send, /api/post and /api/invites, and POST and PATCH /api/people, requests between taking a slot and
-  // answering, so buffered bodies are bounded.
+  // POST /api/send, /api/post, /api/invites and /api/tokens, and POST and PATCH /api/people, requests between taking a
+  // slot and answering, so buffered bodies are bounded.
   let actingAsPerson = 0;
   // Held GET /wait requests per account and agent name (lower-cased, as names are unique regardless of case).
   const held = new Map<AccountId, Map<string, number>>();
@@ -890,8 +891,8 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
   });
 
   /**
-   * POST and PATCH /api/people and POST /api/invites: reads a JSON object and answers with what `act` makes of it, never
-   * cached, as it may carry an invite's code. A slot is taken before the body is read and given back at the end, sharing
+   * POST and PATCH /api/people and POST /api/invites and /api/tokens: reads a JSON object and answers with what `act`
+   * makes of it, never cached, as it may carry an invite's code or a new token. A slot is taken before the body is read and given back at the end, sharing
    * `asPerson`'s count. `act` answers a string for 400, undefined for 404, and throws `PersonError` for 400, `LoginError`
    * for 503, `OwnPersonError` for 403 and `NotAdminError`, for a token's person removed or unmarked while the body was
    * read, for 403.
@@ -1109,13 +1110,24 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
 
   /**
    * /api/tokens. GET: one page of the account's unrevoked tokens, oldest first, as `listTokensBy` gives them: never a
-   * token or its hash. DELETE `?id=<id>`: revokes the account's token `id` of any kind, as `revokeTokenBy` does, the
-   * token this request carries included, answering `{ id }`, or 404 for an id that is no unrevoked token of the
-   * account, another account's included. A request already running on a revoked token may finish; its next request
-   * gets 401. Neither reads a body, so neither takes a slot. `NotAdminError`, for a token's person removed or unmarked
-   * since the token was checked, answers 403.
+   * token or its hash. POST `{ kind }`, with kind "read-only" or "agent" and no other field: makes a new unbound token of
+   * that kind for the account, as `addTokenBy` does, answering `{ id, kind, token }`, never cached; the raw token is in
+   * that answer only. Any other body answers 400, or 413 past 64 KB, and makes nothing. DELETE `?id=<id>`: revokes the account's token `id`
+   * of any kind, as `revokeTokenBy` does, the token this request carries included, answering `{ id }`, or 404 for an id
+   * that is no unrevoked token of the account, another account's included. A request already running on a revoked
+   * token may finish; its next request gets 401. GET and DELETE read no body and take no slot; POST takes `asAdmin`'s.
+   * `NotAdminError`, for a token's person removed or unmarked since the token was checked, answers 403.
    */
   const apiTokens = (req: IncomingMessage, res: ServerResponse, account: AccountId, by: number) => {
+    if (req.method === "POST") {
+      return asAdmin(req, res, (input) => {
+        const keys = Object.keys(input);
+        if (keys.length !== 1 || keys[0] !== "kind" || (input.kind !== "read-only" && input.kind !== "agent")) {
+          return 'Give only kind, as "read-only" or "agent"';
+        }
+        return addTokenBy(db, account, by, input.kind);
+      });
+    }
     const query = new URL(req.url ?? "", "http://x").searchParams;
     let work: () => unknown;
     if (req.method === "GET") {
@@ -1129,7 +1141,7 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
       if (!Number.isSafeInteger(id)) return reply(res, 400, "Give id as a whole number");
       work = () => revokeTokenBy(db, account, by, id);
     } else {
-      return reply(res, 405, "Method not allowed", { Allow: "GET, DELETE" });
+      return reply(res, 405, "Method not allowed", { Allow: "GET, POST, DELETE" });
     }
     let done: unknown;
     try {
@@ -1475,8 +1487,8 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
     // Revoking an approved client, which only an admin person token does; any other method on /api/approvals is a read,
     // or apiApprovals' 405. It reads no body; its 403s close the connection as the routes above do.
     const revoking = path === "/api/approvals" && req.method === "DELETE";
-    // Listing and revoking the account's tokens, which only an admin person token does. Neither reads a body; their 403s
-    // close the connection as the routes above do.
+    // Listing, making and revoking the account's tokens, which only an admin person token does. A POST carries a body its
+    // 403 leaves unread, so their 403s close the connection as the routes above do.
     const tokens = path === "/api/tokens";
     // An agent token reaches /mcp and /wait, where it reads as its agent does, and of the /api paths only GET /api/token,
     // so the dashboard can say why it will not work; it cannot read or delete the account's conversations there. It is
@@ -1501,8 +1513,8 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
     // A person token also sends and posts, only as its person (checked by row once the body is read), approves clients
     // (above), and, while its person is an admin, deletes the account's conversations as a full token does, lists, adds,
     // marks, unmarks and removes people, makes, lists and cancels invites, removes agents and resets their keys, lists
-    // and removes webhooks, revokes approved clients, and lists and revokes the account's tokens. It reaches nothing
-    // else: not /mcp, /wait, nor any path added later. It is refused before a slot is taken or a body read.
+    // and removes webhooks, revokes approved clients, and lists, makes (read-only and agent only) and revokes the
+    // account's tokens. It reaches nothing else: not /mcp, /wait, nor any path added later. It is refused before a slot is taken or a body read.
     if (
       access.person &&
       path !== "/api/send" &&
@@ -1545,7 +1557,8 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
       if (!access.person) return reply(res, 403, FULL_TOKEN_APPROVALS, { Connection: "close" });
       return apiRevokeApproval(req, res, account, access.person.id);
     }
-    // And only an admin person lists and revokes tokens over the API; a full token is refused before anything runs.
+    // And only an admin person lists, makes and revokes tokens over the API; a full token is refused before a slot is
+    // taken or a body read.
     if (tokens) {
       if (!access.person) return reply(res, 403, FULL_TOKEN_TOKENS, { Connection: "close" });
       return apiTokens(req, res, account, access.person.id);

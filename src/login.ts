@@ -443,6 +443,25 @@ export const listTokensBy = (db: Db, account: AccountId, by: number, limit: numb
     }));
   }).immediate();
 
+/** A token POST /api/tokens made: the only time its raw token is shown. */
+export interface MadeToken {
+  id: number;
+  kind: "read-only" | "agent";
+  token: string;
+}
+
+/**
+ * For POST /api/tokens: makes a new read-only or agent token for `account`, unbound, as `token add --read-only` and
+ * `token add --agent-only` make them, and answers it once. `by` is the row of the admin person asking. Throws
+ * `NotAdminError`, making nothing, unless they are still a live admin of the account.
+ */
+export const addTokenBy = (db: Db, account: AccountId, by: number, kind: MadeToken["kind"]): MadeToken =>
+  db.transaction((): MadeToken => {
+    requireAdmin(db, account, by);
+    const { id, token } = issueToken(db, account, kind === "read-only", kind === "agent");
+    return { id, kind, token };
+  }).immediate();
+
 /**
  * For DELETE /api/tokens: revokes the account's unrevoked token `id` of any kind, as `token revoke` does, the token the
  * request carries included, and answers its id, or undefined, changing nothing, for another account's token, one
