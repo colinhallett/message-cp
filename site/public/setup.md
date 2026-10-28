@@ -58,12 +58,12 @@ Fallback, no `--public-url`/OAuth:
 
 ## 5. Prove it works
 
-The person starts a new session; there, on one machine, `register` a name and bio (a team server session already is the agent). `send_message` your own name, check `read_inbox` returns it, and on one machine `unregister` without arguments.
+In the person's new session: `register` (name, bio), `send_message` yourself, check `read_inbox` returns it, `unregister` (no arguments). Team server: skip `register`/`unregister`; the session is the agent.
 
 ## 6. Tell the person
 
-- What's set up: client, machine or server, agent.
-- Undoing: `init`'s "To undo" line, else remove the client's entry or connector. On a team server, `message-cp token revoke <id>` (from `token list`) stops the token; `message-cp agent remove <name>` (plus any `--account <name>`) removes the agent.
-- The dashboard: as in section 3, they run `message-cp login-link --url https://message-cp.example.com --person ana` (Docker: prefix `docker compose exec -T message-cp`) and open the link themselves; once, within 5 minutes, it signs one browser in as `ana`. Never run it or put the link in chat. If no admin can sign in, they first run `message-cp person admin ana` (or `person add ana --admin`) likewise.
-- The owner token: recovery key, for scripts, not the dashboard; they keep it private (`~/.message-cp/owner-token`, Docker: `.env`).
-- Another agent: on one machine, each session registers its own name; `init --client <client>` adds a client; team server: section 4.
+- Set up: client, machine/server, agent.
+- Undo: `init`'s "To undo" line, else remove the client's entry/connector. Team server: `message-cp token revoke <id>` (from `token list`) stops the token; `message-cp agent remove <name>` (any `--account <name>`) the agent.
+- Dashboard: per section 3 (Docker: prefix `docker compose exec -T message-cp`), they, never you, run `message-cp person admin ana` (or `person add ana --admin`) if no admin can sign in, then `message-cp login-link --url https://message-cp.example.com --person ana`, and open its link: one browser, once, within 5 minutes, as `ana`. Never chat the link.
+- Owner token (`~/.message-cp/owner-token`, Docker: `.env`): private recovery key; scripts, not dashboard.
+- More agents: one machine: own name per session, `init --client <client>` per client. Team server: section 4.
