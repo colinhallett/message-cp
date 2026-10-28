@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { addAccount, addToken, listAccounts, listApprovals, listTokens, revokeToken } from "../src/accounts.js";
 import { addPerson, purgeAgent, registerAgent, registerWithIdentity, removeAgent } from "../src/agents.js";
 import { connectAgent } from "../src/connect.js";
-import { makeLoginCode, redeemLoginCode } from "../src/login.js";
+import { NotAdminError, makeLoginCode, redeemLoginCode, revokeApprovalBy } from "../src/login.js";
 import { OWNER_ACCOUNT, openDb, type AccountId, type Db } from "../src/db.js";
 import { startHttp, type HttpServer } from "../src/http.js";
 
@@ -298,13 +298,14 @@ describe("GET /api/approvals", () => {
     for (const token of [bound, unbound]) expect((await get("/api/approvals", token)).status).toBe(403);
     expect((await get("/api/approvals", null)).status).toBe(401);
     expect((await get("/api/approvals", "wrong")).status).toBe(401);
-    for (const method of ["POST", "PUT", "DELETE", "PATCH"]) {
+    // DELETE revokes, for an admin person only (below).
+    for (const method of ["POST", "PUT", "PATCH"]) {
       const res = await get("/api/approvals", ownerFull, method);
       expect(res.status).toBe(405);
-      expect(res.headers.get("allow")).toBe("GET");
+      expect(res.headers.get("allow")).toBe("GET, DELETE");
     }
     // A read-only token's other methods are refused as on every other read.
-    expect((await get("/api/approvals", addToken(db, "owner", true).token, "DELETE")).status).toBe(405);
+    expect((await get("/api/approvals", addToken(db, "owner", true).token, "POST")).status).toBe(405);
   });
 
   it("answers 503 with Retry-After when the database is busy", async () => {
@@ -339,6 +340,179 @@ describe("GET /api/approvals", () => {
     expect(plan.some((d) => /SEARCH agents USING INTEGER PRIMARY KEY/.test(d))).toBe(true);
     expect(plan.some((d) => /SEARCH own USING INDEX agents_by_token \(token_id=\?\)/.test(d))).toBe(true);
     expect(plan.some((d) => /SCAN (agents|own)\b/.test(d))).toBe(false);
+  });
+});
+
+describe("DELETE /api/approvals", () => {
+  const personToken = (account: string, name: string) => addToken(db, account, false, false, undefined, name).token;
+  const revoke = (id: number | string, token: string) => get(`/api/approvals?id=${id}`, token, "DELETE");
+  const message = async (res: Response) => ((await res.json()) as { error: { message: string } }).error.message;
+  const tokens = () => db.prepare("SELECT id, revoked_at FROM tokens ORDER BY id").all();
+  const agents = () => db.prepare("SELECT * FROM agents ORDER BY id").all();
+  const idOf = (account: AccountId, name: string) =>
+    db.prepare("SELECT id FROM agents WHERE account_id = ? AND name = ?").pluck().get(account, name) as number;
+  let ana: string;
+
+  beforeEach(() => {
+    addPerson(db, "owner", "ana", true);
+    ana = personToken("owner", "ana");
+  });
+
+  it("revokes an admin's account's approval, answering its id, after which it gets 401 on /mcp and /wait and its agent stays", async () => {
+    const desk = await connectClient(ownerFull, "desk", { name: "Cursor" });
+    const kept = await connectClient(ownerFull, "laptop", { name: "Zed" });
+    expect((await get("/wait?agent=desk", desk.token)).status).not.toBe(401);
+    const res = await revoke(desk.id, ana);
+    expect(res.status).toBe(200);
+    const text = await res.text();
+    expect(JSON.parse(text)).toEqual({ id: desk.id });
+    expect(text).not.toContain(desk.token);
+    expect((await get("/mcp", desk.token, "POST")).status).toBe(401);
+    expect((await get("/wait?agent=desk", desk.token)).status).toBe(401);
+    expect(db.prepare("SELECT 1 FROM agents WHERE account_id = ? AND name = 'desk' AND removed_at IS NULL").get(OWNER_ACCOUNT)).toBeDefined();
+    expect((await approvals(ownerFull)).map((a) => a.id)).toEqual([kept.id]);
+    // Already revoked, so a second revoke finds nothing.
+    const again = await revoke(desk.id, ana);
+    expect(again.status).toBe(404);
+    expect(await message(again)).toBe("No such approval");
+  });
+
+  it("revokes a token that registers its own agents, keeping the agents it registered", async () => {
+    const codex = await connectClient(ownerFull, null, { name: "Codex" });
+    registerWithIdentity(db, OWNER_ACCOUNT, "codex-1", "x", undefined, codex.id);
+    expect((await revoke(codex.id, ana)).status).toBe(200);
+    expect((await get("/wait?agent=codex-1", codex.token)).status).toBe(401);
+    expect(db.prepare("SELECT token_id FROM agents WHERE name = 'codex-1' AND removed_at IS NULL").pluck().get()).toBe(codex.id);
+    expect(await approvals(ownerFull)).toEqual([]);
+  });
+
+  it("answers 404, changing nothing, for another account's approval, a token not issued through OAuth and an unknown id", async () => {
+    const theirs = await connectClient(friendFull, "desk", { name: "Friend's client" });
+    const others = [
+      addToken(db, "owner").id,
+      addToken(db, "owner", true).id,
+      addToken(db, "owner", false, true).id,
+      connectAgent(db, "owner", "writer", false).tokenId,
+      db.prepare("SELECT id FROM tokens WHERE person_id = ?").pluck().get(idOf(OWNER_ACCOUNT, "ana")) as number,
+    ];
+    for (const id of others) expect(typeof id).toBe("number");
+    const before = tokens();
+    for (const id of [theirs.id, ...others, 9999, 0]) {
+      const res = await revoke(id, ana);
+      expect(res.status, String(id)).toBe(404);
+      expect(await message(res)).toBe("No such approval");
+    }
+    expect(tokens()).toEqual(before);
+    expect((await approvals(friendFull)).map((a) => a.id)).toEqual([theirs.id]);
+    // The admin's own token still works.
+    expect((await get("/api/approvals", ana)).status).toBe(200);
+  });
+
+  it("keeps a second account's admin out of the first account, with the same 404 as an unknown id", async () => {
+    const own = await connectClient(ownerFull, "desk", { name: "Cursor" });
+    const theirs = await connectClient(friendFull, "desk", { name: "Friend's client" });
+    addPerson(db, "friend", "fay", true);
+    const fay = personToken("friend", "fay");
+    const before = tokens();
+    const res = await revoke(own.id, fay);
+    expect(res.status).toBe(404);
+    expect(await message(res)).toBe("No such approval");
+    expect(tokens()).toEqual(before);
+    expect((await revoke(theirs.id, fay)).status).toBe(200);
+    expect((await approvals(ownerFull)).map((a) => a.id)).toEqual([own.id]);
+  });
+
+  it("answers 400 for a missing, repeated or not whole-number id", async () => {
+    const desk = await connectClient(ownerFull, "desk", { name: "Cursor" });
+    const before = tokens();
+    for (const query of ["", "?id=", `?id=${desk.id}&id=${desk.id}`, "?id=x", "?id=-1", "?id=1.5", "?id=1e3", "?id=99999999999999999"]) {
+      const res = await get(`/api/approvals${query}`, ana, "DELETE");
+      expect(res.status, query).toBe(400);
+    }
+    expect(tokens()).toEqual(before);
+  });
+
+  it("refuses a plain person, read-only, agent and full token with 403, closing the connection, and changes nothing", async () => {
+    const desk = await connectClient(ownerFull, "desk", { name: "Cursor" });
+    addPerson(db, "owner", "ben");
+    const refused = [
+      [personToken("owner", "ben"), "A person token only reads, sends and posts"],
+      [addToken(db, "owner", true).token, "This token is read-only"],
+      [addToken(db, "owner", false, true).token, "Agent tokens cannot use the dashboard API"],
+      [desk.token, "Agent tokens cannot use the dashboard API"],
+      [OWNER_TOKEN, /^A full token cannot revoke approved clients over the API\. Run message-cp token list, then message-cp token revoke <id>, on the server/],
+      [ownerFull, /^A full token cannot revoke approved clients over the API\./],
+    ] as const;
+    const before = tokens();
+    for (const [token, expected] of refused) {
+      const res = await revoke(desk.id, token);
+      expect(res.status).toBe(403);
+      expect(res.headers.get("connection")).toBe("close");
+      const text = await message(res);
+      if (typeof expected === "string") expect(text).toBe(expected);
+      else expect(text).toMatch(expected);
+    }
+    expect((await revoke(desk.id, "wrong")).status).toBe(401);
+    expect(tokens()).toEqual(before);
+  });
+
+  it("refuses with 403, changing nothing, an admin unmarked or removed between the token check and the work", async () => {
+    const desk = await connectClient(ownerFull, "desk", { name: "Cursor" });
+    const before = { tokens: tokens(), agents: agents() };
+    for (const change of ["UPDATE agents SET admin = 0 WHERE name = 'ana'", "UPDATE agents SET removed_at = 1 WHERE name = 'ana'"]) {
+      const prepare = db.prepare.bind(db);
+      // Just before the admin's row is checked inside the transaction, as another process would between the two.
+      const spy = vi.spyOn(db, "prepare").mockImplementation(((sql: string) => {
+        if (sql.includes("person = 1 AND admin = 1")) prepare(change).run();
+        return prepare(sql);
+      }) as typeof db.prepare);
+      const res = await revoke(desk.id, ana);
+      spy.mockRestore();
+      expect(res.status).toBe(403);
+      expect(await message(res)).toBe("This person is no longer an admin of the account");
+      // The transaction rolled back, the change above with it.
+      expect({ tokens: tokens(), agents: agents() }).toEqual(before);
+    }
+  });
+
+  it("refuses revokeApprovalBy for anyone who is not a live admin of the account", async () => {
+    const desk = await connectClient(ownerFull, "desk", { name: "Cursor" });
+    addPerson(db, "owner", "ben");
+    addPerson(db, "friend", "fay", true);
+    const before = tokens();
+    for (const by of [idOf(OWNER_ACCOUNT, "ben"), idOf(friend, "fay"), 9999]) {
+      expect(() => revokeApprovalBy(db, OWNER_ACCOUNT, by, desk.id)).toThrow(NotAdminError);
+    }
+    expect(tokens()).toEqual(before);
+  });
+
+  it("answers 503 with Retry-After when the database is busy, changing nothing", async () => {
+    const desk = await connectClient(ownerFull, "desk", { name: "Cursor" });
+    const before = tokens();
+    const prepare = db.prepare.bind(db);
+    const spy = vi.spyOn(db, "prepare").mockImplementation(((sql: string) => {
+      if (sql.includes("person = 1 AND admin = 1")) throw Object.assign(new Error("database is locked"), { code: "SQLITE_BUSY" });
+      return prepare(sql);
+    }) as typeof db.prepare);
+    const res = await revoke(desk.id, ana);
+    spy.mockRestore();
+    expect(res.status).toBe(503);
+    expect(res.headers.get("retry-after")).toBe("1");
+    expect(tokens()).toEqual(before);
+  });
+
+  it("lists approvals with an admin's token as with any person token", async () => {
+    const desk = await connectClient(ownerFull, "desk", { name: "Cursor" });
+    expect((await approvals(ana)).map((a) => a.id)).toEqual([desk.id]);
+  });
+
+  it("finds the token by its integer primary key", () => {
+    const plan = (
+      db
+        .prepare("EXPLAIN QUERY PLAN UPDATE tokens SET revoked_at = ? WHERE id = ? AND account_id = ? AND oauth = 1 AND revoked_at IS NULL")
+        .all(1, 1, OWNER_ACCOUNT) as { detail: string }[]
+    ).map((r) => r.detail);
+    expect(plan).toEqual(["SEARCH tokens USING INTEGER PRIMARY KEY (rowid=?)"]);
   });
 });
 
