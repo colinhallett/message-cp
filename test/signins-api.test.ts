@@ -125,19 +125,20 @@ describe("GET /api/signins", () => {
 });
 
 describe("DELETE /api/signins", () => {
-  it("ends that sign-in, whose next request gets 401, while its token's other sign-in and the token keep working", async () => {
+  it("ends that sign-in, whose next request gets 401, leaving its token unrevoked and every other sign-in and token working", async () => {
     const admin = signIn("owner", "maria");
     const other = signIn("owner");
+    // redeemLoginCode makes one token per sign-in, so a second sign-in of the same token is made by hand.
     const sameToken = db.prepare("INSERT INTO dashboard_sessions (hash, token_id, created_at) VALUES (?, ?, ?) RETURNING id");
     const twin = "a".repeat(64);
     const twinId = sameToken.pluck().get(sha256(twin), other.tokenId, Date.now()) as number;
-    const tokenOf = addToken(db, "owner").token;
+    const unrelated = addToken(db, "owner").token;
     const res = await end(admin.session, other.id);
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ id: other.id });
     expect((await call("/api/token", other.session)).status).toBe(401);
     expect((await call("/api/token", twin)).status).toBe(200);
-    expect((await call("/api/token", tokenOf)).status).toBe(200);
+    expect((await call("/api/token", unrelated)).status).toBe(200);
     expect((await call("/api/token", admin.session)).status).toBe(200);
     const left = (await (await list(admin.session)).json()) as SigninJson[];
     expect(left.map((s) => s.id)).toEqual([admin.id, twinId]);
