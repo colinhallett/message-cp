@@ -4295,10 +4295,11 @@ function webhookRow(w) {
 }
 
 // A token of the account: its kind, its id, which message-cp token revoke takes, when it was made, and when it was last
-// used ("never used" for a lastUsedAt of null), then who or what it is for: a person token's person, or "person removed"; an agent token's bound agent, "agent removed", "registers its
-// own agents", or "bound to no agent"; and an OAuth token's client (its name, else its host, else "unnamed
-// client"), with control and format characters replaced as approvalRow does. A Revoke button asks first. Never a token
-// or hash, which GET /api/tokens does not give. Throws on an entry that is none of the shapes GET /api/tokens gives, so
+// used ("never used" for a lastUsedAt of null), then who or what it is for: a person token's person, or "person
+// removed"; an agent token's bound agent, "agent removed", "registers its own agents", or "bound to no agent"; and an
+// OAuth token's client (its name, else its host, else "unnamed client"), with control and format characters replaced as
+// approvalRow does. A Revoke button asks first. Never a token or hash, which GET /api/tokens does not give. Throws on an
+// entry that is none of the shapes GET /api/tokens gives, including a lastUsedAt that is neither a string nor null, so
 // readTokens shows the answer as unreadable.
 function tokenRow(t) {
   const nameOrNull = (v) => v === null || typeof v === "string";
