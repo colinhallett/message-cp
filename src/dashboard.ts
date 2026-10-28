@@ -23,9 +23,10 @@ import { MAX_BODY_LENGTH } from "./messages.js";
 // confirming, with DELETE /api/conversation, and, from the sidebar's "People" entry, which lists the account's people
 // with GET /api/people and the unused invites with GET /api/invites, marks or unmarks another person an admin with PATCH
 // /api/people, removes one, after confirming, with DELETE /api/people, adds a person with POST /api/people, makes a new
-// invite for one with POST /api/invites and, after confirming, cancels one with DELETE /api/invites; that is all it ever
-// writes. An invite's link is shown only in
-// a field of that view, from the answer that made it, and never kept or written anywhere else but the clipboard, when
+// invite for one with POST /api/invites and, after confirming, cancels one with DELETE /api/invites, and, from an
+// agent's details in the agents panel, after confirming, removes the agent with DELETE /api/agents or gives it a new key
+// with POST /api/agents/key; that is all it ever writes. An invite's link, or an agent's new key, is shown only in
+// a field of its view, from the answer that made it, and never kept or written anywhere else but the clipboard, when
 // its Copy is pressed. With a full token, which acts as no person, it
 // reads and offers Delete, but not posting or sending, which the server refuses it: in the compose box's place it says
 // how to sign in as a person. With a read-only token it only reads. An agent token,
@@ -131,8 +132,8 @@ button, input, select, textarea { font: inherit; color: inherit; }
 button { cursor: pointer; background: none; border: 1px solid var(--border); border-radius: var(--radius); padding: var(--s1) var(--s3); }
 button:hover { background: var(--hover); }
 /* Only the primary actions are filled, in the accent with the page's background as their text. */
-#login button, #compose-send, #channel-create, #new-open, #delete-yes, #person-add, #link-make, #cancel-yes { background: var(--accent); border-color: var(--accent); color: var(--bg); font-weight: 600; }
-#login button:hover:enabled, #compose-send:hover:enabled, #channel-create:hover:enabled, #new-open:hover:enabled, #delete-yes:hover:enabled, #person-add:hover:enabled, #link-make:hover:enabled, #cancel-yes:hover:enabled { background: color-mix(in srgb, var(--accent) 85%, var(--text)); }
+#login button, #compose-send, #channel-create, #new-open, #delete-yes, #person-add, #link-make, #cancel-yes, #agent-yes { background: var(--accent); border-color: var(--accent); color: var(--bg); font-weight: 600; }
+#login button:hover:enabled, #compose-send:hover:enabled, #channel-create:hover:enabled, #new-open:hover:enabled, #delete-yes:hover:enabled, #person-add:hover:enabled, #link-make:hover:enabled, #cancel-yes:hover:enabled, #agent-yes:hover:enabled { background: color-mix(in srgb, var(--accent) 85%, var(--text)); }
 button:disabled { cursor: default; opacity: 0.6; }
 button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .note { color: var(--muted); margin: var(--s2) var(--s3); }
@@ -272,6 +273,12 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .agent > button .status { flex: 0 1 auto; min-width: 0; max-width: 50%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--text-sm); color: var(--muted); }
 .agent .details .status { font-style: italic; }
 .agent .details { display: flex; flex-direction: column; padding: 0 var(--s3) var(--s2) var(--s4); font-size: var(--text-sm); color: var(--muted); overflow-wrap: anywhere; }
+.agent .details .actions button { color: var(--text); }
+/* An admin person's confirmation, note and new key for an agent sit under the panel's heading, outside the rows each
+   poll redraws. */
+#agent-confirm, #agent-key-made { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2); margin: 0 var(--s3) var(--s2); font-size: var(--text-sm); }
+#agent-confirm-text, #agent-key-for { flex: 1 1 100%; margin: 0; overflow-wrap: anywhere; }
+#agent-key { flex: 1 1 100%; min-width: 0; padding: var(--s1); font-family: var(--font-mono); background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); }
 .dot { flex: none; width: 0.6rem; height: 0.6rem; border-radius: 50%; background: var(--offline); overflow: hidden; color: transparent; font-size: 0; }
 .dot.online { background: var(--online); }
 @media (max-width: 720px) {
@@ -357,6 +364,14 @@ const cancelConfirm = document.getElementById("cancel-confirm");
 const cancelText = document.getElementById("cancel-text");
 const cancelYes = document.getElementById("cancel-yes");
 const cancelNote = document.getElementById("cancel-note");
+const agentNote = document.getElementById("agent-note");
+const agentConfirm = document.getElementById("agent-confirm");
+const agentConfirmText = document.getElementById("agent-confirm-text");
+const agentYes = document.getElementById("agent-yes");
+const agentKeyMade = document.getElementById("agent-key-made");
+const agentKeyFor = document.getElementById("agent-key-for");
+const agentKey = document.getElementById("agent-key");
+const agentCopyNote = document.getElementById("agent-copy-note");
 const asNote = document.getElementById("as-note");
 const writer = document.getElementById("writer");
 const compose = document.getElementById("compose");
@@ -601,6 +616,16 @@ let linkKey = "";
 // How long an invite lasts, in days: INVITE_TTL_MS in src/login.ts.
 const INVITE_DAYS = ${INVITE_TTL_MS / 86400000};
 const NO_INVITES = "No unused invites. One is listed here from when it is made until it is used, cancelled or expires.";
+// The agent the agents panel's confirmation, note and new key are for ({ kind: "remove" or "key", name }), or undefined.
+// Opening another confirmation, closing that agent's details, Cancel, Done, unmarked() and ask() end it, so an answer
+// for it that comes after changes nothing in the panel. The new key lives only in its field, never in a variable.
+let agentFor;
+// The tokenGeneration a DELETE /api/agents or a POST /api/agents/key is in flight for, or undefined, as removing is.
+let removingAgent;
+let resettingKey;
+// The agents as the last GET /api/agents gave them, so the panel can be drawn again when the token's admin changes.
+let lastAgents;
+const NOT_ADMIN_AGENTS = "The server says you are no longer an admin of this account (403), so this page no longer offers removing agents or resetting their keys.";
 const NOT_ADMIN = "The server says you are no longer an admin of this account (403), so this page no longer offers changing people or invites.";
 
 function say(text, isError) {
@@ -665,6 +690,10 @@ function ask(message) {
   linkMake.disabled = false;
   cancelYes.disabled = false;
   removeYes.disabled = false;
+  // And the agents panel's confirmation, note and any new key it showed.
+  closeAgentPanel();
+  agentYes.disabled = false;
+  lastAgents = undefined;
   // Clear every panel, so one token's agents, channels, pairs and messages never show under the next token.
   rows.replaceChildren();
   openAgents = new Set();
@@ -759,6 +788,10 @@ document.getElementById("invite-copy").addEventListener("click", () => copyInvit
 cancelYes.addEventListener("click", () => cancelInvite());
 document.getElementById("cancel-no").addEventListener("click", () => closeCancelInvite(true));
 removeYes.addEventListener("click", () => removeAccountPerson());
+agentYes.addEventListener("click", () => (agentFor?.kind === "key" ? resetKey() : removeAgent()));
+document.getElementById("agent-no").addEventListener("click", () => closeAgentPanel());
+document.getElementById("agent-key-done").addEventListener("click", () => closeAgentPanel());
+document.getElementById("agent-key-copy").addEventListener("click", () => copyAgentKey());
 document.getElementById("remove-no").addEventListener("click", () => closeRemovePerson(true));
 newFrom.addEventListener("change", () => fillNew());
 newForm.addEventListener("submit", (event) => {
@@ -1044,6 +1077,9 @@ function unmarked() {
   inviteClosings++;
   showInviteEntry();
   showDelete();
+  // The agents panel's buttons, confirmation and any new key go too.
+  closeAgentPanel();
+  if (lastAgents) show(lastAgents);
   if (!openInvites) return;
   // The focus may be in the forms, which go, so it moves to the view's Close button.
   inviteForms.hidden = true;
@@ -1449,6 +1485,156 @@ async function removeAccountPerson() {
   if (answer.status === 200 || answer.status === 404 || answer.error) refresh();
 }
 
+// Asks under the agents panel's heading before removing the agent name or resetting its key (kind "remove" or "key");
+// nothing is sent until its button is pressed. Any confirmation, note or key shown before goes.
+function openAgentConfirm(kind, name) {
+  if (!meAdmin) return;
+  closeAgentPanel();
+  agentFor = { kind, name };
+  agentConfirmText.textContent =
+    kind === "remove"
+      ? "Remove " + name + "? This cannot be undone: it deletes " + name + "'s direct messages and mentions. Its channel posts stay."
+      : "Reset " + name + "'s key? Its old key stops working at once and its sessions end. A token message-cp connect made for it keeps working until it is revoked.";
+  agentYes.textContent = kind === "remove" ? "Remove" : "Reset key";
+  agentYes.disabled = (kind === "remove" ? removingAgent : resettingKey) === tokenGeneration;
+  agentConfirm.hidden = false;
+  document.getElementById("agent-no").focus();
+}
+
+// Ends what the agents panel shows for an agent: its confirmation, its note and any new key, which is emptied from its
+// field.
+function closeAgentPanel() {
+  agentFor = undefined;
+  agentConfirm.hidden = true;
+  agentConfirmText.textContent = "";
+  agentNote.textContent = "";
+  agentKeyMade.hidden = true;
+  agentKeyFor.textContent = "";
+  agentKey.value = "";
+  agentCopyNote.textContent = "";
+}
+
+// Removes the agent being asked about with DELETE /api/agents and says what it ended from the answer's counts, then
+// reads the agents again, as removeAccountPerson does for a person. After a 200, 404 or no answer it also reads the
+// account's messages again from the start (forgetMessagesOf), even if the panel has moved on to another agent since;
+// any other answer after that, or any answer after the token was forgotten, changes nothing.
+async function removeAgent() {
+  const token = sessionStorage.getItem(KEY);
+  if (!token) return ask();
+  const tokenGen = tokenGeneration;
+  const target = agentFor;
+  if (!meAdmin || target?.kind !== "remove" || removingAgent === tokenGen) return;
+  removingAgent = tokenGen;
+  agentYes.disabled = true;
+  agentNote.textContent = "Removing " + target.name + "…";
+  const ac = new AbortController();
+  const deadline = setTimeout(() => ac.abort(), TIMEOUT_MS);
+  let answer;
+  try {
+    answer = await inviteWrite(token, ac, "DELETE", "/api/agents?" + new URLSearchParams({ name: target.name }));
+  } finally {
+    clearTimeout(deadline);
+  }
+  if (tokenGen !== tokenGeneration) return;
+  removingAgent = undefined;
+  agentYes.disabled = agentFor?.kind === "key" && resettingKey === tokenGen;
+  if (answer.status === 401) return ask("The server refused that token. Enter another.");
+  // Its direct messages are deleted (200), were deleted by whoever removed it first (404), or may be (no answer), so
+  // the messages the page holds are read again from the start, as removeAccountPerson does.
+  const forgot = answer.status === 200 || answer.status === 404 || Boolean(answer.error);
+  if (forgot) forgetMessagesOf(target.name, answer.status === 200 || answer.status === 404);
+  if (agentFor !== target) {
+    if (forgot) refresh();
+    return;
+  }
+  if (answer.status === 403) {
+    unmarked();
+    agentNote.textContent = NOT_ADMIN_AGENTS;
+    return;
+  }
+  agentConfirm.hidden = true;
+  agentConfirmText.textContent = "";
+  const name = target.name;
+  const body = answer.body;
+  if (answer.status === 200) {
+    agentNote.textContent =
+      body && Number.isInteger(body.messages) && Number.isInteger(body.mentions)
+        ? "Removed " + name + ": " + counted(body.messages, "message") + " and " + counted(body.mentions, "mention") + " deleted."
+        : "Removed " + name + ".";
+  } else if (answer.status === 404) agentNote.textContent = name + " is already gone (404).";
+  else if (answer.error) agentNote.textContent = answer.error + ", so " + name + " may have been removed: the list shows whether.";
+  else agentNote.textContent = refusal(answer);
+  if (forgot) refresh();
+}
+
+// Gives the agent being asked about a new key with POST /api/agents/key and shows the key from the answer once, in the
+// panel's read-only field, with a Copy button. An answer after the panel moved on to another agent, or was closed, or
+// after the token was forgotten, changes nothing and shows no key.
+async function resetKey() {
+  const token = sessionStorage.getItem(KEY);
+  if (!token) return ask();
+  const tokenGen = tokenGeneration;
+  const target = agentFor;
+  if (!meAdmin || target?.kind !== "key" || resettingKey === tokenGen) return;
+  resettingKey = tokenGen;
+  agentYes.disabled = true;
+  agentNote.textContent = "Resetting " + target.name + "'s key…";
+  const ac = new AbortController();
+  const deadline = setTimeout(() => ac.abort(), TIMEOUT_MS);
+  let answer;
+  try {
+    answer = await inviteWrite(token, ac, "POST", "/api/agents/key?" + new URLSearchParams({ name: target.name }));
+  } finally {
+    clearTimeout(deadline);
+  }
+  if (tokenGen !== tokenGeneration) return;
+  resettingKey = undefined;
+  agentYes.disabled = agentFor?.kind === "remove" && removingAgent === tokenGen;
+  if (answer.status === 401) return ask("The server refused that token. Enter another.");
+  if (agentFor !== target) return;
+  if (answer.status === 403) {
+    unmarked();
+    agentNote.textContent = NOT_ADMIN_AGENTS;
+    return;
+  }
+  agentConfirm.hidden = true;
+  agentConfirmText.textContent = "";
+  const name = target.name;
+  if (answer.status === 200) {
+    const body = answer.body;
+    if (body && typeof body.key === "string" && body.key !== "") {
+      agentNote.textContent = "";
+      agentKeyFor.textContent =
+        name + "'s new key. Its old key no longer works. Give this one to " + name + "'s client; it shows only here, until you press Done or close " + name + "'s details.";
+      agentKey.value = body.key;
+      agentKeyMade.hidden = false;
+      agentKey.focus();
+    } else agentNote.textContent = name + "'s key was reset, but this page cannot read the new one: reset it again.";
+  } else if (answer.status === 404) agentNote.textContent = name + " is already gone (404).";
+  else if (answer.error) agentNote.textContent = answer.error + ", so " + name + "'s key may have been reset, and this page has no new key to show: reset it again for one.";
+  else agentNote.textContent = refusal(answer);
+  if (answer.status === 200 || answer.status === 404 || answer.error) refresh();
+}
+
+// Copies the shown key to the clipboard; where the browser refuses, selects it to copy by hand, as copyInvite does.
+async function copyAgentKey() {
+  const target = agentFor;
+  if (!target || !agentKey.value) return;
+  let copied = false;
+  try {
+    await navigator.clipboard.writeText(agentKey.value);
+    copied = true;
+  } catch {
+    copied = false;
+  }
+  if (agentFor !== target || !agentKey.value) return;
+  if (!copied) {
+    agentKey.focus();
+    agentKey.select();
+  }
+  agentCopyNote.textContent = copied ? "Copied." : "This browser did not copy it: the key is selected, so copy it yourself.";
+}
+
 // Drops the search in flight and empties the results.
 function closeResults() {
   searchGeneration++;
@@ -1575,6 +1761,8 @@ async function checkToken() {
   meAdmin = admin;
   fullToken = full && own === undefined;
   showInviteEntry();
+  // An admin person's agent buttons show at once, not only from the next poll.
+  if (lastAgents) show(lastAgents);
   showPicker();
   fillNew();
   fillChannel();
@@ -2800,6 +2988,18 @@ function show(agents) {
     const details = part("div", "details", "");
     if (status !== "") details.append(part("span", "status", status));
     details.append(part("span", "bio", bio), seen, part("span", "unread", unreadText));
+    // Only an admin person may remove an agent or reset its key, and a person is neither.
+    if (meAdmin && a.person !== true) {
+      const actions = part("div", "actions", "");
+      const remove = part("button", "", "Remove");
+      remove.type = "button";
+      remove.addEventListener("click", () => openAgentConfirm("remove", name));
+      const reset = part("button", "", "Reset key");
+      reset.type = "button";
+      reset.addEventListener("click", () => openAgentConfirm("key", name));
+      actions.append(remove, reset);
+      details.append(actions);
+    }
     // Opening the details only shows what the answer already holds: it sends nothing and marks nothing read.
     const toggle = (open) => {
       details.hidden = !open;
@@ -2807,8 +3007,11 @@ function show(agents) {
     };
     toggle(openAgents.has(name));
     button.addEventListener("click", () => {
-      if (openAgents.has(name)) openAgents.delete(name);
-      else openAgents.add(name);
+      if (openAgents.has(name)) {
+        openAgents.delete(name);
+        // Closing an agent's details ends its confirmation, and drops a new key shown for it.
+        if (agentFor?.name === name) closeAgentPanel();
+      } else openAgents.add(name);
       toggle(openAgents.has(name));
     });
     li.append(button, details);
@@ -2816,6 +3019,7 @@ function show(agents) {
   });
   if (items.length === 0) items.push(part("li", "note", NO_AGENTS));
   rows.replaceChildren(...items);
+  lastAgents = agents;
   people = agents.filter((a) => a.person === true).map((a) => String(a.name));
   mentionable = agents.map((a) => ({ name: String(a.name), person: a.person === true }));
   statuses = new Map(agents.filter((a) => typeof a.status === "string").map((a) => [String(a.name), a.status]));
@@ -3423,6 +3627,19 @@ export const DASHBOARD_HTML = `<!doctype html>
 </main>
 <aside id="agents" aria-label="Agents">
 <h2>Agents</h2>
+<p id="agent-note" class="note" role="status"></p>
+<div id="agent-confirm" role="group" aria-labelledby="agent-confirm-text" hidden>
+<p id="agent-confirm-text"></p>
+<button id="agent-yes" type="button">Remove</button>
+<button id="agent-no" type="button">Cancel</button>
+</div>
+<div id="agent-key-made" hidden>
+<p id="agent-key-for"></p>
+<input id="agent-key" type="text" readonly aria-label="New agent key" autocomplete="off" spellcheck="false">
+<button id="agent-key-copy" type="button">Copy</button>
+<button id="agent-key-done" type="button">Done</button>
+<span id="agent-copy-note" class="note" role="status"></span>
+</div>
 <ul id="rows"></ul>
 </aside>
 </div>
