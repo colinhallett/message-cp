@@ -290,11 +290,15 @@ export const TOKEN_USE_RESOLUTION_MS = 60_000;
 
 /**
  * Records on the token of row id `token` that a request used it now, unless it was recorded within
- * TOKEN_USE_RESOLUTION_MS. Best effort, and outside any transaction: a lock held past the busy timeout skips it quietly,
- * any other error logs one fixed line, never anything about the token, and the request goes on either way.
+ * TOKEN_USE_RESOLUTION_MS. `lastUsedAt` is the value the caller's lookup read: when that is recent enough nothing is
+ * written, so such a request never waits for SQLite's write lock; otherwise the `UPDATE` checks the window again, so
+ * processes that read the same stale value write it once. Best effort, and outside any transaction: a lock held past the
+ * busy timeout skips it quietly, any other error logs one fixed line, never anything about the token, and the request
+ * goes on either way.
  */
-function recordUse(db: Db, token: number): void {
+function recordUse(db: Db, token: number, lastUsedAt: number | null): void {
   const now = Date.now();
+  if (lastUsedAt !== null && lastUsedAt >= now - TOKEN_USE_RESOLUTION_MS) return;
   try {
     db.prepare("UPDATE tokens SET last_used_at = ? WHERE id = ? AND (last_used_at IS NULL OR last_used_at < ?)").run(
       now,
@@ -326,7 +330,7 @@ export function accountForToken(db: Db, token: string, ownerToken: string): Toke
   // The person is found by row, so a later person given a removed person's name is not theirs.
   const row = db
     .prepare(
-      `SELECT tokens.id AS token_id, tokens.registers, tokens.account_id, tokens.read_only, tokens.agent_only, tokens.agent_id,
+      `SELECT tokens.id AS token_id, tokens.last_used_at, tokens.registers, tokens.account_id, tokens.read_only, tokens.agent_only, tokens.agent_id,
          agents.id, agents.registered_at, agents.instance, agents.name,
          tokens.person_id, people.id AS person_row, people.name AS person_name, people.admin AS person_admin
        FROM tokens LEFT JOIN agents ON agents.id = tokens.agent_id AND agents.account_id = tokens.account_id
@@ -338,6 +342,7 @@ export function accountForToken(db: Db, token: string, ownerToken: string): Toke
     .get(hash) as
     | {
         token_id: number;
+        last_used_at: number | null;
         registers: number;
         account_id: number;
         read_only: number;
@@ -354,7 +359,7 @@ export function accountForToken(db: Db, token: string, ownerToken: string): Toke
       }
     | undefined;
   if (!row || (row.agent_id !== null && row.id === null) || (row.person_id !== null && row.person_row === null)) return undefined;
-  recordUse(db, row.token_id);
+  recordUse(db, row.token_id, row.last_used_at);
   if (row.person_row !== null && row.person_name !== null) {
     const person: BoundPerson = { id: row.person_row, name: row.person_name, admin: row.person_admin === 1 };
     return { account: row.account_id, readOnly: false, agentOnly: false, person };

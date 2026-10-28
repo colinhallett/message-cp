@@ -3,6 +3,7 @@ import { request } from "node:http";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TOKEN_USE_RESOLUTION_MS, addAccount, addToken, listAccounts, listTokens, recordClient, revokeToken } from "../src/accounts.js";
 import { addPerson, purgeAgent, registerAgent, removePerson, setPersonAdmin } from "../src/agents.js";
@@ -13,6 +14,7 @@ import { NotAdminError, addTokenBy, listTokensBy, revokeTokenBy } from "../src/l
 // An admin person's token lists its account's tokens (GET /api/tokens), makes a read-only or agent one (POST
 // /api/tokens) and revokes one (DELETE /api/tokens?id=), on a server with the owner's account and a friend's.
 const OWNER_TOKEN = "owner-token";
+let file: string;
 let db: Db;
 let http: HttpServer;
 let friend: AccountId;
@@ -21,7 +23,8 @@ let ana: string;
 let anaId: number;
 
 beforeEach(async () => {
-  db = openDb(join(mkdtempSync(join(tmpdir(), "message-cp-tokens-api-")), "db.sqlite"));
+  file = join(mkdtempSync(join(tmpdir(), "message-cp-tokens-api-")), "db.sqlite");
+  db = openDb(file);
   friendFull = addAccount(db, "friend");
   friend = listAccounts(db).find((a) => a.name === "friend")!.id;
   addPerson(db, "owner", "ana", true);
@@ -480,6 +483,32 @@ describe("lastUsedAt", () => {
     now += 1;
     expect((await call("/api/agents", made.full.token)).status).toBe(200);
     expect(lastUsed(made.full.id)).toBe(now);
+  });
+
+  it("writes nothing, so never waits for the write lock, while the last write is within TOKEN_USE_RESOLUTION_MS", async () => {
+    const made = tokens();
+    expect((await call("/api/agents", made.full.token)).status).toBe(200);
+    const first = lastUsed(made.full.id);
+    expect(first).not.toBeNull();
+    const writes = vi.fn();
+    const prepare = db.prepare.bind(db);
+    vi.spyOn(db, "prepare").mockImplementation(((sql: string) => {
+      if (sql.includes("SET last_used_at")) writes();
+      return prepare(sql);
+    }) as typeof db.prepare);
+    // Another process holds the write lock; a write here would wait out the busy timeout (5s) before skipping.
+    const other = new Database(file);
+    other.exec("BEGIN IMMEDIATE");
+    try {
+      const start = Date.now();
+      expect((await call("/api/agents", made.full.token)).status).toBe(200);
+      expect(Date.now() - start).toBeLessThan(2_000);
+    } finally {
+      other.exec("ROLLBACK");
+      other.close();
+    }
+    expect(writes).not.toHaveBeenCalled();
+    expect(lastUsed(made.full.id)).toBe(first);
   });
 
   it("counts a request the token authenticates that a later check refuses", async () => {
