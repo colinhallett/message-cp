@@ -9,7 +9,7 @@ import { TOKEN_USE_RESOLUTION_MS, addAccount, addToken, listAccounts, listTokens
 import { addPerson, purgeAgent, registerAgent, removePerson, setPersonAdmin } from "../src/agents.js";
 import { OWNER_ACCOUNT, openDb, type AccountId, type Db } from "../src/db.js";
 import { startHttp, type HttpServer } from "../src/http.js";
-import { NotAdminError, addTokenBy, listTokensBy, revokeTokenBy } from "../src/login.js";
+import { NotAdminError, addTokenBy, COUNT_SIGNINS, listTokensBy, makeLoginCode, redeemLoginCode, revokeTokenBy } from "../src/login.js";
 
 // An admin person's token lists its account's tokens (GET /api/tokens), makes a read-only or agent one (POST
 // /api/tokens) and revokes one (DELETE /api/tokens?id=), on a server with the owner's account and a friend's.
@@ -155,7 +155,7 @@ describe("DELETE /api/tokens", () => {
     const others = db.prepare(`SELECT ${COLUMNS} FROM tokens WHERE id <> ? ORDER BY id`).all(made.readOnly.id);
     const res = await revoke(made.readOnly.id);
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ id: made.readOnly.id });
+    expect(await res.json()).toEqual({ id: made.readOnly.id, signins: 0 });
     expect((await call("/api/agents", made.readOnly.token)).status).toBe(401);
     expect(db.prepare(`SELECT ${COLUMNS} FROM tokens WHERE id <> ? ORDER BY id`).all(made.readOnly.id)).toEqual(others);
     expect(listTokens(db).map((t) => t.id)).not.toContain(made.readOnly.id);
@@ -166,7 +166,7 @@ describe("DELETE /api/tokens", () => {
   it("revokes the token the request carries, which gets 401 next, keeping its person", async () => {
     const res = await revoke(anaId);
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ id: anaId });
+    expect(await res.json()).toEqual({ id: anaId, signins: 0 });
     expect((await list()).status).toBe(401);
     expect(db.prepare("SELECT admin, removed_at FROM agents WHERE name = 'ana'").all()).toEqual([{ admin: 1, removed_at: null }]);
   });
@@ -183,6 +183,79 @@ describe("DELETE /api/tokens", () => {
     }
     expect(snapshot()).toEqual(before);
     expect((await call("/api/agents", made.theirs.token)).status).toBe(200);
+  });
+
+  describe("signins", () => {
+    // Each redeemed login link gives its own person token with one sign-in session.
+    const signIn = (person?: string) => {
+      const session = redeemLoginCode(db, makeLoginCode(db, "owner", person).code);
+      const token = db.prepare("SELECT token_id FROM dashboard_sessions WHERE hash = ?").pluck().get(hashToken(session)) as number;
+      return { session, token };
+    };
+    // Another sign-in on the same token, as a second session row would be.
+    const secondSession = (token: number) => {
+      const session = "s".repeat(64);
+      db.prepare("INSERT INTO dashboard_sessions (hash, token_id, created_at) VALUES (?, ?, ?)").run(hashToken(session), token, Date.now());
+      return session;
+    };
+
+    it("counts the sign-ins the revoke ended, each of which gets 401 next, and ends no other token's", async () => {
+      addPerson(db, "owner", "ben");
+      const first = signIn("ben");
+      const extra = secondSession(first.token);
+      const other = signIn("ben");
+      for (const session of [first.session, extra, other.session]) expect((await call("/api/token", session)).status).toBe(200);
+      const res = await revoke(first.token);
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ id: first.token, signins: 2 });
+      expect((await call("/api/token", first.session)).status).toBe(401);
+      expect((await call("/api/token", extra)).status).toBe(401);
+      expect((await call("/api/token", other.session)).status).toBe(200);
+      // The sessions are kept: the revoked token is what refuses them.
+      expect(db.prepare("SELECT COUNT(*) FROM dashboard_sessions WHERE token_id = ?").pluck().get(first.token)).toBe(2);
+      const res2 = await revoke(other.token);
+      expect(await res2.json()).toEqual({ id: other.token, signins: 1 });
+      expect((await call("/api/token", other.session)).status).toBe(401);
+    });
+
+    it("counts a full token's sign-in from a login link with no person", async () => {
+      const full = signIn();
+      expect(await (await revoke(full.token)).json()).toEqual({ id: full.token, signins: 1 });
+      expect((await call("/api/token", full.session)).status).toBe(401);
+    });
+
+    it("counts 0 for a person token whose person was removed, whose sign-ins were already refused", async () => {
+      addPerson(db, "owner", "ben");
+      const ben = signIn("ben");
+      removePerson(db, "owner", "ben");
+      expect((await call("/api/token", ben.session)).status).toBe(401);
+      expect(await (await revoke(ben.token)).json()).toEqual({ id: ben.token, signins: 0 });
+    });
+
+    it("answers 404 for another account's token, counting and ending none of its sign-ins", async () => {
+      addPerson(db, "friend", "fay", true);
+      const session = redeemLoginCode(db, makeLoginCode(db, "friend", "fay").code);
+      const theirs = db.prepare("SELECT token_id FROM dashboard_sessions WHERE hash = ?").pluck().get(hashToken(session)) as number;
+      const before = snapshot();
+      const res = await revoke(theirs);
+      expect(res.status).toBe(404);
+      expect(await res.text()).not.toContain("signins");
+      expect(snapshot()).toEqual(before);
+      expect((await call("/api/token", session)).status).toBe(200);
+    });
+
+    it("counts through the token's primary key and dashboard_sessions_by_token, without scanning sessions", () => {
+      const plan = db
+        .prepare(`EXPLAIN QUERY PLAN ${COUNT_SIGNINS}`)
+        .all(1)
+        .map((r) => (r as { detail: string }).detail);
+      expect(plan).toEqual([
+        "SEARCH tokens USING INTEGER PRIMARY KEY (rowid=?)",
+        "SEARCH dashboard_sessions USING COVERING INDEX dashboard_sessions_by_token (token_id=?)",
+        "SEARCH agents USING INTEGER PRIMARY KEY (rowid=?) LEFT-JOIN",
+        "SEARCH people USING INTEGER PRIMARY KEY (rowid=?) LEFT-JOIN",
+      ]);
+    });
   });
 
   it("answers 400 for a missing, repeated or not whole-number id", async () => {

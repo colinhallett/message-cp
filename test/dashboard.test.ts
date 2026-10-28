@@ -7663,6 +7663,31 @@ describe("the page's invites", () => {
       expect(res.status).toBe(401);
     });
 
+    it("says how many dashboard sign-ins a revoke ended, and only a whole number above 0", async () => {
+      addPerson(db, "owner", "ben");
+      const session = redeemLoginCode(db, makeLoginCode(db, "owner", "ben").code);
+      const ben = db.prepare("SELECT token_id FROM dashboard_sessions WHERE hash = ?").pluck().get(createHash("sha256").update(session).digest("hex")) as number;
+      const others = [addToken(db, "owner", true).id, addToken(db, "owner", true).id, addToken(db, "owner", true).id, addToken(db, "owner", true).id];
+      let next: Refusal | undefined;
+      const page = await load(anaToken, (url, init) => (init.method === "DELETE" ? next : undefined));
+      await openTokens(page);
+      const revokeOne = async (id: number, answer: Refusal | undefined, said: string) => {
+        next = answer;
+        revokeButton(page, id).on.click();
+        page.elements["token-yes"].on.click();
+        await page.until(() => note(page) === said);
+        await page.until(() => !tokRows(page).some((r) => r[1] === `token ${id}`));
+      };
+      // The server's own answer: ben's one sign-in, which is refused from now on.
+      await revokeOne(ben, undefined, `Revoked token ${ben} (person, ben). This also ended 1 dashboard sign-in.`);
+      expect((await fetch(`${base()}/api/token`, { headers: auth(session) })).status).toBe(401);
+      await revokeOne(others[0], { rewrite: (body) => ({ ...body, signins: 2 }) }, `Revoked token ${others[0]} (read-only). This also ended 2 dashboard sign-ins.`);
+      await revokeOne(others[1], undefined, `Revoked token ${others[1]} (read-only).`);
+      // An older serve answers { id } only; anything but a whole number above 0 says nothing more.
+      await revokeOne(others[2], { rewrite: (body) => ({ id: body.id }) }, `Revoked token ${others[2]} (read-only).`);
+      await revokeOne(others[3], { rewrite: (body) => ({ ...body, signins: "2" }) }, `Revoked token ${others[3]} (read-only).`);
+    });
+
     it("says each other answer to a revoke in plain words, with Revoke token disabled while it is in flight", async () => {
       const id = idOf(viewer);
       let next: Refusal | undefined;
