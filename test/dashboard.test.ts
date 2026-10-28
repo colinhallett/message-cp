@@ -7386,6 +7386,36 @@ describe("the page's invites", () => {
       expect(page.elements["webhook-for"].textContent).toBe("");
     });
 
+    it("drops the secret shown before when another addition gets no answer", async () => {
+      let fail = false;
+      const page = await load(anaToken, (url, init) => (fail && init.method === "POST" && url === "/api/webhooks" ? "fail" : undefined));
+      await openWebhooks(page);
+      fillHook(page, { url: "https://example.com/one", on: "#general" });
+      addHook(page);
+      await page.until(() => page.elements["webhook-secret"].value !== "");
+      fail = true;
+      fillHook(page, { url: "https://example.com/two", on: "#general" });
+      addHook(page);
+      await page.until(() => hookNote(page).startsWith("No answer from the server, so the webhook may or may not have been added"));
+      expect(page.elements["webhook-made"].hidden).toBe(true);
+      expect(page.elements["webhook-secret"].value).toBe("");
+      expect(page.elements["webhook-for"].textContent).toBe("");
+    });
+
+    it("sends nothing when the header name holds a colon, so no part of it becomes the value", async () => {
+      const page = await load(anaToken);
+      await openWebhooks(page);
+      for (const [name, value] of [["Authorization: Bearer", "token"], ["X-Key: secret", ""]]) {
+        fillHook(page, { url: "https://example.com/hook", on: "#general", name, value });
+        addHook(page);
+        expect(hookNote(page)).toBe("A header name has no colon: put the name alone in Header name, and the rest in Header value.");
+        expect(page.elements["hook-header-name"].value).toBe(name);
+        expect(page.elements["hook-header-value"].value).toBe(value);
+      }
+      expect(hookPosts(page)).toEqual([]);
+      expect(hookCount()).toBe(0);
+    });
+
     it("keeps the URL, header value and body typed while the request was in flight, and empties only those still as sent", async () => {
       let hold = false;
       const page = await load(anaToken, (url, init) => (hold && init.method === "POST" && url === "/api/webhooks" ? "held" : undefined));

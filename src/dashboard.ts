@@ -1836,6 +1836,11 @@ async function addAccountWebhook() {
   const body = { url, on, includeText: hookIncludeText.checked };
   const headerName = hookHeaderName.value.trim();
   const headerValue = hookHeaderValue.value;
+  // The server splits the header at its first colon, so a colon in the name would move part of it into the value.
+  if (headerName.includes(":")) {
+    hookNote.textContent = "A header name has no colon: put the name alone in Header name, and the rest in Header value.";
+    return;
+  }
   // Either half given sends the header, so the server refuses one left half filled in rather than it being dropped.
   if (headerName !== "" || headerValue !== "") body.header = headerName + ": " + headerValue;
   if (hookMax.value.trim() !== "") body.maxPerHour = Number(hookMax.value);
@@ -1866,10 +1871,7 @@ async function addAccountWebhook() {
     if (hookHeaderValue.value === headerValue) hookHeaderValue.value = "";
     if (hookBody.value === body.body) hookBody.value = "";
     // Another webhook was added, so the secret shown before is no longer the newest, even when this one's cannot be read.
-    webhookMade.hidden = true;
-    webhookFor.textContent = "";
-    webhookSecret.value = "";
-    webhookCopyNote.textContent = "";
+    hideWebhookSecret();
     if (added && typeof added === "object" && typeof added.secret === "string" && added.secret !== "" && Number.isInteger(added.id)) {
       hookNote.textContent = "Added webhook " + added.id + (typeof added.on === "string" ? " (" + added.on + ")" : "") + ".";
       webhookFor.textContent =
@@ -1886,6 +1888,8 @@ async function addAccountWebhook() {
     return;
   }
   if (answer.error) {
+    // Another webhook may have been added, so the secret shown before may no longer be the newest.
+    hideWebhookSecret();
     hookNote.textContent =
       answer.error + ", so the webhook may or may not have been added: the list below shows whether. " +
       "No secret can be shown for it, so if it is listed, remove it and add it again.";
@@ -1893,6 +1897,14 @@ async function addAccountWebhook() {
     return;
   }
   hookNote.textContent = refusal(answer);
+}
+
+// Hides the secret the "Webhooks" view showed for the webhook added before.
+function hideWebhookSecret() {
+  webhookMade.hidden = true;
+  webhookFor.textContent = "";
+  webhookSecret.value = "";
+  webhookCopyNote.textContent = "";
 }
 
 // Copies the shown secret to the clipboard; where the browser refuses, selects it to copy by hand, as copyInvite does.
