@@ -8193,6 +8193,333 @@ describe("the page's invites", () => {
     });
   });
 
+  describe("its sign-ins view", () => {
+    const sinEntry = (page: Page) => page.elements["signin-entry"].children[0]?.children[0] as Stub | undefined;
+    const openSignins = async (page: Page) => {
+      await page.until(() => sinEntry(page) !== undefined);
+      sinEntry(page)!.on.click();
+      await page.until(() => page.elements["log-note"].textContent !== "Loading…" && page.elements["log-title"].textContent === "Sign-ins");
+    };
+    const sinRows = (page: Page) => page.elements["post-rows"].children.map((r) => r.children.map((c) => c.textContent));
+    // A sign-in's End button. The rows follow the list's order, which is the order of the live sign-ins' ids, so the
+    // database finds a sign-in's row while the page has read the list since it last changed.
+    const liveIds = () => db.prepare("SELECT id FROM dashboard_sessions ORDER BY id").pluck().all() as number[];
+    const endButton = (page: Page, id: number) =>
+      page.elements["post-rows"].children[liveIds().indexOf(id)].children.find((c) => c.textContent === "End")!;
+    const sinUrls = (page: Page) => page.requests.filter((r) => r.url.startsWith("/api/signins"));
+    const note = (page: Page) => page.elements["signin-note"].textContent;
+    const live = (id: number) => db.prepare("SELECT 1 FROM dashboard_sessions WHERE id = ?").get(id) !== undefined;
+    const sha = (v: string) => createHash("sha256").update(v).digest("hex");
+    // Signs a browser in as the person, or with a full token without one, and answers the session and its row's id and token's id.
+    const signIn = (person?: string) => {
+      const session = redeemLoginCode(db, makeLoginCode(db, "owner", person).code);
+      const row = db.prepare("SELECT id, token_id FROM dashboard_sessions WHERE hash = ?").get(sha(session)) as { id: number; token_id: number };
+      return { session, id: row.id, tokenId: row.token_id };
+    };
+    const signedAt = (id: number) => new Date(db.prepare("SELECT created_at FROM dashboard_sessions WHERE id = ?").pluck().get(id) as number).toISOString();
+
+    it("shows the Sign-ins entry to an admin person only, and never asks for the sign-ins with any other token", async () => {
+      addPerson(db, "owner", "maria");
+      const plain = addToken(db, "owner", false, false, undefined, "maria").token;
+      for (const token of [plain, OWNER_TOKEN, viewer, signIn("maria").session, signIn().session]) {
+        const page = await load(token);
+        await page.until(() => page.elements["approval-entry"].children.length === 1 && page.requests.some((r) => r.url === "/api/token"));
+        await page.poll();
+        expect(page.elements["signin-entry"].children).toEqual([]);
+        expect(sinUrls(page)).toEqual([]);
+      }
+      const agent = await load(agentToken);
+      await agent.until(() => agent.store.size === 0);
+      expect(agent.elements["signin-entry"].children).toEqual([]);
+      expect(sinUrls(agent)).toEqual([]);
+      const page = await load(anaToken);
+      await page.until(() => sinEntry(page) !== undefined);
+      expect(sinEntry(page)!.children.map((c) => c.textContent)).toEqual(["Sign-ins", ""]);
+      // Until the view is opened, the sign-ins are not read.
+      expect(sinUrls(page)).toEqual([]);
+    });
+
+    it("lists the account's sign-ins oldest first, with this browser on the page's own, never a session or another account's", async () => {
+      addPerson(db, "owner", "ben");
+      const ben = signIn("ben");
+      const mine = signIn("ana");
+      const full = signIn();
+      addAccount(db, "other");
+      addPerson(db, "other", "olga", true);
+      const theirs = redeemLoginCode(db, makeLoginCode(db, "other", "olga").code);
+      const page = await load(mine.session);
+      await openSignins(page);
+      expect(sinRows(page)).toEqual([
+        ["person", `token ${ben.tokenId}`, `signed in ${at(signedAt(ben.id))}`, "ben", "End"],
+        ["person", `token ${mine.tokenId}`, `signed in ${at(signedAt(mine.id))}`, "ana · this browser", "End"],
+        ["full", `token ${full.tokenId}`, `signed in ${at(signedAt(full.id))}`, "End"],
+      ]);
+      expect(page.elements["post-rows"].children[0].children[2].title).toBe(signedAt(ben.id));
+      expect(sinEntry(page)!.children.map((c) => c.textContent)).toEqual(["Sign-ins", "3"]);
+      expect(page.elements["log-note"].textContent).toBe("");
+      const hashes = db.prepare("SELECT hash FROM dashboard_sessions").pluck().all() as string[];
+      for (const hidden of [ben.session, full.session, theirs, ...hashes, "olga"]) expect(onPage(page, hidden)).toBe(false);
+      expect(sinUrls(page).every((r) => r.method === "GET")).toBe(true);
+      // With a token rather than a sign-in, no row is this browser's.
+      const other = await load(anaToken);
+      await openSignins(other);
+      expect(sinRows(other).some((r) => r.some((c) => c.includes("this browser")))).toBe(false);
+    });
+
+    it("says when there are none, and when only the first page is shown", async () => {
+      const page = await load(anaToken);
+      await openSignins(page);
+      expect(page.elements["log-note"].textContent).toBe(
+        "No dashboard sign-ins. A browser is listed here from when it signs in with a message-cp login-link link or an invite until its sign-in ends.",
+      );
+      expect(sinRows(page)).toEqual([]);
+      for (let i = 0; i < 201; i++) signIn();
+      await page.poll();
+      await page.until(() => page.elements["log-note"].textContent === "Only the first 200 sign-ins are shown.");
+      expect(sinRows(page)).toHaveLength(200);
+      expect(sinEntry(page)!.children.map((c) => c.textContent)).toEqual(["Sign-ins", "200"]);
+    });
+
+    it("ends a sign-in only after confirming, signing that browser out while the token's other sign-in keeps working", async () => {
+      addPerson(db, "owner", "ben");
+      const first = signIn("ben");
+      const second = signIn("ben");
+      // ben's two browsers, each signed in with its own sign-in of the same token.
+      const firstPage = await load(first.session);
+      const secondPage = await load(second.session);
+      for (const p of [firstPage, secondPage]) await p.until(() => p.requests.some((r) => r.url.startsWith("/api/messages")));
+      const page = await load(anaToken);
+      await openSignins(page);
+      endButton(page, first.id).on.click();
+      expect(page.elements["signin-confirm"].hidden).toBe(false);
+      expect(page.elements["signin-text"].textContent).toBe(
+        `End sign-in ${first.id} (person, ben)? That browser is signed out at its next request. A request already running may finish, and its token is not revoked.`,
+      );
+      page.elements["signin-no"].on.click();
+      expect(page.elements["signin-confirm"].hidden).toBe(true);
+      expect(page.writes()).toEqual([]);
+      endButton(page, first.id).on.click();
+      page.elements["signin-yes"].on.click();
+      await page.until(() => note(page) === `Ended sign-in ${first.id} (person, ben).`);
+      expect(page.writes()).toEqual([{ url: `/api/signins?id=${first.id}`, method: "DELETE", body: undefined }]);
+      expect(page.elements["signin-confirm"].hidden).toBe(true);
+      await page.until(() => sinRows(page).length === 1);
+      expect(sinEntry(page)!.children.map((c) => c.textContent)).toEqual(["Sign-ins", "1"]);
+      expect((await fetch(`${base()}/api/token`, { headers: auth(first.session) })).status).toBe(401);
+      expect((await fetch(`${base()}/api/token`, { headers: auth(second.session) })).status).toBe(200);
+      // The ended browser's next poll asks for a token; the other keeps reading.
+      await firstPage.poll();
+      await firstPage.until(() => firstPage.elements["status-line"].textContent === "The server refused that token. Enter another.");
+      expect(firstPage.store.size).toBe(0);
+      const before = secondPage.requests.length;
+      await secondPage.poll();
+      await secondPage.until(() => secondPage.requests.slice(before).some((r) => r.url.startsWith("/api/messages")));
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(secondPage.store.size).toBe(1);
+      expect(secondPage.elements["status-line"].textContent).toBe("");
+    });
+
+    it("warns before ending this page's own sign-in, and asks for a token once it is ended", async () => {
+      const mine = signIn("ana");
+      const page = await load(mine.session);
+      await openSignins(page);
+      endButton(page, mine.id).on.click();
+      expect(page.elements["signin-text"].textContent).toBe(
+        `End sign-in ${mine.id} (person, ana)? This is this browser's sign-in: ending it signs this page out at its next request. A request already running may finish, and its token is not revoked.`,
+      );
+      page.elements["signin-yes"].on.click();
+      // The DELETE's 200 reads the list again, whose 401 asks for another token.
+      await page.until(() => page.elements["status-line"].textContent === "The server refused that token. Enter another.");
+      expect(live(mine.id)).toBe(false);
+      expect(page.store.size).toBe(0);
+      expect(sinEntry(page)).toBeUndefined();
+      expect(page.elements["post-rows"].children).toEqual([]);
+      // Its token was not revoked.
+      expect(db.prepare("SELECT revoked_at FROM tokens WHERE id = ?").pluck().get(mine.tokenId)).toBeNull();
+    });
+
+    it("says each other answer to an end in plain words, with End sign-in disabled while it is in flight", async () => {
+      const s = signIn();
+      let next: Refusal | undefined;
+      const page = await load(anaToken, (url, init) => (init.method === "DELETE" ? next : undefined));
+      await openSignins(page);
+      const endOne = async (answer: Refusal | undefined, said: string) => {
+        next = answer;
+        endButton(page, s.id).on.click();
+        page.elements["signin-yes"].on.click();
+        await page.until(() => note(page) === said);
+        expect(page.elements["signin-confirm"].hidden).toBe(true);
+      };
+      await endOne({ status: 400, reason: "Give id once" }, "Give id once");
+      await endOne({ status: 503, reason: "Database busy", retry: true }, "The server is busy (503). Try again in a moment.");
+      await endOne(404, `Sign-in ${s.id} was already ended or gone (404).`);
+      await endOne("fail", `No answer from the server, so sign-in ${s.id} may or may not have ended: the list below shows which.`);
+      next = "hang";
+      endButton(page, s.id).on.click();
+      page.elements["signin-yes"].on.click();
+      await page.until(() => page.deadlines.size > 0);
+      expect(page.elements["signin-yes"].disabled).toBe(true);
+      page.elements["signin-yes"].on.click();
+      expect(page.writes()).toHaveLength(5);
+      for (const [, fn] of page.deadlines) fn();
+      await page.until(() => note(page).startsWith(`The server did not answer in time, so sign-in ${s.id} may or may not have ended`));
+      expect(page.elements["signin-yes"].disabled).toBe(false);
+      expect(live(s.id)).toBe(true);
+      // The server's own 404, for a sign-in ended meanwhile, after which the list is read again.
+      next = undefined;
+      endButton(page, s.id).on.click();
+      db.prepare("DELETE FROM dashboard_sessions WHERE id = ?").run(s.id);
+      page.elements["signin-yes"].on.click();
+      await page.until(() => note(page) === `Sign-in ${s.id} was already ended or gone (404).`);
+      await page.until(() => sinRows(page).length === 0);
+    });
+
+    it("closes a confirmation once the list no longer gives its sign-in, sending nothing", async () => {
+      const s = signIn();
+      const page = await load(anaToken);
+      await openSignins(page);
+      endButton(page, s.id).on.click();
+      const before = page.requests.length;
+      await page.poll();
+      await page.until(() => page.requests.slice(before).some((r) => r.url.startsWith("/api/signins")));
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(page.elements["signin-confirm"].hidden).toBe(false);
+      db.prepare("DELETE FROM dashboard_sessions WHERE id = ?").run(s.id);
+      await page.poll();
+      await page.until(() => page.elements["signin-confirm"].hidden);
+      expect(note(page)).toBe(`Sign-in ${s.id} (full) changed or went from the list, so its confirmation closed and nothing was sent.`);
+      page.elements["signin-yes"].on.click();
+      expect(page.writes()).toEqual([]);
+    });
+
+    it("shows a sign-in list not as GET /api/signins gives it as unreadable", async () => {
+      signIn();
+      for (const [field, value] of [
+        ["createdAt", null],
+        ["tokenId", "1"],
+        ["current", false],
+        ["kind", "agent"],
+      ] as const) {
+        let odd = false;
+        const page = await load(anaToken, (url, init) =>
+          odd && url.startsWith("/api/signins") && (init.method ?? "GET") === "GET"
+            ? { rewrite: (items: Record<string, unknown>[]) => items.map((t) => ({ ...t, [field]: value })) }
+            : undefined,
+        );
+        await openSignins(page);
+        expect(sinRows(page)).toHaveLength(1);
+        odd = true;
+        await page.poll();
+        await page.until(() => page.elements["log-note"].textContent === "The server sent an answer this page cannot read. Retrying…");
+      }
+    });
+
+    it("takes the entry and the view away on a 403 to either request, once the person is no longer an admin", async () => {
+      const s = signIn();
+      for (const method of ["DELETE", "GET"]) {
+        setPersonAdmin(db, "owner", "ana", true);
+        const page = await load(anaToken);
+        await openSignins(page);
+        await page.until(() => sinRows(page).length > 0);
+        setPersonAdmin(db, "owner", "ana", false);
+        if (method === "DELETE") {
+          endButton(page, s.id).on.click();
+          page.elements["signin-yes"].on.click();
+        } else {
+          await page.poll();
+        }
+        await page.until(() => page.elements["log-note"].textContent.startsWith("The server says you are no longer an admin"));
+        expect(page.elements["log-note"].textContent).toBe(
+          "The server says you are no longer an admin of this account (403), so this page no longer lists or ends sign-ins.",
+        );
+        expect(sinEntry(page)).toBeUndefined();
+        expect(page.elements["post-rows"].children).toEqual([]);
+        expect(page.elements["signin-confirm"].hidden).toBe(true);
+        expect(live(s.id)).toBe(true);
+        const before = page.requests.length;
+        await page.poll();
+        await page.until(() => page.requests.slice(before).some((r) => r.url.startsWith("/api/messages")));
+        expect(page.requests.slice(before).filter((r) => r.url.startsWith("/api/signins"))).toEqual([]);
+      }
+    });
+
+    it("asks for a token again on a 401 to either request", async () => {
+      const s = signIn();
+      for (const method of ["DELETE", "GET"]) {
+        let refuse = false;
+        const page = await load(anaToken, (url, init) => (refuse && url.startsWith("/api/signins") && (init.method ?? "GET") === method ? 401 : undefined));
+        await openSignins(page);
+        await page.until(() => sinRows(page).length > 0);
+        refuse = true;
+        if (method === "DELETE") {
+          endButton(page, s.id).on.click();
+          page.elements["signin-yes"].on.click();
+        } else {
+          await page.poll();
+        }
+        await page.until(() => page.elements["status-line"].textContent === "The server refused that token. Enter another.");
+        expect(page.store.size).toBe(0);
+        expect(sinEntry(page)).toBeUndefined();
+        expect(page.elements["post-rows"].children).toEqual([]);
+        expect(live(s.id)).toBe(true);
+      }
+    });
+
+    it("drops an end's answer that comes after the view closed, another view opened or the token was forgotten", async () => {
+      let hold = false;
+      const page = await load(anaToken, (url, init) => (hold && init.method === "DELETE" ? "held" : undefined));
+      for (const leave of ["close", "other", "forget"]) {
+        const s = signIn();
+        await openSignins(page);
+        await page.until(() => sinRows(page).length === 1);
+        hold = true;
+        endButton(page, s.id).on.click();
+        page.elements["signin-yes"].on.click();
+        await page.until(() => page.held.length === 1);
+        if (leave === "close") page.elements["close-log"].on.click();
+        else if (leave === "other") page.elements["delivery-entry"].children[0].children[0].on.click();
+        else page.elements["forget"].on.click();
+        hold = false;
+        page.release();
+        // The server ended it, but the page says nothing of it.
+        await page.until(() => !live(s.id));
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        expect(note(page)).toBe("");
+        expect(page.elements["signin-confirm"].hidden).toBe(true);
+        expect(page.elements["signin-yes"].disabled).toBe(false);
+        if (leave === "other") {
+          expect(page.elements["log-title"].textContent).toBe("Webhook deliveries");
+          expect(page.elements["post-rows"].children.every((r) => !r.className.startsWith("entry signin"))).toBe(true);
+        }
+        if (leave === "forget") {
+          expect(page.elements["log"].hidden).toBe(true);
+          expect(sinEntry(page)).toBeUndefined();
+        }
+      }
+    });
+
+    it("drops a read that comes after the view closed or the token was forgotten", async () => {
+      signIn();
+      for (const leave of ["close", "forget"]) {
+        let hold = false;
+        const page = await load(anaToken, (url) => (hold && url.startsWith("/api/signins") ? "held" : undefined));
+        await page.until(() => sinEntry(page) !== undefined);
+        hold = true;
+        sinEntry(page)!.on.click();
+        await page.until(() => page.held.length === 1);
+        if (leave === "close") page.elements["close-log"].on.click();
+        else page.elements["forget"].on.click();
+        page.release();
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        expect(page.elements["log"].hidden).toBe(true);
+        expect(page.elements["post-rows"].children).toEqual([]);
+        expect(page.elements["log-note"].textContent).toBe("");
+        if (leave === "close") expect(sinEntry(page)!.children.map((c) => c.textContent)).toEqual(["Sign-ins", ""]);
+        else expect(sinEntry(page)).toBeUndefined();
+      }
+    });
+  });
+
   it("asks for a token again on a 401 to any of its requests", async () => {
     for (const method of ["POST", "GET"]) {
       let refuse = false;
