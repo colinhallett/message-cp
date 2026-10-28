@@ -7941,11 +7941,13 @@ describe("the page's invites", () => {
         await answer({ status: 503, reason: "Database busy", retry: true }, "The server is busy (503). Try again in a moment.");
         await answer(
           "junk",
-          "A token may have been made, but this page cannot show it: revoke the newest one in the list below and make another.",
+          "A token may have been made, but this page cannot show it." +
+            " The list below does not say who made each token, so revoke a new read-only token there only if you know no one else made it, then make another.",
         );
         await answer(
           "fail",
-          "No answer from the server, so a token may or may not have been made, and no token can be shown for it. If the list below has a new one, revoke it and make another.",
+          "No answer from the server, so a token may or may not have been made, and no token can be shown for it." +
+            " The list below does not say who made each token, so revoke a new read-only token there only if you know no one else made it, then make another.",
         );
         next = "hang";
         make(page, "agent");
@@ -8055,8 +8057,10 @@ describe("the page's invites", () => {
           await page.until(() => note(page) !== "");
           expect(note(page)).toBe(
             outcome === "held"
-              ? "This page made an agent token, but its answer came after the view it was made from closed or changed, so it is not shown and never will be. If the list below has a new one, revoke it and make another."
-              : "The server did not answer in time, so a read-only token may or may not have been made, and no token can be shown for it. If the list below has a new one, revoke it and make another.",
+              ? "This page made an agent token, but its answer came after the view it was made from closed or changed, so it is not shown and never will be." +
+                " The list below does not say who made each token, so revoke a new agent token there only if you know no one else made it, then make another."
+              : "The server did not answer in time, so a read-only token may or may not have been made, and no token can be shown for it." +
+                " The list below does not say who made each token, so revoke a new read-only token there only if you know no one else made it, then make another.",
           );
           expect(shown(page)).toBe("");
           expect(page.elements["token-made"].hidden).toBe(true);

@@ -2088,6 +2088,13 @@ async function revokeToken() {
   if (answer.status === 200 || answer.status === 404 || answer.error) refresh();
 }
 
+// What to do about a token this page may have made but cannot show. GET /api/tokens does not say who made a token, and
+// another admin, or the server's shell, may have made a newer one of the same kind for a client in use, so it never
+// points at the newest entry.
+function unshownTokenAdvice(kind) {
+  return " The list below does not say who made each token, so revoke a new " + kind + " token there only if you know no one else made it, then make another.";
+}
+
 // Empties the made token's field and its line, and hides them.
 function dropMadeToken() {
   tokenMade.hidden = true;
@@ -2130,7 +2137,7 @@ async function makeToken() {
     // The view closed or was unmarked while the server may have made the token, which this answer's token is never
     // shown for: say so in a Tokens view open again, or still open unmarked, where nothing newer is shown.
     const named = kind === "agent" ? "an agent token" : "a read-only token";
-    const then = meAdmin ? " If the list below has a new one, revoke it and make another." : "";
+    const then = meAdmin ? unshownTokenAdvice(kind) : "";
     if (openTokens && tokenNote.textContent === "" && answer.status === 200) {
       tokenNote.textContent = "This page made " + named + ", but its answer came after the view it was made from closed or changed, so it is not shown and never will be." + then;
     } else if (openTokens && tokenNote.textContent === "" && answer.error) {
@@ -2152,14 +2159,14 @@ async function makeToken() {
       tokenMade.hidden = false;
       tokenValue.focus();
     } else {
-      tokenMakeNote.textContent = "A token may have been made, but this page cannot show it: revoke the newest one in the list below and make another.";
+      tokenMakeNote.textContent = "A token may have been made, but this page cannot show it." + unshownTokenAdvice(kind);
     }
     refresh();
     return;
   }
   if (answer.error) {
     tokenMakeNote.textContent =
-      answer.error + ", so a token may or may not have been made, and no token can be shown for it. If the list below has a new one, revoke it and make another.";
+      answer.error + ", so a token may or may not have been made, and no token can be shown for it." + unshownTokenAdvice(kind);
     refresh();
     return;
   }
