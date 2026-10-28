@@ -5999,7 +5999,7 @@ describe("the page's invites", () => {
   // Runs the served script with the given token, as the approved clients tests do. refuse, when it returns a status,
   // answers a request with that status; "hang" answers only by failing when it is aborted, "fail" rejects, "held" waits
   // for release() to answer as the server does, and a { status, reason, retry } answers with that error.
-  type Refusal = number | "hang" | "fail" | "held" | { status: number; reason: string; retry?: boolean };
+  type Refusal = number | "hang" | "fail" | "held" | "junk" | { status: number; reason: string; retry?: boolean };
   async function load(token: string, refuse: (url: string, init: RequestInit) => Refusal | undefined = () => undefined, server = base) {
     const html = await (await fetch(`${server()}/`)).text();
     const script = /<script>([\s\S]*?)<\/script>/.exec(html)![1];
@@ -6026,6 +6026,7 @@ describe("the page's invites", () => {
         const status = refuse(url, init);
         if (status === "hang") return new Promise<Response>((_resolve, reject) => init.signal!.addEventListener("abort", () => reject(new Error("aborted"))));
         if (status === "held") return new Promise<Response>((resolve) => held.push(() => resolve(fetch(`${server()}${url}`, { ...init, signal: undefined }))));
+        if (status === "junk") return Promise.resolve(new Response("not json", { status: 200 }));
         if (status === "fail") return Promise.reject(new TypeError("fetch failed"));
         if (typeof status === "object") {
           const body = JSON.stringify({ jsonrpc: "2.0", error: { code: -32000, message: status.reason }, id: null });
@@ -7367,6 +7368,41 @@ describe("the page's invites", () => {
       await page.until(() => hookNote(page).startsWith("The server did not answer in time, so the webhook may or may not have been added"));
       expect(page.elements["hook-add"].disabled).toBe(false);
       expect(shownOutsideFields(page, "sekret-value")).toBe(false);
+    });
+
+    it("drops the secret shown before once another webhook is added, even when the page cannot read the new one's", async () => {
+      let junk = false;
+      const page = await load(anaToken, (url, init) => (junk && init.method === "POST" && url === "/api/webhooks" ? "junk" : undefined));
+      await openWebhooks(page);
+      fillHook(page, { url: "https://example.com/one", on: "#general" });
+      addHook(page);
+      await page.until(() => page.elements["webhook-secret"].value !== "");
+      junk = true;
+      fillHook(page, { url: "https://example.com/two", on: "#general" });
+      addHook(page);
+      await page.until(() => hookNote(page).startsWith("A webhook was added, but this page cannot read its secret"));
+      expect(page.elements["webhook-made"].hidden).toBe(true);
+      expect(page.elements["webhook-secret"].value).toBe("");
+      expect(page.elements["webhook-for"].textContent).toBe("");
+    });
+
+    it("keeps the URL, header value and body typed while the request was in flight, and empties only those still as sent", async () => {
+      let hold = false;
+      const page = await load(anaToken, (url, init) => (hold && init.method === "POST" && url === "/api/webhooks" ? "held" : undefined));
+      await openWebhooks(page);
+      hold = true;
+      fillHook(page, { url: "https://example.com/one", on: "#general", name: "X-Api-Key", value: "sekret-value", body: '{"a":"{{delivery}}"}' });
+      addHook(page);
+      await page.until(() => page.held.length === 1);
+      page.elements["hook-url"].value = "https://example.com/next";
+      page.elements["hook-body"].value = '{"b":"{{delivery}}"}';
+      hold = false;
+      page.release();
+      await page.until(() => hookNote(page).startsWith("Added webhook "));
+      expect(page.elements["hook-url"].value).toBe("https://example.com/next");
+      expect(page.elements["hook-body"].value).toBe('{"b":"{{delivery}}"}');
+      expect(page.elements["hook-header-value"].value).toBe("");
+      expect(db.prepare("SELECT url FROM webhooks").pluck().all()).toEqual(["https://example.com/one"]);
     });
 
     it("takes the form and any secret away on a 403, and asks for a token again on a 401", async () => {

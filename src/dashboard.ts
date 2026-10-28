@@ -30,7 +30,8 @@ import { MAX_BODY_LENGTH } from "./messages.js";
 // /api/approvals; that is all it ever writes. An invite's link, an agent's new key, or a new webhook's secret, is shown only in
 // a field of its view, from the answer that made it, and never kept or written anywhere else but the clipboard, when
 // its Copy is pressed. A new webhook's URL, header value and body go on the page only into the form's fields, by value,
-// which are emptied once the server answers that it was added, when its view closes and on unmarked(). With a full token, which acts as no person, it
+// which are emptied when the server answers that it was added (each only while it still holds what was sent), when its
+// view closes and on unmarked(). With a full token, which acts as no person, it
 // reads and offers Delete, but not posting or sending, which the server refuses it: in the compose box's place it says
 // how to sign in as a person. With a read-only token it only reads. An agent token,
 // which the server refuses on every /api path but GET /api/token, it forgets, saying that agent tokens cannot use it. It
@@ -1781,10 +1782,16 @@ async function addAccountWebhook() {
   if (closings !== webhookClosings) return;
   if (answer.status === 200) {
     const added = answer.body;
-    // Only the fields that held what the server keeps private are emptied; the event and the rest stay for the next one.
-    hookUrl.value = "";
-    hookHeaderValue.value = "";
-    hookBody.value = "";
+    // Only the fields that held what the server keeps private are emptied, and only while they still hold what was sent,
+    // so text typed while the request was in flight stays; the event and the rest stay for the next one.
+    if (hookUrl.value.trim() === url) hookUrl.value = "";
+    if (hookHeaderValue.value === headerValue) hookHeaderValue.value = "";
+    if (hookBody.value === body.body) hookBody.value = "";
+    // Another webhook was added, so the secret shown before is no longer the newest, even when this one's cannot be read.
+    webhookMade.hidden = true;
+    webhookFor.textContent = "";
+    webhookSecret.value = "";
+    webhookCopyNote.textContent = "";
     if (added && typeof added === "object" && typeof added.secret === "string" && added.secret !== "" && Number.isInteger(added.id)) {
       hookNote.textContent = "Added webhook " + added.id + (typeof added.on === "string" ? " (" + added.on + ")" : "") + ".";
       webhookFor.textContent =
