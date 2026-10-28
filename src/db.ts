@@ -498,6 +498,9 @@ function migrate(db: Db, path: string): void {
   // The person a person token sends and posts as (`token add --person`), null for every other token. Its row is
   // read-only, so a server from before this column takes it for a read-only token, never a full one.
   addColumn(db, "person_id", "INTEGER REFERENCES agents(id)", "tokens");
+  // DELETE /api/people counts the removed person's live tokens, and through them their sign-ins, by this, not by
+  // scanning the account's tokens under the write lock (removePersonBy in login.ts).
+  db.exec("CREATE INDEX IF NOT EXISTS tokens_live_by_person ON tokens (person_id) WHERE revoked_at IS NULL");
   // 1 for a token the OAuth code exchange issued (exchangeCode in oauth.ts), null for every other token and for one it
   // issued before this column. With it, the client's `client_name` as stored then (null for none) and, for a client known
   // by a Client ID Metadata Document, that URL's host (null otherwise). A server from before these columns ignores them.

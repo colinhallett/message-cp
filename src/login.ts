@@ -225,18 +225,36 @@ export const setAdminBy = (db: Db, account: AccountId, by: number, name: string,
     return { name: marked.name, admin: marked.admin };
   }).immediate();
 
+/** What DELETE /api/people ended: the counts `removePerson` deleted, and the person's tokens and sign-ins it stopped. */
+export type PersonRemoved = Purged & {
+  /** The person's unrevoked person tokens of the account, which `accountForToken` accepted and now refuses. */
+  tokens: number;
+  /** Those tokens' dashboard sign-ins, which GET /api/signins listed and no longer lists. */
+  signins: number;
+};
+
+// A removed person's tokens and sessions are kept: `accountForToken` and LIVE_SIGNIN_TOKEN refuse them once their person
+// is gone. Counted while the person is still live, so these are the ones the removal stops. Found through
+// `tokens_live_by_person`, then each token's sessions through `dashboard_sessions_by_token`.
+export const COUNT_PERSON_TOKENS = "SELECT COUNT(*) FROM tokens WHERE person_id = ? AND account_id = ? AND revoked_at IS NULL";
+export const COUNT_PERSON_SIGNINS = `SELECT COUNT(*) FROM tokens JOIN dashboard_sessions ON dashboard_sessions.token_id = tokens.id
+  WHERE tokens.person_id = ? AND tokens.account_id = ? AND tokens.revoked_at IS NULL`;
+
 /**
  * For DELETE /api/people: removes the live person `name` (any case) of the account `account` as `removePerson` does,
- * or answers undefined, changing nothing, for a name no live person of the account has. `by` is the row of the admin
- * person asking. Throws `NotAdminError` unless they are still a live admin of the account, and `OwnPersonError` if they
- * would remove themselves.
+ * and answers its counts with `tokens` and `signins`, how many of the person's tokens and dashboard sign-ins were
+ * accepted just before and are refused from now on, or answers undefined, changing nothing, for a name no live person
+ * of the account has. Nothing is revoked or deleted for the counts. `by` is the row of the admin person asking. Throws
+ * `NotAdminError` unless they are still a live admin of the account, and `OwnPersonError` if they would remove themselves.
  */
-export const removePersonBy = (db: Db, account: AccountId, by: number, name: string): Purged | undefined =>
+export const removePersonBy = (db: Db, account: AccountId, by: number, name: string): PersonRemoved | undefined =>
   db.transaction(() => {
     const person = personOf(db, account, by, name);
     if (person === undefined) return undefined;
     if (person.id === by) throw new OwnPersonError();
-    return removePerson(db, person.account, name);
+    const tokens = db.prepare(COUNT_PERSON_TOKENS).pluck().get(person.id, account) as number;
+    const signins = db.prepare(COUNT_PERSON_SIGNINS).pluck().get(person.id, account) as number;
+    return { ...removePerson(db, person.account, name), tokens, signins };
   }).immediate();
 
 /** A live person of an account as GET /api/people lists them. */

@@ -1772,7 +1772,8 @@ function openRemovePerson(name) {
   if (!meAdmin || !openInvites) return;
   removeTarget = { name };
   peopleNote.textContent = "";
-  removeText.textContent = "Remove " + name + "? This cannot be undone: it deletes their direct messages and mentions.";
+  removeText.textContent =
+    "Remove " + name + "? This cannot be undone: it deletes their direct messages and mentions, and their tokens and dashboard sign-ins stop working.";
   removeConfirm.hidden = false;
   removeYes.disabled = removing === tokenGeneration;
   document.getElementById("remove-no").focus();
@@ -1820,7 +1821,8 @@ function forgetMessagesOf(name, gone) {
   showDelete();
 }
 
-// Removes the person being asked about with DELETE /api/people and says what it ended from the answer's counts, then
+// Removes the person being asked about with DELETE /api/people and says what it ended from the answer's counts (the
+// messages and mentions deleted, and the tokens and dashboard sign-ins that stopped working), then
 // reads the list again, as cancelInvite does. After a 200, 404 or no answer it also reads the account's messages again
 // from the start (forgetMessagesOf), even if the view has closed since; any other answer after the view closed, or any
 // answer after the token was forgotten, changes nothing.
@@ -1861,10 +1863,17 @@ async function removeAccountPerson() {
   const name = target.name;
   const body = answer.body;
   if (answer.status === 200) {
+    // An older serve answers no tokens or signins; then only what it deleted is said.
+    const access = body && Number.isSafeInteger(body.tokens) && Number.isSafeInteger(body.signins);
+    const stopped = !access
+      ? ""
+      : body.tokens === 0 && body.signins === 0
+        ? " They had no working tokens or dashboard sign-ins."
+        : " Their " + counted(body.tokens, "token") + " and " + counted(body.signins, "dashboard sign-in") + " stopped working.";
     peopleNote.textContent =
-      body && Number.isInteger(body.messages) && Number.isInteger(body.mentions)
+      (body && Number.isInteger(body.messages) && Number.isInteger(body.mentions)
         ? "Removed " + name + ": " + counted(body.messages, "message") + " and " + counted(body.mentions, "mention") + " deleted."
-        : "Removed " + name + ".";
+        : "Removed " + name + ".") + stopped;
   } else if (answer.status === 404) peopleNote.textContent = name + " is already gone (404).";
   else if (answer.error) peopleNote.textContent = answer.error + ", so " + name + " may have been removed: the list below shows whether.";
   else peopleNote.textContent = refusal(answer);

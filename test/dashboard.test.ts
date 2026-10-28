@@ -6426,7 +6426,7 @@ describe("the page's invites", () => {
       button(page, "ben", "Remove").on.click();
       expect(page.elements["remove-confirm"].hidden).toBe(false);
       expect(page.elements["remove-text"].textContent).toBe(
-        "Remove ben? This cannot be undone: it deletes their direct messages and mentions.",
+        "Remove ben? This cannot be undone: it deletes their direct messages and mentions, and their tokens and dashboard sign-ins stop working.",
       );
       // Keep them sends nothing.
       page.elements["remove-no"].on.click();
@@ -6434,13 +6434,37 @@ describe("the page's invites", () => {
       expect(page.writes()).toEqual([]);
       button(page, "ben", "Remove").on.click();
       page.elements["remove-yes"].on.click();
-      await page.until(() => page.elements["people-note"].textContent === "Removed ben: 3 messages and 1 mention deleted.");
+      await page.until(
+        () => page.elements["people-note"].textContent === "Removed ben: 3 messages and 1 mention deleted. They had no working tokens or dashboard sign-ins.",
+      );
       expect(page.writes()).toEqual([{ url: "/api/people?name=ben", method: "DELETE", body: undefined }]);
       expect(page.elements["remove-confirm"].hidden).toBe(true);
       expect(adminOf("ben")).toBeUndefined();
       await page.until(() => personRows(page).length === 1);
       // No message body is shown.
       expect(onPage(page, "hi @ben")).toBe(false);
+    });
+
+    it("says how many of their tokens and dashboard sign-ins stopped working, and only what it deleted for an older serve", async () => {
+      for (const name of ["ben", "cy", "dee"]) addPerson(db, "owner", name);
+      const session = redeemLoginCode(db, makeLoginCode(db, "owner", "ben").code);
+      addToken(db, "owner", false, false, undefined, "ben");
+      let next: Refusal | undefined;
+      const page = await load(anaToken, (url, init) => (init.method === "DELETE" ? next : undefined));
+      await page.openInvites();
+      await page.until(() => personRows(page).length === 4);
+      const removeOne = async (name: string, answer: Refusal | undefined, said: string) => {
+        next = answer;
+        button(page, name, "Remove").on.click();
+        page.elements["remove-yes"].on.click();
+        await page.until(() => page.elements["people-note"].textContent === said);
+      };
+      // The server's own answer: ben's two tokens, one with a sign-in, which is refused from now on.
+      await removeOne("ben", undefined, "Removed ben: 0 messages and 0 mentions deleted. Their 2 tokens and 1 dashboard sign-in stopped working.");
+      expect((await fetch(`${base()}/api/token`, { headers: auth(session) })).status).toBe(401);
+      // An older serve answers { name, messages, mentions } only; anything but whole numbers says nothing more.
+      await removeOne("cy", { rewrite: (body) => ({ name: body.name, messages: 1, mentions: 0 }) }, "Removed cy: 1 message and 0 mentions deleted.");
+      await removeOne("dee", { rewrite: (body) => ({ ...body, tokens: "1", signins: 1 }) }, "Removed dee: 0 messages and 0 mentions deleted.");
     });
 
     it("reads the account's messages again from the start after a removal, so a later message is not skipped", async () => {
@@ -6454,7 +6478,7 @@ describe("the page's invites", () => {
       await page.until(() => personRows(page).length === 2 && page.elements["pair-rows"].children.length === 2);
       button(page, "ben", "Remove").on.click();
       page.elements["remove-yes"].on.click();
-      await page.until(() => page.elements["people-note"].textContent === "Removed ben: 3 messages and 0 mentions deleted.");
+      await page.until(() => page.elements["people-note"].textContent.startsWith("Removed ben: 3 messages and 0 mentions deleted."));
       // bot and eve's next message is read, though the three rows before it were deleted, and ben's pair is gone.
       sendMessage(db, OWNER_ACCOUNT, "eve", "bot", "second");
       for (let i = 0; i < 5 && !page.requests.some((r) => r.url.startsWith("/api/messages?") && r.url.includes("offset=0")); i++) await page.poll();
