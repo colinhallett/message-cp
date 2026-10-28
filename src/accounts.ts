@@ -31,7 +31,8 @@ export interface NewToken {
  * invites. A person token reads what a read-only token reads, sends and posts only as its person, approves MCP clients
  * (POST /oauth/approve) and, while its person is an admin, deletes the account's conversations (DELETE
  * /api/conversation), adds, marks, unmarks and removes other people (/api/people), makes, lists and cancels invites
- * (/api/invites), and removes agents and resets their keys (DELETE /api/agents, POST /api/agents/key).
+ * (/api/invites), removes agents and resets their keys (DELETE /api/agents, POST /api/agents/key), lists and removes
+ * webhooks (/api/webhooks), and revokes the account's approved clients (DELETE /api/approvals).
  */
 export interface TokenAccess {
   account: AccountId;

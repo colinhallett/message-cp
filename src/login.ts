@@ -366,6 +366,21 @@ export const removeWebhookBy = (db: Db, account: AccountId, by: number, id: numb
     return { id, deliveries };
   }).immediate();
 
+/**
+ * For DELETE /api/approvals: revokes the account's unrevoked token `id` that the OAuth code exchange issued, as `token
+ * revoke` does, keeping the agents it acted as or registered, and answers its id, or undefined, changing nothing, for
+ * any other id: another account's token, one not issued through OAuth, one already revoked, or an unknown one. `by` is
+ * the row of the admin person asking. Throws `NotAdminError` unless they are still a live admin of the account.
+ */
+export const revokeApprovalBy = (db: Db, account: AccountId, by: number, id: number): { id: number } | undefined =>
+  db.transaction(() => {
+    requireAdmin(db, account, by);
+    const changed = db
+      .prepare("UPDATE tokens SET revoked_at = ? WHERE id = ? AND account_id = ? AND oauth = 1 AND revoked_at IS NULL")
+      .run(Date.now(), id, account).changes;
+    return changed === 0 ? undefined : { id };
+  }).immediate();
+
 /** An unused invite as GET /api/invites lists it: never its code or hash. */
 export interface PendingInvite {
   id: number;

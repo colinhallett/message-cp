@@ -33,6 +33,7 @@ import {
   listWebhooksBy,
   removeAgentBy,
   removeWebhookBy,
+  revokeApprovalBy,
   resetAgentKeyBy,
   removePersonBy,
   setAdminBy,
@@ -92,6 +93,9 @@ const FULL_TOKEN_AGENTS =
 /** What GET and DELETE /api/webhooks answer a full token, which is no admin person, with its 403. */
 const FULL_TOKEN_WEBHOOKS =
   "A full token cannot list or remove webhooks over the API. Run message-cp webhook list or webhook remove on the server, or sign in as an admin person: run message-cp login-link --url <public url> --account <account> --person <name> on the server";
+/** What DELETE /api/approvals answers a full token, which is no admin person, with its 403. */
+const FULL_TOKEN_APPROVALS =
+  "A full token cannot revoke approved clients over the API. Run message-cp token list, then message-cp token revoke <id>, on the server, or sign in as an admin person: run message-cp login-link --url <public url> --account <account> --person <name> on the server";
 /** The body limit for the OAuth registration, approval and token endpoints, which take a few short fields. */
 const MAX_OAUTH_BODY_BYTES = 16 * 1024;
 /** An agent seen this recently counts as online in GET /api/agents, as does one with a GET /wait held now. */
@@ -773,10 +777,10 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
    * its id, whether it registers its own agents, its agent's name (null for one that registers), for one that registers
    * the names of the live agents it registered (empty for none), the client's name and metadata host (each null for
    * none) and when it was issued. A single-agent token whose agent was removed is left out. Never a token, hash, code or
-   * redirect URI.
+   * redirect URI. DELETE is routed to `apiRevokeApproval` before this, so any method but GET is answered 405 here.
    */
   const apiApprovals = (req: IncomingMessage, res: ServerResponse, account: AccountId) => {
-    if (req.method !== "GET") return reply(res, 405, "Method not allowed", { Allow: "GET" });
+    if (req.method !== "GET") return reply(res, 405, "Method not allowed", { Allow: "GET, DELETE" });
     const query = new URL(req.url ?? "", "http://x").searchParams;
     const paging = page(query, DEFAULT_LIST_LIMIT, MAX_LIST_LIMIT);
     if (paging === undefined) return reply(res, 400, `limit must be 1-${MAX_LIST_LIMIT} and offset 0 or more`);
@@ -1072,6 +1076,29 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
     }
     if (done === undefined) return;
     if (done === null) return reply(res, 404, "No such webhook");
+    sendJson(res, done);
+  };
+
+  /**
+   * DELETE /api/approvals?id=<id>: revokes the account's approval `id`, as `revokeApprovalBy` does, answering `{ id }`,
+   * or 404 for an id that is no unrevoked OAuth token of the account, another account's included. It reads no body, so
+   * it takes no slot. `NotAdminError`, for a token's person removed or unmarked since the token was checked, answers 403.
+   */
+  const apiRevokeApproval = (req: IncomingMessage, res: ServerResponse, account: AccountId, by: number) => {
+    const ids = new URL(req.url ?? "", "http://x").searchParams.getAll("id");
+    if (ids.length !== 1) return reply(res, 400, "Give id once");
+    const id = /^[0-9]{1,16}$/.test(ids[0]) ? Number(ids[0]) : NaN;
+    if (!Number.isSafeInteger(id)) return reply(res, 400, "Give id as a whole number");
+    let done: { id: number } | null | undefined;
+    try {
+      // null for no such approval, kept apart from the undefined `unlessBusy` gives once it has answered 503.
+      done = unlessBusy(res, () => revokeApprovalBy(db, account, by, id) ?? null);
+    } catch (err) {
+      if (err instanceof NotAdminError) return reply(res, 403, err.message);
+      throw err;
+    }
+    if (done === undefined) return;
+    if (done === null) return reply(res, 404, "No such approval");
     sendJson(res, done);
   };
 
@@ -1403,6 +1430,9 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
     // Listing and removing webhooks, which only an admin person token does. Neither reads a body; their 403s close the
     // connection as the routes above do.
     const hooks = path === "/api/webhooks";
+    // Revoking an approved client, which only an admin person token does; any other method on /api/approvals is a read,
+    // or apiApprovals' 405. It reads no body; its 403s close the connection as the routes above do.
+    const revoking = path === "/api/approvals" && req.method === "DELETE";
     // An agent token reaches /mcp and /wait, where it reads as its agent does, and of the /api paths only GET /api/token,
     // so the dashboard can say why it will not work; it cannot read or delete the account's conversations there. It is
     // refused before a slot is taken or a body read.
@@ -1411,7 +1441,7 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
       (path === "/api" || path.startsWith("/api/")) &&
       !(path === "/api/token" && req.method === "GET")
     ) {
-      return reply(res, 403, "Agent tokens cannot use the dashboard API", inviting || managing || hooks ? { Connection: "close" } : {});
+      return reply(res, 403, "Agent tokens cannot use the dashboard API", inviting || managing || hooks || revoking ? { Connection: "close" } : {});
     }
     if (path === "/api/token") return apiToken(req, res, access);
     if (path === "/api/agents" && !managing) return apiAgents(req, res, account);
@@ -1420,25 +1450,25 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
     if (path === "/api/messages") return apiMessages(req, res, account);
     if (path === "/api/search") return apiSearch(req, res, account);
     if (path === "/api/webhook-deliveries") return apiWebhookDeliveries(req, res, account);
-    if (path === "/api/approvals") return apiApprovals(req, res, account);
+    if (path === "/api/approvals" && !revoking) return apiApprovals(req, res, account);
     // A read-only token reaches the read-only endpoints above and nothing else: /mcp can write, and so can any path added later.
-    if (access.readOnly) return reply(res, 403, "This token is read-only", inviting || managing || hooks ? { Connection: "close" } : {});
+    if (access.readOnly) return reply(res, 403, "This token is read-only", inviting || managing || hooks || revoking ? { Connection: "close" } : {});
     // A person token also sends and posts, only as its person (checked by row once the body is read), approves clients
     // (above), and, while its person is an admin, deletes the account's conversations as a full token does, lists, adds,
-    // marks, unmarks and removes people, makes, lists and cancels invites, removes agents and resets their keys, and lists
-    // and removes webhooks. It reaches nothing else: not /mcp, /wait, nor any path added later. It is refused before a slot
-    // is taken or a body read.
+    // marks, unmarks and removes people, makes, lists and cancels invites, removes agents and resets their keys, lists
+    // and removes webhooks, and revokes approved clients. It reaches nothing else: not /mcp, /wait, nor any path added
+    // later. It is refused before a slot is taken or a body read.
     if (
       access.person &&
       path !== "/api/send" &&
       path !== "/api/post" &&
-      !(access.person.admin && (inviting || managing || hooks || path === "/api/conversation"))
+      !(access.person.admin && (inviting || managing || hooks || revoking || path === "/api/conversation"))
     ) {
       return reply(
         res,
         403,
         access.person.admin
-          ? "An admin person token only reads, sends, posts, deletes, invites, changes people and manages agents and webhooks"
+          ? "An admin person token only reads, sends, posts, deletes, invites, changes people, manages agents and webhooks and revokes approved clients"
           : "A person token only reads, sends and posts",
         { Connection: "close" },
       );
@@ -1464,6 +1494,11 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
     if (hooks) {
       if (!access.person) return reply(res, 403, FULL_TOKEN_WEBHOOKS, { Connection: "close" });
       return apiWebhooks(req, res, account, access.person.id);
+    }
+    // And only an admin person revokes approved clients over the API; a full token is refused before anything runs.
+    if (revoking) {
+      if (!access.person) return reply(res, 403, FULL_TOKEN_APPROVALS, { Connection: "close" });
+      return apiRevokeApproval(req, res, account, access.person.id);
     }
     if (path === "/api/conversation") return apiConversation(req, res, account);
     if (path === "/wait") return wait(req, res, account, access.agent, access.registers);
