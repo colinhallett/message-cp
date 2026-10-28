@@ -338,6 +338,8 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   #agents { right: 0; transform: translateX(100%); border-left: 1px solid var(--border); }
   #view.show-sidebar #sidebar, #view.show-agents #agents { visibility: visible; transform: none; }
   .entry { padding: var(--s2) var(--s3); }
+  /* A token's last use goes under its made time, so neither runs under its Revoke button. */
+  .entry.token { grid-template-columns: auto auto minmax(0, 1fr) auto; grid-template-areas: "from tag time revoke" "used used used revoke" "body body body revoke"; }
   #writer { padding: var(--s2) var(--s3); }
 }
 @media (prefers-reduced-motion: reduce) {
