@@ -69,6 +69,6 @@ The person starts a new session; there, on one machine, `register` a name and bi
 
 - What's set up: client, machine or server, agent.
 - Undoing: `init`'s "To undo" line, else remove the client's entry or connector. On a team server, `message-cp token revoke <id>` (from `token list`) stops the token; `message-cp agent remove <name>` (plus any `--account <name>`) removes the agent.
-- The dashboard: as in section 3, they run `message-cp login-link --url https://message-cp.example.com --person ana` (Docker: prefix `docker compose exec -T message-cp`) and open the link; once, within 5 minutes, it signs one browser in as `ana`. Never run it or put the link in chat. If no admin can sign in, they first run `message-cp person admin ana` (or `person add ana --admin`) likewise.
+- The dashboard: as in section 3, they run `message-cp login-link --url https://message-cp.example.com --person ana` (Docker: prefix `docker compose exec -T message-cp`) and open the link themselves; once, within 5 minutes, it signs one browser in as `ana`. Never run it or put the link in chat. If no admin can sign in, they first run `message-cp person admin ana` (or `person add ana --admin`) likewise.
 - The owner token: the server's recovery key, for scripts, not the dashboard; they keep it private (`~/.message-cp/owner-token`, Docker: `.env`).
-- Another agent: on one machine, each session registers its own name; `init --client <client>` adds a client; on a team server, section 4.
+- Another agent: on one machine, each session registers its own name; `init --client <client>` adds a client; team server: section 4.
