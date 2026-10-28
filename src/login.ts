@@ -503,18 +503,35 @@ export const addTokenBy = (db: Db, account: AccountId, by: number, kind: MadeTok
 
 /**
  * For DELETE /api/tokens: revokes the account's unrevoked token `id` of any kind, as `token revoke` does, the token the
- * request carries included, and answers its id, or undefined, changing nothing, for another account's token, one
- * already revoked, or an unknown one. `by` is the row of the admin person asking. Throws `NotAdminError` unless they
- * are still a live admin of the account.
+ * request carries included, and answers its id with `signins`, how many of its dashboard sign-ins (`dashboard_sessions`)
+ * `accountForToken` still accepted just before and refuses from now on, or undefined, changing and counting nothing, for
+ * another account's token, one already revoked, or an unknown one. A person token whose person is no longer a live
+ * person of its account counts 0, as its sign-ins were already refused. Its session rows are kept: `accountForToken`
+ * refuses them through the revoked token. `by` is the row of the admin person asking. Throws `NotAdminError` unless
+ * they are still a live admin of the account.
  */
-export const revokeTokenBy = (db: Db, account: AccountId, by: number, id: number): { id: number } | undefined =>
+export const revokeTokenBy = (db: Db, account: AccountId, by: number, id: number): { id: number; signins: number } | undefined =>
   db.transaction(() => {
     requireAdmin(db, account, by);
     const changed = db
       .prepare("UPDATE tokens SET revoked_at = ? WHERE id = ? AND account_id = ? AND revoked_at IS NULL")
       .run(Date.now(), id, account).changes;
-    return changed === 0 ? undefined : { id };
+    if (changed === 0) return undefined;
+    return { id, signins: db.prepare(COUNT_SIGNINS).pluck().get(id) as number };
   }).immediate();
+
+/**
+ * Counts the dashboard sign-ins of the token with the bound id that `accountForToken` would accept but for its revoke:
+ * none for a single-agent token whose agent is gone or a person token whose person is gone, as `accountForToken`
+ * refuses those, with the agent and the person found in the token's own account under the same conditions. Searched
+ * through the token's primary key and `dashboard_sessions_by_token`, never by scanning sessions.
+ */
+export const COUNT_SIGNINS = `SELECT COUNT(*) FROM tokens JOIN dashboard_sessions ON dashboard_sessions.token_id = tokens.id
+  LEFT JOIN agents ON agents.id = tokens.agent_id AND agents.account_id = tokens.account_id
+    AND agents.removed_at IS NULL AND agents.person = 0
+  LEFT JOIN agents people ON people.id = tokens.person_id AND people.account_id = tokens.account_id
+    AND people.removed_at IS NULL AND people.person = 1
+  WHERE tokens.id = ? AND (tokens.agent_id IS NULL OR agents.id IS NOT NULL) AND (tokens.person_id IS NULL OR people.id IS NOT NULL)`;
 
 /** A live dashboard sign-in, as GET /api/signins lists it: never its session id, its hash or its token. */
 export interface AccountSignin {
