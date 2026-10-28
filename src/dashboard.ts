@@ -272,8 +272,9 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 /* A webhook: what it fires on, its id, its origin and what it sends, with its Remove button at the end. */
 .entry.webhook { grid-template-columns: auto auto minmax(0, 1fr) auto; grid-template-areas: "from tag . remove" "body body body remove"; }
 .entry.webhook > button { grid-area: remove; align-self: center; }
-/* A token: its kind, its id and when it was made, then who or what it is for, with its Revoke button at the end. */
-.entry.token { grid-template-columns: auto auto minmax(0, 1fr) auto; grid-template-areas: "from tag time revoke" "body body body revoke"; }
+/* A token: its kind, its id, when it was made and last used, then who or what it is for, with its Revoke button at the end. */
+.entry.token { grid-template-columns: auto auto auto minmax(0, 1fr) auto; grid-template-areas: "from tag time used revoke" "body body body body revoke"; }
+.entry.token > .used { grid-area: used; }
 .entry.token > button { grid-area: revoke; align-self: center; }
 #webhook-confirm, #token-confirm { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2); padding: var(--s2) var(--s4); border-bottom: 1px solid var(--border); }
 #webhook-text, #token-text { flex: 1 1 100%; margin: 0; }
@@ -3598,7 +3599,7 @@ async function readTokens(token, signal, gen) {
     // A confirmation for a token the list no longer gives as it was closes, so it never revokes one it no longer
     // describes. The one being revoked is left to that request's answer, which closes it.
     const inFlight = revokingToken === tokenGeneration && revokingTokenTarget === tokenTarget;
-    if (tokenTarget && !inFlight && !page.items.some((t) => JSON.stringify(t) === tokenTarget.key)) {
+    if (tokenTarget && !inFlight && !page.items.some((t) => tokenKey(t) === tokenTarget.key)) {
       tokenNote.textContent =
         "Token " + tokenTarget.id + " (" + tokenTarget.label + ") changed or went from the list, so its confirmation closed and nothing was sent.";
       closeRevokeToken();
@@ -4291,8 +4292,8 @@ function webhookRow(w) {
   return li;
 }
 
-// A token of the account: its kind, its id, which message-cp token revoke takes, and when it was made, then who or what
-// it is for: a person token's person, or "person removed"; an agent token's bound agent, "agent removed", "registers its
+// A token of the account: its kind, its id, which message-cp token revoke takes, when it was made, and when it was last
+// used ("never used" for a lastUsedAt of null), then who or what it is for: a person token's person, or "person removed"; an agent token's bound agent, "agent removed", "registers its
 // own agents", or "bound to no agent"; and an OAuth token's client (its name, else its host, else "unnamed
 // client"), with control and format characters replaced as approvalRow does. A Revoke button asks first. Never a token
 // or hash, which GET /api/tokens does not give. Throws on an entry that is none of the shapes GET /api/tokens gives, so
@@ -4312,7 +4313,7 @@ function tokenRow(t) {
   // An OAuth token, of any kind, also has its client's name and host, each null when the client gave none.
   const client = t && t.client;
   const clientShape = client === undefined || (client !== null && typeof client === "object" && nameOrNull(client.name) && nameOrNull(client.host));
-  if (!(personShape || agentShape || plainShape) || !clientShape || !Number.isInteger(t.id) || typeof t.createdAt !== "string") {
+  if (!(personShape || agentShape || plainShape) || !clientShape || !Number.isInteger(t.id) || typeof t.createdAt !== "string" || !nameOrNull(t.lastUsedAt)) {
     throw new TypeError("not a token");
   }
   const facts = [];
@@ -4325,6 +4326,8 @@ function tokenRow(t) {
   li.className = "entry token";
   const time = part("time", "time", "made " + when(t.createdAt));
   time.title = t.createdAt;
+  const used = part("time", "time used", t.lastUsedAt === null ? "never used" : "last used " + when(t.lastUsedAt));
+  if (t.lastUsedAt !== null) used.title = t.lastUsedAt;
   const button = part("button", "", "Revoke");
   button.type = "button";
   button.setAttribute("aria-label", "Revoke token " + t.id);
@@ -4332,10 +4335,10 @@ function tokenRow(t) {
     id: t.id,
     label: [kind, ...facts].join(", "),
     mine: kind === "person" && typeof t.person === "string" && me !== undefined && t.person.toLowerCase() === me.toLowerCase(),
-    key: JSON.stringify(t),
+    key: tokenKey(t),
   };
   button.addEventListener("click", () => openRevokeToken(target));
-  li.append(part("span", "from", kind), part("span", "tag", "token " + t.id), time);
+  li.append(part("span", "from", kind), part("span", "tag", "token " + t.id), time, used);
   if (facts.length > 0) li.append(part("div", "body", facts.join(" · ")));
   li.append(button);
   return li;
@@ -4397,6 +4400,14 @@ function appendMessages(page) {
     showPairs();
     showDelete();
   }
+}
+
+// What a revoke confirmation compares to tell whether the list still gives its token as it was: the whole entry but when
+// it was last used, which changes about once a minute while the token is in use.
+function tokenKey(t) {
+  if (t === null || typeof t !== "object") return JSON.stringify(t);
+  const { lastUsedAt, ...rest } = t;
+  return JSON.stringify(rest);
 }
 
 function when(iso) {
