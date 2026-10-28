@@ -2960,7 +2960,8 @@ async function readApprovals(token, signal, gen) {
     if (approvalTarget && !inFlight && !page.items.some((a) => JSON.stringify(a) === approvalTarget.key)) {
       approvalNote.textContent =
         "Token " + approvalTarget.id + " (" + approvalTarget.client + ") changed or went from the list, so its confirmation closed and nothing was sent.";
-      closeRevokeApproval();
+      // Focus inside the confirmation goes to the view's Close button, as the confirmation is hidden; focus elsewhere stays.
+      closeRevokeApproval(approvalConfirm.contains(document.activeElement));
     }
     approvalCount.textContent = String(page.items.length);
     logNote.textContent =

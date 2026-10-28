@@ -3288,7 +3288,10 @@ describe("the page's approved clients", () => {
     addEventListener(type: string, fn: () => void): void;
     setAttribute(name: string, value: string): void;
     focus(): void;
+    contains(node: unknown): boolean;
   }
+  // The element that last took focus, which the page reads as document.activeElement.
+  let focused: Stub | null = null;
   const el = (): Stub => ({
     on: {},
     hidden: true,
@@ -3309,7 +3312,12 @@ describe("the page's approved clients", () => {
       this.on[type] = fn;
     },
     setAttribute() {},
-    focus() {},
+    focus() {
+      focused = this;
+    },
+    contains(node) {
+      return node === this || this.children.some((c) => c.contains(node));
+    },
   });
   const text = (node: Stub): string => (node.children.length > 0 ? node.children.map(text).join("") : node.textContent);
   const field = (row: Stub, name: string) => {
@@ -3361,7 +3369,12 @@ describe("the page's approved clients", () => {
       history: { replaceState() {} },
       addEventListener() {},
       URLSearchParams,
-      document: { getElementById: (id: string) => (elements[id] ??= el()), createElement: el, addEventListener() {} },
+      document: {
+        getElementById: (id: string) => (elements[id] ??= el()), createElement: el, addEventListener() {},
+        get activeElement() {
+          return focused;
+        },
+      },
       sessionStorage: { getItem: (k: string) => store.get(k) ?? null, setItem: (k: string, v: string) => store.set(k, v), removeItem: (k: string) => store.delete(k) },
       setTimeout: timers.set,
       clearTimeout: timers.clear,
@@ -3860,10 +3873,14 @@ describe("the page's approved clients", () => {
       // Revoked on the server: the next poll no longer lists it.
       revoke(page, cursor.id);
       expect(confirm(page).hidden).toBe(false);
+      // The confirmation's Keep it has the focus, which goes to the view's Close button as the confirmation is hidden.
+      confirm(page).children.push(page.elements["approval-no"], page.elements["approval-yes"]);
+      page.elements["approval-no"].focus();
       revokeToken(db, cursor.id);
       await page.poll();
       await page.until(() => rows(page).length === 1);
       expect(confirm(page).hidden).toBe(true);
+      expect(focused).toBe(page.elements["close-log"]);
       expect(note(page)).toBe(`Token ${cursor.id} (Cursor) changed or went from the list, so its confirmation closed and nothing was sent.`);
       page.elements["approval-yes"].on.click();
       expect(page.writes()).toEqual([]);
@@ -3872,9 +3889,12 @@ describe("the page's approved clients", () => {
       await page.poll();
       await page.until(() => page.polls.size === 1);
       expect(confirm(page).hidden).toBe(false);
+      // Focus the reader moved out of the confirmation stays where it is.
+      page.elements["log-title"].focus();
       registerWithIdentity(db, OWNER_ACCOUNT, "codex-1", "x", undefined, codex.id);
       await page.poll();
       await page.until(() => confirm(page).hidden);
+      expect(focused).toBe(page.elements["log-title"]);
       expect(note(page)).toBe(`Token ${codex.id} (Codex) changed or went from the list, so its confirmation closed and nothing was sent.`);
       page.elements["approval-yes"].on.click();
       expect(page.writes()).toEqual([]);
