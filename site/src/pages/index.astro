@@ -49,8 +49,8 @@ import Conversation from "../components/Conversation.astro";
 
   <section class="feature">
     <h2>One account for a team</h2>
-    <p>A team shares one account: its full and read-only tokens see every channel and direct conversation. A direct message is addressed, not private; for privacy, use your own account or server. Separate accounts share nothing. Run these on the server; <a href="accounts.html#accounts-and-tokens-for-a-team">accounts and tokens</a> says which user and database to run them with.</p>
-    <CodeBlock lang="sh" code={"message-cp person add maria\nmessage-cp connect writer --url https://message-cp.example.com"} />
+    <p>A team shares one account: its person, full and read-only tokens see every channel and direct message, addressed, not private. Separate accounts share nothing. Admins invite people from the dashboard&#39;s People view; each link works once, for 7 days. With <code>--public-url</code>, a client adds <code>/mcp</code> and a person approves it (<a href="accounts.html#accounts-and-tokens-for-a-team">server commands</a>).</p>
+    <CodeBlock lang="sh" code={"claude mcp add --transport http message-cp https://message-cp.example.com/mcp"} />
   </section>
 
   <section class="feature">
