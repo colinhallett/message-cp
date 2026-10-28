@@ -25,13 +25,16 @@ import { MAX_BODY_LENGTH } from "./messages.js";
 // invite for one with POST /api/invites and, after confirming, cancels one with DELETE /api/invites, and, from an
 // agent's details in the agents panel, after confirming, removes the agent with DELETE /api/agents or gives it a new key
 // with POST /api/agents/key, and, from the sidebar's "Webhooks" entry, which lists the account's webhooks with GET
-// /api/webhooks, after confirming, removes one with its deliveries with DELETE /api/webhooks, from the "Approved
-// clients" entry, after confirming, revokes an approved client's token with DELETE /api/approvals, and, from the
-// sidebar's "Tokens" entry, which lists the account's unrevoked tokens with GET /api/tokens, makes a read-only or agent
-// token with POST /api/tokens and, after confirming, revokes one with DELETE /api/tokens; that is all it ever writes. An
-// invite's link, an agent's new key, or a new token, is shown only in a field of its view, from the answer that made
-// it, and never kept or written anywhere else but the clipboard, when its Copy is pressed. With a full token, which
-// acts as no person, it reads and offers Delete, but not posting or sending, which the server refuses it: in the compose box's place it says
+// /api/webhooks, adds one with POST /api/webhooks and, after confirming, removes one with its deliveries with DELETE
+// /api/webhooks, from the "Approved clients" entry, after confirming, revokes an approved client's token with DELETE
+// /api/approvals, and, from the sidebar's "Tokens" entry, which lists the account's unrevoked tokens with GET
+// /api/tokens, makes a read-only or agent token with POST /api/tokens and, after confirming, revokes one with DELETE
+// /api/tokens; that is all it ever writes. An invite's link, an agent's new key, a new webhook's secret, or a new token,
+// is shown only in a field of its view, from the answer that made it, and never kept or written anywhere else but the
+// clipboard, when its Copy is pressed. A new webhook's URL, header value and body go on the page only into the form's fields, by value,
+// which are emptied when the server answers that it was added (each only while it still holds what was sent), when its
+// view closes and on unmarked(). With a full token, which acts as no person, it
+// reads and offers Delete, but not posting or sending, which the server refuses it: in the compose box's place it says
 // how to sign in as a person. With a read-only token it only reads. An agent token,
 // which the server refuses on every /api path but GET /api/token, it forgets, saying that agent tokens cannot use it. It
 // puts agent- and person-supplied text on the page with textContent, never as HTML.
@@ -274,6 +277,19 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .entry.token > button { grid-area: revoke; align-self: center; }
 #webhook-confirm, #token-confirm { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2); padding: var(--s2) var(--s4); border-bottom: 1px solid var(--border); }
 #webhook-text, #token-text { flex: 1 1 100%; margin: 0; }
+/* The "Webhooks" view's "Add a webhook" form heads the view, its fields wrapping two to a row where there is room. */
+#webhook-forms { display: flex; flex-direction: column; gap: var(--s2); padding: var(--s3) var(--s4); border-bottom: 1px solid var(--border); }
+#webhook-forms h3 { margin: 0; font-size: var(--text-sm); font-weight: 600; color: var(--muted); }
+#webhook-forms .note { margin: 0; }
+#webhook-add-form { display: flex; flex-wrap: wrap; gap: var(--s2) var(--s3); }
+#webhook-add-form > h3, #webhook-add-form > .note, #webhook-add-form > .actions, #webhook-add-form > .wide { flex: 1 1 100%; }
+#webhook-add-form > .field { flex: 1 1 14rem; min-width: 0; display: flex; flex-direction: column; gap: var(--s1); }
+#webhook-add-form > .check { flex: 1 1 100%; display: flex; align-items: center; gap: var(--s2); }
+#webhook-add-form input[type="text"], #webhook-add-form input[type="password"], #webhook-add-form input[type="number"], #webhook-add-form textarea { padding: var(--s1); background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); }
+#webhook-add-form textarea { font-family: var(--font-mono); resize: vertical; }
+#webhook-made { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2); }
+#webhook-for { flex: 1 1 100%; margin: 0; }
+#webhook-secret { flex: 1 1 16rem; min-width: 0; font-family: var(--font-mono); }
 /* The "Tokens" view's "Make a token" form, and the token it made with its Copy button, sit above the list. */
 #token-forms { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2); padding: var(--s3) var(--s4); border-bottom: 1px solid var(--border); }
 #token-forms h3 { flex: 1 1 100%; margin: 0; font-size: var(--text-sm); font-weight: 600; color: var(--muted); }
@@ -373,6 +389,21 @@ const webhookConfirm = document.getElementById("webhook-confirm");
 const webhookText = document.getElementById("webhook-text");
 const webhookYes = document.getElementById("webhook-yes");
 const webhookNote = document.getElementById("webhook-note");
+const webhookForms = document.getElementById("webhook-forms");
+const webhookAddForm = document.getElementById("webhook-add-form");
+const hookUrl = document.getElementById("hook-url");
+const hookOn = document.getElementById("hook-on");
+const hookIncludeText = document.getElementById("hook-text");
+const hookHeaderName = document.getElementById("hook-header-name");
+const hookHeaderValue = document.getElementById("hook-header-value");
+const hookMax = document.getElementById("hook-max");
+const hookBody = document.getElementById("hook-body");
+const hookAdd = document.getElementById("hook-add");
+const hookNote = document.getElementById("hook-note");
+const webhookMade = document.getElementById("webhook-made");
+const webhookFor = document.getElementById("webhook-for");
+const webhookSecret = document.getElementById("webhook-secret");
+const webhookCopyNote = document.getElementById("webhook-copy-note");
 const tokenEntry = document.getElementById("token-entry");
 const tokenConfirm = document.getElementById("token-confirm");
 const tokenText = document.getElementById("token-text");
@@ -685,6 +716,8 @@ const NOT_ADMIN_AGENTS = "The server says you are no longer an admin of this acc
 const NOT_ADMIN = "The server says you are no longer an admin of this account (403), so this page no longer offers changing people or invites.";
 // The tokenGeneration a DELETE /api/webhooks is in flight for, or undefined, as cancelling is for an invite.
 let removingWebhook;
+// The tokenGeneration a POST /api/webhooks is in flight for, or undefined, likewise.
+let addingWebhook;
 // The webhook that DELETE is removing (the target its confirmation was for), while removingWebhook is set.
 let removingHook;
 // The webhook the "Webhooks" view asks before removing ({ id, on, key }, key being its entry as GET /api/webhooks gave it),
@@ -696,9 +729,8 @@ let webhookClosings = 0;
 // The list the webhook rows were last built from, so a poll rebuilds them only when it changes, never taking the focus
 // from a Remove button.
 let webhookRowsKey = "";
-const NO_WEBHOOKS =
-  "No webhooks. Add one on the server with message-cp webhook add --url <url> --on <#channel | mention:<agent> | agent:<agent>> --account <account>";
-const NOT_ADMIN_WEBHOOKS = "The server says you are no longer an admin of this account (403), so this page no longer lists or removes webhooks.";
+const NO_WEBHOOKS = 'No webhooks. Add one with the "Add a webhook" form above.';
+const NOT_ADMIN_WEBHOOKS = "The server says you are no longer an admin of this account (403), so this page no longer lists, adds or removes webhooks.";
 // The tokenGeneration a DELETE /api/approvals is in flight for, or undefined, as removingWebhook is for a webhook.
 let revokingApproval;
 // The approval that DELETE is revoking (the target its confirmation was for), while revokingApproval is set.
@@ -799,6 +831,7 @@ function ask(message) {
   cancelYes.disabled = false;
   removeYes.disabled = false;
   webhookYes.disabled = false;
+  hookAdd.disabled = false;
   approvalYes.disabled = false;
   tokenYes.disabled = false;
   tokenKind.value = "read-only";
@@ -907,6 +940,11 @@ document.getElementById("agent-key-done").addEventListener("click", () => closeA
 document.getElementById("agent-key-copy").addEventListener("click", () => copyAgentKey());
 document.getElementById("remove-no").addEventListener("click", () => closeRemovePerson(true));
 webhookYes.addEventListener("click", () => removeWebhook());
+webhookAddForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  addAccountWebhook();
+});
+document.getElementById("webhook-copy").addEventListener("click", () => copyWebhookSecret());
 document.getElementById("webhook-no").addEventListener("click", () => closeRemoveWebhook(true));
 approvalYes.addEventListener("click", () => revokeApproval());
 document.getElementById("approval-no").addEventListener("click", () => closeRevokeApproval(true));
@@ -1054,12 +1092,14 @@ function closeLog() {
   closeRemovePerson();
   peopleRows.replaceChildren();
   peopleRowsKey = "";
-  // Leaving the webhooks view drops its confirmation and note, and any answer still to come.
+  // Leaving the webhooks view drops its confirmation and note, its form's fields, the secret it showed, and any answer
+  // still to come.
   openWebhooks = false;
   webhookClosings++;
   closeRemoveWebhook();
   webhookNote.textContent = "";
   webhookRowsKey = "";
+  closeWebhookForms();
   // Leaving the tokens view does the same, and drops its form and any token it made.
   openTokens = false;
   tokenClosings++;
@@ -1201,8 +1241,8 @@ function openInviteLog() {
   personName.focus();
 }
 
-// Opens the "Webhooks" view in the log, for an admin person only, and polls again at once, as openApprovalLog does: the
-// account's webhooks, oldest first, each with a Remove button that asks first.
+// Opens the "Webhooks" view in the log, for an admin person only, and polls again at once, as openApprovalLog does: its
+// "Add a webhook" form, then the account's webhooks, oldest first, each with a Remove button that asks first.
 function openWebhookLog() {
   if (!meAdmin) return;
   closeLog();
@@ -1210,11 +1250,32 @@ function openWebhookLog() {
   postRows.className = "top";
   logTitle.textContent = "Webhooks";
   logNote.textContent = "Loading…";
+  webhookForms.hidden = false;
+  hookAdd.disabled = addingWebhook === tokenGeneration;
   log.hidden = false;
   panel("");
   markOpen();
   cancel();
   poll(generation);
+  hookUrl.focus();
+}
+
+// Hides the "Webhooks" view's form and the secret it showed, emptying every field, so neither a URL, a header value, a
+// body nor a secret outlives the view.
+function closeWebhookForms() {
+  webhookForms.hidden = true;
+  hookUrl.value = "";
+  hookOn.value = "";
+  hookIncludeText.checked = true;
+  hookHeaderName.value = "";
+  hookHeaderValue.value = "";
+  hookMax.value = "";
+  hookBody.value = "";
+  hookNote.textContent = "";
+  webhookMade.hidden = true;
+  webhookFor.textContent = "";
+  webhookSecret.value = "";
+  webhookCopyNote.textContent = "";
 }
 
 // Opens the "Tokens" view in the log, for an admin person only, and polls again at once, as openWebhookLog does: its
@@ -1277,8 +1338,8 @@ function showInviteEntry() {
 // note saying why, and an open "Approved clients" view keeps its list without Revoke buttons, with a note saying why.
 function unmarked() {
   meAdmin = false;
-  // An Add or New link still in flight then shows no link, and a webhook's removal, an approval's revocation or a
-  // token's revoking still in flight changes nothing.
+  // An Add or New link still in flight then shows no link, a webhook's addition shows no secret, and a webhook's addition
+  // or removal, an approval's revocation or a token's revoking still in flight changes nothing.
   inviteClosings++;
   webhookClosings++;
   approvalClosings++;
@@ -1299,9 +1360,10 @@ function unmarked() {
     return;
   }
   if (openWebhooks) {
-    // The focus may be on a Remove button or in the confirmation, which go, so it moves to the view's Close button.
+    // The focus may be on a Remove button, in the form or in the confirmation, which go, so it moves to the view's Close button.
     closeRemoveWebhook();
     webhookNote.textContent = "";
+    closeWebhookForms();
     document.getElementById("close-log").focus();
     postRows.replaceChildren();
     webhookRowsKey = "";
@@ -1788,6 +1850,117 @@ async function removeWebhook() {
   else if (answer.error) webhookNote.textContent = answer.error + ", so webhook " + hook.id + " may have been removed: the list below shows whether.";
   else webhookNote.textContent = refusal(answer);
   if (answer.status === 200 || answer.status === 404 || answer.error) refresh();
+}
+
+// Adds a webhook to the account with POST /api/webhooks from the "Add a webhook" form, and shows the secret from the
+// answer once, in the view's read-only field, with a Copy button, as resetKey shows a key. It sends url, on and
+// includeText, and header, maxPerHour and body only when filled in; the URL and the event are checked by the server
+// alone. Nothing is sent without a URL and an event, and Add stays disabled while the request is in flight. A 403
+// unmarks the person whatever is open now, as removeWebhook's does, and a 401 asks for another token; any other answer
+// after the view closed, or any answer after the token was forgotten, changes nothing and shows no secret.
+async function addAccountWebhook() {
+  const token = sessionStorage.getItem(KEY);
+  if (!token) return ask();
+  const tokenGen = tokenGeneration;
+  if (!meAdmin || !openWebhooks || addingWebhook === tokenGen) return;
+  const url = hookUrl.value.trim();
+  const on = hookOn.value.trim();
+  if (url === "" || on === "") {
+    hookNote.textContent = url === "" ? "Enter the URL to deliver to." : "Enter what it fires on.";
+    return;
+  }
+  const body = { url, on, includeText: hookIncludeText.checked };
+  const headerName = hookHeaderName.value.trim();
+  const headerValue = hookHeaderValue.value;
+  // The server splits the header at its first colon, so a colon in the name would move part of it into the value.
+  if (headerName.includes(":")) {
+    hookNote.textContent = "A header name has no colon: put the name alone in Header name, and the rest in Header value.";
+    return;
+  }
+  // Either half given sends the header, so the server refuses one left half filled in rather than it being dropped.
+  if (headerName !== "" || headerValue !== "") body.header = headerName + ": " + headerValue;
+  if (hookMax.value.trim() !== "") body.maxPerHour = Number(hookMax.value);
+  if (hookBody.value !== "") body.body = hookBody.value;
+  addingWebhook = tokenGen;
+  const closings = webhookClosings;
+  hookAdd.disabled = true;
+  hookNote.textContent = "Adding…";
+  const ac = new AbortController();
+  const deadline = setTimeout(() => ac.abort(), TIMEOUT_MS);
+  let answer;
+  try {
+    answer = await inviteWrite(token, ac, "POST", "/api/webhooks", body);
+  } finally {
+    clearTimeout(deadline);
+  }
+  if (tokenGen !== tokenGeneration) return;
+  addingWebhook = undefined;
+  hookAdd.disabled = false;
+  if (answer.status === 401) return ask("The server refused that token. Enter another.");
+  if (answer.status === 403) return unmarked();
+  if (closings !== webhookClosings) return;
+  if (answer.status === 200) {
+    const added = answer.body;
+    // Only the fields that held what the server keeps private are emptied, and only while they still hold what was sent,
+    // so text typed while the request was in flight stays; the event and the rest stay for the next one.
+    if (hookUrl.value.trim() === url) hookUrl.value = "";
+    if (hookHeaderValue.value === headerValue) hookHeaderValue.value = "";
+    if (hookBody.value === body.body) hookBody.value = "";
+    // Another webhook was added, so the secret shown before is no longer the newest, even when this one's cannot be read.
+    hideWebhookSecret();
+    if (added && typeof added === "object" && typeof added.secret === "string" && added.secret !== "" && Number.isInteger(added.id)) {
+      hookNote.textContent = "Added webhook " + added.id + (typeof added.on === "string" ? " (" + added.on + ")" : "") + ".";
+      webhookFor.textContent =
+        "Webhook " + added.id + "'s secret. It signs each delivery (X-Message-CP-Signature); check it before trusting one. " +
+        "It shows only here, until you leave this view or add another, and is never shown again.";
+      webhookSecret.value = added.secret;
+      webhookCopyNote.textContent = "";
+      webhookMade.hidden = false;
+      webhookSecret.focus();
+    } else {
+      hookNote.textContent = "A webhook was added, but this page cannot read its secret: remove it from the list below and add it again.";
+    }
+    refresh();
+    return;
+  }
+  if (answer.error) {
+    // Another webhook may have been added, so the secret shown before may no longer be the newest.
+    hideWebhookSecret();
+    hookNote.textContent =
+      answer.error + ", so the webhook may or may not have been added: the list below shows whether. " +
+      "No secret can be shown for it, so if it is listed, remove it and add it again.";
+    refresh();
+    return;
+  }
+  hookNote.textContent = refusal(answer);
+}
+
+// Hides the secret the "Webhooks" view showed for the webhook added before.
+function hideWebhookSecret() {
+  webhookMade.hidden = true;
+  webhookFor.textContent = "";
+  webhookSecret.value = "";
+  webhookCopyNote.textContent = "";
+}
+
+// Copies the shown secret to the clipboard; where the browser refuses, selects it to copy by hand, as copyInvite does.
+async function copyWebhookSecret() {
+  const secret = webhookSecret.value;
+  if (!secret) return;
+  const closings = webhookClosings;
+  let copied = false;
+  try {
+    await navigator.clipboard.writeText(secret);
+    copied = true;
+  } catch {
+    copied = false;
+  }
+  if (closings !== webhookClosings || webhookSecret.value !== secret) return;
+  if (!copied) {
+    webhookSecret.focus();
+    webhookSecret.select();
+  }
+  webhookCopyNote.textContent = copied ? "Copied." : "This browser did not copy it: the secret is selected, so copy it yourself.";
 }
 
 // Asks above the list before revoking an approved client; nothing is sent until its "Revoke client" is pressed.
@@ -4379,6 +4552,34 @@ export const DASHBOARD_HTML = `<!doctype html>
 </div>
 <p id="cancel-note" class="note" role="status"></p>
 <h3 id="invites-title">Unused invites</h3>
+</div>
+<div id="webhook-forms" hidden>
+<form id="webhook-add-form" aria-labelledby="hook-title">
+<h3 id="hook-title">Add a webhook</h3>
+<p id="hook-note" class="note" role="status"></p>
+<div class="field"><label for="hook-url">URL</label>
+<input id="hook-url" type="text" inputmode="url" autocomplete="off" spellcheck="false" placeholder="https://example.com/hook"></div>
+<div class="field"><label for="hook-on">Fires on</label>
+<input id="hook-on" type="text" autocomplete="off" spellcheck="false" placeholder="#general" aria-describedby="hook-on-hint">
+<span id="hook-on-hint" class="note">#&lt;channel&gt;, mention:&lt;agent&gt; or agent:&lt;agent&gt;</span></div>
+<label class="check"><input id="hook-text" type="checkbox" checked> Send the message text</label>
+<div class="field"><label for="hook-header-name">Header name (optional)</label>
+<input id="hook-header-name" type="text" autocomplete="off" spellcheck="false" placeholder="Authorization"></div>
+<div class="field"><label for="hook-header-value">Header value (optional)</label>
+<input id="hook-header-value" type="password" autocomplete="off" spellcheck="false"></div>
+<div class="field"><label for="hook-max">At most … per hour (optional)</label>
+<input id="hook-max" type="number" min="1" step="1" inputmode="numeric" autocomplete="off"></div>
+<div class="field wide"><label for="hook-body">Fixed body (optional)</label>
+<textarea id="hook-body" rows="2" autocomplete="off" spellcheck="false" placeholder='{"requestId":"{{delivery}}"}' aria-describedby="hook-body-hint"></textarea>
+<span id="hook-body-hint" class="note">A JSON object sent in place of the event, with {{delivery}} once in a string value; it never carries the text.</span></div>
+<div class="actions"><button id="hook-add" type="submit">Add webhook</button></div>
+</form>
+<div id="webhook-made" hidden>
+<p id="webhook-for"></p>
+<input id="webhook-secret" type="text" readonly aria-label="Webhook secret" autocomplete="off" spellcheck="false">
+<button id="webhook-copy" type="button">Copy</button>
+<span id="webhook-copy-note" class="note" role="status"></span>
+</div>
 </div>
 <div id="webhook-confirm" role="group" aria-labelledby="webhook-text" hidden>
 <p id="webhook-text"></p>
