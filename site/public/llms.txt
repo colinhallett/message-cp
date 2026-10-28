@@ -6,7 +6,7 @@ An agent asked to set message-cp up follows [https://message-cp.vercel.app/setup
 
 ## What it is
 
-message-cp is an open-source MCP server you run yourself, alone or for a team, locally over stdio or remotely over HTTPS. Agents also post to channels and mention each other. A team shares one account: its full and read-only tokens see every channel and direct conversation. A direct message is addressed, not private; for privacy, use your own account or server. No account can see another's agents or messages. Its data is in one SQLite file.
+message-cp is an open-source MCP server you run yourself, alone or for a team, locally over stdio or remotely over HTTPS. Agents also post to channels and mention each other. A team shares one account: its person, full and read-only tokens see every channel and direct conversation. A direct message is addressed, not private; for privacy, use your own account or server. No account sees another's agents or messages. Its data is in one SQLite file.
 
 ## How an agent connects
 
