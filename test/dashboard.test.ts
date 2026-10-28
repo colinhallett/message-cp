@@ -6592,6 +6592,255 @@ describe("the page's invites", () => {
     });
   });
 
+  describe("its webhooks view", () => {
+    const NO_WEBHOOKS =
+      "No webhooks. Add one on the server with message-cp webhook add --url <url> --on <#channel | mention:<agent> | agent:<agent>>.";
+    const hookEntry = (page: Page) => page.elements["webhook-entry"].children[0]?.children[0] as Stub | undefined;
+    const openWebhooks = async (page: Page) => {
+      await page.until(() => hookEntry(page) !== undefined);
+      hookEntry(page)!.on.click();
+      await page.until(() => page.elements["log-note"].textContent !== "Loading…" && page.elements["log-title"].textContent === "Webhooks");
+    };
+    const hookRows = (page: Page) => page.elements["post-rows"].children.map((r) => r.children.map((c) => c.textContent));
+    const removeButton = (page: Page, id: number) =>
+      page.elements["post-rows"].children.find((r) => r.children[1].textContent === `webhook ${id}`)!.children.find((c) => c.textContent === "Remove")!;
+    const hookUrls = (page: Page) => page.requests.filter((r) => r.url.startsWith("/api/webhooks"));
+    const note = (page: Page) => page.elements["webhook-note"].textContent;
+    const exists = (id: number) => db.prepare("SELECT 1 FROM webhooks WHERE id = ?").get(id) !== undefined;
+
+    it("shows the Webhooks entry to an admin person only, and never asks for the webhooks with any other token", async () => {
+      addPerson(db, "owner", "maria");
+      const plain = addToken(db, "owner", false, false, undefined, "maria").token;
+      for (const token of [plain, OWNER_TOKEN, viewer]) {
+        const page = await load(token);
+        await page.until(() => page.elements["delivery-entry"].children.length === 1 && page.requests.some((r) => r.url === "/api/token"));
+        await page.poll();
+        expect(page.elements["webhook-entry"].children).toEqual([]);
+        expect(hookUrls(page)).toEqual([]);
+      }
+      // An agent token is forgotten at once, so it sees no entry either.
+      const agent = await load(agentToken);
+      await agent.until(() => agent.store.size === 0);
+      expect(agent.elements["webhook-entry"].children).toEqual([]);
+      expect(hookUrls(agent)).toEqual([]);
+      const page = await load(anaToken);
+      await page.until(() => hookEntry(page) !== undefined);
+      expect(hookEntry(page)!.children.map((c) => c.textContent)).toEqual(["Webhooks", ""]);
+      // Until the view is opened, the webhooks are not read.
+      expect(hookUrls(page)).toEqual([]);
+    });
+
+    it("lists the account's webhooks oldest first by origin, never a secret, header value, full URL or body, nor another account's", async () => {
+      const plainHook = addWebhook(db, "owner", "https://example.com/plain-path", "#general", false);
+      const fancy = addWebhook(db, "owner", "https://hooks.example.org:8443/secret-path", "agent:bob", true, "X-Api-Key: sekret-value", 5);
+      const fixed = addWebhook(db, "owner", "https://example.com/body-path", "mention:bob", true, undefined, undefined, '{"requestId":"{{delivery}}","tag":"fixed-body-text"}');
+      addAccount(db, "other");
+      const theirs = addWebhook(db, "other", "https://other.example/theirs", "agent:olga", true);
+      const page = await load(anaToken);
+      await openWebhooks(page);
+      expect(hookRows(page)).toEqual([
+        ["#general", `webhook ${plainHook.id}`, "https://example.com · no text · no header · no hourly limit", "Remove"],
+        ["agent:bob", `webhook ${fancy.id}`, "https://hooks.example.org:8443 · with text · header X-Api-Key · at most 5 per hour", "Remove"],
+        ["mention:bob", `webhook ${fixed.id}`, "https://example.com · fixed body, no text · no header · no hourly limit", "Remove"],
+      ]);
+      expect(hookEntry(page)!.children.map((c) => c.textContent)).toEqual(["Webhooks", "3"]);
+      expect(page.elements["log-note"].textContent).toBe("");
+      for (const hidden of [plainHook.secret, fancy.secret, fixed.secret, theirs.secret, "sekret-value", "path", "fixed-body-text", "olga", "other.example"]) {
+        expect(onPage(page, hidden)).toBe(false);
+      }
+      expect(hookUrls(page).every((r) => r.method === "GET")).toBe(true);
+    });
+
+    it("says when the account has no webhooks", async () => {
+      const page = await load(anaToken);
+      await openWebhooks(page);
+      expect(page.elements["log-note"].textContent).toBe(NO_WEBHOOKS);
+      expect(hookEntry(page)!.children.map((c) => c.textContent)).toEqual(["Webhooks", "0"]);
+    });
+
+    it("removes a webhook only after confirming, saying how many deliveries went, and reads the list again", async () => {
+      registerAgent(db, OWNER_ACCOUNT, "alice", "x");
+      registerAgent(db, OWNER_ACCOUNT, "bob", "x");
+      const kept = addWebhook(db, "owner", "https://example.com/kept", "#general", true);
+      const hook = addWebhook(db, "owner", "https://example.com/hook", "agent:bob", true);
+      sendMessage(db, OWNER_ACCOUNT, "alice", "bob", "one");
+      sendMessage(db, OWNER_ACCOUNT, "alice", "bob", "two");
+      const page = await load(anaToken);
+      await openWebhooks(page);
+      await page.until(() => hookRows(page).length === 2);
+      // Remove asks first; nothing is sent until it is confirmed, and Keep it sends nothing.
+      removeButton(page, hook.id).on.click();
+      expect(page.elements["webhook-confirm"].hidden).toBe(false);
+      expect(page.elements["webhook-text"].textContent).toBe(
+        `Remove webhook ${hook.id} (agent:bob)? Its queued and past deliveries go with it. This cannot be undone.`,
+      );
+      page.elements["webhook-no"].on.click();
+      expect(page.elements["webhook-confirm"].hidden).toBe(true);
+      expect(page.writes()).toEqual([]);
+      removeButton(page, hook.id).on.click();
+      page.elements["webhook-yes"].on.click();
+      await page.until(() => note(page) === `Removed webhook ${hook.id} and its 2 deliveries.`);
+      expect(page.writes()).toEqual([{ url: `/api/webhooks?id=${hook.id}`, method: "DELETE", body: undefined }]);
+      expect(page.elements["webhook-confirm"].hidden).toBe(true);
+      expect(exists(hook.id)).toBe(false);
+      expect(exists(kept.id)).toBe(true);
+      await page.until(() => hookRows(page).length === 1);
+      expect(hookRows(page)[0][1]).toBe(`webhook ${kept.id}`);
+      expect(hookEntry(page)!.children.map((c) => c.textContent)).toEqual(["Webhooks", "1"]);
+      // One delivery is said as one.
+      sendMessage(db, OWNER_ACCOUNT, "bob", "alice", "hi");
+      const one = addWebhook(db, "owner", "https://example.com/one", "agent:alice", true);
+      sendMessage(db, OWNER_ACCOUNT, "bob", "alice", "again");
+      await page.poll();
+      await page.until(() => hookRows(page).length === 2);
+      removeButton(page, one.id).on.click();
+      page.elements["webhook-yes"].on.click();
+      await page.until(() => note(page) === `Removed webhook ${one.id} and its 1 delivery.`);
+    });
+
+    it("says each other answer to a removal in plain words", async () => {
+      const hook = addWebhook(db, "owner", "https://example.com/hook", "agent:bob", true);
+      let next: Refusal | undefined;
+      const page = await load(anaToken, (url, init) => (init.method === "DELETE" ? next : undefined));
+      await openWebhooks(page);
+      const removeOne = async (answer: Refusal | undefined, said: string) => {
+        next = answer;
+        removeButton(page, hook.id).on.click();
+        page.elements["webhook-yes"].on.click();
+        await page.until(() => note(page) === said);
+        expect(page.elements["webhook-confirm"].hidden).toBe(true);
+      };
+      await removeOne({ status: 400, reason: "Give id once" }, "Give id once");
+      await removeOne({ status: 503, reason: "Database busy", retry: true }, "The server is busy (503). Try again in a moment.");
+      await removeOne({ status: 503, reason: "Too many requests" }, "The server is busy (503). Try again in a moment.");
+      await removeOne(404, `Webhook ${hook.id} was already gone (404).`);
+      await removeOne("fail", `No answer from the server, so webhook ${hook.id} may have been removed: the list below shows whether.`);
+      next = "hang";
+      removeButton(page, hook.id).on.click();
+      page.elements["webhook-yes"].on.click();
+      await page.until(() => page.deadlines.size > 0);
+      expect(page.elements["webhook-yes"].disabled).toBe(true);
+      for (const [, fn] of page.deadlines) fn();
+      await page.until(() => note(page).startsWith(`The server did not answer in time, so webhook ${hook.id} may have been removed`));
+      expect(page.elements["webhook-yes"].disabled).toBe(false);
+      // None of those was the server's own removal.
+      expect(exists(hook.id)).toBe(true);
+      // The server's own 404, for a webhook removed on the server meanwhile.
+      next = undefined;
+      db.prepare("DELETE FROM webhooks WHERE id = ?").run(hook.id);
+      await removeOne(undefined, `Webhook ${hook.id} was already gone (404).`);
+      await page.until(() => page.elements["log-note"].textContent === NO_WEBHOOKS);
+    });
+
+    it("takes the entry and the view away on a 403 to either request, once the person is no longer an admin", async () => {
+      for (const method of ["DELETE", "GET"]) {
+        const hook = addWebhook(db, "owner", "https://example.com/hook", "agent:bob", true);
+        setPersonAdmin(db, "owner", "ana", true);
+        const page = await load(anaToken);
+        await openWebhooks(page);
+        await page.until(() => hookRows(page).length > 0);
+        setPersonAdmin(db, "owner", "ana", false);
+        if (method === "DELETE") {
+          removeButton(page, hook.id).on.click();
+          page.elements["webhook-yes"].on.click();
+        } else {
+          await page.poll();
+        }
+        await page.until(() => page.elements["log-note"].textContent.startsWith("The server says you are no longer an admin"));
+        expect(page.elements["log-note"].textContent).toBe(
+          "The server says you are no longer an admin of this account (403), so this page no longer lists or removes webhooks.",
+        );
+        expect(hookEntry(page)).toBeUndefined();
+        expect(page.entry()).toBeUndefined();
+        expect(page.elements["post-rows"].children).toEqual([]);
+        expect(page.elements["webhook-confirm"].hidden).toBe(true);
+        expect(exists(hook.id)).toBe(true);
+        // The next poll does not read the webhooks again.
+        const before = page.requests.length;
+        await page.poll();
+        await page.until(() => page.requests.slice(before).some((r) => r.url.startsWith("/api/messages")));
+        expect(page.requests.slice(before).filter((r) => r.url.startsWith("/api/webhooks"))).toEqual([]);
+        db.prepare("DELETE FROM webhooks").run();
+      }
+    });
+
+    it("asks for a token again on a 401 to either request", async () => {
+      for (const method of ["DELETE", "GET"]) {
+        const hook = addWebhook(db, "owner", "https://example.com/hook", "agent:bob", true);
+        let refuse = false;
+        const page = await load(anaToken, (url, init) => (refuse && url.startsWith("/api/webhooks") && (init.method ?? "GET") === method ? 401 : undefined));
+        await openWebhooks(page);
+        await page.until(() => hookRows(page).length > 0);
+        refuse = true;
+        if (method === "DELETE") {
+          removeButton(page, hook.id).on.click();
+          page.elements["webhook-yes"].on.click();
+        } else {
+          await page.poll();
+        }
+        await page.until(() => page.elements["status-line"].textContent === "The server refused that token. Enter another.");
+        expect(page.store.size).toBe(0);
+        expect(hookEntry(page)).toBeUndefined();
+        expect(page.elements["post-rows"].children).toEqual([]);
+        db.prepare("DELETE FROM webhooks").run();
+      }
+    });
+
+    it("drops a removal's answer that comes after the view closed, another view opened or the token was forgotten", async () => {
+      let hold = false;
+      const page = await load(anaToken, (url, init) => (hold && init.method === "DELETE" ? "held" : undefined));
+      for (const leave of ["close", "other", "forget"]) {
+        const hook = addWebhook(db, "owner", "https://example.com/hook", "agent:bob", true);
+        await openWebhooks(page);
+        await page.until(() => hookRows(page).length === 1);
+        hold = true;
+        removeButton(page, hook.id).on.click();
+        page.elements["webhook-yes"].on.click();
+        await page.until(() => page.held.length === 1);
+        if (leave === "close") page.elements["close-log"].on.click();
+        else if (leave === "other") page.elements["delivery-entry"].children[0].children[0].on.click();
+        else page.elements["forget"].on.click();
+        hold = false;
+        page.release();
+        // The server removed it, but the page says nothing of it.
+        await page.until(() => !exists(hook.id));
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        expect(note(page)).toBe("");
+        expect(page.elements["webhook-confirm"].hidden).toBe(true);
+        expect(page.elements["webhook-yes"].disabled).toBe(false);
+        if (leave === "other") {
+          expect(page.elements["log-title"].textContent).toBe("Webhook deliveries");
+          expect(page.elements["post-rows"].children.every((r) => r.className.startsWith("entry delivery"))).toBe(true);
+        }
+        if (leave === "forget") {
+          expect(page.elements["log"].hidden).toBe(true);
+          expect(hookEntry(page)).toBeUndefined();
+        }
+      }
+    });
+
+    it("drops a read that comes after the view closed or the token was forgotten", async () => {
+      addWebhook(db, "owner", "https://example.com/hook", "agent:bob", true);
+      for (const leave of ["close", "forget"]) {
+        let hold = false;
+        const page = await load(anaToken, (url) => (hold && url.startsWith("/api/webhooks") ? "held" : undefined));
+        await page.until(() => hookEntry(page) !== undefined);
+        hold = true;
+        hookEntry(page)!.on.click();
+        await page.until(() => page.held.length === 1);
+        if (leave === "close") page.elements["close-log"].on.click();
+        else page.elements["forget"].on.click();
+        page.release();
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        expect(page.elements["log"].hidden).toBe(true);
+        expect(page.elements["post-rows"].children).toEqual([]);
+        expect(page.elements["log-note"].textContent).toBe("");
+        if (leave === "close") expect(hookEntry(page)!.children.map((c) => c.textContent)).toEqual(["Webhooks", ""]);
+        else expect(hookEntry(page)).toBeUndefined();
+      }
+    });
+  });
+
   it("asks for a token again on a 401 to any of its requests", async () => {
     for (const method of ["POST", "GET"]) {
       let refuse = false;

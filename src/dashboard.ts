@@ -10,7 +10,7 @@ import { MAX_BODY_LENGTH } from "./messages.js";
 // token under an https public URL (and out with DELETE on "Forget token", which also signs out its other dashboard tabs),
 // and polls GET /api/agents, GET /api/channels, GET /api/messages and, while one is
 // open, a channel's GET /api/channel-posts, the account's GET /api/webhook-deliveries, its GET /api/approvals or, for
-// an admin person, its GET /api/people and GET /api/invites with it. It shows them as a chat app: channels and the pairs of agents that have
+// an admin person, its GET /api/people and GET /api/invites, or its GET /api/webhooks, with it. It shows them as a chat app: channels and the pairs of agents that have
 // messaged each other in a sidebar, the open one as a log in the middle, and the agents on the right. A search box asks GET /api/search once per search and
 // shows the answer in the middle in place of the open conversation. The sidebar's "Webhook deliveries" entry shows
 // the newest deliveries in the middle the same way, refreshed with each poll, and its "Approved clients" entry, the
@@ -25,7 +25,8 @@ import { MAX_BODY_LENGTH } from "./messages.js";
 // /api/people, removes one, after confirming, with DELETE /api/people, adds a person with POST /api/people, makes a new
 // invite for one with POST /api/invites and, after confirming, cancels one with DELETE /api/invites, and, from an
 // agent's details in the agents panel, after confirming, removes the agent with DELETE /api/agents or gives it a new key
-// with POST /api/agents/key; that is all it ever writes. An invite's link, or an agent's new key, is shown only in
+// with POST /api/agents/key, and, from the sidebar's "Webhooks" entry, which lists the account's webhooks with GET
+// /api/webhooks, after confirming, removes one with its deliveries with DELETE /api/webhooks; that is all it ever writes. An invite's link, or an agent's new key, is shown only in
 // a field of its view, from the answer that made it, and never kept or written anywhere else but the clipboard, when
 // its Copy is pressed. With a full token, which acts as no person, it
 // reads and offers Delete, but not posting or sending, which the server refuses it: in the compose box's place it says
@@ -257,6 +258,11 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .entry.invite { grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "from cancel" "time cancel" "body cancel"; }
 .entry.invite > button { grid-area: cancel; align-self: center; }
 .entry.approval > .agents { grid-column: 1 / -1; overflow-wrap: anywhere; }
+/* A webhook: what it fires on, its id, its origin and what it sends, with its Remove button at the end. */
+.entry.webhook { grid-template-columns: auto auto minmax(0, 1fr) auto; grid-template-areas: "from tag . remove" "body body body remove"; }
+.entry.webhook > button { grid-area: remove; align-self: center; }
+#webhook-confirm { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2); padding: var(--s2) var(--s4); border-bottom: 1px solid var(--border); }
+#webhook-text { flex: 1 1 100%; margin: 0; }
 .delivery.failed .tag { color: var(--error); background: var(--error-bg); }
 .item { display: flex; align-items: center; gap: var(--s2); text-align: left; background: none; border: 0; border-radius: var(--radius); padding: var(--s1) var(--s2); margin: 1px var(--s2); width: calc(100% - 2 * var(--s2)); }
 .item.current { background: var(--active); font-weight: 600; box-shadow: inset 3px 0 0 var(--accent); }
@@ -338,6 +344,11 @@ const resultsNote = document.getElementById("results-note");
 const resultRows = document.getElementById("result-rows");
 const deliveryEntry = document.getElementById("delivery-entry");
 const approvalEntry = document.getElementById("approval-entry");
+const webhookEntry = document.getElementById("webhook-entry");
+const webhookConfirm = document.getElementById("webhook-confirm");
+const webhookText = document.getElementById("webhook-text");
+const webhookYes = document.getElementById("webhook-yes");
+const webhookNote = document.getElementById("webhook-note");
 const peopleHead = document.getElementById("people-head");
 const inviteEntry = document.getElementById("invite-entry");
 const inviteForms = document.getElementById("invite-forms");
@@ -417,11 +428,12 @@ let pairs = new Map();
 let madePairs = 0;
 // The pair whose messages are open in the log, by pairKey, or undefined.
 let openPair;
-// Whether the webhook deliveries, the approved clients or the invites are open in the log. At most one of openChannel,
-// openPair, openDeliveries, openApprovals and openInvites is set.
+// Whether the webhook deliveries, the approved clients, the invites or the webhooks are open in the log. At most one of
+// openChannel, openPair, openDeliveries, openApprovals, openInvites and openWebhooks is set.
 let openDeliveries = false;
 let openApprovals = false;
 let openInvites = false;
+let openWebhooks = false;
 // What this tab has seen of each channel and pair, by sidebar key: its count of posts or messages when the tab last
 // had it open, or when the first poll for this token read it. An entry's total less this is its unread badge. It lives
 // only here, is never sent or stored, and marks nothing read for any agent; ask() forgets it.
@@ -437,6 +449,8 @@ let approvalCount;
 // The count on the sidebar's people entry while it is made, for an admin person only: how many people the view read
 // when last open.
 let inviteCount;
+// The count on the sidebar's webhooks entry while it is made, for an admin person only, likewise.
+let webhookCount;
 // The search's own counter and request, separate from generation and controller, so a newer search, leaving the
 // results or ask() drops a search's answer.
 let searchGeneration = 0;
@@ -628,6 +642,19 @@ let resettingKey;
 let lastAgents;
 const NOT_ADMIN_AGENTS = "The server says you are no longer an admin of this account (403), so this page no longer offers removing agents or resetting their keys.";
 const NOT_ADMIN = "The server says you are no longer an admin of this account (403), so this page no longer offers changing people or invites.";
+// The tokenGeneration a DELETE /api/webhooks is in flight for, or undefined, as cancelling is for an invite.
+let removingWebhook;
+// The webhook the "Webhooks" view asks before removing ({ id, on }), or undefined.
+let webhookTarget;
+// How many times the "Webhooks" view has closed (closeLog), so an answer that comes after it closed changes nothing, as
+// inviteClosings does for the people view. unmarked() bumps it too.
+let webhookClosings = 0;
+// The list the webhook rows were last built from, so a poll rebuilds them only when it changes, never taking the focus
+// from a Remove button.
+let webhookRowsKey = "";
+const NO_WEBHOOKS =
+  "No webhooks. Add one on the server with message-cp webhook add --url <url> --on <#channel | mention:<agent> | agent:<agent>>.";
+const NOT_ADMIN_WEBHOOKS = "The server says you are no longer an admin of this account (403), so this page no longer lists or removes webhooks.";
 
 function say(text, isError) {
   statusLine.textContent = text;
@@ -652,6 +679,7 @@ function ask(message) {
   me = undefined;
   meAdmin = false;
   showInviteEntry();
+  showWebhookEntry();
   fullToken = false;
   people = undefined;
   person = undefined;
@@ -691,6 +719,7 @@ function ask(message) {
   linkMake.disabled = false;
   cancelYes.disabled = false;
   removeYes.disabled = false;
+  webhookYes.disabled = false;
   // And the agents panel's confirmation, note and any new key it showed.
   closeAgentPanel();
   agentYes.disabled = false;
@@ -794,6 +823,8 @@ document.getElementById("agent-no").addEventListener("click", () => closeAgentPa
 document.getElementById("agent-key-done").addEventListener("click", () => closeAgentPanel(true));
 document.getElementById("agent-key-copy").addEventListener("click", () => copyAgentKey());
 document.getElementById("remove-no").addEventListener("click", () => closeRemovePerson(true));
+webhookYes.addEventListener("click", () => removeWebhook());
+document.getElementById("webhook-no").addEventListener("click", () => closeRemoveWebhook(true));
 newFrom.addEventListener("change", () => fillNew());
 newForm.addEventListener("submit", (event) => {
   event.preventDefault();
@@ -925,6 +956,12 @@ function closeLog() {
   closeRemovePerson();
   peopleRows.replaceChildren();
   peopleRowsKey = "";
+  // Leaving the webhooks view drops its confirmation and note, and any answer still to come.
+  openWebhooks = false;
+  webhookClosings++;
+  closeRemoveWebhook();
+  webhookNote.textContent = "";
+  webhookRowsKey = "";
   held = 0;
   postRows.replaceChildren();
   postRows.className = "";
@@ -1057,6 +1094,34 @@ function openInviteLog() {
   personName.focus();
 }
 
+// Opens the "Webhooks" view in the log, for an admin person only, and polls again at once, as openApprovalLog does: the
+// account's webhooks, oldest first, each with a Remove button that asks first.
+function openWebhookLog() {
+  if (!meAdmin) return;
+  closeLog();
+  openWebhooks = true;
+  postRows.className = "top";
+  logTitle.textContent = "Webhooks";
+  logNote.textContent = "Loading…";
+  log.hidden = false;
+  panel("");
+  markOpen();
+  cancel();
+  poll(generation);
+}
+
+// Makes the sidebar's "Webhooks" entry, under its Webhooks heading beside "Webhook deliveries", while the token is an
+// admin person's, and removes it otherwise, as showInviteEntry does.
+function showWebhookEntry() {
+  if (!meAdmin) {
+    webhookEntry.replaceChildren();
+    webhookCount = undefined;
+  } else if (!webhookCount) {
+    webhookCount = part("span", "count", "");
+    webhookEntry.append(sidebarItem("webhooks", "Webhooks", "", webhookCount, openWebhookLog));
+  }
+}
+
 // Makes the sidebar's "People" entry, under its People heading, while the token is an admin person's, and removes both
 // otherwise.
 function showInviteEntry() {
@@ -1071,16 +1136,28 @@ function showInviteEntry() {
 }
 
 // After the server's 403 to an admin's request, which says the person is no longer an admin: the page forgets it, so
-// the "People" entry and Delete go, and an open people view keeps only a note saying why.
+// the "People" and "Webhooks" entries and Delete go, and an open people or webhooks view keeps only a note saying why.
 function unmarked() {
   meAdmin = false;
-  // An Add or New link still in flight then shows no link.
+  // An Add or New link still in flight then shows no link, and a webhook's removal still in flight changes nothing.
   inviteClosings++;
+  webhookClosings++;
   showInviteEntry();
+  showWebhookEntry();
   showDelete();
   // The agents panel's buttons, confirmation and any new key go too.
   closeAgentPanel();
   if (lastAgents) show(lastAgents);
+  if (openWebhooks) {
+    // The focus may be on a Remove button or in the confirmation, which go, so it moves to the view's Close button.
+    closeRemoveWebhook();
+    webhookNote.textContent = "";
+    document.getElementById("close-log").focus();
+    postRows.replaceChildren();
+    webhookRowsKey = "";
+    logNote.textContent = NOT_ADMIN_WEBHOOKS;
+    return;
+  }
   if (!openInvites) return;
   // The focus may be in the forms, which go, so it moves to the view's Close button.
   inviteForms.hidden = true;
@@ -1486,6 +1563,67 @@ async function removeAccountPerson() {
   if (answer.status === 200 || answer.status === 404 || answer.error) refresh();
 }
 
+// Asks above the list before removing a webhook; nothing is sent until its "Remove webhook" is pressed.
+function openRemoveWebhook(hook) {
+  if (!meAdmin || !openWebhooks) return;
+  webhookTarget = hook;
+  webhookNote.textContent = "";
+  webhookText.textContent =
+    "Remove webhook " + hook.id + " (" + hook.on + ")? Its queued and past deliveries go with it. This cannot be undone.";
+  webhookConfirm.hidden = false;
+  webhookYes.disabled = removingWebhook === tokenGeneration;
+  document.getElementById("webhook-no").focus();
+}
+
+// Dismisses the webhook's confirmation; when the reader dismissed it, or it was answered, the focus goes to the view's
+// Close button, as the row may be gone.
+function closeRemoveWebhook(refocus) {
+  webhookConfirm.hidden = true;
+  webhookText.textContent = "";
+  webhookTarget = undefined;
+  if (refocus) document.getElementById("close-log").focus();
+}
+
+// Removes the webhook being asked about with DELETE /api/webhooks and says what it ended from the answer, then reads the
+// list again, as cancelInvite does. A 403 means the token's person is no longer an admin (unmarked), whatever is open
+// now; any other answer after the view closed, or any answer after the token was forgotten, changes nothing.
+async function removeWebhook() {
+  const token = sessionStorage.getItem(KEY);
+  if (!token) return ask();
+  const tokenGen = tokenGeneration;
+  const hook = webhookTarget;
+  if (!meAdmin || !openWebhooks || !hook || removingWebhook === tokenGen) return;
+  removingWebhook = tokenGen;
+  const closings = webhookClosings;
+  webhookYes.disabled = true;
+  const ac = new AbortController();
+  const deadline = setTimeout(() => ac.abort(), TIMEOUT_MS);
+  let answer;
+  try {
+    answer = await inviteWrite(token, ac, "DELETE", "/api/webhooks?" + new URLSearchParams({ id: String(hook.id) }));
+  } finally {
+    clearTimeout(deadline);
+  }
+  if (tokenGen !== tokenGeneration) return;
+  removingWebhook = undefined;
+  webhookYes.disabled = false;
+  if (answer.status === 401) return ask("The server refused that token. Enter another.");
+  if (answer.status === 403) return unmarked();
+  if (closings !== webhookClosings) return;
+  // A confirmation opened for another webhook meanwhile stays.
+  if (webhookTarget === hook) closeRemoveWebhook(true);
+  const body = answer.body;
+  if (answer.status === 200) {
+    webhookNote.textContent =
+      body && Number.isInteger(body.deliveries)
+        ? "Removed webhook " + hook.id + " and its " + (body.deliveries === 1 ? "1 delivery" : body.deliveries + " deliveries") + "."
+        : "Removed webhook " + hook.id + ".";
+  } else if (answer.status === 404) webhookNote.textContent = "Webhook " + hook.id + " was already gone (404).";
+  else if (answer.error) webhookNote.textContent = answer.error + ", so webhook " + hook.id + " may have been removed: the list below shows whether.";
+  else webhookNote.textContent = refusal(answer);
+  if (answer.status === 200 || answer.status === 404 || answer.error) refresh();
+}
+
 // Asks under the agents panel's heading before removing the agent name or resetting its key (kind "remove" or "key");
 // nothing is sent until its button is pressed. Any confirmation, note or key shown before goes.
 function openAgentConfirm(kind, name) {
@@ -1785,6 +1923,7 @@ async function checkToken() {
   meAdmin = admin;
   fullToken = full && own === undefined;
   showInviteEntry();
+  showWebhookEntry();
   // An admin person's agent buttons show at once, not only from the next poll.
   if (lastAgents) show(lastAgents);
   showPicker();
@@ -2787,6 +2926,47 @@ async function readInvites(token, signal, gen) {
   return { ok: true };
 }
 
+// Reads the account's webhooks, oldest first, and replaces the ones the log holds when they changed, as readInvites does;
+// with the view closed, or no longer an admin's, it leaves the log as it is. A 403 says the person is no longer an admin
+// (unmarked). Any other failure but a refused token goes in the log's note.
+async function readWebhooks(token, signal, gen) {
+  if (!meAdmin) return { ok: true };
+  let page;
+  try {
+    page = await fetchPage(token, signal, "/api/webhooks", {}, 0, list);
+  } catch {
+    page = { error: signal.aborted ? "The server did not answer in time" : "Cannot reach the server" };
+  }
+  if (gen !== generation || !openWebhooks || !meAdmin) return { ok: true };
+  if (page.status === 401) return page;
+  if (page.status === 403) {
+    unmarked();
+    return { ok: true };
+  }
+  let shown;
+  const key = page.items ? JSON.stringify(page.items) : "";
+  try {
+    if (page.items && key !== webhookRowsKey) shown = page.items.map(webhookRow);
+  } catch {
+    page = { error: "The server sent an answer this page cannot read" };
+  }
+  if (page.items) {
+    if (shown) {
+      webhookRowsKey = key;
+      postRows.replaceChildren(...shown);
+      postRows.scrollTop = 0;
+    }
+    webhookCount.textContent = String(page.items.length);
+    logNote.textContent =
+      page.items.length === 0 ? NO_WEBHOOKS : page.items.length === PAGE ? "Only the first " + PAGE + " webhooks are shown." : "";
+  } else if (page.status === 503) {
+    logNote.textContent = "The server is busy (503). Retrying…";
+  } else {
+    logNote.textContent = (page.error || "The server answered " + page.status) + ". Retrying…";
+  }
+  return { ok: true };
+}
+
 async function poll(gen) {
   const token = sessionStorage.getItem(KEY);
   if (!token) return ask();
@@ -2797,13 +2977,14 @@ async function poll(gen) {
   const deliveries = openDeliveries;
   const approvals = openApprovals;
   const invites = openInvites;
+  const webhooks = openWebhooks;
   const held = messages.length;
   let result;
   try {
     result = await fetchView(token, ac.signal);
     // The agents and channels go up before the messages and the log are read, so a long or slow history never holds
-    // them back. The messages and the log (a channel's posts, the webhook deliveries, the approvals, or the people and
-    // invites) are read side by side, so neither waits on the other or fails with it, and both have finished before the
+    // them back. The messages and the log (a channel's posts, the webhook deliveries, the approvals, the people and
+    // invites, or the webhooks) are read side by side, so neither waits on the other or fails with it, and both have finished before the
     // next poll can read past what they hold.
     if (result.ok && gen === generation) {
       show(result.agents);
@@ -2821,7 +3002,9 @@ async function poll(gen) {
               ? readApprovals(token, ac.signal, gen)
               : invites
                 ? readPeopleView(token, ac.signal, gen)
-                : { ok: true },
+                : webhooks
+                  ? readWebhooks(token, ac.signal, gen)
+                  : { ok: true },
       ]);
       // A refused token from either read wins, so a failure of the other never leaves the page showing its data.
       const values = [messages, posts].filter((r) => r.status === "fulfilled").map((r) => r.value);
@@ -3065,6 +3248,7 @@ function openKey() {
   if (openDeliveries) return "deliveries";
   if (openApprovals) return "approvals";
   if (openInvites) return "invites";
+  if (openWebhooks) return "webhooks";
   return undefined;
 }
 
@@ -3144,12 +3328,12 @@ function showPairs() {
   pairRows.replaceChildren(...items);
 }
 
-// Marks the open channel, pair, webhook deliveries, approved clients or invites in the sidebar, in place, so the button just chosen keeps the focus.
+// Marks the open channel, pair, webhook deliveries, webhooks, approved clients or invites in the sidebar, in place, so the button just chosen keeps the focus.
 // The open entry's posts or messages all count as seen, so its badge goes.
 function markOpen() {
   const key = openKey();
   if (shownTotals.has(key)) seen.set(key, shownTotals.get(key));
-  const entries = [...channelRows.children, ...pairRows.children, ...deliveryEntry.children, ...approvalEntry.children, ...inviteEntry.children];
+  const entries = [...channelRows.children, ...pairRows.children, ...deliveryEntry.children, ...webhookEntry.children, ...approvalEntry.children, ...inviteEntry.children];
   for (const li of entries) {
     const button = li.children[0];
     if (!button) continue;
@@ -3411,6 +3595,38 @@ function inviteRow(i) {
   return li;
 }
 
+// A webhook: what it fires on, its id, which message-cp webhook remove takes, its URL's origin, and whether it sends the
+// text, a header (by name), a per-hour limit and a fixed body, with a Remove button that asks first. Never a secret, a
+// header value, a full URL or a body, which GET /api/webhooks does not give. Throws on an entry that is not a webhook, so
+// readWebhooks shows the answer as unreadable.
+function webhookRow(w) {
+  if (
+    !w ||
+    !Number.isInteger(w.id) ||
+    typeof w.on !== "string" ||
+    typeof w.origin !== "string" ||
+    typeof w.includeText !== "boolean" ||
+    !(w.headerName === null || typeof w.headerName === "string") ||
+    !(w.maxPerHour === null || Number.isInteger(w.maxPerHour)) ||
+    typeof w.fixedBody !== "boolean"
+  ) {
+    throw new TypeError("not a webhook");
+  }
+  const li = document.createElement("li");
+  li.className = "entry webhook";
+  // A fixed body never carries the text.
+  const facts = [w.origin, w.fixedBody ? "fixed body, no text" : w.includeText ? "with text" : "no text"];
+  facts.push(w.headerName === null ? "no header" : "header " + w.headerName);
+  facts.push(w.maxPerHour === null ? "no hourly limit" : "at most " + w.maxPerHour + " per hour");
+  const button = part("button", "", "Remove");
+  button.type = "button";
+  button.setAttribute("aria-label", "Remove webhook " + w.id);
+  const hook = { id: w.id, on: w.on };
+  button.addEventListener("click", () => openRemoveWebhook(hook));
+  li.append(part("span", "from", w.on), part("span", "tag", "webhook " + w.id), part("div", "body", facts.join(" · ")), button);
+  return li;
+}
+
 // A webhook delivery: what it was for, its status (failed marked), when it was queued, its webhook, its attempts and,
 // once delivered, when. Never a URL, a secret or a message's text, which GET /api/webhook-deliveries does not give.
 // Throws on an entry that is not a delivery as GET /api/webhook-deliveries gives one, so readDeliveries shows the
@@ -3564,6 +3780,7 @@ export const DASHBOARD_HTML = `<!doctype html>
 <ul id="pair-rows"></ul>
 <h2>Webhooks</h2>
 <ul id="delivery-entry"></ul>
+<ul id="webhook-entry"></ul>
 <h2>Clients</h2>
 <ul id="approval-entry"></ul>
 <h2 id="people-head" hidden>People</h2>
@@ -3628,6 +3845,12 @@ export const DASHBOARD_HTML = `<!doctype html>
 <p id="cancel-note" class="note" role="status"></p>
 <h3 id="invites-title">Unused invites</h3>
 </div>
+<div id="webhook-confirm" role="group" aria-labelledby="webhook-text" hidden>
+<p id="webhook-text"></p>
+<button id="webhook-yes" type="button">Remove webhook</button>
+<button id="webhook-no" type="button">Keep it</button>
+</div>
+<p id="webhook-note" class="note" role="status"></p>
 <p id="log-note" class="note"></p>
 <ol id="post-rows" role="log"></ol>
 <div id="writer" hidden>
