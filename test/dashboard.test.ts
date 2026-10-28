@@ -9,7 +9,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { accountForToken, addAccount, addToken, listAccounts, recordClient, revokeToken } from "../src/accounts.js";
 import { cancelInvite, makeInvite, makeLoginCode, redeemLoginCode } from "../src/login.js";
 import { OWNER_ACCOUNT, openDb, type Db } from "../src/db.js";
-import { addPerson, identityOf, registerAgent, registerWithIdentity, removeAgent, removePerson, setPersonAdmin, setStatus } from "../src/agents.js";
+import { addPerson, identityOf, purgeAgent, registerAgent, registerWithIdentity, removeAgent, removePerson, setPersonAdmin, setStatus } from "../src/agents.js";
 import { joinChannel, leaveChannel, post } from "../src/channels.js";
 import { MAX_BODY_LENGTH, readInbox, sendMessage, unreadSummary } from "../src/messages.js";
 import { startHttp, type HttpServer } from "../src/http.js";
@@ -238,9 +238,9 @@ describe("GET /", () => {
     expect(html).not.toMatch(/<img|data:/);
     expect(style).toContain(".mention.me { color: var(--me); background: var(--me-bg); box-shadow: inset 0 -2px 0 currentColor; }");
     expect(style).toMatch(/^button \{[^}]*background: none;/m);
-    expect(style).toContain("#login button, #compose-send, #channel-create, #new-open, #delete-yes, #person-add, #link-make, #cancel-yes { background: var(--accent); border-color: var(--accent); color: var(--bg);");
+    expect(style).toContain("#login button, #compose-send, #channel-create, #new-open, #delete-yes, #person-add, #link-make, #cancel-yes, #agent-yes { background: var(--accent); border-color: var(--accent); color: var(--bg);");
     expect(style).toContain(
-      "#login button:hover:enabled, #compose-send:hover:enabled, #channel-create:hover:enabled, #new-open:hover:enabled, #delete-yes:hover:enabled, #person-add:hover:enabled, #link-make:hover:enabled, #cancel-yes:hover:enabled { background: color-mix(in srgb, var(--accent) 85%, var(--text)); }",
+      "#login button:hover:enabled, #compose-send:hover:enabled, #channel-create:hover:enabled, #new-open:hover:enabled, #delete-yes:hover:enabled, #person-add:hover:enabled, #link-make:hover:enabled, #cancel-yes:hover:enabled, #agent-yes:hover:enabled { background: color-mix(in srgb, var(--accent) 85%, var(--text)); }",
     );
     // The only shadows left are the inset accent bars on the open conversation and the highlighted mention option, and
     // the underline on the reader's own mention.
@@ -6339,6 +6339,255 @@ describe("the page's invites", () => {
           return;
         }
         if (act === "remove") addPerson(db, "owner", "cy");
+      }
+    });
+  });
+
+  describe("its agents panel", () => {
+    // An agent's row in the agents panel, its details, and the Remove or Reset key button in them, if offered.
+    const agentRow = (page: Page, name: string) => page.elements["rows"].children.find((r) => r.children[0]?.children[1]?.textContent === name);
+    const actionsOf = (page: Page, name: string) => agentRow(page, name)?.children[1].children.find((c) => c.className === "actions");
+    const action = (page: Page, name: string, label: string) => actionsOf(page, name)!.children.find((c) => c.textContent === label)!;
+    const openDetails = (page: Page, name: string) => agentRow(page, name)!.children[0].on.click();
+    const live = (name: string) => db.prepare("SELECT 1 FROM agents WHERE name = ? AND removed_at IS NULL").pluck().get(name);
+    const note = (page: Page) => page.elements["agent-note"].textContent;
+
+    it("offers Remove and Reset key on an agent's details for an admin person only, never on a person's", async () => {
+      registerAgent(db, OWNER_ACCOUNT, "writer", "");
+      addPerson(db, "owner", "maria");
+      const plain = addToken(db, "owner", false, false, undefined, "maria").token;
+      for (const token of [plain, OWNER_TOKEN, viewer]) {
+        const page = await load(token);
+        await page.until(() => agentRow(page, "writer") !== undefined && page.requests.some((r) => r.url === "/api/token"));
+        await page.poll();
+        expect(actionsOf(page, "writer")).toBeUndefined();
+      }
+      const page = await load(anaToken);
+      await page.until(() => actionsOf(page, "writer") !== undefined);
+      expect(actionsOf(page, "writer")!.children.map((c) => c.textContent)).toEqual(["Remove", "Reset key"]);
+      expect(actionsOf(page, "ana")).toBeUndefined();
+      expect(actionsOf(page, "maria")).toBeUndefined();
+      // An agent token is forgotten, so it never sees the panel at all.
+      const agentPage = await load(agentToken);
+      await agentPage.until(() => agentPage.store.size === 0);
+      expect(agentPage.elements["rows"].children).toEqual([]);
+    });
+
+    it("removes an agent only after asking, and says what it deleted from the answer's counts", async () => {
+      registerAgent(db, OWNER_ACCOUNT, "writer", "");
+      registerAgent(db, OWNER_ACCOUNT, "bot", "");
+      for (const body of ["a", "b", "c"]) sendMessage(db, OWNER_ACCOUNT, "bot", "writer", body);
+      const bot = { ...identityOf(db, OWNER_ACCOUNT, "bot")!, name: "bot" };
+      joinChannel(db, OWNER_ACCOUNT, bot, "general");
+      post(db, OWNER_ACCOUNT, bot, "general", "hi @writer");
+      const page = await load(anaToken);
+      await page.until(() => actionsOf(page, "writer") !== undefined && page.elements["pair-rows"].children.length === 1);
+      openDetails(page, "writer");
+      action(page, "writer", "Remove").on.click();
+      expect(page.elements["agent-confirm"].hidden).toBe(false);
+      expect(page.elements["agent-confirm-text"].textContent).toBe(
+        "Remove writer? This cannot be undone: it deletes writer's direct messages and mentions. Its channel posts stay.",
+      );
+      expect(page.elements["agent-yes"].textContent).toBe("Remove");
+      // Cancel sends nothing.
+      page.elements["agent-no"].on.click();
+      expect(page.elements["agent-confirm"].hidden).toBe(true);
+      expect(page.writes()).toEqual([]);
+      action(page, "writer", "Remove").on.click();
+      page.elements["agent-yes"].on.click();
+      await page.until(() => note(page) === "Removed writer: 3 messages and 1 mention deleted.");
+      expect(page.writes()).toEqual([{ url: "/api/agents?name=writer", method: "DELETE", body: undefined }]);
+      expect(page.elements["agent-confirm"].hidden).toBe(true);
+      expect(live("writer")).toBeUndefined();
+      // The messages are read again from the start, so writer's pair goes, and the list follows.
+      await page.until(() => agentRow(page, "writer") === undefined && page.elements["pair-rows"].children.length === 0);
+      expect(page.requests.filter((r) => r.url.startsWith("/api/messages?") && r.url.includes("offset=0")).length).toBeGreaterThan(1);
+      expect(onPage(page, "hi @writer")).toBe(false);
+    });
+
+    it("resets a key only after asking, shows the new key once with Copy, and drops it when the details close", async () => {
+      registerAgent(db, OWNER_ACCOUNT, "writer", "");
+      const page = await load(anaToken);
+      await page.until(() => actionsOf(page, "writer") !== undefined);
+      openDetails(page, "writer");
+      action(page, "writer", "Reset key").on.click();
+      expect(page.elements["agent-confirm-text"].textContent).toBe(
+        "Reset writer's key? Its old key stops working at once and its sessions end. A token message-cp connect made for it keeps working until it is revoked.",
+      );
+      expect(page.elements["agent-yes"].textContent).toBe("Reset key");
+      page.elements["agent-yes"].on.click();
+      await page.until(() => page.elements["agent-key-made"].hidden === false);
+      expect(page.writes()).toEqual([{ url: "/api/agents/key?name=writer", method: "POST", body: undefined }]);
+      const key = page.elements["agent-key"].value;
+      expect(key).toMatch(/^[0-9a-f]{64}$/);
+      // The new key registers writer; it is nowhere on the page but its field, and never stored.
+      expect(() => registerAgent(db, OWNER_ACCOUNT, "writer", "", key)).not.toThrow();
+      expect(Object.entries(page.elements).some(([id, node]) => id !== "agent-key" && JSON.stringify(node, (k, v) => (k === "on" ? undefined : v)).includes(key))).toBe(false);
+      expect([...page.store.values()]).not.toContain(key);
+      expect(page.elements["agent-key-for"].textContent).toContain("writer's new key.");
+      page.elements["agent-key-copy"].on.click();
+      await page.until(() => page.elements["agent-copy-note"].textContent === "Copied.");
+      expect(page.copied).toEqual([key]);
+      // A poll redraws the rows but keeps the key.
+      await page.poll();
+      expect(page.elements["agent-key"].value).toBe(key);
+      // Closing writer's details drops it.
+      openDetails(page, "writer");
+      expect(page.elements["agent-key"].value).toBe("");
+      expect(page.elements["agent-key-made"].hidden).toBe(true);
+      // So does Done, and forgetting the token.
+      openDetails(page, "writer");
+      action(page, "writer", "Reset key").on.click();
+      page.elements["agent-yes"].on.click();
+      await page.until(() => page.elements["agent-key"].value !== "");
+      page.elements["agent-key-done"].on.click();
+      expect(page.elements["agent-key"].value).toBe("");
+      action(page, "writer", "Reset key").on.click();
+      page.elements["agent-yes"].on.click();
+      await page.until(() => page.elements["agent-key"].value !== "");
+      page.elements["forget"].on.click();
+      expect(page.elements["agent-key"].value).toBe("");
+      expect(page.elements["agent-key-made"].hidden).toBe(true);
+    });
+
+    it("says each other answer plainly, and reads again after a 404 or no answer", async () => {
+      registerAgent(db, OWNER_ACCOUNT, "writer", "");
+      let next: Refusal | undefined;
+      const page = await load(anaToken, (url, init) => (init.method === "POST" || init.method === "DELETE") && url.startsWith("/api/agents") ? next : undefined);
+      await page.until(() => actionsOf(page, "writer") !== undefined);
+      openDetails(page, "writer");
+      const answer = async (label: string, value: Refusal, said: string) => {
+        next = value;
+        action(page, "writer", label).on.click();
+        page.elements["agent-yes"].on.click();
+        await page.until(() => note(page) === said);
+        expect(page.elements["agent-confirm"].hidden).toBe(true);
+        expect(page.elements["agent-key"].value).toBe("");
+      };
+      await answer("Remove", 404, "writer is already gone (404).");
+      await answer("Reset key", 404, "writer is already gone (404).");
+      await answer("Remove", { status: 503, reason: "Database busy", retry: true }, "The server is busy (503). Try again in a moment.");
+      await answer("Reset key", { status: 503, reason: "Database busy", retry: true }, "The server is busy (503). Try again in a moment.");
+      await answer("Remove", "fail", "No answer from the server, so writer may have been removed: the list shows whether.");
+      await answer(
+        "Reset key",
+        "fail",
+        "No answer from the server, so writer's key may have been reset, and this page has no new key to show: reset it again for one.",
+      );
+      // A deadline that passes says so too.
+      next = "hang";
+      action(page, "writer", "Remove").on.click();
+      page.elements["agent-yes"].on.click();
+      await page.until(() => page.deadlines.size > 0 && note(page) === "Removing writer…");
+      for (const [, fn] of page.deadlines) fn();
+      await page.until(() => note(page).startsWith("The server did not answer in time, so writer may have been removed"));
+      expect(live("writer")).toBe(1);
+    });
+
+    it("forgets the admin on a 403, and asks for a token again on a 401", async () => {
+      registerAgent(db, OWNER_ACCOUNT, "writer", "");
+      for (const [status, label] of [[403, "Remove"], [403, "Reset key"], [401, "Remove"], [401, "Reset key"]] as const) {
+        let refuse = false;
+        const page = await load(anaToken, (url, init) => (refuse && init.method !== "GET" && url.startsWith("/api/agents") ? status : undefined));
+        await page.until(() => actionsOf(page, "writer") !== undefined);
+        openDetails(page, "writer");
+        refuse = true;
+        action(page, "writer", label).on.click();
+        page.elements["agent-yes"].on.click();
+        if (status === 403) {
+          await page.until(() => note(page).startsWith("The server says you are no longer an admin"));
+          expect(actionsOf(page, "writer")).toBeUndefined();
+          expect(page.elements["agent-confirm"].hidden).toBe(true);
+          expect(page.entry()).toBeUndefined();
+        } else {
+          await page.until(() => page.elements["status-line"].textContent === "The server refused that token. Enter another.");
+          expect(page.store.size).toBe(0);
+          expect(page.elements["agent-confirm"].hidden).toBe(true);
+        }
+      }
+    });
+
+    it("forgets the admin on a 403 that comes after the panel moved on, and ends a confirmation whose agent left the list", async () => {
+      registerAgent(db, OWNER_ACCOUNT, "writer", "");
+      registerAgent(db, OWNER_ACCOUNT, "eve", "");
+      let hold = false;
+      const page = await load(anaToken, (url, init) => (hold && init.method !== "GET" && url.startsWith("/api/agents") ? { status: 403, reason: "Not an admin" } : undefined));
+      await page.until(() => actionsOf(page, "writer") !== undefined && actionsOf(page, "eve") !== undefined);
+      openDetails(page, "eve");
+      action(page, "eve", "Remove").on.click();
+      // Someone else removes eve: the next poll ends the confirmation for her.
+      purgeAgent(db, "owner", "eve");
+      await page.poll();
+      await page.until(() => agentRow(page, "eve") === undefined);
+      expect(page.elements["agent-confirm"].hidden).toBe(true);
+      openDetails(page, "writer");
+      hold = true;
+      action(page, "writer", "Reset key").on.click();
+      page.elements["agent-yes"].on.click();
+      page.elements["agent-no"].on.click();
+      await page.until(() => actionsOf(page, "writer") === undefined);
+      expect(note(page)).toBe("");
+    });
+
+    it("says a key may have been reset when no answer comes after the reader pressed Cancel", async () => {
+      registerAgent(db, OWNER_ACCOUNT, "writer", "");
+      let next: Refusal | undefined;
+      const page = await load(anaToken, (url, init) => (init.method === "POST" && url.startsWith("/api/agents") ? next : undefined));
+      await page.until(() => actionsOf(page, "writer") !== undefined);
+      openDetails(page, "writer");
+      next = "hang";
+      action(page, "writer", "Reset key").on.click();
+      page.elements["agent-yes"].on.click();
+      await page.until(() => page.deadlines.size > 0 && note(page) === "Resetting writer's key…");
+      page.elements["agent-no"].on.click();
+      for (const [, fn] of page.deadlines) fn();
+      await page.until(
+        () => note(page) === "The server did not answer in time, so writer's key may have been reset, and this page has no new key to show: reset it again for one.",
+      );
+      expect(page.elements["agent-confirm"].hidden).toBe(true);
+      expect(page.elements["agent-key"].value).toBe("");
+      expect(page.elements["agent-key-made"].hidden).toBe(true);
+    });
+
+    it("changes nothing in the panel for an answer that comes after it moved on or the token was forgotten", async () => {
+      registerAgent(db, OWNER_ACCOUNT, "writer", "");
+      registerAgent(db, OWNER_ACCOUNT, "eve", "");
+      let hold = false;
+      const page = await load(anaToken, (url, init) => (hold && init.method !== "GET" && url.startsWith("/api/agents") ? "held" : undefined));
+      for (const [leave, label] of [["other", "Reset key"], ["close", "Reset key"], ["other", "Remove"], ["forget", "Reset key"]] as const) {
+        if (leave === "forget") page.store.set("message-cp-token", anaToken);
+        await page.until(() => actionsOf(page, "writer") !== undefined && actionsOf(page, "eve") !== undefined);
+        if (agentRow(page, "writer")!.children[1].hidden) openDetails(page, "writer");
+        hold = true;
+        action(page, "writer", label).on.click();
+        page.elements["agent-yes"].on.click();
+        await page.until(() => page.held.length === 1);
+        if (leave === "other") {
+          if (agentRow(page, "eve")!.children[1].hidden) openDetails(page, "eve");
+          action(page, "eve", "Remove").on.click();
+        } else if (leave === "close") openDetails(page, "writer");
+        else page.elements["forget"].on.click();
+        hold = false;
+        page.release();
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        // The server did it, but no key shows, and a confirmation for eve stays as it was.
+        expect(page.elements["agent-key"].value).toBe("");
+        expect(page.elements["agent-key-made"].hidden).toBe(true);
+        if (leave === "other") {
+          expect(page.elements["agent-confirm-text"].textContent).toMatch(/^Remove eve\?/);
+          expect(page.elements["agent-yes"].disabled).toBe(false);
+          page.elements["agent-no"].on.click();
+        } else expect(page.elements["agent-confirm"].hidden).toBe(true);
+        // A key reset after its details closed says so, as its key is not shown; nothing else leaves a note.
+        expect(note(page)).toBe(
+          leave === "close" ? "writer's key was reset, but this page closed it before showing the new one: reset it again for a key you can see." : "",
+        );
+        if (label === "Remove") {
+          expect(live("writer")).toBeUndefined();
+          registerAgent(db, OWNER_ACCOUNT, "writer", "");
+          await page.poll();
+        }
+        if (leave === "forget") expect(page.elements["rows"].children).toEqual([]);
       }
     });
   });
