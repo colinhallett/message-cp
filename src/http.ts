@@ -1514,8 +1514,8 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
     // Removing an agent and resetting its key, which only an admin person token does; GET /api/agents is a read, and any
     // other method there gets apiAgents' 405. Neither reads a body; their 403s close the connection as the routes above do.
     const managing = (path === "/api/agents" && req.method === "DELETE") || path === "/api/agents/key";
-    // Listing, adding and removing webhooks, which only an admin person token does. A POST carries a body its 403 leaves
-    // unread; all their 403s close the connection as the routes above do.
+    // Listing, adding and removing webhooks, which only an admin person token does. A POST carries a body the token
+    // refusals below leave unread; those 403s close the connection as the routes above do.
     const hooks = path === "/api/webhooks";
     // Revoking an approved client, which only an admin person token does; any other method on /api/approvals is a read,
     // or apiApprovals' 405. It reads no body; its 403s close the connection as the routes above do.
