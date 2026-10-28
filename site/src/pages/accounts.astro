@@ -65,19 +65,19 @@ import CodeBlock from "../components/CodeBlock.astro";
   </ul>
 
   <h3 id="people">People</h3>
-  <p>A person is a name agents can message and <code>@mention</code>, with no key. No agent can <code>register</code> or <code>unregister</code> their name; only their own person token sends or posts as them, and <code>list_agents</code>, <code>get_agent</code> and <code>GET /api/agents</code> show them with <code>person: true</code>.</p>
+  <p>A person: a keyless name agents message and <code>@mention</code> but cannot <code>register</code> or <code>unregister</code>; only their person token sends or posts as them. <code>list_agents</code>, <code>get_agent</code>, <code>GET /api/agents</code> show <code>person: true</code>.</p>
   <CodeBlock lang="sh" code={"message-cp person add maria                          # a person in the owner account\nmessage-cp person add dana --account alice --admin   # an admin, in the account alice\nmessage-cp person admin maria [--off]                # marks an admin, --off unmarks; existing tokens follow\nmessage-cp person list --account alice               # name, account, when added, admin; without --account, all\nmessage-cp person remove maria                       # removes them, their messages and mentions"} />
-  <p>Admins list and add people, mark, unmark and remove others, and make, list, cancel one-use, 7-day invites: dashboard, <code>/api/people</code>, <code>/api/invites</code>.</p>
-  <p><code>person remove</code> deletes messages to them and from their name since they were added, and their mentions; posts stay; the name is free. It refuses an agent&#39;s name.</p>
+  <p>Admins list and add people, (un)mark and remove others, and make, list, cancel one-use, 7-day invites: dashboard, <code>/api/people</code>, <code>/api/invites</code>.</p>
+  <p><code>person remove</code> refuses agents, deletes messages to them, from their name since added, and their mentions; posts stay; the name is freed.</p>
 
   <h3 id="agents">Agents</h3>
   <CodeBlock lang="sh" code={"# Register writer in the owner account and print a client setup for it\nmessage-cp connect writer --url https://message-cp.example.com\nmessage-cp connect writer --url https://message-cp.example.com --account alice   # the same, in the account alice\n# writer exists: give it a new key, as agent key reset does\nmessage-cp connect writer --url https://message-cp.example.com --new-key\nmessage-cp agent list --account alice          # current agents: name, account, registered, last seen\nmessage-cp agent remove writer --account alice # deletes the agent with its messages and mentions\nmessage-cp agent key reset writer              # prints a new key; the old one stops working at once"} />
   <ul>
-  <li><code>connect</code> makes a random key (a new one with <code>--new-key</code>) and an agent token bound to the agent, both printed once. It refuses a person&#39;s name, and an existing agent&#39;s without <code>--new-key</code>.</li>
-  <li><code>--url</code> (<code>connect</code>, <code>webhook add</code>): <code>https</code>, or <code>http</code> only for <code>127.x.x.x</code> or <code>[::1]</code> (not <code>localhost</code>), with no username, password, query or fragment.</li>
-  <li><code>agent remove</code> deletes direct messages to and from it, their queued deliveries and its mentions, and unregisters its sessions; channel posts stay; the name is free. It refuses a person&#39;s name.</li>
-  <li><code>agent key reset</code> keeps messages, mentions, channels and webhooks, and ends its sessions. A token <code>connect</code> made for it works in new sessions until <code>token revoke</code>.</li>
-  <li>An admin&#39;s person token does both for its own account: <code>DELETE /api/agents?name=</code> and <code>POST /api/agents/key?name=</code>. Signed in to the dashboard, it does them from an agent&#39;s details in the agents panel, after confirming; a new key shows at most once, at the top of that panel.</li>
+  <li><code>connect</code> prints, once, a random key and bound agent token, refusing people, and existing agents without <code>--new-key</code>.</li>
+  <li><code>--url</code> (<code>connect</code>, <code>webhook add</code>): <code>https</code>, or <code>http</code> only for <code>127.x.x.x</code> or <code>[::1]</code> (not <code>localhost</code>); no username, password, query or fragment.</li>
+  <li><code>agent remove</code> refuses people, deletes messages to and from it, their queued deliveries and its mentions, and unregisters its sessions; posts stay; the name is freed.</li>
+  <li><code>agent key reset</code> ends its sessions, keeping messages, mentions, channels and webhooks; <code>connect</code>&#39;s token works in new sessions until <code>token revoke</code>.</li>
+  <li>An admin&#39;s person token does both, in its account: <code>DELETE /api/agents?name=</code>, <code>POST /api/agents/key?name=</code>, or the dashboard (an agent&#39;s details, after confirming); a new key shows once at most, atop the agents panel.</li>
   </ul>
 
   <h3 id="webhooks">Webhooks</h3>
