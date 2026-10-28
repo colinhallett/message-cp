@@ -1,14 +1,27 @@
+import { createHash } from "node:crypto";
 import { mkdtempSync } from "node:fs";
 import { request } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { accountForToken, addAccount, addToken, listAccounts } from "../src/accounts.js";
+import { accountForToken, addAccount, addToken, listAccounts, revokeToken } from "../src/accounts.js";
 import { addPerson, registerAgent, removePerson, setPersonAdmin } from "../src/agents.js";
 import { postAsPerson } from "../src/channels.js";
 import { OWNER_ACCOUNT, openDb, type AccountId, type Db } from "../src/db.js";
 import { startHttp, type HttpServer } from "../src/http.js";
-import { NotAdminError, OwnPersonError, listInvites, makeInvite, redeemLoginCode, removePersonBy, setAdminBy, LoginRefused } from "../src/login.js";
+import {
+  COUNT_PERSON_SIGNINS,
+  COUNT_PERSON_TOKENS,
+  NotAdminError,
+  OwnPersonError,
+  listInvites,
+  makeInvite,
+  makeLoginCode,
+  redeemLoginCode,
+  removePersonBy,
+  setAdminBy,
+  LoginRefused,
+} from "../src/login.js";
 import { sendAsPerson } from "../src/messages.js";
 
 // GET, PATCH and DELETE /api/people: an admin person's token lists the people of its own account and marks, unmarks and removes the other people of its own account,
@@ -108,7 +121,7 @@ describe("DELETE /api/people", () => {
     const res = await remove("Ben");
     expect(res.status).toBe(200);
     const text = await res.text();
-    expect(JSON.parse(text)).toEqual({ name: "ben", messages: 2, mentions: 1 });
+    expect(JSON.parse(text)).toEqual({ name: "ben", messages: 2, mentions: 1, tokens: 0, signins: 0 });
     expect(text).not.toContain("secret");
     expect(people()).not.toContainEqual(expect.objectContaining({ name: "ben" }));
     expect((messages() as { body: string }[]).map((m) => m.body)).toEqual(["stays"]);
@@ -120,8 +133,73 @@ describe("DELETE /api/people", () => {
   it("counts a message they sent themselves once", async () => {
     sendAsPerson(db, OWNER_ACCOUNT, "ben", "ben", "note to self");
     sendAsPerson(db, OWNER_ACCOUNT, "ben", "ana", "hi");
-    expect(await (await remove("ben")).json()).toEqual({ name: "ben", messages: 2, mentions: 0 });
+    expect(await (await remove("ben")).json()).toEqual({ name: "ben", messages: 2, mentions: 0, tokens: 0, signins: 0 });
     expect(messages()).toEqual([]);
+  });
+
+  describe("tokens and signins", () => {
+    const hashToken = (token: string) => createHash("sha256").update(token).digest("hex");
+    // A redeemed login link gives a new person token with one sign-in session.
+    const signIn = (account: string, person: string) => {
+      const session = redeemLoginCode(db, makeLoginCode(db, account, person).code);
+      const token = db.prepare("SELECT token_id FROM dashboard_sessions WHERE hash = ?").pluck().get(hashToken(session)) as number;
+      return { session, token };
+    };
+    const kept = () => ({
+      tokens: db.prepare("SELECT id, revoked_at FROM tokens ORDER BY id").all(),
+      sessions: db.prepare("SELECT id, hash, token_id FROM dashboard_sessions ORDER BY id").all(),
+    });
+    const signins = async () => ((await (await call("/api/signins", ana)).json()) as { tokenId: number }[]).map((s) => s.tokenId);
+
+    it("counts only their live tokens and those tokens' sign-ins, which stop working, revoking and deleting nothing", async () => {
+      const revoked = signIn("owner", "ben");
+      const live = signIn("owner", "ben");
+      revokeToken(db, revoked.token);
+      expect(await signins()).toEqual([live.token]);
+      expect((await call("/api/token", live.session)).status).toBe(200);
+      const before = kept();
+      const res = await remove("ben");
+      expect(res.status).toBe(200);
+      const text = await res.text();
+      expect(JSON.parse(text)).toEqual({ name: "ben", messages: 0, mentions: 0, tokens: 1, signins: 1 });
+      for (const secret of [revoked.session, live.session, hashToken(live.session), hashToken(revoked.session)]) {
+        expect(text).not.toContain(secret);
+      }
+      expect(text).not.toContain("session");
+      expect((await call("/api/token", live.session)).status).toBe(401);
+      expect(await signins()).toEqual([]);
+      // Nothing is revoked or deleted: the person's removal is what refuses them.
+      expect(kept()).toEqual(before);
+    });
+
+    it("counts a person token with no sign-in among the tokens", async () => {
+      personToken("owner", "ben");
+      signIn("owner", "ben");
+      expect(await (await remove("ben")).json()).toMatchObject({ tokens: 2, signins: 1 });
+    });
+
+    it("never counts or changes another account's tokens or sign-ins, a person of the same name's included", async () => {
+      addPerson(db, "friend", "ben");
+      const theirs = signIn("friend", "ben");
+      personToken("friend", "ben");
+      const before = kept();
+      expect(await (await remove("ben")).json()).toMatchObject({ tokens: 0, signins: 0 });
+      expect(kept()).toEqual(before);
+      expect((await call("/api/token", theirs.session)).status).toBe(200);
+      // Called directly with the friend's person row but the owner's account, nothing of the friend's is counted.
+      const fay = idOf(friend, "ben");
+      expect(db.prepare(COUNT_PERSON_TOKENS).pluck().get(fay, OWNER_ACCOUNT)).toBe(0);
+      expect(db.prepare(COUNT_PERSON_SIGNINS).pluck().get(fay, OWNER_ACCOUNT)).toBe(0);
+    });
+
+    it("counts through tokens_live_by_person and dashboard_sessions_by_token, without scanning tokens or sessions", () => {
+      const plan = (sql: string) => (db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all(1, 1) as { detail: string }[]).map((p) => p.detail);
+      expect(plan(COUNT_PERSON_TOKENS)).toEqual(["SEARCH tokens USING INDEX tokens_live_by_person (person_id=?)"]);
+      expect(plan(COUNT_PERSON_SIGNINS)).toEqual([
+        "SEARCH tokens USING INDEX tokens_live_by_person (person_id=?)",
+        "SEARCH dashboard_sessions USING COVERING INDEX dashboard_sessions_by_token (token_id=?)",
+      ]);
+    });
   });
 
   it("leaves their tokens refused with 401 and their unused invites unlisted and unredeemable", async () => {

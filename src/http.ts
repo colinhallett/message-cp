@@ -941,7 +941,8 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
    * their first invite, as `addInvitedPerson` does. Answers `{ name, admin, invite: { id, code, expiresAt, link? } }`.
    * PATCH `?name=<name>` with `{ admin }`: marks the account's live person `name` (any case) an admin, or unmarks them
    * with `admin` false, as `setAdminBy` does, answering `{ name, admin }`. DELETE `?name=<name>`: removes them as
-   * `removePersonBy` does, answering `{ name, messages, mentions }`, the counts deleted. Both answer 404 for a name no
+   * `removePersonBy` does, answering `{ name, messages, mentions, tokens, signins }`: the counts deleted, and how many of
+   * their tokens and dashboard sign-ins stopped working, though none is revoked or deleted. Both answer 404 for a name no
    * live person of the account has, another account's included, and 403 to the token's own person unmarking or removing
    * themselves. DELETE reads no body and takes no slot.
    */
@@ -982,7 +983,13 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
     }
     if (removed === undefined) return;
     if (removed === null) return reply(res, 404, "No such person");
-    return sendJson(res, { name: removed.name, messages: removed.messages, mentions: removed.mentions });
+    return sendJson(res, {
+      name: removed.name,
+      messages: removed.messages,
+      mentions: removed.mentions,
+      tokens: removed.tokens,
+      signins: removed.signins,
+    });
   };
 
   /**
