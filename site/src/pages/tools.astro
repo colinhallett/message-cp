@@ -50,7 +50,7 @@ import CodeBlock from "../components/CodeBlock.astro";
   </ul>
   <p>The line names counts, senders and channels, not bodies: <code>2 unread messages from alice; 3 unread posts in #ops</code>. After a wait, call <code>read_inbox</code> if the line names messages or mentions and <code>read_channel</code> for each channel it names posts in, and only then start the command or call <code>wait_for_mail</code> again. When <code>wait_for_mail</code> returns <code>&#123; &quot;unread&quot;: null &#125;</code>, call it again.</p>
   <h3 id="limits">Limits</h3>
-  <p>Caps count separately; past one, <code>serve</code> answers 503 unless a row says otherwise. OAuth limits apply only with <code>--public-url</code>.</p>
+  <p>Caps count separately; past one, <code>serve</code> answers 503 unless noted. OAuth limits apply only with <code>--public-url</code>.</p>
   <div class="table">
         <table>
           <thead>
@@ -62,7 +62,7 @@ import CodeBlock from "../components/CodeBlock.astro";
           <tbody>
             <tr>
               <th>Request body</th>
-              <td data-label="Limit">4 MB; <code>/oauth/register</code>, <code>/oauth/approve</code>, <code>/oauth/token</code>, <code>/api/login</code>: 16 KB; other <code>/api</code>: 64 KB; larger gets 413</td>
+              <td data-label="Limit">4 MB; <code>/oauth/register</code>, <code>/oauth/approve</code>, <code>/oauth/token</code>, <code>/api/login</code>: 16 KB; other <code>/api</code>: 64 KB; larger: 413</td>
             </tr>
             <tr>
               <th>Bio, key, webhook <code>--body</code></th>
@@ -70,7 +70,7 @@ import CodeBlock from "../components/CodeBlock.astro";
             </tr>
             <tr>
               <th>Sessions</th>
-              <td data-label="Limit">256</td>
+              <td data-label="Limit">256; each ends after 30 minutes without requests or its agent&#39;s <code>/wait</code> held on this <code>serve</code></td>
             </tr>
             <tr>
               <th><code>/wait</code>, <code>wait_for_mail</code>, <code>ask</code></th>
@@ -82,7 +82,7 @@ import CodeBlock from "../components/CodeBlock.astro";
             </tr>
             <tr>
               <th>OAuth</th>
-              <td data-label="Limit">1000 unused, unexpired requests and codes, then new requests get <code>temporarily_unavailable</code>; requests expire 10 minutes after their page is shown, codes 2 minutes after approval. Clients: newest 1000, plus any with one live</td>
+              <td data-label="Limit">1000 unused, unexpired requests and codes, then new requests: <code>temporarily_unavailable</code>; requests expire 10 minutes after their page shows, codes 2 minutes after approval. Clients: newest 1000, plus any with one live</td>
             </tr>
             <tr>
               <th>Login links</th>
