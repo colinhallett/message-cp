@@ -6435,7 +6435,7 @@ describe("the page's invites", () => {
       button(page, "ben", "Remove").on.click();
       page.elements["remove-yes"].on.click();
       await page.until(
-        () => page.elements["people-note"].textContent === "Removed ben: 3 messages and 1 mention deleted. Their 0 tokens and 0 dashboard sign-ins stopped working.",
+        () => page.elements["people-note"].textContent === "Removed ben: 3 messages and 1 mention deleted. They had no working tokens or dashboard sign-ins.",
       );
       expect(page.writes()).toEqual([{ url: "/api/people?name=ben", method: "DELETE", body: undefined }]);
       expect(page.elements["remove-confirm"].hidden).toBe(true);

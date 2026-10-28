@@ -1864,10 +1864,12 @@ async function removeAccountPerson() {
   const body = answer.body;
   if (answer.status === 200) {
     // An older serve answers no tokens or signins; then only what it deleted is said.
-    const stopped =
-      body && Number.isSafeInteger(body.tokens) && Number.isSafeInteger(body.signins)
-        ? " Their " + counted(body.tokens, "token") + " and " + counted(body.signins, "dashboard sign-in") + " stopped working."
-        : "";
+    const access = body && Number.isSafeInteger(body.tokens) && Number.isSafeInteger(body.signins);
+    const stopped = !access
+      ? ""
+      : body.tokens === 0 && body.signins === 0
+        ? " They had no working tokens or dashboard sign-ins."
+        : " Their " + counted(body.tokens, "token") + " and " + counted(body.signins, "dashboard sign-in") + " stopped working.";
     peopleNote.textContent =
       (body && Number.isInteger(body.messages) && Number.isInteger(body.mentions)
         ? "Removed " + name + ": " + counted(body.messages, "message") + " and " + counted(body.mentions, "mention") + " deleted."
