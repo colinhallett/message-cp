@@ -8270,7 +8270,7 @@ describe("the page's invites", () => {
       const page = await load(anaToken);
       await openSignins(page);
       expect(page.elements["log-note"].textContent).toBe(
-        "No dashboard sign-ins. A browser is listed here from when it signs in with a message-cp login-link link or an invite until its sign-in ends.",
+        "No dashboard sign-ins. A browser is listed here from when it signs in with a login link or an invite until its sign-in ends.",
       );
       expect(sinRows(page)).toEqual([]);
       for (let i = 0; i < 201; i++) signIn();

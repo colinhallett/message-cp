@@ -796,7 +796,7 @@ let signinClosings = 0;
 let signinRowsKey = "";
 // The view's note for an account with no live sign-in. The page's own sign-in is listed while it is live, so this shows
 // only to a page that reads with a token it was given rather than a sign-in.
-const NO_SIGNINS = "No dashboard sign-ins. A browser is listed here from when it signs in with a message-cp login-link link or an invite until its sign-in ends.";
+const NO_SIGNINS = "No dashboard sign-ins. A browser is listed here from when it signs in with a login link or an invite until its sign-in ends.";
 const NOT_ADMIN_SIGNINS = "The server says you are no longer an admin of this account (403), so this page no longer lists or ends sign-ins.";
 
 function say(text, isError) {
