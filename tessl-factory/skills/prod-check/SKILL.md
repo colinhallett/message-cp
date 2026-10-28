@@ -16,15 +16,22 @@ code, push nothing, and open no pull request.
 ## Environment
 
 - `MESSAGE_CP_URL`: the live server, with or without `/mcp`.
-- `MESSAGE_CP_HTTP_TOKEN`: its bearer token. Never print, echo or write it
-  anywhere, Linear included.
+- `MESSAGE_CP_CHECK_TOKEN`: a full token of the server's `prod-check`
+  account, which holds nothing but this check's own traffic. The check runs
+  with it, so its cleanup can read and delete its test messages without any
+  access to the owner's account. Never print, echo or write it anywhere,
+  Linear included.
+- `MESSAGE_CP_HTTP_TOKEN` is your own message-cp connection (an agent token
+  in the owner's account, for posting in #factory). Never pass it to the
+  check.
 - `LINEAR_API_URL` and `LINEAR_TOKEN`: every Linear call goes to
   `$LINEAR_API_URL/graphql` with `Authorization: Bearer $LINEAR_TOKEN`. Never
   call `api.linear.app` directly. Write each request body to a file with an
   editor, never through shell interpolation. A response with `errors` is a
   failed call.
 
-If any of these four is unset, stop and say which in the run output. Do not
+If `MESSAGE_CP_URL`, `MESSAGE_CP_CHECK_TOKEN`, `LINEAR_API_URL` or
+`LINEAR_TOKEN` is unset, stop and say which in the run output. Do not
 run the check and do not write to Linear.
 
 ## The check
@@ -52,7 +59,7 @@ run the check and do not write to Linear.
 
    ```bash
    cd "$CHECK_DIR/main"
-   npm run e2e -- --url "$MESSAGE_CP_URL" > "$CHECK_DIR/out" 2>&1; echo $? > "$CHECK_DIR/code"
+   MESSAGE_CP_HTTP_TOKEN="$MESSAGE_CP_CHECK_TOKEN" npm run e2e -- --url "$MESSAGE_CP_URL" > "$CHECK_DIR/out" 2>&1; echo $? > "$CHECK_DIR/code"
    ```
 
 Exit code 0 is a pass. Any other code is a failure. Nothing else counts:
