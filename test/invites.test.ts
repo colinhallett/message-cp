@@ -104,7 +104,7 @@ describe("POST /api/people", () => {
 
     const signed = await login(answer.invite.code);
     expect(signed.status).toBe(200);
-    const token = ((await signed.json()) as { token: string }).token;
+    const token = ((await signed.json()) as { session: string }).session;
     expect(accountForToken(db, token, OWNER_TOKEN)?.person).toEqual({ id: ben, name: "Ben", admin: false });
     const again = await login(answer.invite.code);
     expect(again.status).toBe(400);
@@ -500,7 +500,7 @@ describe("who reaches the invite routes", () => {
     expect(people()).toContainEqual({ account_id: friend, name: "ben", person: 1, admin: 1 });
     expect(codes().filter((c) => c.account_id === OWNER_ACCOUNT)).toHaveLength(1);
     expect(codes()[0].used_at).toBeNull();
-    const token = ((await (await login(added.invite.code)).json()) as { token: string }).token;
+    const token = ((await (await login(added.invite.code)).json()) as { session: string }).session;
     expect(accountForToken(db, token, OWNER_TOKEN)?.account).toBe(friend);
     expect((await login(ours.code)).status).toBe(200);
   });
