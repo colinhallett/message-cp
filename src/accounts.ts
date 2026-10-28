@@ -73,7 +73,10 @@ export interface TokenInfo {
   /** For a token the OAuth code exchange issued, the client it was issued to, as `exchangeCode` recorded it. */
   client?: ApprovedClient;
   createdAt: string;
-  /** When a request last used it, to within TOKEN_USE_RESOLUTION_MS (earlier if a busy database skipped a write); null for never since that was recorded. */
+  /**
+   * When a request last used it, to within TOKEN_USE_RESOLUTION_MS (earlier if a write was skipped or failed); null
+   * until a request is recorded, so also for a token used only while every write was skipped or failed.
+   */
   lastUsedAt: string | null;
 }
 
@@ -278,15 +281,6 @@ export function revokeToken(db: Db, id: number): string {
   return row.account;
 }
 
-/**
- * The account a bearer token belongs to: the owner's for `ownerToken` (MESSAGE_CP_HTTP_TOKEN, never read-only or
- * agent-only), else the account of a token created with `message-cp`, as long as it has not been revoked. A token bound
- * to an agent comes with that agent, and only while it is a live agent of the token's own account; a person token
- * comes with its person, only while that row is a live person of the token's own account, and with whether that row is
- * marked admin now. A token that registers its own agents comes with its row id. Undefined for anything else, a bound
- * token whose agent or person has been removed included. A created token it accepts is recorded as used now (see
- * `recordUse`), even if a later check refuses the request; nothing is recorded for `ownerToken` or a refused token.
- */
 /** The name of the account `account`. */
 export const accountName = (db: Db, account: AccountId): string =>
   db.prepare("SELECT name FROM accounts WHERE id = ?").pluck().get(account) as string;
@@ -313,6 +307,15 @@ function recordUse(db: Db, token: number): void {
   }
 }
 
+/**
+ * The account a bearer token belongs to: the owner's for `ownerToken` (MESSAGE_CP_HTTP_TOKEN, never read-only or
+ * agent-only), else the account of a token created with `message-cp`, as long as it has not been revoked. A token bound
+ * to an agent comes with that agent, and only while it is a live agent of the token's own account; a person token
+ * comes with its person, only while that row is a live person of the token's own account, and with whether that row is
+ * marked admin now. A token that registers its own agents comes with its row id. Undefined for anything else, a bound
+ * token whose agent or person has been removed included. A created token it accepts is recorded as used now (see
+ * `recordUse`), even if a later check refuses the request; nothing is recorded for `ownerToken` or a refused token.
+ */
 export function accountForToken(db: Db, token: string, ownerToken: string): TokenAccess | undefined {
   const hash = hashToken(token);
   // Constant-time against the owner's token, as before accounts; created tokens are found by their hash.

@@ -427,7 +427,7 @@ export interface AccountToken {
   /** For a token the OAuth code exchange issued, the client it was issued to, as `token list` shows it. */
   client?: ApprovedClient;
   createdAt: string;
-  /** As `token list` gives it: when a request last used it, to within a minute, or null for never since that was recorded. */
+  /** As `token list` gives it: when a request last used it, to within a minute, or null until a request is recorded. */
   lastUsedAt: string | null;
 }
 

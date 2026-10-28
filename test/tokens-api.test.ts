@@ -53,11 +53,9 @@ const make = (body: unknown, token = ana) =>
     body: typeof body === "string" ? body : JSON.stringify(body),
   });
 const message = async (res: Response) => ((await res.json()) as { error: { message: string } }).error.message;
-// Without last_used_at, which a request the token authenticates sets even when a later check refuses it.
-const snapshot = () =>
-  db
-    .prepare("SELECT id, account_id, hash, created_at, revoked_at, read_only, agent_only, agent_id, person_id, oauth, client_name, client_host, registers FROM tokens ORDER BY id")
-    .all();
+// Every column but last_used_at, which a request the token authenticates sets even when a later check refuses it.
+const COLUMNS = "id, account_id, hash, created_at, revoked_at, read_only, agent_only, agent_id, person_id, oauth, client_name, client_host, registers";
+const snapshot = () => db.prepare(`SELECT ${COLUMNS} FROM tokens ORDER BY id`).all();
 const idOf = (account: AccountId, name: string) =>
   db.prepare("SELECT id FROM agents WHERE account_id = ? AND name = ?").pluck().get(account, name) as number;
 const both = [() => list(), () => revoke(anaId)] as const;
@@ -150,13 +148,13 @@ describe("DELETE /api/tokens", () => {
   it("revokes a token, which gets 401 from its next request, and changes no other", async () => {
     const made = tokens();
     expect((await call("/api/agents", made.readOnly.token)).status).toBe(200);
-    // Ana's own token is left out: the revoking request records its use.
-    const others = db.prepare("SELECT * FROM tokens WHERE id NOT IN (?, ?) ORDER BY id").all(made.readOnly.id, anaId);
+    // Without last_used_at: the revoking request records the use of ana's token.
+    const others = db.prepare(`SELECT ${COLUMNS} FROM tokens WHERE id <> ? ORDER BY id`).all(made.readOnly.id);
     const res = await revoke(made.readOnly.id);
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ id: made.readOnly.id });
     expect((await call("/api/agents", made.readOnly.token)).status).toBe(401);
-    expect(db.prepare("SELECT * FROM tokens WHERE id NOT IN (?, ?) ORDER BY id").all(made.readOnly.id, anaId)).toEqual(others);
+    expect(db.prepare(`SELECT ${COLUMNS} FROM tokens WHERE id <> ? ORDER BY id`).all(made.readOnly.id)).toEqual(others);
     expect(listTokens(db).map((t) => t.id)).not.toContain(made.readOnly.id);
     // Gone, so a second revoke finds nothing.
     expect((await revoke(made.readOnly.id)).status).toBe(404);
@@ -298,8 +296,8 @@ describe("POST /api/tokens", () => {
     const made = tokens();
     const fay = made.theirPerson.token;
     const friendBefore = db.prepare("SELECT * FROM tokens WHERE account_id = ? ORDER BY id").all(friend);
-    // Ana's own token is left out: her requests record its use.
-    const ownerBefore = db.prepare("SELECT * FROM tokens WHERE account_id = ? AND id <> ? ORDER BY id").all(OWNER_ACCOUNT, anaId);
+    // Without last_used_at: ana's requests record her token's use.
+    const ownerBefore = db.prepare(`SELECT ${COLUMNS} FROM tokens WHERE account_id = ? ORDER BY id`).all(OWNER_ACCOUNT);
     // The owner's admin makes one: the friend's list and tokens are unchanged.
     const ours = (await (await make({ kind: "read-only" })).json()) as { id: number; token: string };
     expect(db.prepare("SELECT * FROM tokens WHERE account_id = ? ORDER BY id").all(friend)).toEqual(friendBefore);
@@ -308,7 +306,7 @@ describe("POST /api/tokens", () => {
     // The friend's admin makes one: it reads the friend's account, not the owner's.
     const theirs = (await (await make({ kind: "read-only" }, fay)).json()) as { id: number; token: string };
     expect(db.prepare("SELECT account_id FROM tokens WHERE id = ?").pluck().get(theirs.id)).toBe(friend);
-    expect(db.prepare("SELECT * FROM tokens WHERE account_id = ? AND id NOT IN (?, ?) ORDER BY id").all(OWNER_ACCOUNT, anaId, ours.id)).toEqual(ownerBefore);
+    expect(db.prepare(`SELECT ${COLUMNS} FROM tokens WHERE account_id = ? AND id <> ? ORDER BY id`).all(OWNER_ACCOUNT, ours.id)).toEqual(ownerBefore);
     registerAgent(db, friend, "fred");
     const names = async (token: string) => ((await (await call("/api/agents", token)).json()) as { name: string }[]).map((a) => a.name);
     expect(await names(theirs.token)).toContain("fred");
