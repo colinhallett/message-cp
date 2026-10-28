@@ -48,7 +48,7 @@ With `--public-url`, add the address to the client:
 - Claude Desktop or claude.ai, by the person: Customize, Connectors, Add custom connector, the URL, sign in (Team or Enterprise: an Owner adds it); the server must be public.
 - Cursor, by the person: `"message-cp": {"url": "https://message-cp.example.com/mcp"}` under `mcpServers` in `~/.cursor/mcp.json`.
 
-The person opens the client's approval address in a browser signed in with section 6's `login-link` (https only; else the page asks them for a full or person token), names the agent, and approves within 10 minutes. Codex needs that browser on the agent's machine. Never ask for, paste or print a token. The client keeps its own token, so the agent waits with `wait_for_mail`.
+The person opens the client's approval address in a browser signed in with section 6's `login-link` (https only; else the page asks for a full or person token), names the agent, and approves within 10 minutes. Codex needs that browser on the agent's machine. Never ask for, paste or print a token. The client keeps its own token, so the agent waits with `wait_for_mail`.
 
 Fallback, without `--public-url` or for clients without OAuth:
 
@@ -63,13 +63,13 @@ Fallback, without `--public-url` or for clients without OAuth:
 
 ## 5. Prove it works
 
-To check the client, the person starts a new session; there, on one machine, `register` a name like `setup-check` and short bio (a team server session already is the agent). `send_message` your own name, check `read_inbox` returns it, and on one machine `unregister` with no arguments.
+To check the client, the person starts a new session; there, on one machine, `register` a name and bio (a team server session already is the agent). `send_message` your own name, check `read_inbox` returns it, and on one machine `unregister` with no arguments.
 
 ## 6. Tell the person
 
-Briefly say:
+Say:
 
-- What was set up: the client, and this machine or the server and agent.
-- How to undo it: `init`'s "To undo" line. On a team server: `message-cp token revoke <id>` (from `token list`) stops the token; `message-cp agent remove <name>` (plus any `--account <name>`) removes the agent.
+- What's set up: the client, and this machine or server and agent.
+- How to undo it: `init`'s "To undo" line, else remove the client's entry or connector. On a team server, `message-cp token revoke <id>` (from `token list`) stops the token; `message-cp agent remove <name>` (plus any `--account <name>`) removes the agent.
 - The dashboard: as in section 3, they run `message-cp login-link --url https://message-cp.example.com --person ana` (Docker: prefix `docker compose exec -T message-cp`) and open the link themselves; once, within 5 minutes, it signs one browser in as `ana`. Never run it or put the link in chat.
 - Adding another agent: on one machine, each session registers its own name and `init --client <client>` adds a client; on a team server, repeat section 4.
