@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { request } from "node:http";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -7,10 +8,10 @@ import { addAccount, addToken, listAccounts, listTokens, recordClient, revokeTok
 import { addPerson, purgeAgent, registerAgent, removePerson, setPersonAdmin } from "../src/agents.js";
 import { OWNER_ACCOUNT, openDb, type AccountId, type Db } from "../src/db.js";
 import { startHttp, type HttpServer } from "../src/http.js";
-import { NotAdminError, listTokensBy, revokeTokenBy } from "../src/login.js";
+import { NotAdminError, addTokenBy, listTokensBy, revokeTokenBy } from "../src/login.js";
 
-// An admin person's token lists its account's tokens (GET /api/tokens) and revokes one (DELETE /api/tokens?id=), on a
-// server with the owner's account and a friend's.
+// An admin person's token lists its account's tokens (GET /api/tokens), makes a read-only or agent one (POST
+// /api/tokens) and revokes one (DELETE /api/tokens?id=), on a server with the owner's account and a friend's.
 const OWNER_TOKEN = "owner-token";
 let db: Db;
 let http: HttpServer;
@@ -27,8 +28,12 @@ beforeEach(async () => {
   const made = addToken(db, "owner", false, false, undefined, "ana");
   ana = made.token;
   anaId = made.id;
-  http = await startHttp(db, { token: OWNER_TOKEN, port: 0, waitHoldMs: 0 });
+  await start();
 });
+
+const start = async (options: { maxSessions?: number } = {}) => {
+  http = await startHttp(db, { token: OWNER_TOKEN, port: 0, waitHoldMs: 0, ...options });
+};
 
 afterEach(async () => {
   vi.restoreAllMocks();
@@ -41,11 +46,18 @@ const call = (path: string, token: string, method = "GET") =>
   fetch(`http://127.0.0.1:${http.port}${path}`, { method, headers: { Authorization: `Bearer ${token}` } });
 const list = (query = "", token = ana) => call(`/api/tokens${query}`, token);
 const revoke = (id: number | string, token = ana) => call(`/api/tokens?id=${id}`, token, "DELETE");
+const make = (body: unknown, token = ana) =>
+  fetch(`http://127.0.0.1:${http.port}/api/tokens`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    body: typeof body === "string" ? body : JSON.stringify(body),
+  });
 const message = async (res: Response) => ((await res.json()) as { error: { message: string } }).error.message;
 const snapshot = () => db.prepare("SELECT * FROM tokens ORDER BY id").all();
 const idOf = (account: AccountId, name: string) =>
   db.prepare("SELECT id FROM agents WHERE account_id = ? AND name = ?").pluck().get(account, name) as number;
 const both = [() => list(), () => revoke(anaId)] as const;
+const all = [...both, () => make({ kind: "read-only" })] as const;
 
 /** One token of each kind in the owner's account, after ana's, and a full and a person token in the friend's, after `addAccount`'s. */
 function tokens() {
@@ -175,6 +187,165 @@ describe("DELETE /api/tokens", () => {
   });
 });
 
+describe("POST /api/tokens", () => {
+  it("makes each kind for the token's own account, answered once and never cached, and it works at once", async () => {
+    for (const kind of ["read-only", "agent"] as const) {
+      const res = await make({ kind });
+      expect(res.status).toBe(200);
+      expect(res.headers.get("cache-control")).toBe("no-store");
+      const made = (await res.json()) as { id: number; kind: string; token: string };
+      expect(Object.keys(made).sort()).toEqual(["id", "kind", "token"]);
+      expect(made.kind).toBe(kind);
+      expect(made.token).toMatch(/^[0-9a-f]{64}$/);
+      // Only its hash is stored, in the owner's account, unbound.
+      expect(db.prepare("SELECT account_id, hash, read_only, agent_only, agent_id, person_id, registers FROM tokens WHERE id = ?").get(made.id)).toEqual({
+        account_id: OWNER_ACCOUNT,
+        hash: hashToken(made.token),
+        read_only: 1,
+        agent_only: kind === "agent" ? 1 : 0,
+        agent_id: null,
+        person_id: null,
+        registers: 0,
+      });
+      if (kind === "read-only") {
+        expect((await call("/api/agents", made.token)).status).toBe(200);
+        expect((await call("/api/conversation?a=x&b=y", made.token, "DELETE")).status).toBe(403);
+      } else {
+        expect((await call("/api/agents", made.token)).status).toBe(403);
+        const mcp = await fetch(`http://127.0.0.1:${http.port}/mcp`, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${made.token}`, "Content-Type": "application/json", Accept: "application/json, text/event-stream" },
+          body: JSON.stringify({
+            jsonrpc: "2.0",
+            id: 1,
+            method: "initialize",
+            params: { protocolVersion: "2025-03-26", capabilities: {}, clientInfo: { name: "test", version: "1" } },
+          }),
+        });
+        expect(mcp.status).toBe(200);
+        expect(mcp.headers.get("mcp-session-id")).toBeTruthy();
+      }
+    }
+  });
+
+  it("lists the new tokens with their kind in GET /api/tokens and token list", async () => {
+    const readOnly = (await (await make({ kind: "read-only" })).json()) as { id: number };
+    const agent = (await (await make({ kind: "agent" })).json()) as { id: number };
+    const body = (await (await list()).json()) as TokenJson[];
+    expect(body.map(({ createdAt, ...rest }) => rest)).toEqual([
+      { id: anaId, kind: "person", person: "ana" },
+      { id: readOnly.id, kind: "read-only" },
+      { id: agent.id, kind: "agent" },
+    ]);
+    const cli = new Map(listTokens(db).map((t) => [t.id, t.kind]));
+    expect([cli.get(readOnly.id), cli.get(agent.id)]).toEqual(["read-only", "agent"]);
+  });
+
+  it("answers 400, making nothing, for any other body", async () => {
+    tokens();
+    const before = snapshot();
+    const bodies = [
+      { kind: "full" },
+      { kind: "person" },
+      { kind: "READ-ONLY" },
+      { kind: "" },
+      { kind: null },
+      { kind: ["agent"] },
+      {},
+      { kind: "agent", account: "friend" },
+      { kind: "read-only", agent: "bob" },
+      { kind: "agent", registers: true },
+      { type: "agent" },
+      ["agent"],
+      "agent",
+      7,
+      null,
+    ];
+    for (const body of bodies) {
+      const res = await make(JSON.stringify(body));
+      expect(res.status, JSON.stringify(body)).toBe(400);
+      expect(await message(res)).toBe('Give only kind, as "read-only" or "agent"');
+    }
+    const invalid = await make("{kind:");
+    expect(invalid.status).toBe(400);
+    expect(await message(invalid)).toBe("Invalid JSON");
+    expect(snapshot()).toEqual(before);
+  });
+
+  it("answers 401, making nothing, to a revoked admin's token", async () => {
+    revokeToken(db, anaId);
+    const before = snapshot();
+    expect((await make({ kind: "agent" })).status).toBe(401);
+    expect(snapshot()).toEqual(before);
+  });
+
+  it("answers 413, making nothing, for a body over 64 KB", async () => {
+    const before = snapshot();
+    const res = await make(JSON.stringify({ kind: "agent", pad: "x".repeat(65 * 1024) }));
+    expect(res.status).toBe(413);
+    expect(snapshot()).toEqual(before);
+  });
+
+  it("makes the second account's token in that account only, leaving the owner's tokens alone, and the other way round", async () => {
+    const made = tokens();
+    const fay = made.theirPerson.token;
+    const friendBefore = db.prepare("SELECT * FROM tokens WHERE account_id = ? ORDER BY id").all(friend);
+    const ownerBefore = db.prepare("SELECT * FROM tokens WHERE account_id = ? ORDER BY id").all(OWNER_ACCOUNT);
+    // The owner's admin makes one: the friend's list and tokens are unchanged.
+    const ours = (await (await make({ kind: "read-only" })).json()) as { id: number; token: string };
+    expect(db.prepare("SELECT * FROM tokens WHERE account_id = ? ORDER BY id").all(friend)).toEqual(friendBefore);
+    expect(((await (await list("", fay)).json()) as TokenJson[]).map((t) => t.id)).toEqual([friendFull.id, made.theirs.id, made.theirPerson.id]);
+    for (const t of [made.theirs.token, friendFull.token, fay]) expect((await call("/api/agents", t)).status).toBe(200);
+    // The friend's admin makes one: it reads the friend's account, not the owner's.
+    const theirs = (await (await make({ kind: "read-only" }, fay)).json()) as { id: number; token: string };
+    expect(db.prepare("SELECT account_id FROM tokens WHERE id = ?").pluck().get(theirs.id)).toBe(friend);
+    expect(db.prepare("SELECT * FROM tokens WHERE account_id = ? AND id <> ? ORDER BY id").all(OWNER_ACCOUNT, ours.id)).toEqual(ownerBefore);
+    registerAgent(db, friend, "fred");
+    const names = async (token: string) => ((await (await call("/api/agents", token)).json()) as { name: string }[]).map((a) => a.name);
+    expect(await names(theirs.token)).toContain("fred");
+    expect(await names(ours.token)).not.toContain("fred");
+  });
+
+  it("never logs the new token", async () => {
+    const spies = (["log", "info", "warn", "error", "debug"] as const).map((m) => vi.spyOn(console, m));
+    const write = vi.spyOn(process.stderr, "write");
+    const made = (await (await make({ kind: "agent" })).json()) as { token: string };
+    for (const spy of [...spies, write]) {
+      for (const args of spy.mock.calls) expect(JSON.stringify(args)).not.toContain(made.token);
+    }
+  });
+
+  it("takes a slot before reading its body, shared with /api/send, answering 503 with Connection: close past it", async () => {
+    await http.close();
+    await start({ maxSessions: 1 });
+    const held = request(`http://127.0.0.1:${http.port}/api/send`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${ana}`, "Content-Type": "application/json", "Content-Length": "1000" },
+    });
+    const answered = new Promise<number>((resolve, reject) => {
+      held.on("response", (r) => {
+        r.resume();
+        resolve(r.statusCode!);
+      });
+      held.on("error", reject);
+    });
+    held.write("{");
+    await new Promise((r) => setTimeout(r, 200));
+    const before = snapshot();
+    const refused = await make({ kind: "agent" });
+    expect(refused.status).toBe(503);
+    expect(refused.headers.get("connection")).toBe("close");
+    // What can be answered at once is answered before the cap.
+    expect((await make({ kind: "agent" }, OWNER_TOKEN)).status).toBe(403);
+    expect((await make({ kind: "agent" }, "wrong")).status).toBe(401);
+    expect(snapshot()).toEqual(before);
+    held.end(" ".repeat(999));
+    expect(await answered).toBe(400);
+    // The slot was given back.
+    expect((await make({ kind: "agent" })).status).toBe(200);
+  });
+});
+
 describe("/api/tokens", () => {
   it("refuses a plain person, read-only, agent and full token with 403, closing the connection, and changes nothing", async () => {
     const made = tokens();
@@ -183,12 +354,12 @@ describe("/api/tokens", () => {
       [addToken(db, "owner", false, false, undefined, "ben").token, "A person token only reads, sends and posts"],
       [made.readOnly.token, "This token is read-only"],
       [made.agentOnly.token, "Agent tokens cannot use the dashboard API"],
-      [made.full.token, /^A full token cannot list or revoke tokens over the API\. Run message-cp token list or token revoke <id> on the server/],
-      [OWNER_TOKEN, /^A full token cannot list or revoke tokens over the API\./],
+      [made.full.token, /^A full token cannot list, make or revoke tokens over the API\. Run message-cp token list, token add <account> --read-only or --agent-only, or token revoke <id> on the server/],
+      [OWNER_TOKEN, /^A full token cannot list, make or revoke tokens over the API\./],
     ] as const;
     const before = snapshot();
     for (const [token, expected] of refused) {
-      for (const res of [await list("", token), await revoke(made.full.id, token)]) {
+      for (const res of [await list("", token), await revoke(made.full.id, token), await make({ kind: "agent" }, token)]) {
         expect(res.status).toBe(403);
         expect(res.headers.get("connection")).toBe("close");
         const text = await message(res);
@@ -197,12 +368,13 @@ describe("/api/tokens", () => {
       }
     }
     expect((await list("", "wrong")).status).toBe(401);
+    expect((await make({ kind: "agent" }, "wrong")).status).toBe(401);
     expect(snapshot()).toEqual(before);
   });
 
   it("refuses an admin's token with 403 once they are marked not admin", async () => {
     setPersonAdmin(db, "owner", "ana", false);
-    for (const route of both) {
+    for (const route of all) {
       const res = await route();
       expect(res.status).toBe(403);
       expect(await message(res)).toBe("A person token only reads, sends and posts");
@@ -213,7 +385,7 @@ describe("/api/tokens", () => {
     tokens();
     const before = snapshot();
     for (const change of ["UPDATE agents SET admin = 0 WHERE name = 'ana'", "UPDATE agents SET removed_at = 1 WHERE name = 'ana'"]) {
-      for (const route of both) {
+      for (const route of all) {
         const prepare = db.prepare.bind(db);
         // Just before the admin's row is checked inside the transaction, as another process would between the two.
         const spy = vi.spyOn(db, "prepare").mockImplementation(((sql: string) => {
@@ -231,13 +403,14 @@ describe("/api/tokens", () => {
     }
   });
 
-  it("refuses listTokensBy and revokeTokenBy for anyone who is not a live admin of the account", () => {
+  it("refuses listTokensBy, addTokenBy and revokeTokenBy for anyone who is not a live admin of the account", () => {
     const made = tokens();
     addPerson(db, "owner", "ben");
     const before = snapshot();
     for (const by of [idOf(OWNER_ACCOUNT, "ben"), idOf(friend, "fay"), 9999]) {
       expect(() => listTokensBy(db, OWNER_ACCOUNT, by, 10, 0)).toThrow(NotAdminError);
       expect(() => revokeTokenBy(db, OWNER_ACCOUNT, by, made.full.id)).toThrow(NotAdminError);
+      for (const kind of ["read-only", "agent"] as const) expect(() => addTokenBy(db, OWNER_ACCOUNT, by, kind)).toThrow(NotAdminError);
     }
     expect(snapshot()).toEqual(before);
   });
@@ -245,7 +418,7 @@ describe("/api/tokens", () => {
   it("answers 503 with Retry-After when the database is busy, changing nothing", async () => {
     tokens();
     const before = snapshot();
-    for (const route of both) {
+    for (const route of all) {
       const prepare = db.prepare.bind(db);
       const spy = vi.spyOn(db, "prepare").mockImplementation(((sql: string) => {
         if (sql.includes("person = 1 AND admin = 1")) throw Object.assign(new Error("database is locked"), { code: "SQLITE_BUSY" });
@@ -259,11 +432,11 @@ describe("/api/tokens", () => {
     expect(snapshot()).toEqual(before);
   });
 
-  it("answers 405 with Allow: GET, DELETE for another method", async () => {
-    for (const method of ["POST", "PUT", "PATCH"]) {
+  it("answers 405 with Allow: GET, POST, DELETE for another method", async () => {
+    for (const method of ["PUT", "PATCH"]) {
       const res = await call("/api/tokens", ana, method);
       expect(res.status, method).toBe(405);
-      expect(res.headers.get("allow")).toBe("GET, DELETE");
+      expect(res.headers.get("allow")).toBe("GET, POST, DELETE");
     }
   });
 });
