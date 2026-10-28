@@ -644,6 +644,8 @@ const NOT_ADMIN_AGENTS = "The server says you are no longer an admin of this acc
 const NOT_ADMIN = "The server says you are no longer an admin of this account (403), so this page no longer offers changing people or invites.";
 // The tokenGeneration a DELETE /api/webhooks is in flight for, or undefined, as cancelling is for an invite.
 let removingWebhook;
+// The webhook that DELETE is removing (the target its confirmation was for), while removingWebhook is set.
+let removingHook;
 // The webhook the "Webhooks" view asks before removing ({ id, on, key }, key being its entry as GET /api/webhooks gave it),
 // or undefined.
 let webhookTarget;
@@ -1596,6 +1598,7 @@ async function removeWebhook() {
   const hook = webhookTarget;
   if (!meAdmin || !openWebhooks || !hook || removingWebhook === tokenGen) return;
   removingWebhook = tokenGen;
+  removingHook = hook;
   const closings = webhookClosings;
   webhookYes.disabled = true;
   const ac = new AbortController();
@@ -1608,6 +1611,7 @@ async function removeWebhook() {
   }
   if (tokenGen !== tokenGeneration) return;
   removingWebhook = undefined;
+  removingHook = undefined;
   webhookYes.disabled = false;
   if (answer.status === 401) return ask("The server refused that token. Enter another.");
   if (answer.status === 403) return unmarked();
@@ -2954,8 +2958,10 @@ async function readWebhooks(token, signal, gen) {
   }
   if (page.items) {
     // A confirmation for a webhook the list no longer gives as it was closes, so it never removes a webhook added since
-    // that the server gave the same id. One whose removal is in flight is left to that removal's answer, which closes it.
-    if (webhookTarget && removingWebhook !== tokenGeneration && !page.items.some((w) => JSON.stringify(w) === webhookTarget.key)) {
+    // that the server gave the same id. The one whose removal is in flight is left to that removal's answer, which closes
+    // it; a confirmation for any other webhook opened meanwhile is checked like any other.
+    const inFlight = removingWebhook === tokenGeneration && removingHook === webhookTarget;
+    if (webhookTarget && !inFlight && !page.items.some((w) => JSON.stringify(w) === webhookTarget.key)) {
       webhookNote.textContent =
         "Webhook " + webhookTarget.id + " (" + webhookTarget.on + ") changed or went from the list, so its confirmation closed and nothing was sent.";
       closeRemoveWebhook();

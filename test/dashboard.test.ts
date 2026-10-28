@@ -6814,6 +6814,39 @@ describe("the page's invites", () => {
       expect(page.writes()).toEqual([]);
     });
 
+    it("closes a stale confirmation for one webhook while another's removal is still in flight", async () => {
+      const a = addWebhook(db, "owner", "https://example.com/a", "#general", true);
+      const b = addWebhook(db, "owner", "https://example.com/b", "agent:bob", true);
+      let next: "hang" | undefined;
+      const page = await load(anaToken, (url, init) => (init.method === "DELETE" ? next : undefined));
+      await openWebhooks(page);
+      await page.until(() => hookRows(page).length === 2);
+      next = "hang";
+      removeButton(page, a.id).on.click();
+      page.elements["webhook-yes"].on.click();
+      await page.until(() => page.deadlines.size > 0);
+      // A's own confirmation is left to its answer, even once A is gone from the list.
+      db.prepare("DELETE FROM webhooks WHERE id = ?").run(a.id);
+      await page.poll();
+      await page.until(() => hookRows(page).length === 1);
+      expect(page.elements["webhook-confirm"].hidden).toBe(false);
+      // B's confirmation, opened while A's removal hangs, closes once B goes, and a replacement with B's id is never removed.
+      removeButton(page, b.id).on.click();
+      db.prepare("DELETE FROM webhooks WHERE id = ?").run(b.id);
+      await page.poll();
+      await page.until(() => page.elements["webhook-confirm"].hidden);
+      expect(note(page)).toBe(`Webhook ${b.id} (agent:bob) changed or went from the list, so its confirmation closed and nothing was sent.`);
+      for (const [, fn] of page.deadlines) fn();
+      await page.until(() => note(page).startsWith(`The server did not answer in time, so webhook ${a.id} may have been removed`));
+      addWebhook(db, "owner", "https://example.org/a2", "#general", true);
+      const replacement = addWebhook(db, "owner", "https://example.org/b2", "agent:bob", true);
+      expect(replacement.id).toBe(b.id);
+      await page.poll();
+      page.elements["webhook-yes"].on.click();
+      expect(page.writes().filter((w) => w.url === `/api/webhooks?id=${b.id}`)).toEqual([]);
+      expect(exists(replacement.id)).toBe(true);
+    });
+
     it("says a busy server in the view's note, keeps the rows, and keeps polling", async () => {
       addWebhook(db, "owner", "https://example.com/hook", "agent:bob", true);
       let next: "busy" | "odd" | undefined;
