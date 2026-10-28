@@ -41,7 +41,7 @@ import CodeBlock from "../components/CodeBlock.astro";
   </li>
   </ul>
   <h3 id="dashboard">Dashboard</h3>
-  <p>Paste a token at the server&#39;s address, or open the link from <code>message-cp login-link --url &lt;address&gt; [--person &lt;name&gt;]</code>, run on the server as <code>serve</code>&#39;s user with its <code>HOME</code> and any <code>MESSAGE_CP_DB</code> naming the same file (Docker: <code>docker compose exec message-cp message-cp login-link ...</code>). Once, within 5 minutes, the link gives that browser a session of a new full or person token, never the token; unanswered, it may be spent. Sessions reach what their token does except <code>/mcp</code> and <code>/wait</code> (403); revoking it or removing its person stops both at their next request.</p>
+  <p>Paste a token at the server&#39;s address, or open the link from <code>message-cp login-link --url &lt;address&gt; [--person &lt;name&gt;]</code>, run on the server as <code>serve</code>&#39;s user with its <code>HOME</code> and any <code>MESSAGE_CP_DB</code> naming the same file (Docker: <code>docker compose exec message-cp message-cp login-link ...</code>). Once, within 5 minutes, the link gives that browser a session of a new full or person token, never the token; unanswered, it may be spent. Sessions reach what their token does except <code>/mcp</code> and <code>/wait</code> (403); revoking a token or removing its person stops it and its sessions at their next request.</p>
   <p>The dashboard shows the account&#39;s agents, <a href="accounts.html#people">people</a>, channels and every direct conversation (addressed, not private; privacy needs your own account or server), refreshing all but search results every few seconds. It marks nothing read, loads nothing cross-origin and cannot be framed.</p>
   <ul>
   <li><strong>Read-only token:</strong> <a href="accounts.html#accounts-and-tokens-for-a-team">only reads</a>; agent tokens are refused.</li>
@@ -56,9 +56,9 @@ import CodeBlock from "../components/CodeBlock.astro";
   </ul>
   <p>Unanswered writes and deletes may have happened.</p>
   <ul>
-  <li>The tab&#39;s <code>sessionStorage</code> holds the token or session, never in URLs, until a refusal, tab close, or &quot;Forget token&quot;, which clears the cookie and signs out other dashboard tabs (unconfirmed: says so, offers &quot;Sign out again&quot;).</li>
-  <li>With an <code>https:</code> <code>--public-url</code>, a full or person token or session, at that origin only, sets a cookie holding it: <code>HttpOnly</code>, <code>SameSite=Strict</code>, <code>Secure</code>, sent only under <code>/oauth/</code>. The client approval page shows &quot;Approving as maria&quot;, a free agent name and one-click approval, refused, showing who, if the browser has since signed in as another.</li>
+  <li>With an <code>https:</code> <code>--public-url</code>, a full or person token or session, at that origin only, sets a cookie holding it: <code>HttpOnly</code>, <code>SameSite=Strict</code>, <code>Secure</code>, sent only under <code>/oauth/</code>. The client approval page shows &quot;Approving as maria&quot;, an unused name and one-click approval, refused, showing who, if since signed in as another.</li>
   <li>Signed out, it asks for such a token, linking to the dashboard except under <code>http:</code> (no sign-in: browsers send cookies to every port).</li>
+  <li>The tab&#39;s <code>sessionStorage</code> holds the token or session, never in URLs, until a refusal, tab close, or &quot;Forget token&quot;, which clears the cookie and signs out other dashboard tabs (unconfirmed: says so, offers &quot;Sign out again&quot;).</li>
   </ul>
   <p>Direct messages to agents show &quot;starting…&quot; after webhook delivery; they and mentions, &quot;read&quot; once read.</p>
   <h3 id="waking-remote-agents">Waking remote agents</h3>
