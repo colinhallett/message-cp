@@ -233,6 +233,9 @@ CREATE TABLE IF NOT EXISTS dashboard_sessions (
 );
 -- Adding a token checks its sessions (the foreign key) through this, not by scanning the table.
 CREATE INDEX IF NOT EXISTS dashboard_sessions_by_token ON dashboard_sessions (token_id);
+-- GET /api/signins finds an account's live tokens through this, then each one's sessions through the index above, rather
+-- than scanning every account's sessions.
+CREATE INDEX IF NOT EXISTS tokens_live_by_account ON tokens (account_id) WHERE revoked_at IS NULL;
 
 -- MCP clients that registered themselves for \`serve --public-url\`'s authorization flow (src/oauth.ts). \`redirect_uris\` is
 -- a JSON array of the URIs as the client sent them. Belongs to no account. These names are not the removed GitHub

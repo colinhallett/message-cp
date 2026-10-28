@@ -516,6 +516,69 @@ export const revokeTokenBy = (db: Db, account: AccountId, by: number, id: number
     return changed === 0 ? undefined : { id };
   }).immediate();
 
+/** A live dashboard sign-in, as GET /api/signins lists it: never its session id, its hash or its token. */
+export interface AccountSignin {
+  /** The `dashboard_sessions` row id, which is not a credential. */
+  id: number;
+  tokenId: number;
+  kind: "full" | "person";
+  /** For a person token, its person's name. */
+  person?: string;
+  createdAt: string;
+  /** Only on the sign-in the request itself carries. */
+  current?: true;
+}
+
+// A sign-in is live while `accountForToken` would accept it: its token is unrevoked and, for a person token, its person
+// is still a live person of the token's own account, found by row. Login codes only make full and person tokens.
+const LIVE_SIGNIN_TOKEN = `tokens.account_id = ? AND tokens.revoked_at IS NULL AND (tokens.person_id IS NULL OR people.id IS NOT NULL)`;
+const SIGNIN_PEOPLE = `LEFT JOIN agents people ON people.id = tokens.person_id AND people.account_id = tokens.account_id
+  AND people.removed_at IS NULL AND people.person = 1`;
+
+/**
+ * For GET /api/signins: one page of the account's live dashboard sign-ins, oldest first, with `current` on the one whose
+ * row id is `current`, the request's own. `by` is the row of the admin person asking. Throws `NotAdminError` unless they
+ * are still a live admin of the account.
+ */
+export const listSigninsBy = (db: Db, account: AccountId, by: number, current: number | undefined, limit: number, offset: number): AccountSignin[] =>
+  db.transaction(() => {
+    requireAdmin(db, account, by);
+    const rows = db
+      .prepare(
+        `SELECT dashboard_sessions.id, dashboard_sessions.token_id, dashboard_sessions.created_at, tokens.person_id, people.name AS person
+         FROM dashboard_sessions JOIN tokens ON tokens.id = dashboard_sessions.token_id ${SIGNIN_PEOPLE}
+         WHERE ${LIVE_SIGNIN_TOKEN} ORDER BY dashboard_sessions.id LIMIT ? OFFSET ?`,
+      )
+      .all(account, limit, offset) as { id: number; token_id: number; created_at: number; person_id: number | null; person: string | null }[];
+    return rows.map((r): AccountSignin => ({
+      id: r.id,
+      tokenId: r.token_id,
+      kind: r.person_id !== null ? "person" : "full",
+      ...(r.person !== null && { person: r.person }),
+      createdAt: new Date(r.created_at).toISOString(),
+      ...(r.id === current && { current: true as const }),
+    }));
+  }).immediate();
+
+/**
+ * For DELETE /api/signins: ends the account's live dashboard sign-in `id` by deleting its row, the request's own
+ * included, so its next request gets 401 while its token and the token's other sign-ins keep working, and answers its
+ * id, or undefined, changing nothing, for an id that is no live sign-in of the account, another account's included.
+ * Nothing references `dashboard_sessions`, so the delete cascades nowhere. `by` is the row of the admin person asking.
+ * Throws `NotAdminError` unless they are still a live admin of the account.
+ */
+export const endSigninBy = (db: Db, account: AccountId, by: number, id: number): { id: number } | undefined =>
+  db.transaction(() => {
+    requireAdmin(db, account, by);
+    const changed = db
+      .prepare(
+        `DELETE FROM dashboard_sessions WHERE id = ? AND EXISTS (SELECT 1 FROM tokens ${SIGNIN_PEOPLE}
+           WHERE tokens.id = dashboard_sessions.token_id AND ${LIVE_SIGNIN_TOKEN})`,
+      )
+      .run(id, account).changes;
+    return changed === 0 ? undefined : { id };
+  }).immediate();
+
 /** An unused invite as GET /api/invites lists it: never its code or hash. */
 export interface PendingInvite {
   id: number;
