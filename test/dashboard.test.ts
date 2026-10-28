@@ -6013,8 +6013,9 @@ describe("the page's invites", () => {
 
   // Runs the served script with the given token, as the approved clients tests do. refuse, when it returns a status,
   // answers a request with that status; "hang" answers only by failing when it is aborted, "fail" rejects, "held" waits
-  // for release() to answer as the server does, and a { status, reason, retry } answers with that error.
-  type Refusal = number | "hang" | "fail" | "held" | "junk" | { status: number; reason: string; retry?: boolean };
+  // for release() to answer as the server does, a { status, reason, retry } answers with that error, and a { rewrite }
+  // answers with the server's own JSON answer passed through it.
+  type Refusal = number | "hang" | "fail" | "held" | "junk" | { status: number; reason: string; retry?: boolean } | { rewrite: (body: any) => unknown };
   async function load(token: string, refuse: (url: string, init: RequestInit) => Refusal | undefined = () => undefined, server = base) {
     const html = await (await fetch(`${server()}/`)).text();
     const script = /<script>([\s\S]*?)<\/script>/.exec(html)![1];
@@ -6043,6 +6044,9 @@ describe("the page's invites", () => {
         if (status === "held") return new Promise<Response>((resolve) => held.push(() => resolve(fetch(`${server()}${url}`, { ...init, signal: undefined }))));
         if (status === "junk") return Promise.resolve(new Response("not json", { status: 200 }));
         if (status === "fail") return Promise.reject(new TypeError("fetch failed"));
+        if (typeof status === "object" && "rewrite" in status) {
+          return fetch(`${server()}${url}`, init).then(async (res) => new Response(JSON.stringify(status.rewrite(await res.json())), { status: res.status }));
+        }
         if (typeof status === "object") {
           const body = JSON.stringify({ jsonrpc: "2.0", error: { code: -32000, message: status.reason }, id: null });
           return Promise.resolve(new Response(body, { status: status.status, headers: status.retry ? { "Retry-After": "1" } : {} }));
@@ -7537,6 +7541,12 @@ describe("the page's invites", () => {
     const note = (page: Page) => page.elements["token-note"].textContent;
     const live = (id: number) => db.prepare("SELECT 1 FROM tokens WHERE id = ? AND revoked_at IS NULL").get(id) !== undefined;
     const made = (id: number) => at(new Date(db.prepare("SELECT created_at FROM tokens WHERE id = ?").pluck().get(id) as number).toISOString());
+    // When the database last recorded a use of the token, as GET /api/tokens gives it, or null.
+    const usedAt = (id: number) => {
+      const ms = db.prepare("SELECT last_used_at FROM tokens WHERE id = ?").pluck().get(id) as number | null;
+      return ms === null ? null : new Date(ms).toISOString();
+    };
+    const used = (id: number) => (usedAt(id) === null ? "never used" : `last used ${at(usedAt(id)!)}`);
     // The ids of the tokens beforeEach made: the read-only viewer, the agent token bound to no agent, and ana's.
     const idOf = (token: string) => db.prepare("SELECT id FROM tokens WHERE hash = ?").pluck().get(createHash("sha256").update(token).digest("hex")) as number;
 
@@ -7581,21 +7591,32 @@ describe("the page's invites", () => {
       addAccount(db, "other");
       addPerson(db, "other", "olga", true);
       const theirs = addToken(db, "other", false, false, undefined, "olga");
+      expect((await fetch(`${base()}/api/agents`, { headers: auth(full.token) })).status).toBe(200);
       const page = await load(anaToken);
       await openTokens(page);
       const [v, a, me] = [idOf(viewer), idOf(agentToken), idOf(anaToken)];
+      // ana's token is the one the page reads with, so it has been used; the full token is used once before the page
+      // opens, and the others never.
+      expect(usedAt(me)).not.toBeNull();
+      expect(usedAt(full.id)).not.toBeNull();
+      expect(usedAt(bound.id)).toBeNull();
       expect(tokRows(page)).toEqual([
-        ["read-only", `token ${v}`, `made ${made(v)}`, "Revoke"],
-        ["agent", `token ${a}`, `made ${made(a)}`, "bound to no agent", "Revoke"],
-        ["person", `token ${me}`, `made ${made(me)}`, "ana", "Revoke"],
-        ["full", `token ${full.id}`, `made ${made(full.id)}`, "Revoke"],
-        ["agent", `token ${bound.id}`, `made ${made(bound.id)}`, "bob", "Revoke"],
-        ["agent", `token ${registering.id}`, `made ${made(registering.id)}`, "registers its own agents", "Revoke"],
-        ["agent", `token ${oauth.id}`, `made ${made(oauth.id)}`, "bob · client Evil\uFFFDClient\uFFFDid 1", "Revoke"],
-        ["agent", `token ${hosted.id}`, `made ${made(hosted.id)}`, "registers its own agents · client host.example", "Revoke"],
-        ["person", `token ${goneToken.id}`, `made ${made(goneToken.id)}`, "person removed", "Revoke"],
-        ["agent", `token ${lostToken.id}`, `made ${made(lostToken.id)}`, "agent removed", "Revoke"],
+        ["read-only", `token ${v}`, `made ${made(v)}`, used(v), "Revoke"],
+        ["agent", `token ${a}`, `made ${made(a)}`, used(a), "bound to no agent", "Revoke"],
+        ["person", `token ${me}`, `made ${made(me)}`, `last used ${at(usedAt(me)!)}`, "ana", "Revoke"],
+        ["full", `token ${full.id}`, `made ${made(full.id)}`, `last used ${at(usedAt(full.id)!)}`, "Revoke"],
+        ["agent", `token ${bound.id}`, `made ${made(bound.id)}`, "never used", "bob", "Revoke"],
+        ["agent", `token ${registering.id}`, `made ${made(registering.id)}`, "never used", "registers its own agents", "Revoke"],
+        ["agent", `token ${oauth.id}`, `made ${made(oauth.id)}`, "never used", "bob · client Evil\uFFFDClient\uFFFDid 1", "Revoke"],
+        ["agent", `token ${hosted.id}`, `made ${made(hosted.id)}`, "never used", "registers its own agents · client host.example", "Revoke"],
+        ["person", `token ${goneToken.id}`, `made ${made(goneToken.id)}`, "never used", "person removed", "Revoke"],
+        ["agent", `token ${lostToken.id}`, `made ${made(lostToken.id)}`, "never used", "agent removed", "Revoke"],
       ]);
+      // Each time's title is the raw ISO string; a never-used token's has none.
+      const rowOf = (id: number) => page.elements["post-rows"].children.find((r) => r.children[1].textContent === `token ${id}`)!;
+      expect(rowOf(full.id).children[3].title).toBe(usedAt(full.id));
+      expect(rowOf(full.id).children[2].title).toBe(new Date(db.prepare("SELECT created_at FROM tokens WHERE id = ?").pluck().get(full.id) as number).toISOString());
+      expect(rowOf(bound.id).children[3].title).toBe("");
       expect(tokEntry(page)!.children.map((c) => c.textContent)).toEqual(["Tokens", "10"]);
       expect(page.elements["log-note"].textContent).toBe("");
       const hashes = db.prepare("SELECT hash FROM tokens").pluck().all() as string[];
@@ -7782,6 +7803,65 @@ describe("the page's invites", () => {
       expect(page.writes()).toEqual([]);
     });
 
+    it("keeps a confirmation open when only its token's last use changed, and draws the new time", async () => {
+      const bobId = (registerAgent(db, OWNER_ACCOUNT, "bob", "x"), identityOf(db, OWNER_ACCOUNT, "bob")!.id);
+      const bound = addToken(db, "owner", false, true, bobId);
+      const page = await load(anaToken);
+      await openTokens(page);
+      expect(revokeButton(page, bound.id)).toBeDefined();
+      revokeButton(page, bound.id).on.click();
+      // A newer use of the token, as a request two minutes on would record it, changes only its lastUsedAt.
+      const later = Date.now() + 120_000;
+      db.prepare("UPDATE tokens SET last_used_at = ? WHERE id = ?").run(later, bound.id);
+      const before = page.requests.length;
+      await page.poll();
+      await page.until(() => page.requests.slice(before).some((r) => r.url.startsWith("/api/tokens")));
+      const iso = new Date(later).toISOString();
+      await page.until(() => tokRows(page).some((r) => r[1] === `token ${bound.id}` && r[3] === `last used ${at(iso)}`));
+      expect(page.elements["token-confirm"].hidden).toBe(false);
+      expect(note(page)).toBe("");
+      // The confirmation still revokes the token it describes.
+      page.elements["token-yes"].on.click();
+      await page.until(() => note(page) === `Revoked token ${bound.id} (agent, bob).`);
+      expect(live(bound.id)).toBe(false);
+    });
+
+    it("still closes a confirmation when its token changed in more than its last use", async () => {
+      const bobId = (registerAgent(db, OWNER_ACCOUNT, "bob", "x"), identityOf(db, OWNER_ACCOUNT, "bob")!.id);
+      const bound = addToken(db, "owner", false, true, bobId);
+      const page = await load(anaToken);
+      await openTokens(page);
+      revokeButton(page, bound.id).on.click();
+      db.prepare("UPDATE tokens SET last_used_at = ? WHERE id = ?").run(Date.now() + 120_000, bound.id);
+      purgeAgent(db, "owner", "bob");
+      await page.poll();
+      await page.until(() => page.elements["token-confirm"].hidden);
+      expect(note(page)).toBe(`Token ${bound.id} (agent, bob) changed or went from the list, so its confirmation closed and nothing was sent.`);
+      page.elements["token-yes"].on.click();
+      expect(page.writes()).toEqual([]);
+    });
+
+    it("shows a token list whose last use or made time is not as GET /api/tokens gives it as unreadable", async () => {
+      for (const [field, value] of [
+        ["lastUsedAt", 5],
+        ["lastUsedAt", undefined],
+        ["lastUsedAt", { at: "now" }],
+        ["createdAt", null],
+      ] as const) {
+        let odd = false;
+        const page = await load(anaToken, (url, init) =>
+          odd && url.startsWith("/api/tokens") && (init.method ?? "GET") === "GET"
+            ? { rewrite: (items: Record<string, unknown>[]) => items.map((t) => ({ ...t, [field]: value })) }
+            : undefined,
+        );
+        await openTokens(page);
+        expect(tokRows(page).length).toBeGreaterThan(0);
+        odd = true;
+        await page.poll();
+        await page.until(() => page.elements["log-note"].textContent === "The server sent an answer this page cannot read. Retrying…");
+      }
+    });
+
     it("drops a revoke's answer that comes after the view closed, another view opened or the token was forgotten", async () => {
       let hold = false;
       const page = await load(anaToken, (url, init) => (hold && init.method === "DELETE" ? "held" : undefined));
@@ -7908,7 +7988,7 @@ describe("the page's invites", () => {
         );
         expect(page.elements["token-copy-note"].textContent).toBe("");
         await page.until(() => tokRows(page).some((r) => r[1] === `token ${agentId}`));
-        expect(tokRows(page).find((r) => r[1] === `token ${agentId}`)).toEqual(["agent", `token ${agentId}`, `made ${made(agentId)}`, "bound to no agent", "Revoke"]);
+        expect(tokRows(page).find((r) => r[1] === `token ${agentId}`)).toEqual(["agent", `token ${agentId}`, `made ${made(agentId)}`, "never used", "bound to no agent", "Revoke"]);
         // It is refused the dashboard API, as every agent token is, and reaches /mcp.
         expect((await fetch(`${base()}/api/agents`, { headers: auth(agent) })).status).toBe(403);
         const mcp = await fetch(`${base()}/mcp`, {
