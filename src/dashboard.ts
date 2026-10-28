@@ -30,8 +30,8 @@ import { MAX_BODY_LENGTH } from "./messages.js";
 // sidebar's "Tokens" entry, which lists the account's unrevoked tokens with GET /api/tokens, makes a read-only or agent
 // token with POST /api/tokens and, after confirming, revokes one with DELETE /api/tokens; that is all it ever writes. An
 // invite's link, an agent's new key, or a new token, is shown only in a field of its view, from the answer that made
-// it, and never kept or written anywhere else but the clipboard, when its Copy is pressed. With a full token, which acts as no person, it
-// reads and offers Delete, but not posting or sending, which the server refuses it: in the compose box's place it says
+// it, and never kept or written anywhere else but the clipboard, when its Copy is pressed. With a full token, which
+// acts as no person, it reads and offers Delete, but not posting or sending, which the server refuses it: in the compose box's place it says
 // how to sign in as a person. With a read-only token it only reads. An agent token,
 // which the server refuses on every /api path but GET /api/token, it forgets, saying that agent tokens cannot use it. It
 // puts agent- and person-supplied text on the page with textContent, never as HTML.
@@ -1937,6 +1937,8 @@ async function makeToken() {
   makingToken = tokenGen;
   const closings = tokenClosings;
   tokenMake.disabled = true;
+  // A token an earlier answer showed goes, so it is never taken for the one this request makes.
+  dropMadeToken();
   tokenMakeNote.textContent = "Making a token…";
   const ac = new AbortController();
   const deadline = setTimeout(() => ac.abort(), TIMEOUT_MS);
@@ -1957,7 +1959,7 @@ async function makeToken() {
     const named = kind === "agent" ? "an agent token" : "a read-only token";
     const then = meAdmin ? " If the list below has a new one, revoke it and make another." : "";
     if (openTokens && tokenNote.textContent === "" && answer.status === 200) {
-      tokenNote.textContent = "This page made " + named + ", but its answer came after the view it was made from closed, so it is not shown and never will be." + then;
+      tokenNote.textContent = "This page made " + named + ", but its answer came after the view it was made from closed or changed, so it is not shown and never will be." + then;
     } else if (openTokens && tokenNote.textContent === "" && answer.error) {
       tokenNote.textContent = answer.error + ", so " + named + " may or may not have been made, and no token can be shown for it." + then;
     }

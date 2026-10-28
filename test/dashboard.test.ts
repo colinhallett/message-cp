@@ -7606,7 +7606,12 @@ describe("the page's invites", () => {
           expect(page.elements["token-made"].hidden).toBe(true);
           expect(page.elements["token-make"].disabled).toBe(false);
         };
+        // A token an earlier 200 showed goes when the next attempt starts, so a refusal never sits beside it.
+        next = undefined;
+        make(page, "read-only");
+        await page.until(() => shown(page) !== "");
         await answer({ status: 400, reason: 'Give only kind, as "read-only" or "agent"' }, 'Give only kind, as "read-only" or "agent"');
+        expect(page.elements["token-for"].textContent).toBe("");
         await answer(413, "This is too long for the server (413).");
         await answer({ status: 503, reason: "Database busy", retry: true }, "The server is busy (503). Try again in a moment.");
         await answer(
@@ -7624,7 +7629,7 @@ describe("the page's invites", () => {
         expect(makeNote(page)).toBe("Making a token…");
         // A second press while it is in flight sends nothing more.
         make(page, "agent");
-        expect(page.writes()).toHaveLength(6);
+        expect(page.writes()).toHaveLength(7);
         for (const [, fn] of page.deadlines) fn();
         await page.until(() => makeNote(page).startsWith("The server did not answer in time, so a token may or may not have been made"));
         expect(page.elements["token-make"].disabled).toBe(false);
@@ -7634,10 +7639,11 @@ describe("the page's invites", () => {
           { kind: "read-only" },
           { kind: "read-only" },
           { kind: "read-only" },
+          { kind: "read-only" },
           { kind: "agent" },
         ]);
-        // None of those reached the server, which made nothing.
-        expect(tokRows(page)).toHaveLength(3);
+        // Only the first reached the server; it made one token.
+        expect(tokRows(page)).toHaveLength(4);
       });
 
       it("drops the made token and the form on a 403 to it or to the list, once the person is no longer an admin", async () => {
@@ -7724,7 +7730,7 @@ describe("the page's invites", () => {
           await page.until(() => note(page) !== "");
           expect(note(page)).toBe(
             outcome === "held"
-              ? "This page made an agent token, but its answer came after the view it was made from closed, so it is not shown and never will be. If the list below has a new one, revoke it and make another."
+              ? "This page made an agent token, but its answer came after the view it was made from closed or changed, so it is not shown and never will be. If the list below has a new one, revoke it and make another."
               : "The server did not answer in time, so a read-only token may or may not have been made, and no token can be shown for it. If the list below has a new one, revoke it and make another.",
           );
           expect(shown(page)).toBe("");
