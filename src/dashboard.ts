@@ -1701,8 +1701,8 @@ function closeRevokeApproval(refocus) {
   if (refocus) document.getElementById("close-log").focus();
 }
 
-// Revokes the approval being asked about with DELETE /api/approvals and says what it ended from the answer, then reads
-// the list again, as removeWebhook does: a 403, which means the token's person is no longer an admin, unmarks them
+// Revokes the approval being asked about with DELETE /api/approvals and says what it ended from the answer, then, after a
+// 200, a 404 or no answer, reads the list again, as removeWebhook does: a 403, which means the token's person is no longer an admin, unmarks them
 // whatever is open now, as a 401 asks for another token; any other answer after the view closed, or any answer after the
 // token was forgotten, changes nothing.
 async function revokeApproval() {
@@ -3671,8 +3671,8 @@ function showApprovalEntry() {
 // and lists the agents it registered, or says it has registered none yet. The client chose its name, so it goes in with
 // textContent and, as token list prints it, with control and format characters (a newline, a direction override)
 // replaced, so it cannot pass for another token's id; the id has its own element. Agent names go in with textContent
-// too. Never a token, hash, code or redirect URI, which GET /api/approvals does not give. For an admin person it ends
-// with a Revoke button that asks first. Throws on an entry that is neither shape GET /api/approvals gives, so
+// too. Never a token, hash, code or redirect URI, which GET /api/approvals does not give. For an admin person it has
+// a Revoke button that asks first. Throws on an entry that is neither shape GET /api/approvals gives, so
 // readApprovals shows the answer as unreadable.
 function approvalRow(a) {
   const single = a && a.registers === false && typeof a.agent === "string" && a.agents === undefined;

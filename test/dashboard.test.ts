@@ -3837,8 +3837,9 @@ describe("the page's approved clients", () => {
         else page.elements["forget"].on.click();
         hold = false;
         page.release();
-        // The server revoked it, but the page says nothing of it.
-        await page.until(() => !live(issuedNow.token));
+        // The server revoked it, but the page says nothing of it, once the answer has come: the DELETE's own deadline is
+        // cleared when it does.
+        await page.until(() => !live(issuedNow.token) && page.deadlines.size === 0);
         await new Promise((resolve) => setTimeout(resolve, 50));
         expect(note(page)).toBe("");
         expect(confirm(page).hidden).toBe(true);
