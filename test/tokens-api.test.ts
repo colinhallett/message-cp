@@ -272,6 +272,13 @@ describe("POST /api/tokens", () => {
     expect(snapshot()).toEqual(before);
   });
 
+  it("answers 401, making nothing, to a revoked admin's token", async () => {
+    revokeToken(db, anaId);
+    const before = snapshot();
+    expect((await make({ kind: "agent" })).status).toBe(401);
+    expect(snapshot()).toEqual(before);
+  });
+
   it("answers 413, making nothing, for a body over 64 KB", async () => {
     const before = snapshot();
     const res = await make(JSON.stringify({ kind: "agent", pad: "x".repeat(65 * 1024) }));
@@ -361,6 +368,7 @@ describe("/api/tokens", () => {
       }
     }
     expect((await list("", "wrong")).status).toBe(401);
+    expect((await make({ kind: "agent" }, "wrong")).status).toBe(401);
     expect(snapshot()).toEqual(before);
   });
 

@@ -891,8 +891,8 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
   });
 
   /**
-   * POST and PATCH /api/people and POST /api/invites and /api/tokens: reads a JSON object and answers with what `act` makes of it, never
-   * cached, as it may carry an invite's code. A slot is taken before the body is read and given back at the end, sharing
+   * POST and PATCH /api/people and POST /api/invites and /api/tokens: reads a JSON object and answers with what `act`
+   * makes of it, never cached, as it may carry an invite's code or a new token. A slot is taken before the body is read and given back at the end, sharing
    * `asPerson`'s count. `act` answers a string for 400, undefined for 404, and throws `PersonError` for 400, `LoginError`
    * for 503, `OwnPersonError` for 403 and `NotAdminError`, for a token's person removed or unmarked while the body was
    * read, for 403.
@@ -1112,7 +1112,7 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
    * /api/tokens. GET: one page of the account's unrevoked tokens, oldest first, as `listTokensBy` gives them: never a
    * token or its hash. POST `{ kind }`, with kind "read-only" or "agent" and no other field: makes a new unbound token of
    * that kind for the account, as `addTokenBy` does, answering `{ id, kind, token }`, never cached; the raw token is in
-   * that answer only. Any other body answers 400 and makes nothing. DELETE `?id=<id>`: revokes the account's token `id`
+   * that answer only. Any other body answers 400, or 413 past 64 KB, and makes nothing. DELETE `?id=<id>`: revokes the account's token `id`
    * of any kind, as `revokeTokenBy` does, the token this request carries included, answering `{ id }`, or 404 for an id
    * that is no unrevoked token of the account, another account's included. A request already running on a revoked
    * token may finish; its next request gets 401. GET and DELETE read no body and take no slot; POST takes `asAdmin`'s.
@@ -1514,8 +1514,7 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
     // (above), and, while its person is an admin, deletes the account's conversations as a full token does, lists, adds,
     // marks, unmarks and removes people, makes, lists and cancels invites, removes agents and resets their keys, lists
     // and removes webhooks, revokes approved clients, and lists, makes (read-only and agent only) and revokes the
-    // account's tokens. It reaches nothing
-    // else: not /mcp, /wait, nor any path added later. It is refused before a slot is taken or a body read.
+    // account's tokens. It reaches nothing else: not /mcp, /wait, nor any path added later. It is refused before a slot is taken or a body read.
     if (
       access.person &&
       path !== "/api/send" &&
