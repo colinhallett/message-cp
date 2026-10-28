@@ -653,7 +653,7 @@ let webhookClosings = 0;
 // from a Remove button.
 let webhookRowsKey = "";
 const NO_WEBHOOKS =
-  "No webhooks. Add one on the server with message-cp webhook add --url <url> --on <#channel | mention:<agent> | agent:<agent>>.";
+  "No webhooks. Add one on the server with message-cp webhook add --url <url> --on <#channel | mention:<agent> | agent:<agent>> --account <account>";
 const NOT_ADMIN_WEBHOOKS = "The server says you are no longer an admin of this account (403), so this page no longer lists or removes webhooks.";
 
 function say(text, isError) {
@@ -1585,8 +1585,9 @@ function closeRemoveWebhook(refocus) {
 }
 
 // Removes the webhook being asked about with DELETE /api/webhooks and says what it ended from the answer, then reads the
-// list again, as cancelInvite does. A 403 means the token's person is no longer an admin (unmarked), whatever is open
-// now; any other answer after the view closed, or any answer after the token was forgotten, changes nothing.
+// list again, as cancelInvite does. Unlike cancelInvite, a 403, which means the token's person is no longer an admin,
+// unmarks them whatever is open now, as a 401 asks for another token; any other answer after the view closed, or any
+// answer after the token was forgotten, changes nothing.
 async function removeWebhook() {
   const token = sessionStorage.getItem(KEY);
   if (!token) return ask();

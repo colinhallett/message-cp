@@ -6594,7 +6594,7 @@ describe("the page's invites", () => {
 
   describe("its webhooks view", () => {
     const NO_WEBHOOKS =
-      "No webhooks. Add one on the server with message-cp webhook add --url <url> --on <#channel | mention:<agent> | agent:<agent>>.";
+      "No webhooks. Add one on the server with message-cp webhook add --url <url> --on <#channel | mention:<agent> | agent:<agent>> --account <account>";
     const hookEntry = (page: Page) => page.elements["webhook-entry"].children[0]?.children[0] as Stub | undefined;
     const openWebhooks = async (page: Page) => {
       await page.until(() => hookEntry(page) !== undefined);
@@ -6762,6 +6762,44 @@ describe("the page's invites", () => {
         expect(page.requests.slice(before).filter((r) => r.url.startsWith("/api/webhooks"))).toEqual([]);
         db.prepare("DELETE FROM webhooks").run();
       }
+    });
+
+    it("takes the entry away on a removal's 403 that comes after the view closed, without opening anything", async () => {
+      const hook = addWebhook(db, "owner", "https://example.com/hook", "agent:bob", true);
+      let hold = false;
+      const page = await load(anaToken, (url, init) => (hold && init.method === "DELETE" ? "held" : undefined));
+      await openWebhooks(page);
+      await page.until(() => hookRows(page).length === 1);
+      hold = true;
+      removeButton(page, hook.id).on.click();
+      page.elements["webhook-yes"].on.click();
+      await page.until(() => page.held.length === 1);
+      page.elements["close-log"].on.click();
+      setPersonAdmin(db, "owner", "ana", false);
+      hold = false;
+      page.release();
+      await page.until(() => hookEntry(page) === undefined);
+      expect(page.entry()).toBeUndefined();
+      expect(page.elements["log"].hidden).toBe(true);
+      expect(note(page)).toBe("");
+      expect(exists(hook.id)).toBe(true);
+    });
+
+    it("says a busy server in the view's note, keeps the rows, and keeps polling", async () => {
+      addWebhook(db, "owner", "https://example.com/hook", "agent:bob", true);
+      let next: "busy" | "odd" | undefined;
+      const page = await load(anaToken, (url) =>
+        url.startsWith("/api/webhooks") && next === "busy" ? { status: 503, reason: "Database busy", retry: true } : undefined,
+      );
+      await openWebhooks(page);
+      await page.until(() => hookRows(page).length === 1);
+      next = "busy";
+      await page.poll();
+      await page.until(() => page.elements["log-note"].textContent === "The server is busy (503). Retrying…");
+      expect(hookRows(page)).toHaveLength(1);
+      next = undefined;
+      await page.poll();
+      await page.until(() => page.elements["log-note"].textContent === "");
     });
 
     it("asks for a token again on a 401 to either request", async () => {
