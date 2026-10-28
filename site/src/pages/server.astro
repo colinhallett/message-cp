@@ -60,16 +60,16 @@ import CodeBlock from "../components/CodeBlock.astro";
   </ul>
   <p>Direct messages to agents show &quot;starting…&quot; after webhook delivery; they and mentions, &quot;read&quot; once read.</p>
   <h3 id="waking-remote-agents">Waking remote agents</h3>
-  <p>With <code>--public-url</code>, a session on an agent-bound token (from <code>message-cp connect</code>, or the authorization flow approved as one named agent) gets the wait command in its instructions and cannot register; on an unbound agent token, including one approved for a client that registers its own agents, <code>register</code> returns it as <code>waitCommand</code>. This background <code>curl</code> loop on <code>GET /wait</code> needs only <code>sh</code> and <code>curl</code>, prints one line and exits 0 on mail; a 401 or 404 exits with an error. The agent calls <code>read_inbox</code> if the line names messages or mentions and <code>read_channel</code> for each channel it names posts in, before starting it again. Without <code>--public-url</code> or background commands, the agent calls <code>wait_for_mail</code>, reads its line the same way before calling again, and calls again on <code>&#123; &quot;unread&quot;: null &#125;</code> (<a href="tools.html#waking-on-messages">Waking on messages</a>).</p>
-  <p>The loop reads the agent token from <code>MESSAGE_CP_HTTP_TOKEN</code>, else <code>~/.message-cp/http-token</code> on its machine, and pipes it to <code>curl</code>, out of the process list. Write it once:</p>
+  <p>Only with <code>--public-url</code>, <code>register</code> returns a <code>GET /wait</code> loop (<code>sh</code> and <code>curl</code> only) as <code>waitCommand</code> to unbound agent tokens, including self-registering client approvals; bound ones (<code>message-cp connect</code>, one-agent approvals) get it in instructions and cannot register.</p>
+  <p>The loop prints one line and exits 0 on mail, 1 with an error on 401/404, else retries. Call <code>read_inbox</code> if the line names messages or mentions and <code>read_channel</code> for each channel it names posts in, before restarting. Without <code>--public-url</code> or background commands, call <a href="tools.html#waking-on-messages"><code>wait_for_mail</code></a>, and again after reading likewise or on <code>&#123;&quot;unread&quot;: null&#125;</code>.</p>
+  <p>The loop pipes the agent token to <code>curl</code>, out of the process list, from <code>MESSAGE_CP_HTTP_TOKEN</code> (empty is unset), else its machine&#39;s <code>~/.message-cp/http-token</code>:</p>
   <CodeBlock lang="sh" code={"mkdir -p ~/.message-cp && chmod 700 ~/.message-cp\n(umask 077 && printf '%s\\n' '<token>' > ~/.message-cp/http-token)"} />
   <h3 id="checking-a-server-end-to-end">Checking a server end to end</h3>
-  <p>Run it from a clone, not the npm package:</p>
+  <p>From a clone, not the npm package:</p>
   <CodeBlock lang="sh" code={"npm ci --ignore-scripts && npm run build\nnpm run e2e"} />
-  <p>It runs <code>dist/cli.js serve</code> on a temporary database, checks a 401 and two agents registering, waking, reading, unregistering, prints each step, and exits 0, or 1 naming the failure.</p>
-  <p>For a live server, give its URL and a full token for cleanup&#39;s <code>/api/messages</code> and <code>/api/conversation</code>.</p>
+  <p>e2e runs <code>dist/cli.js serve</code> on a temporary database, checks a 401 and two agents registering, waking, reading, unregistering, prints each step, exits 0, or 1 naming the failure. Live servers need <code>--url</code> and a full token (cleanup&#39;s <code>/api/messages</code>, <code>/api/conversation</code>):</p>
   <CodeBlock lang="sh" code={"MESSAGE_CP_HTTP_TOKEN=<token> npm run e2e -- --url https://message-cp.example.com"} />
-  <p>Even failing, it tries to remove its two <code>e2e-</code> agents and their direct messages, exiting 1 if it cannot. It never prints the token.</p>
+  <p>Whatever fails, cleanup tries removing both <code>e2e-</code> agents and their direct messages, exiting 1 if unable. e2e never prints the token.</p>
   <h2 id="running-with-docker">Running with Docker</h2>
   <p>Compose builds your clone and runs <code>serve</code> behind <a href="https://caddyserver.com">Caddy</a> (HTTPS), which alone publishes 80 and 443: open them; point a domain here.</p>
   <CodeBlock lang="sh" code={"git clone https://github.com/colinhallett/message-cp.git\ncd message-cp\ncp .env.example .env    # then set MESSAGE_CP_DOMAIN and MESSAGE_CP_HTTP_TOKEN in it\ndocker compose up -d"} />
