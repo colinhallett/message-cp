@@ -10,7 +10,7 @@ import { MAX_BODY_LENGTH } from "./messages.js";
 // oauth/signin for a full or person token under an https public URL (and out with DELETE on "Forget token", which also signs out its other dashboard tabs),
 // and polls GET /api/agents, GET /api/channels, GET /api/messages and, while one is
 // open, a channel's GET /api/channel-posts, the account's GET /api/webhook-deliveries, its GET /api/approvals or, for
-// an admin person, its GET /api/people and GET /api/invites, its GET /api/webhooks or its GET /api/tokens, with it. It shows them as a chat app: channels and the pairs of agents that have
+// an admin person, its GET /api/people and GET /api/invites, its GET /api/webhooks, its GET /api/tokens or its GET /api/signins, with it. It shows them as a chat app: channels and the pairs of agents that have
 // messaged each other in a sidebar, the open one as a log in the middle, and the agents on the right. A search box asks GET /api/search once per search and
 // shows the answer in the middle in place of the open conversation. The sidebar's "Webhook deliveries" entry shows
 // the newest deliveries in the middle the same way, refreshed with each poll, and its "Approved clients" entry, the
@@ -29,7 +29,8 @@ import { MAX_BODY_LENGTH } from "./messages.js";
 // /api/webhooks, from the "Approved clients" entry, after confirming, revokes an approved client's token with DELETE
 // /api/approvals, and, from the sidebar's "Tokens" entry, which lists the account's unrevoked tokens with GET
 // /api/tokens, makes a read-only or agent token with POST /api/tokens and, after confirming, revokes one with DELETE
-// /api/tokens; that is all it ever writes. An invite's link, an agent's new key, a new webhook's secret, or a new token,
+// /api/tokens, and, from the sidebar's "Sign-ins" entry, which lists the account's dashboard sign-ins with GET
+// /api/signins, after confirming, ends one with DELETE /api/signins; that is all it ever writes. An invite's link, an agent's new key, a new webhook's secret, or a new token,
 // is shown only in a field of its view, from the answer that made it, and never kept or written anywhere else but the
 // clipboard, when its Copy is pressed. A new webhook's URL, header value and body go on the page only into the form's fields, by value,
 // which are emptied when the server answers that it was added (each only while it still holds what was sent), when its
@@ -276,8 +277,11 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .entry.token { grid-template-columns: auto auto auto minmax(0, 1fr) auto; grid-template-areas: "from tag time used revoke" "body body body body revoke"; }
 .entry.token > .used { grid-area: used; }
 .entry.token > button { grid-area: revoke; align-self: center; }
-#webhook-confirm, #token-confirm { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2); padding: var(--s2) var(--s4); border-bottom: 1px solid var(--border); }
-#webhook-text, #token-text { flex: 1 1 100%; margin: 0; }
+/* A sign-in: its token's kind, its token's id and when it was signed in, then its person and whether it is this browser, with its End button at the end. */
+.entry.signin { grid-template-columns: auto auto minmax(0, 1fr) auto; grid-template-areas: "from tag time end" "body body body end"; }
+.entry.signin > button { grid-area: end; align-self: center; }
+#webhook-confirm, #token-confirm, #signin-confirm { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2); padding: var(--s2) var(--s4); border-bottom: 1px solid var(--border); }
+#webhook-text, #token-text, #signin-text { flex: 1 1 100%; margin: 0; }
 /* The "Webhooks" view's "Add a webhook" form heads the view, its fields wrapping two to a row where there is room. */
 #webhook-forms { display: flex; flex-direction: column; gap: var(--s2); padding: var(--s3) var(--s4); border-bottom: 1px solid var(--border); }
 #webhook-forms h3 { margin: 0; font-size: var(--text-sm); font-weight: 600; color: var(--muted); }
@@ -421,6 +425,11 @@ const tokenMade = document.getElementById("token-made");
 const tokenFor = document.getElementById("token-for");
 const tokenValue = document.getElementById("token-value");
 const tokenCopyNote = document.getElementById("token-copy-note");
+const signinEntry = document.getElementById("signin-entry");
+const signinConfirm = document.getElementById("signin-confirm");
+const signinText = document.getElementById("signin-text");
+const signinYes = document.getElementById("signin-yes");
+const signinNote = document.getElementById("signin-note");
 const peopleHead = document.getElementById("people-head");
 const inviteEntry = document.getElementById("invite-entry");
 const inviteForms = document.getElementById("invite-forms");
@@ -500,13 +509,15 @@ let pairs = new Map();
 let madePairs = 0;
 // The pair whose messages are open in the log, by pairKey, or undefined.
 let openPair;
-// Whether the webhook deliveries, the approved clients, the invites, the webhooks or the tokens are open in the log. At
-// most one of openChannel, openPair, openDeliveries, openApprovals, openInvites, openWebhooks and openTokens is set.
+// Whether the webhook deliveries, the approved clients, the invites, the webhooks, the tokens or the sign-ins are open in
+// the log. At most one of openChannel, openPair, openDeliveries, openApprovals, openInvites, openWebhooks, openTokens and
+// openSignins is set.
 let openDeliveries = false;
 let openApprovals = false;
 let openInvites = false;
 let openWebhooks = false;
 let openTokens = false;
+let openSignins = false;
 // What this tab has seen of each channel and pair, by sidebar key: its count of posts or messages when the tab last
 // had it open, or when the first poll for this token read it. An entry's total less this is its unread badge. It lives
 // only here, is never sent or stored, and marks nothing read for any agent; ask() forgets it.
@@ -526,6 +537,8 @@ let inviteCount;
 let webhookCount;
 // The count on the sidebar's tokens entry while it is made, for an admin person only, likewise.
 let tokenCount;
+// The count on the sidebar's sign-ins entry while it is made, for an admin person only, likewise.
+let signinCount;
 // The search's own counter and request, separate from generation and controller, so a newer search, leaving the
 // results or ask() drops a search's answer.
 let searchGeneration = 0;
@@ -768,6 +781,23 @@ const NOT_ADMIN_TOKENS = "The server says you are no longer an admin of this acc
 // The tokenGeneration a POST /api/tokens is in flight for, or undefined, as revokingToken is for a DELETE. The token it
 // makes lives only in its field, never in a variable.
 let makingToken;
+// The tokenGeneration a DELETE /api/signins is in flight for, or undefined, as revokingToken is for a token.
+let endingSignin;
+// The sign-in that DELETE is ending (the target its confirmation was for), while endingSignin is set.
+let endingSigninTarget;
+// The sign-in the "Sign-ins" view asks before ending ({ id, label, current, key }, label being its token's kind and
+// person, current whether it is this page's own sign-in, key its entry as GET /api/signins gave it), or undefined.
+let signinTarget;
+// How many times the "Sign-ins" view has closed (closeLog), so an answer that comes after it closed changes nothing, as
+// tokenClosings does. unmarked() bumps it too.
+let signinClosings = 0;
+// The list the sign-in rows were last built from, so a poll rebuilds them only when it changes, never taking the focus
+// from an End button.
+let signinRowsKey = "";
+// The view's note for an account with no live sign-in. The page's own sign-in is listed while it is live, so this shows
+// only to a page that reads with a token it was given rather than a sign-in.
+const NO_SIGNINS = "No dashboard sign-ins. A browser is listed here from when it signs in with a login link or an invite until its sign-in ends.";
+const NOT_ADMIN_SIGNINS = "The server says you are no longer an admin of this account (403), so this page no longer lists or ends sign-ins.";
 
 function say(text, isError) {
   statusLine.textContent = text;
@@ -794,6 +824,7 @@ function ask(message) {
   showInviteEntry();
   showWebhookEntry();
   showTokenEntry();
+  showSigninEntry();
   fullToken = false;
   people = undefined;
   person = undefined;
@@ -837,6 +868,7 @@ function ask(message) {
   hookAdd.disabled = false;
   approvalYes.disabled = false;
   tokenYes.disabled = false;
+  signinYes.disabled = false;
   tokenKind.value = "read-only";
   tokenMake.disabled = false;
   // And the agents panel's confirmation, note and any new key it showed.
@@ -958,6 +990,8 @@ tokenForm.addEventListener("submit", (event) => {
   makeToken();
 });
 document.getElementById("token-copy").addEventListener("click", () => copyToken());
+signinYes.addEventListener("click", () => endSignin());
+document.getElementById("signin-no").addEventListener("click", () => closeEndSignin(true));
 newFrom.addEventListener("change", () => fillNew());
 newForm.addEventListener("submit", (event) => {
   event.preventDefault();
@@ -1112,6 +1146,12 @@ function closeLog() {
   tokenForms.hidden = true;
   dropMadeToken();
   tokenMakeNote.textContent = "";
+  // Leaving the sign-ins view drops its confirmation and note, and any answer still to come.
+  openSignins = false;
+  signinClosings++;
+  closeEndSignin();
+  signinNote.textContent = "";
+  signinRowsKey = "";
   held = 0;
   postRows.replaceChildren();
   postRows.className = "";
@@ -1323,6 +1363,34 @@ function showTokenEntry() {
   }
 }
 
+// Opens the "Sign-ins" view in the log, for an admin person only, and polls again at once, as openTokenLog does: the
+// account's live dashboard sign-ins, oldest first, each with an End button that asks first.
+function openSigninLog() {
+  if (!meAdmin) return;
+  closeLog();
+  openSignins = true;
+  postRows.className = "top";
+  logTitle.textContent = "Sign-ins";
+  logNote.textContent = "Loading…";
+  log.hidden = false;
+  panel("");
+  markOpen();
+  cancel();
+  poll(generation);
+}
+
+// Makes the sidebar's "Sign-ins" entry, under its Clients heading after "Tokens", while the token is an admin person's,
+// and removes it otherwise, as showTokenEntry does.
+function showSigninEntry() {
+  if (!meAdmin) {
+    signinEntry.replaceChildren();
+    signinCount = undefined;
+  } else if (!signinCount) {
+    signinCount = part("span", "count", "");
+    signinEntry.append(sidebarItem("signins", "Sign-ins", "", signinCount, openSigninLog));
+  }
+}
+
 // Makes the sidebar's "People" entry, under its People heading, while the token is an admin person's, and removes both
 // otherwise.
 function showInviteEntry() {
@@ -1337,19 +1405,21 @@ function showInviteEntry() {
 }
 
 // After the server's 403 to an admin's request, which says the person is no longer an admin: the page forgets it, so
-// the "People", "Webhooks" and "Tokens" entries and Delete go, an open people, webhooks or tokens view keeps only a
-// note saying why, and an open "Approved clients" view keeps its list without Revoke buttons, with a note saying why.
+// the "People", "Webhooks", "Tokens" and "Sign-ins" entries and Delete go, an open people, webhooks, tokens or sign-ins
+// view keeps only a note saying why, and an open "Approved clients" view keeps its list without Revoke buttons, with a note saying why.
 function unmarked() {
   meAdmin = false;
   // An Add or New link still in flight then shows no link, a webhook's addition shows no secret, and a webhook's addition
-  // or removal, an approval's revocation or a token's revoking still in flight changes nothing.
+  // or removal, an approval's revocation, a token's revoking or a sign-in's ending still in flight changes nothing.
   inviteClosings++;
   webhookClosings++;
   approvalClosings++;
   tokenClosings++;
+  signinClosings++;
   showInviteEntry();
   showWebhookEntry();
   showTokenEntry();
+  showSigninEntry();
   showDelete();
   // The agents panel's buttons, confirmation and any new key go too.
   closeAgentPanel();
@@ -1384,6 +1454,16 @@ function unmarked() {
     postRows.replaceChildren();
     tokenRowsKey = "";
     logNote.textContent = NOT_ADMIN_TOKENS;
+    return;
+  }
+  if (openSignins) {
+    // Likewise for an End button or the sign-in's confirmation.
+    closeEndSignin();
+    signinNote.textContent = "";
+    document.getElementById("close-log").focus();
+    postRows.replaceChildren();
+    signinRowsKey = "";
+    logNote.textContent = NOT_ADMIN_SIGNINS;
     return;
   }
   if (!openInvites) return;
@@ -2096,6 +2176,70 @@ async function revokeToken() {
   if (answer.status === 200 || answer.status === 404 || answer.error) refresh();
 }
 
+// Asks above the list before ending a sign-in; nothing is sent until its "End sign-in" is pressed. For this page's own
+// sign-in (current), it says ending it signs this page out.
+function openEndSignin(target) {
+  if (!meAdmin || !openSignins) return;
+  signinTarget = target;
+  signinNote.textContent = "";
+  signinText.textContent =
+    "End sign-in " + target.id + " (" + target.label + ")? " +
+    (target.current
+      ? "This is this browser's sign-in: ending it signs this page out at its next request."
+      : "That browser is signed out at its next request.") +
+    " A request already running may finish, and its token is not revoked.";
+  signinConfirm.hidden = false;
+  signinYes.disabled = endingSignin === tokenGeneration;
+  document.getElementById("signin-no").focus();
+}
+
+// Dismisses the sign-in's confirmation; when the reader dismissed it, or it was answered, the focus goes to the view's
+// Close button, as the row may be gone.
+function closeEndSignin(refocus) {
+  signinConfirm.hidden = true;
+  signinText.textContent = "";
+  signinTarget = undefined;
+  if (refocus) document.getElementById("close-log").focus();
+}
+
+// Ends the sign-in being asked about with DELETE /api/signins and says so, then reads the list again, as revokeToken
+// does: a 401 asks for another token and a 403 unmarks the person whatever is open now; any other answer after the view
+// closed, or any answer after the token was forgotten, changes nothing. Ending this page's own sign-in is allowed: the
+// page's next request then gets 401, which asks for another token.
+async function endSignin() {
+  const token = sessionStorage.getItem(KEY);
+  if (!token) return ask();
+  const tokenGen = tokenGeneration;
+  const target = signinTarget;
+  if (!meAdmin || !openSignins || !target || endingSignin === tokenGen) return;
+  endingSignin = tokenGen;
+  endingSigninTarget = target;
+  const closings = signinClosings;
+  signinYes.disabled = true;
+  const ac = new AbortController();
+  const deadline = setTimeout(() => ac.abort(), TIMEOUT_MS);
+  let answer;
+  try {
+    answer = await inviteWrite(token, ac, "DELETE", "/api/signins?" + new URLSearchParams({ id: String(target.id) }));
+  } finally {
+    clearTimeout(deadline);
+  }
+  if (tokenGen !== tokenGeneration) return;
+  endingSignin = undefined;
+  endingSigninTarget = undefined;
+  signinYes.disabled = false;
+  if (answer.status === 401) return ask("The server refused that token. Enter another.");
+  if (answer.status === 403) return unmarked();
+  if (closings !== signinClosings) return;
+  // A confirmation opened for another sign-in meanwhile stays.
+  if (signinTarget === target) closeEndSignin(true);
+  if (answer.status === 200) signinNote.textContent = "Ended sign-in " + target.id + " (" + target.label + ").";
+  else if (answer.status === 404) signinNote.textContent = "Sign-in " + target.id + " was already ended or gone (404).";
+  else if (answer.error) signinNote.textContent = answer.error + ", so sign-in " + target.id + " may or may not have ended: the list below shows which once it has been read again.";
+  else signinNote.textContent = refusal(answer);
+  if (answer.status === 200 || answer.status === 404 || answer.error) refresh();
+}
+
 // What to do about a token this page may have made but cannot show. Nothing in GET /api/tokens ties an entry to the
 // request that made it, and another tab, another admin or the server's shell may have made a newer one of the same kind
 // for a client in use, so it never points at an entry by recency, kind or maker.
@@ -2502,6 +2646,7 @@ async function checkToken() {
   showInviteEntry();
   showWebhookEntry();
   showTokenEntry();
+  showSigninEntry();
   // An admin person's agent and Revoke buttons show at once, not only from the next poll.
   if (lastAgents) show(lastAgents);
   if (openApprovals) drawApprovals(shownApprovals);
@@ -3626,6 +3771,55 @@ async function readTokens(token, signal, gen) {
   return { ok: true };
 }
 
+// Reads the account's live dashboard sign-ins, oldest first, and replaces the ones the log holds when they changed, as
+// readTokens does; with the view closed, or no longer an admin's, it leaves the log as it is. A 403 says the person is no
+// longer an admin (unmarked). Any other failure but a refused token goes in the log's note.
+async function readSignins(token, signal, gen) {
+  if (!meAdmin) return { ok: true };
+  let page;
+  try {
+    page = await fetchPage(token, signal, "/api/signins", {}, 0, list);
+  } catch {
+    page = { error: signal.aborted ? "The server did not answer in time" : "Cannot reach the server" };
+  }
+  if (gen !== generation || !openSignins || !meAdmin) return { ok: true };
+  if (page.status === 401) return page;
+  if (page.status === 403) {
+    unmarked();
+    return { ok: true };
+  }
+  let shown;
+  const key = page.items ? JSON.stringify(page.items) : "";
+  try {
+    if (page.items && key !== signinRowsKey) shown = page.items.map(signinRow);
+  } catch {
+    page = { error: "The server sent an answer this page cannot read" };
+  }
+  if (page.items) {
+    // A confirmation for a sign-in the list no longer gives as it was closes, so it never ends one it no longer
+    // describes. The one being ended is left to that request's answer, which closes it.
+    const inFlight = endingSignin === tokenGeneration && endingSigninTarget === signinTarget;
+    if (signinTarget && !inFlight && !page.items.some((t) => JSON.stringify(t) === signinTarget.key)) {
+      signinNote.textContent =
+        "Sign-in " + signinTarget.id + " (" + signinTarget.label + ") changed or went from the list, so its confirmation closed and nothing was sent.";
+      closeEndSignin();
+    }
+    if (shown) {
+      signinRowsKey = key;
+      postRows.replaceChildren(...shown);
+      postRows.scrollTop = 0;
+    }
+    signinCount.textContent = String(page.items.length);
+    logNote.textContent =
+      page.items.length === 0 ? NO_SIGNINS : page.items.length === PAGE ? "Only the first " + PAGE + " sign-ins are shown." : "";
+  } else if (page.status === 503) {
+    logNote.textContent = "The server is busy (503). Retrying…";
+  } else {
+    logNote.textContent = (page.error || "The server answered " + page.status) + ". Retrying…";
+  }
+  return { ok: true };
+}
+
 async function poll(gen) {
   const token = sessionStorage.getItem(KEY);
   if (!token) return ask();
@@ -3638,13 +3832,14 @@ async function poll(gen) {
   const invites = openInvites;
   const webhooks = openWebhooks;
   const tokens = openTokens;
+  const signins = openSignins;
   const held = messages.length;
   let result;
   try {
     result = await fetchView(token, ac.signal);
     // The agents and channels go up before the messages and the log are read, so a long or slow history never holds
     // them back. The messages and the log (a channel's posts, the webhook deliveries, the approvals, the people and
-    // invites, the webhooks, or the tokens) are read side by side, so neither waits on the other or fails with it, and both have finished before the
+    // invites, the webhooks, the tokens, or the sign-ins) are read side by side, so neither waits on the other or fails with it, and both have finished before the
     // next poll can read past what they hold.
     if (result.ok && gen === generation) {
       show(result.agents);
@@ -3666,7 +3861,9 @@ async function poll(gen) {
                   ? readWebhooks(token, ac.signal, gen)
                   : tokens
                     ? readTokens(token, ac.signal, gen)
-                    : { ok: true },
+                    : signins
+                      ? readSignins(token, ac.signal, gen)
+                      : { ok: true },
       ]);
       // A refused token from either read wins, so a failure of the other never leaves the page showing its data.
       const values = [messages, posts].filter((r) => r.status === "fulfilled").map((r) => r.value);
@@ -3912,6 +4109,7 @@ function openKey() {
   if (openInvites) return "invites";
   if (openWebhooks) return "webhooks";
   if (openTokens) return "tokens";
+  if (openSignins) return "signins";
   return undefined;
 }
 
@@ -4352,6 +4550,39 @@ function tokenRow(t) {
   return li;
 }
 
+// A dashboard sign-in of the account: its token's kind, its token's id, which message-cp token revoke takes, and when
+// it was signed in, then the person for a person token and "this browser" on this page's own (current). An End button
+// asks first. Never a session id, hash or token, which GET /api/signins does not give. Throws on an entry that is not
+// the shape GET /api/signins gives, so readSignins shows the answer as unreadable.
+function signinRow(s) {
+  const kind = s && s.kind;
+  const personShape = kind === "person" ? s.person === undefined || typeof s.person === "string" : kind === "full" && s.person === undefined;
+  if (!personShape || !Number.isInteger(s.id) || !Number.isInteger(s.tokenId) || typeof s.createdAt !== "string" || !(s.current === undefined || s.current === true)) {
+    throw new TypeError("not a sign-in");
+  }
+  const facts = [];
+  if (typeof s.person === "string") facts.push(s.person);
+  if (s.current) facts.push("this browser");
+  const li = document.createElement("li");
+  li.className = "entry signin";
+  const time = part("time", "time", "signed in " + when(s.createdAt));
+  time.title = s.createdAt;
+  const button = part("button", "", "End");
+  button.type = "button";
+  button.setAttribute("aria-label", "End sign-in " + s.id);
+  const target = {
+    id: s.id,
+    label: typeof s.person === "string" ? kind + ", " + s.person : kind,
+    current: s.current === true,
+    key: JSON.stringify(s),
+  };
+  button.addEventListener("click", () => openEndSignin(target));
+  li.append(part("span", "from", kind), part("span", "tag", "token " + s.tokenId), time);
+  if (facts.length > 0) li.append(part("div", "body", facts.join(" · ")));
+  li.append(button);
+  return li;
+}
+
 // A webhook delivery: what it was for, its status (failed marked), when it was queued, its webhook, its attempts and,
 // once delivered, when. Never a URL, a secret or a message's text, which GET /api/webhook-deliveries does not give.
 // Throws on an entry that is not a delivery as GET /api/webhook-deliveries gives one, so readDeliveries shows the
@@ -4517,6 +4748,7 @@ export const DASHBOARD_HTML = `<!doctype html>
 <h2>Clients</h2>
 <ul id="approval-entry"></ul>
 <ul id="token-entry"></ul>
+<ul id="signin-entry"></ul>
 <h2 id="people-head" hidden>People</h2>
 <ul id="invite-entry"></ul>
 </nav>
@@ -4640,6 +4872,12 @@ export const DASHBOARD_HTML = `<!doctype html>
 <button id="token-no" type="button">Keep it</button>
 </div>
 <p id="token-note" class="note" role="status"></p>
+<div id="signin-confirm" role="group" aria-labelledby="signin-text" hidden>
+<p id="signin-text"></p>
+<button id="signin-yes" type="button">End sign-in</button>
+<button id="signin-no" type="button">Keep it</button>
+</div>
+<p id="signin-note" class="note" role="status"></p>
 <p id="log-note" class="note"></p>
 <ol id="post-rows" role="log"></ol>
 <div id="writer" hidden>
