@@ -258,8 +258,9 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .entry.invite { grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "from cancel" "time cancel" "body cancel"; }
 .entry.invite > button { grid-area: cancel; align-self: center; }
 .entry.approval > .agents { grid-column: 1 / -1; overflow-wrap: anywhere; }
-/* An admin's approval row has its Revoke button at the end. */
-.entry.approval.revocable { grid-template-columns: auto auto minmax(0, 1fr) auto; grid-template-areas: "from tag time revoke" "body body body revoke"; }
+/* An admin's approval row has its Revoke button at the end, and its time on a line of its own, so the button never covers it. */
+.entry.approval.revocable { grid-template-columns: auto auto minmax(0, 1fr) auto; grid-template-areas: "from tag . revoke" "time time time revoke" "body body body revoke"; }
+.entry.approval.revocable > .agents { grid-column: 1 / 4; }
 .entry.approval.revocable > button { grid-area: revoke; align-self: center; }
 #approval-confirm { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2); padding: var(--s2) var(--s4); border-bottom: 1px solid var(--border); }
 #approval-text { flex: 1 1 100%; margin: 0; }
