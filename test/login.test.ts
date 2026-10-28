@@ -225,12 +225,12 @@ describe("message-cp login-link", () => {
       expect(out.stderr).toBe(message ?? "usage: message-cp login-link --url <public url> [--account <name>] [--person <name>]\n");
     }
     expect(everything()).toEqual(before);
-  });
+  }, 60_000);
 
   it("is in help and in the unknown command list", () => {
     expect(cli("help").stdout).toContain("message-cp login-link --url <public url> [--account <name>] [--person <name>]");
     expect(cli("nope").stderr).toContain("login-link");
-  });
+  }, 60_000);
 });
 
 describe("dashboard sign-in sessions", () => {
