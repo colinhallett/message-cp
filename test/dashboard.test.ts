@@ -7354,7 +7354,7 @@ describe("the page's invites", () => {
         }
         await page.until(() => page.elements["log-note"].textContent.startsWith("The server says you are no longer an admin"));
         expect(page.elements["log-note"].textContent).toBe(
-          "The server says you are no longer an admin of this account (403), so this page no longer lists or revokes tokens.",
+          "The server says you are no longer an admin of this account (403), so this page no longer lists, makes or revokes tokens.",
         );
         expect(tokEntry(page)).toBeUndefined();
         expect(page.entry()).toBeUndefined();
@@ -7493,6 +7493,248 @@ describe("the page's invites", () => {
         if (leave === "close") expect(tokEntry(page)!.children.map((c) => c.textContent)).toEqual(["Tokens", ""]);
         else expect(tokEntry(page)).toBeUndefined();
       }
+    });
+
+    describe("making a token", () => {
+      const shown = (page: Page) => page.elements["token-value"].value;
+      const makeNote = (page: Page) => page.elements["token-make-note"].textContent;
+      const make = (page: Page, kind: "read-only" | "agent") => {
+        page.elements["token-kind"].value = kind;
+        submit(page.elements["token-form"]);
+      };
+      const unrevoked = (account: string) =>
+        db.prepare("SELECT t.id FROM tokens t JOIN accounts a ON a.id = t.account_id WHERE a.name = ? AND t.revoked_at IS NULL ORDER BY t.id").pluck().all(account);
+
+      it("offers the form to an admin person only, and never makes a token with any other token", async () => {
+        addPerson(db, "owner", "maria");
+        const plain = addToken(db, "owner", false, false, undefined, "maria").token;
+        for (const token of [plain, OWNER_TOKEN, viewer, agentToken]) {
+          const page = await load(token);
+          await page.until(() => page.requests.some((r) => r.url === "/api/token"));
+          await new Promise((resolve) => setTimeout(resolve, 20));
+          expect(page.elements["token-forms"].hidden).toBe(true);
+          submit(page.elements["token-form"]);
+          await new Promise((resolve) => setTimeout(resolve, 20));
+          expect(page.writes()).toEqual([]);
+        }
+        const page = await load(anaToken);
+        // Not until the view is open.
+        await page.until(() => tokEntry(page) !== undefined);
+        expect(page.elements["token-forms"].hidden).toBe(true);
+        await openTokens(page);
+        expect(page.elements["token-forms"].hidden).toBe(false);
+      });
+
+      it("makes each kind with exactly its body, shows the token once in its field, and the token works", async () => {
+        addAccount(db, "other");
+        addToken(db, "other", true);
+        const theirs = unrevoked("other");
+        const page = await load(anaToken);
+        await openTokens(page);
+        await page.until(() => tokRows(page).length === 3);
+
+        make(page, "read-only");
+        await page.until(() => shown(page) !== "");
+        expect(page.writes()).toEqual([{ url: "/api/tokens", method: "POST", body: { kind: "read-only" } }]);
+        const readOnly = shown(page);
+        const readOnlyId = idOf(readOnly);
+        expect(page.elements["token-made"].hidden).toBe(false);
+        expect(page.elements["token-for"].textContent).toBe(
+          `New read-only token ${readOnlyId}. It shows only here, at most until you leave this view, and is never shown again.`,
+        );
+        expect(makeNote(page)).toBe("");
+        // Only in its field: nowhere else on the page, nor stored.
+        expect(Object.entries(page.elements).some(([id, node]) => id !== "token-value" && JSON.stringify(node, (k, v) => (k === "on" ? undefined : v)).includes(readOnly))).toBe(false);
+        expect([...page.store.values()]).not.toContain(readOnly);
+        // The list is read again, so it shows the new one.
+        await page.until(() => tokRows(page).some((r) => r[1] === `token ${readOnlyId}`));
+        expect(tokRows(page).find((r) => r[1] === `token ${readOnlyId}`)![0]).toBe("read-only");
+        // Copy puts it on the clipboard.
+        page.elements["token-copy"].on.click();
+        await page.until(() => page.elements["token-copy-note"].textContent === "Copied.");
+        expect(page.copied).toEqual([readOnly]);
+        // It reads the account, and cannot write.
+        const read = await fetch(`${base()}/api/agents`, { headers: auth(readOnly) });
+        expect(read.status).toBe(200);
+        expect(accountForToken(db, readOnly, OWNER_TOKEN)).toMatchObject({ account: OWNER_ACCOUNT, readOnly: true, agentOnly: false });
+
+        make(page, "agent");
+        await page.until(() => shown(page) !== "" && shown(page) !== readOnly);
+        expect(page.writes().slice(1)).toEqual([{ url: "/api/tokens", method: "POST", body: { kind: "agent" } }]);
+        const agent = shown(page);
+        const agentId = idOf(agent);
+        expect(page.elements["token-for"].textContent).toBe(
+          `New agent token ${agentId}, bound to no agent, so a client using it must still name its agent. It shows only here, at most until you leave this view, and is never shown again.`,
+        );
+        expect(page.elements["token-copy-note"].textContent).toBe("");
+        await page.until(() => tokRows(page).some((r) => r[1] === `token ${agentId}`));
+        expect(tokRows(page).find((r) => r[1] === `token ${agentId}`)).toEqual(["agent", `token ${agentId}`, `made ${made(agentId)}`, "bound to no agent", "Revoke"]);
+        // It is refused the dashboard API, as every agent token is, and reaches /mcp.
+        expect((await fetch(`${base()}/api/agents`, { headers: auth(agent) })).status).toBe(403);
+        const mcp = await fetch(`${base()}/mcp`, {
+          method: "POST",
+          headers: { ...auth(agent), "Content-Type": "application/json", Accept: "application/json, text/event-stream" },
+          body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-03-26", capabilities: {}, clientInfo: { name: "t", version: "1" } } }),
+        });
+        expect(mcp.status).toBe(200);
+        await mcp.body?.cancel();
+        expect(accountForToken(db, agent, OWNER_TOKEN)).toMatchObject({ account: OWNER_ACCOUNT, agentOnly: true });
+        // Another account's tokens are as they were.
+        expect(unrevoked("other")).toEqual(theirs);
+        // Leaving the view empties the field and its line.
+        page.elements["close-log"].on.click();
+        expect(shown(page)).toBe("");
+        expect(page.elements["token-for"].textContent).toBe("");
+        expect(page.elements["token-made"].hidden).toBe(true);
+        expect(page.elements["token-forms"].hidden).toBe(true);
+        expect(Object.values(page.elements).some((node) => JSON.stringify(node, (k, v) => (k === "on" ? undefined : v)).includes(agent))).toBe(false);
+        // Opening it again shows no token.
+        await openTokens(page);
+        expect(shown(page)).toBe("");
+        expect(page.elements["token-made"].hidden).toBe(true);
+      });
+
+      it("says each other answer plainly, with Make token disabled while it is in flight", async () => {
+        let next: Refusal | "junk" | undefined;
+        const page = await load(anaToken, (url, init) => (init.method === "POST" && url === "/api/tokens" ? (next === "junk" ? 200 : next) : undefined));
+        await openTokens(page);
+        const answer = async (value: Refusal | "junk", said: string) => {
+          next = value;
+          make(page, "read-only");
+          await page.until(() => makeNote(page) === said);
+          expect(shown(page)).toBe("");
+          expect(page.elements["token-made"].hidden).toBe(true);
+          expect(page.elements["token-make"].disabled).toBe(false);
+        };
+        await answer({ status: 400, reason: 'Give only kind, as "read-only" or "agent"' }, 'Give only kind, as "read-only" or "agent"');
+        await answer(413, "This is too long for the server (413).");
+        await answer({ status: 503, reason: "Database busy", retry: true }, "The server is busy (503). Try again in a moment.");
+        await answer(
+          "junk",
+          "A token may have been made, but this page cannot show it: revoke the newest one in the list below and make another.",
+        );
+        await answer(
+          "fail",
+          "No answer from the server, so a token may or may not have been made, and no token can be shown for it. If the list below has a new one, revoke it and make another.",
+        );
+        next = "hang";
+        make(page, "agent");
+        await page.until(() => page.deadlines.size > 0);
+        expect(page.elements["token-make"].disabled).toBe(true);
+        expect(makeNote(page)).toBe("Making a token…");
+        // A second press while it is in flight sends nothing more.
+        make(page, "agent");
+        expect(page.writes()).toHaveLength(6);
+        for (const [, fn] of page.deadlines) fn();
+        await page.until(() => makeNote(page).startsWith("The server did not answer in time, so a token may or may not have been made"));
+        expect(page.elements["token-make"].disabled).toBe(false);
+        expect(page.writes().map((w) => w.body)).toEqual([
+          { kind: "read-only" },
+          { kind: "read-only" },
+          { kind: "read-only" },
+          { kind: "read-only" },
+          { kind: "read-only" },
+          { kind: "agent" },
+        ]);
+        // None of those reached the server, which made nothing.
+        expect(tokRows(page)).toHaveLength(3);
+      });
+
+      it("drops the made token and the form on a 403 to it or to the list, once the person is no longer an admin", async () => {
+        for (const method of ["POST", "GET"]) {
+          setPersonAdmin(db, "owner", "ana", true);
+          const page = await load(anaToken);
+          await openTokens(page);
+          make(page, "read-only");
+          await page.until(() => shown(page) !== "");
+          const before = unrevoked("owner").length;
+          setPersonAdmin(db, "owner", "ana", false);
+          if (method === "POST") make(page, "agent");
+          else await page.poll();
+          await page.until(() => page.elements["log-note"].textContent.startsWith("The server says you are no longer an admin"));
+          expect(shown(page)).toBe("");
+          expect(page.elements["token-for"].textContent).toBe("");
+          expect(page.elements["token-made"].hidden).toBe(true);
+          expect(page.elements["token-forms"].hidden).toBe(true);
+          expect(unrevoked("owner")).toHaveLength(before);
+          // The hidden form sends nothing more.
+          const writes = page.writes().length;
+          submit(page.elements["token-form"]);
+          await new Promise((resolve) => setTimeout(resolve, 20));
+          expect(page.writes()).toHaveLength(writes);
+        }
+      });
+
+      it("asks for a token again on a 401", async () => {
+        const page = await load(anaToken, (url, init) => (init.method === "POST" && url === "/api/tokens" ? 401 : undefined));
+        await openTokens(page);
+        make(page, "agent");
+        await page.until(() => page.elements["status-line"].textContent === "The server refused that token. Enter another.");
+        expect(page.store.size).toBe(0);
+        expect(tokEntry(page)).toBeUndefined();
+        expect(page.elements["token-forms"].hidden).toBe(true);
+        expect(shown(page)).toBe("");
+      });
+
+      it("shows no token from an answer that comes after the view closed, another view opened or the token was forgotten", async () => {
+        let hold = false;
+        let fail = false;
+        const page = await load(anaToken, (url, init) => (init.method === "POST" && url === "/api/tokens" ? (fail ? "fail" : hold ? "held" : undefined) : undefined));
+        for (const leave of ["close", "other", "forget"]) {
+          await openTokens(page);
+          const before = unrevoked("owner").length;
+          hold = true;
+          make(page, "agent");
+          await page.until(() => page.held.length === 1);
+          if (leave === "close") page.elements["close-log"].on.click();
+          else if (leave === "other") page.elements["delivery-entry"].children[0].children[0].on.click();
+          else page.elements["forget"].on.click();
+          hold = false;
+          page.release();
+          // The server made it, but the page shows no token.
+          await page.until(() => unrevoked("owner").length === before + 1);
+          await new Promise((resolve) => setTimeout(resolve, 50));
+          expect(shown(page)).toBe("");
+          expect(page.elements["token-made"].hidden).toBe(true);
+          expect(note(page)).toBe("");
+          expect(page.elements["token-make"].disabled).toBe(false);
+          if (leave === "forget") {
+            expect(page.elements["log"].hidden).toBe(true);
+            expect(tokEntry(page)).toBeUndefined();
+          }
+        }
+      });
+
+      it("says in the list's note that a token was, or may have been, made when its answer comes after the view was left and opened again", async () => {
+        let next: "held" | "hang" | undefined;
+        const page = await load(anaToken, (url, init) => (init.method === "POST" && url === "/api/tokens" ? next : undefined));
+        const reads = () => page.requests.filter((r) => r.url.startsWith("/api/tokens") && r.method === "GET").length;
+        for (const outcome of ["held", "hang"] as const) {
+          await openTokens(page);
+          const before = unrevoked("owner").length;
+          next = outcome;
+          make(page, outcome === "held" ? "agent" : "read-only");
+          await page.until(() => (outcome === "held" ? page.held.length === 1 : page.deadlines.size > 0));
+          page.elements["close-log"].on.click();
+          await openTokens(page);
+          next = undefined;
+          const read = reads();
+          if (outcome === "held") page.release();
+          else for (const [, fn] of page.deadlines) fn();
+          await page.until(() => note(page) !== "");
+          expect(note(page)).toBe(
+            outcome === "held"
+              ? "This page made an agent token, but its answer came after the view it was made from closed, so it is not shown and never will be. If the list below has a new one, revoke it and make another."
+              : "The server did not answer in time, so a read-only token may or may not have been made, and no token can be shown for it. If the list below has a new one, revoke it and make another.",
+          );
+          expect(shown(page)).toBe("");
+          expect(page.elements["token-made"].hidden).toBe(true);
+          expect(makeNote(page)).toBe("");
+          expect(unrevoked("owner")).toHaveLength(outcome === "held" ? before + 1 : before);
+          await page.until(() => reads() > read);
+          page.elements["close-log"].on.click();
+        }
+      });
     });
   });
 
