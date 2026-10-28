@@ -2088,11 +2088,11 @@ async function revokeToken() {
   if (answer.status === 200 || answer.status === 404 || answer.error) refresh();
 }
 
-// What to do about a token this page may have made but cannot show. GET /api/tokens does not say who made a token, and
-// another admin, or the server's shell, may have made a newer one of the same kind for a client in use, so it never
-// points at the newest entry.
+// What to do about a token this page may have made but cannot show. Nothing in GET /api/tokens ties an entry to the
+// request that made it, and another tab, another admin or the server's shell may have made a newer one of the same kind
+// for a client in use, so it never points at an entry by recency, kind or maker.
 function unshownTokenAdvice(kind) {
-  return " The list below does not say who made each token, so revoke a new " + kind + " token there only if you know no one else made it, then make another.";
+  return " The list below cannot show which " + kind + " token this attempt made, so revoke one there only if you know it is that one, then make another.";
 }
 
 // Empties the made token's field and its line, and hides them.

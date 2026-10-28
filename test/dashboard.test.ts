@@ -7942,12 +7942,12 @@ describe("the page's invites", () => {
         await answer(
           "junk",
           "A token may have been made, but this page cannot show it." +
-            " The list below does not say who made each token, so revoke a new read-only token there only if you know no one else made it, then make another.",
+            " The list below cannot show which read-only token this attempt made, so revoke one there only if you know it is that one, then make another.",
         );
         await answer(
           "fail",
           "No answer from the server, so a token may or may not have been made, and no token can be shown for it." +
-            " The list below does not say who made each token, so revoke a new read-only token there only if you know no one else made it, then make another.",
+            " The list below cannot show which read-only token this attempt made, so revoke one there only if you know it is that one, then make another.",
         );
         next = "hang";
         make(page, "agent");
@@ -8058,9 +8058,9 @@ describe("the page's invites", () => {
           expect(note(page)).toBe(
             outcome === "held"
               ? "This page made an agent token, but its answer came after the view it was made from closed or changed, so it is not shown and never will be." +
-                " The list below does not say who made each token, so revoke a new agent token there only if you know no one else made it, then make another."
+                " The list below cannot show which agent token this attempt made, so revoke one there only if you know it is that one, then make another."
               : "The server did not answer in time, so a read-only token may or may not have been made, and no token can be shown for it." +
-                " The list below does not say who made each token, so revoke a new read-only token there only if you know no one else made it, then make another.",
+                " The list below cannot show which read-only token this attempt made, so revoke one there only if you know it is that one, then make another.",
           );
           expect(shown(page)).toBe("");
           expect(page.elements["token-made"].hidden).toBe(true);
