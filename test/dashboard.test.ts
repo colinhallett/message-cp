@@ -5701,6 +5701,7 @@ describe("the page's invites", () => {
     on: Record<string, () => void>;
     hidden: boolean;
     disabled?: boolean;
+    checked?: boolean;
     value: string;
     textContent: string;
     className: string;
@@ -6593,8 +6594,7 @@ describe("the page's invites", () => {
   });
 
   describe("its webhooks view", () => {
-    const NO_WEBHOOKS =
-      "No webhooks. Add one on the server with message-cp webhook add --url <url> --on <#channel | mention:<agent> | agent:<agent>> --account <account>";
+    const NO_WEBHOOKS = 'No webhooks. Add one with the "Add a webhook" form above.';
     const hookEntry = (page: Page) => page.elements["webhook-entry"].children[0]?.children[0] as Stub | undefined;
     const openWebhooks = async (page: Page) => {
       await page.until(() => hookEntry(page) !== undefined);
@@ -6748,7 +6748,7 @@ describe("the page's invites", () => {
         }
         await page.until(() => page.elements["log-note"].textContent.startsWith("The server says you are no longer an admin"));
         expect(page.elements["log-note"].textContent).toBe(
-          "The server says you are no longer an admin of this account (403), so this page no longer lists or removes webhooks.",
+          "The server says you are no longer an admin of this account (403), so this page no longer lists, adds or removes webhooks.",
         );
         expect(hookEntry(page)).toBeUndefined();
         expect(page.entry()).toBeUndefined();
@@ -6937,6 +6937,265 @@ describe("the page's invites", () => {
         expect(page.elements["log-note"].textContent).toBe("");
         if (leave === "close") expect(hookEntry(page)!.children.map((c) => c.textContent)).toEqual(["Webhooks", ""]);
         else expect(hookEntry(page)).toBeUndefined();
+      }
+    });
+
+    // Fills the "Add a webhook" form; the checkbox starts checked, as the markup has it.
+    const fillHook = (page: Page, fields: { url?: string; on?: string; text?: boolean; name?: string; value?: string; max?: string; body?: string }) => {
+      const e = page.elements;
+      e["hook-url"].value = fields.url ?? "";
+      e["hook-on"].value = fields.on ?? "";
+      e["hook-text"].checked = fields.text ?? true;
+      e["hook-header-name"].value = fields.name ?? "";
+      e["hook-header-value"].value = fields.value ?? "";
+      e["hook-max"].value = fields.max ?? "";
+      e["hook-body"].value = fields.body ?? "";
+    };
+    const addHook = (page: Page) => submit(page.elements["webhook-add-form"]);
+    const hookNote = (page: Page) => page.elements["hook-note"].textContent;
+    const hookPosts = (page: Page) => page.writes().filter((w) => w.url === "/api/webhooks" && w.method === "POST");
+    const formFields = ["hook-url", "hook-on", "hook-header-name", "hook-header-value", "hook-max", "hook-body"];
+    // Whether a string appears anywhere on the page but the form's fields, which hold it by value, and the secret's field.
+    const shownOutsideFields = (page: Page, text: string) =>
+      Object.entries(page.elements).some(
+        ([id, node]) => ![...formFields, "webhook-secret"].includes(id) && JSON.stringify(node, (k, v) => (k === "on" ? undefined : v)).includes(text),
+      );
+    const secretOf = (id: number) => db.prepare("SELECT secret FROM webhooks WHERE id = ?").pluck().get(id) as string;
+    const hookCount = () => db.prepare("SELECT count(*) FROM webhooks").pluck().get() as number;
+
+    it("shows the Add a webhook form to an admin person only, and never sends it with any other token", async () => {
+      addPerson(db, "owner", "maria");
+      const plain = addToken(db, "owner", false, false, undefined, "maria").token;
+      for (const token of [plain, OWNER_TOKEN, viewer]) {
+        const page = await load(token);
+        await page.until(() => page.elements["delivery-entry"].children.length === 1 && page.requests.some((r) => r.url === "/api/token"));
+        await page.poll();
+        fillHook(page, { url: "https://example.com/hook", on: "#general" });
+        addHook(page);
+        expect(page.elements["webhook-forms"].hidden).toBe(true);
+        expect(hookPosts(page)).toEqual([]);
+      }
+      const agent = await load(agentToken);
+      await agent.until(() => agent.store.size === 0);
+      expect(agent.elements["webhook-forms"].hidden).toBe(true);
+      const page = await load(anaToken);
+      await page.until(() => hookEntry(page) !== undefined);
+      expect(page.elements["webhook-forms"].hidden).toBe(true);
+      await openWebhooks(page);
+      expect(page.elements["webhook-forms"].hidden).toBe(false);
+      expect(page.elements["webhook-made"].hidden).toBe(true);
+      expect(page.elements["hook-add"].disabled).toBe(false);
+      // Another view hides it again.
+      page.elements["delivery-entry"].children[0].children[0].on.click();
+      expect(page.elements["webhook-forms"].hidden).toBe(true);
+    });
+
+    it("sends only the required fields, or each optional one only when filled in, and nothing without a URL and an event", async () => {
+      const page = await load(anaToken);
+      await openWebhooks(page);
+      fillHook(page, { on: "#general" });
+      addHook(page);
+      expect(hookNote(page)).toBe("Enter the URL to deliver to.");
+      fillHook(page, { url: "https://example.com/hook", on: "  " });
+      addHook(page);
+      expect(hookNote(page)).toBe("Enter what it fires on.");
+      expect(page.writes()).toEqual([]);
+      const sent: unknown[] = [];
+      const cases: [Parameters<typeof fillHook>[1], Record<string, unknown>][] = [
+        [{ url: " https://example.com/a ", on: " #general " }, { url: "https://example.com/a", on: "#general", includeText: true }],
+        [{ url: "https://example.com/b", on: "agent:bob", text: false }, { url: "https://example.com/b", on: "agent:bob", includeText: false }],
+        [
+          { url: "https://example.com/c", on: "mention:bob", name: "X-Api-Key", value: "sekret-value" },
+          { url: "https://example.com/c", on: "mention:bob", includeText: true, header: "X-Api-Key: sekret-value" },
+        ],
+        [{ url: "https://example.com/d", on: "#general", max: "30" }, { url: "https://example.com/d", on: "#general", includeText: true, maxPerHour: 30 }],
+        [
+          { url: "https://example.com/e", on: "agent:bob", body: '{"requestId":"{{delivery}}"}' },
+          { url: "https://example.com/e", on: "agent:bob", includeText: true, body: '{"requestId":"{{delivery}}"}' },
+        ],
+      ];
+      for (const [fields, body] of cases) {
+        fillHook(page, fields);
+        addHook(page);
+        sent.push({ url: "/api/webhooks", method: "POST", body });
+        await page.until(() => hookPosts(page).length === sent.length && hookNote(page).startsWith("Added webhook "));
+        page.elements["hook-note"].textContent = "";
+      }
+      expect(hookPosts(page)).toEqual(sent);
+      expect(db.prepare("SELECT url, include_text, header_name, header_value, max_per_hour, fixed_body FROM webhooks ORDER BY id").all()).toEqual([
+        { url: "https://example.com/a", include_text: 1, header_name: null, header_value: null, max_per_hour: null, fixed_body: null },
+        { url: "https://example.com/b", include_text: 0, header_name: null, header_value: null, max_per_hour: null, fixed_body: null },
+        { url: "https://example.com/c", include_text: 1, header_name: "X-Api-Key", header_value: "sekret-value", max_per_hour: null, fixed_body: null },
+        { url: "https://example.com/d", include_text: 1, header_name: null, header_value: null, max_per_hour: 30, fixed_body: null },
+        { url: "https://example.com/e", include_text: 1, header_name: null, header_value: null, max_per_hour: null, fixed_body: '{"requestId":"{{delivery}}"}' },
+      ]);
+    });
+
+    it("shows the new webhook's secret once with Copy, empties the URL, header value and body, lists it, and drops the secret when the view closes", async () => {
+      const page = await load(anaToken);
+      await openWebhooks(page);
+      fillHook(page, {
+        url: "https://hooks.example.org/secret-path",
+        on: "agent:bob",
+        name: "X-Api-Key",
+        value: "sekret-value",
+        max: "5",
+        body: '{"id":"{{delivery}}","tag":"fixed-body-text"}',
+      });
+      addHook(page);
+      await page.until(() => hookNote(page).startsWith("Added webhook "));
+      const id = db.prepare("SELECT id FROM webhooks").pluck().get() as number;
+      const secret = secretOf(id);
+      expect(hookNote(page)).toBe(`Added webhook ${id} (agent:bob).`);
+      expect(page.elements["webhook-made"].hidden).toBe(false);
+      expect(page.elements["webhook-secret"].value).toBe(secret);
+      expect(page.elements["webhook-for"].textContent).toBe(
+        `Webhook ${id}'s secret. It signs each delivery (X-Message-CP-Signature); check it before trusting one. It shows only here, until you leave this view, and is never shown again.`,
+      );
+      expect(page.elements["hook-url"].value).toBe("");
+      expect(page.elements["hook-header-value"].value).toBe("");
+      expect(page.elements["hook-body"].value).toBe("");
+      // The rest stay as they were.
+      expect(page.elements["hook-on"].value).toBe("agent:bob");
+      expect(page.elements["hook-header-name"].value).toBe("X-Api-Key");
+      expect(page.elements["hook-add"].disabled).toBe(false);
+      // The list is read again and shows it, by origin only.
+      await page.until(() => hookRows(page).length === 1);
+      expect(hookRows(page)[0]).toEqual(["agent:bob", `webhook ${id}`, "https://hooks.example.org · fixed body, no text · header X-Api-Key · at most 5 per hour", "Remove"]);
+      // The secret is in its field alone, and neither it, the header value, the URL's path nor the body is anywhere else,
+      // nor stored by the page.
+      for (const hidden of [secret, "sekret-value", "secret-path", "fixed-body-text"]) {
+        expect(shownOutsideFields(page, hidden)).toBe(false);
+        expect([...page.store.values()].join()).not.toContain(hidden);
+      }
+      page.elements["webhook-copy"].on.click();
+      await page.until(() => page.elements["webhook-copy-note"].textContent === "Copied.");
+      expect(page.copied).toEqual([secret]);
+      // Leaving the view drops the secret and empties every field.
+      page.elements["close-log"].on.click();
+      expect(page.elements["webhook-secret"].value).toBe("");
+      expect(page.elements["webhook-made"].hidden).toBe(true);
+      expect(page.elements["webhook-for"].textContent).toBe("");
+      expect(page.elements["webhook-forms"].hidden).toBe(true);
+      for (const field of formFields) expect(page.elements[field].value).toBe("");
+      expect(page.elements["hook-text"].checked).toBe(true);
+      await openWebhooks(page);
+      expect(page.elements["webhook-made"].hidden).toBe(true);
+      expect(hookNote(page)).toBe("");
+    });
+
+    it("keeps every field on a refusal and says why, and says a webhook may have been added when there is no answer", async () => {
+      let next: Refusal | undefined;
+      const page = await load(anaToken, (url, init) => (init.method === "POST" && url === "/api/webhooks" ? next : undefined));
+      await openWebhooks(page);
+      const filled = { url: "http://example.com/hook", on: "#general", text: false, name: "X-Api-Key", value: "sekret-value", max: "5" };
+      const addOne = async (answer: Refusal | undefined, said: string) => {
+        next = answer;
+        fillHook(page, filled);
+        page.elements["hook-note"].textContent = "";
+        addHook(page);
+        await page.until(() => hookNote(page) === said);
+        expect(page.elements["hook-url"].value).toBe(filled.url);
+        expect(page.elements["hook-on"].value).toBe(filled.on);
+        expect(page.elements["hook-text"].checked).toBe(false);
+        expect(page.elements["hook-header-name"].value).toBe(filled.name);
+        expect(page.elements["hook-header-value"].value).toBe(filled.value);
+        expect(page.elements["hook-max"].value).toBe(filled.max);
+        expect(page.elements["webhook-made"].hidden).toBe(true);
+        expect(page.elements["webhook-secret"].value).toBe("");
+      };
+      // The server's own 400, with addWebhook's reason.
+      await addOne(undefined, "--url must be https (plain http only for 127.x.x.x or [::1]): deliveries would cross the network in the clear.");
+      await addOne({ status: 400, reason: "Invalid --on" }, "Invalid --on");
+      await addOne(413, "This is too long for the server (413).");
+      await addOne({ status: 503, reason: "Database busy", retry: true }, "The server is busy (503). Try again in a moment.");
+      await addOne(
+        "fail",
+        "No answer from the server, so the webhook may or may not have been added: the list below shows whether. No secret can be shown for it, so if it is listed, remove it and add it again.",
+      );
+      expect(hookCount()).toBe(0);
+      // Add stays disabled while the request is in flight, until its deadline, and a second submit sends nothing.
+      next = "hang";
+      addHook(page);
+      await page.until(() => page.deadlines.size > 0);
+      expect(page.elements["hook-add"].disabled).toBe(true);
+      addHook(page);
+      expect(hookPosts(page)).toHaveLength(6);
+      for (const [, fn] of page.deadlines) fn();
+      await page.until(() => hookNote(page).startsWith("The server did not answer in time, so the webhook may or may not have been added"));
+      expect(page.elements["hook-add"].disabled).toBe(false);
+      expect(shownOutsideFields(page, "sekret-value")).toBe(false);
+    });
+
+    it("takes the form and any secret away on a 403, and asks for a token again on a 401", async () => {
+      const page = await load(anaToken);
+      await openWebhooks(page);
+      fillHook(page, { url: "https://example.com/one", on: "#general" });
+      addHook(page);
+      await page.until(() => page.elements["webhook-secret"].value !== "");
+      setPersonAdmin(db, "owner", "ana", false);
+      fillHook(page, { url: "https://example.com/two", on: "#general" });
+      addHook(page);
+      await page.until(() => page.elements["log-note"].textContent.startsWith("The server says you are no longer an admin"));
+      expect(page.elements["webhook-forms"].hidden).toBe(true);
+      expect(page.elements["webhook-secret"].value).toBe("");
+      expect(page.elements["webhook-made"].hidden).toBe(true);
+      for (const field of formFields) expect(page.elements[field].value).toBe("");
+      expect(hookEntry(page)).toBeUndefined();
+      expect(hookCount()).toBe(1);
+
+      setPersonAdmin(db, "owner", "ana", true);
+      let refuse = false;
+      const other = await load(anaToken, (url, init) => (refuse && init.method === "POST" && url === "/api/webhooks" ? 401 : undefined));
+      await openWebhooks(other);
+      refuse = true;
+      fillHook(other, { url: "https://example.com/three", on: "#general" });
+      addHook(other);
+      await other.until(() => other.elements["status-line"].textContent === "The server refused that token. Enter another.");
+      expect(other.store.size).toBe(0);
+      expect(other.elements["webhook-forms"].hidden).toBe(true);
+      expect(other.elements["hook-url"].value).toBe("");
+      expect(other.elements["hook-add"].disabled).toBe(false);
+    });
+
+    it("shows no secret from an answer that comes after the view closed, another view opened, the token was forgotten or the person was unmarked", async () => {
+      for (const leave of ["close", "other", "forget", "unmarked"]) {
+        let hold = false;
+        let demoted = false;
+        const page = await load(anaToken, (url, init) => {
+          if (hold && init.method === "POST" && url === "/api/webhooks") return "held";
+          if (demoted && url.startsWith("/api/webhooks") && (init.method ?? "GET") === "GET") return { status: 403, reason: "Forbidden" };
+          return undefined;
+        });
+        const before = hookCount();
+        await openWebhooks(page);
+        hold = true;
+        fillHook(page, { url: "https://example.com/" + leave, on: "#general", name: "X-Api-Key", value: "sekret-value" });
+        addHook(page);
+        await page.until(() => page.held.length === 1);
+        if (leave === "close") page.elements["close-log"].on.click();
+        else if (leave === "other") page.elements["delivery-entry"].children[0].children[0].on.click();
+        else if (leave === "forget") page.elements["forget"].on.click();
+        else {
+          demoted = true;
+          await page.poll();
+          await page.until(() => page.elements["log-note"].textContent.startsWith("The server says you are no longer an admin"));
+        }
+        hold = false;
+        page.release();
+        // The server added it, but the page shows nothing of it.
+        await page.until(() => hookCount() === before + 1);
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        const id = db.prepare("SELECT max(id) FROM webhooks").pluck().get() as number;
+        expect(page.elements["webhook-secret"].value).toBe("");
+        expect(page.elements["webhook-made"].hidden).toBe(true);
+        expect(hookNote(page)).toBe("");
+        expect(shownOutsideFields(page, secretOf(id))).toBe(false);
+        expect(shownOutsideFields(page, "sekret-value")).toBe(false);
+        expect(page.elements["hook-add"].disabled).toBe(false);
+        expect(page.elements["webhook-forms"].hidden).toBe(true);
+        if (leave === "other") expect(page.elements["log-title"].textContent).toBe("Webhook deliveries");
+        if (leave === "forget") expect(hookEntry(page)).toBeUndefined();
       }
     });
   });
