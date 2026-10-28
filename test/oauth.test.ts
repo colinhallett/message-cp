@@ -77,7 +77,8 @@ const stored = () =>
     db.prepare("SELECT * FROM mcp_clients ORDER BY id").all(),
     db.prepare("SELECT * FROM mcp_authorizations ORDER BY id").all(),
     db.prepare("SELECT * FROM agents ORDER BY id").all(),
-    db.prepare("SELECT * FROM tokens ORDER BY id").all(),
+    // Without last_used_at, which a request the token authenticates sets even when a later check refuses it.
+    db.prepare("SELECT id, account_id, hash, created_at, revoked_at, read_only, agent_only, agent_id, person_id, oauth, client_name, client_host, registers FROM tokens ORDER BY id").all(),
   ]);
 
 const register = (body: unknown) =>

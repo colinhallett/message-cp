@@ -516,24 +516,30 @@ describe("message-cp token list", () => {
       encoding: "utf8",
     });
 
-  it("prints one line per working token with its id, account, kind and creation time, and never a token or hash", () => {
+  it("prints one line per working token with its id, account, kind, creation time and last use, and never a token or hash", async () => {
     const agent = addToken(db, "owner", false, true);
     addPerson(db, "owner", "maria");
     const person = addToken(db, "owner", false, false, undefined, "maria");
     const gone = addToken(db, "friend");
     revokeToken(db, gone.id);
+    // Only the friend's read-only token has been used; the refused revoked token and the owner's token record nothing.
+    const used = async (token: string) =>
+      (await fetch(`http://127.0.0.1:${http.port}/api/agents`, { headers: { Authorization: `Bearer ${token}` } })).status;
+    expect(await used(friendViewer)).toBe(200);
+    expect(await used(gone.token)).toBe(401);
+    expect(await used(OWNER_TOKEN)).toBe(200);
     const res = cli("token", "list");
     expect(res.status).toBe(0);
     const ids = (db.prepare("SELECT id FROM tokens WHERE revoked_at IS NULL ORDER BY id").pluck().all() as number[]);
     const lines = res.stdout.trimEnd().split("\n");
-    expect(lines.map((l) => l.replace(/created \S+$/, "created"))).toEqual([
-      `${ids[0]}\tfriend\tfull\tcreated`,
-      `${ids[1]}\tfriend\tread-only\tcreated`,
-      `${ids[2]}\towner\tread-only\tcreated`,
-      `${agent.id}\towner\tagent\tcreated`,
-      `${person.id}\towner\tperson\tcreated`,
+    expect(lines.map((l) => l.replace(/created \S+/, "created").replace(/last used \S+$/, "last used"))).toEqual([
+      `${ids[0]}\tfriend\tfull\tcreated\tnever used`,
+      `${ids[1]}\tfriend\tread-only\tcreated\tlast used`,
+      `${ids[2]}\towner\tread-only\tcreated\tnever used`,
+      `${agent.id}\towner\tagent\tcreated\tnever used`,
+      `${person.id}\towner\tperson\tcreated\tnever used`,
     ]);
-    for (const l of lines) expect(l).toMatch(/\tcreated \d{4}-\d\d-\d\dT[\d:.]+Z$/);
+    for (const l of lines) expect(l).toMatch(/\tcreated \d{4}-\d\d-\d\dT[\d:.]+Z\t(never used|last used \d{4}-\d\d-\d\dT[\d:.]+Z)$/);
     const out = res.stdout + res.stderr;
     for (const secret of [friendToken, friendViewer, ownerViewer, agent.token, person.token, gone.token, OWNER_TOKEN]) expect(out).not.toContain(secret);
     expect(out).not.toMatch(/[0-9a-f]{64}/);

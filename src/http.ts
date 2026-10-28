@@ -1142,9 +1142,10 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
   };
 
   /**
-   * /api/tokens. GET: one page of the account's unrevoked tokens, oldest first, as `listTokensBy` gives them: never a
-   * token or its hash. POST `{ kind }`, with kind "read-only" or "agent" and no other field: makes a new unbound token of
-   * that kind for the account, as `addTokenBy` does, answering `{ id, kind, token }`, never cached; the raw token is in
+   * /api/tokens. GET: one page of the account's unrevoked tokens, oldest first, as `listTokensBy` gives them, each with
+   * `lastUsedAt`, when a request last used it to within a minute (earlier if a write was skipped or failed), or null
+   * until a request is recorded: never a token or its hash. POST `{ kind }`, with kind "read-only" or "agent" and no
+   * other field: makes a new unbound token of that kind for the account, as `addTokenBy` does, answering `{ id, kind, token }`, never cached; the raw token is in
    * that answer only. Any other body answers 400, or 413 past 64 KB, and makes nothing. DELETE `?id=<id>`: revokes the account's token `id`
    * of any kind, as `revokeTokenBy` does, the token this request carries included, answering `{ id }`, or 404 for an id
    * that is no unrevoked token of the account, another account's included. A request already running on a revoked

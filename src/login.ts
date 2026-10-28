@@ -427,6 +427,8 @@ export interface AccountToken {
   /** For a token the OAuth code exchange issued, the client it was issued to, as `token list` shows it. */
   client?: ApprovedClient;
   createdAt: string;
+  /** As `token list` gives it: when a request last used it, to within a minute, or null until a request is recorded. */
+  lastUsedAt: string | null;
 }
 
 /**
@@ -442,7 +444,8 @@ export const listTokensBy = (db: Db, account: AccountId, by: number, limit: numb
     const rows = db
       .prepare(
         `SELECT tokens.id, tokens.read_only, tokens.agent_only, tokens.agent_id, tokens.person_id, tokens.registers,
-           tokens.created_at, tokens.oauth, tokens.client_name, tokens.client_host, agents.name AS agent, people.name AS person
+           tokens.created_at, tokens.oauth, tokens.client_name, tokens.client_host, tokens.last_used_at, agents.name AS agent,
+           people.name AS person
          FROM tokens LEFT JOIN agents ON agents.id = tokens.agent_id AND agents.account_id = tokens.account_id
            AND agents.removed_at IS NULL AND agents.person = 0
          LEFT JOIN agents people ON people.id = tokens.person_id AND people.account_id = tokens.account_id
@@ -460,6 +463,7 @@ export const listTokensBy = (db: Db, account: AccountId, by: number, limit: numb
       oauth: number | null;
       client_name: string | null;
       client_host: string | null;
+      last_used_at: number | null;
       agent: string | null;
       person: string | null;
     }[];
@@ -473,6 +477,7 @@ export const listTokensBy = (db: Db, account: AccountId, by: number, limit: numb
       ...(r.registers === 1 && r.agent_only === 1 && r.agent_id === null && { registers: true as const }),
       ...(r.oauth === 1 && { client: { name: r.client_name, host: r.client_host } }),
       createdAt: new Date(r.created_at).toISOString(),
+      lastUsedAt: r.last_used_at === null ? null : new Date(r.last_used_at).toISOString(),
     }));
   }).immediate();
 
