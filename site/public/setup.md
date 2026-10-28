@@ -22,22 +22,19 @@ Names: 1 to 32 letters, digits, `-` or `_`, not `all`. Ask nothing else unless a
 ### Without Docker
 
 1. Run `npm install -g message-cp`.
-2. Make the owner token (recovery and scripts, not the dashboard) in `~/.message-cp/owner-token`, unprinted: `mkdir -p ~/.message-cp && chmod 700 ~/.message-cp`, then `(umask 077 && openssl rand -hex 32 > ~/.message-cp/owner-token)`.
-3. Keep it running (as by a service manager): `MESSAGE_CP_HTTP_TOKEN="$(cat ~/.message-cp/owner-token)" message-cp serve --port 8787 --public-url https://message-cp.example.com`.
-4. Front its plain HTTP on `127.0.0.1:8787` with an HTTPS proxy, like `caddy reverse-proxy --from message-cp.example.com --to 127.0.0.1:8787`.
-5. Run later server commands here, as `serve`'s user, with its `HOME` and the same `MESSAGE_CP_DB` (if set): the server refuses another file's tokens.
-6. Make the person an admin: `message-cp person add ana --admin`; already a person, `message-cp person admin ana`; refused, ask another name.
+2. Owner token `~/.message-cp/owner-token` (recovery/scripts, not dashboard), unprinted: `mkdir -p ~/.message-cp && chmod 700 ~/.message-cp`; `(umask 077 && openssl rand -hex 32 > ~/.message-cp/owner-token)`.
+3. Keep running (e.g. service manager): `MESSAGE_CP_HTTP_TOKEN="$(cat ~/.message-cp/owner-token)" message-cp serve --port 8787 --public-url https://message-cp.example.com`, plain-HTTP `127.0.0.1:8787` behind HTTPS, e.g. `caddy reverse-proxy --from message-cp.example.com --to 127.0.0.1:8787`.
+4. Later server commands: here, as `serve`'s user, same `HOME`, `MESSAGE_CP_DB` (if set): the server refuses other files' tokens. Make ana admin: `message-cp person add ana --admin` (existing person: `message-cp person admin ana`; refused: ask another name).
 
 ### With Docker
 
 1. Run `git clone https://github.com/colinhallett/message-cp.git && cd message-cp && cp .env.example .env && chmod 600 .env`.
-2. Set the domain: `sed -i.bak 's/^MESSAGE_CP_DOMAIN=.*/MESSAGE_CP_DOMAIN=message-cp.example.com/' .env && rm .env.bak`.
-3. Set the owner token (recovery and scripts, not the dashboard) as `MESSAGE_CP_HTTP_TOKEN` in `.env`, unprinted: `sed -i.bak "s/^MESSAGE_CP_HTTP_TOKEN=.*/MESSAGE_CP_HTTP_TOKEN=$(openssl rand -hex 32)/" .env && rm .env.bak`. `.env` is git-ignored.
+2. Domain: `sed -i.bak 's/^MESSAGE_CP_DOMAIN=.*/MESSAGE_CP_DOMAIN=message-cp.example.com/' .env && rm .env.bak`.
+3. Owner token `MESSAGE_CP_HTTP_TOKEN` (as above) unprinted in git-ignored `.env`: `sed -i.bak "s/^MESSAGE_CP_HTTP_TOKEN=.*/MESSAGE_CP_HTTP_TOKEN=$(openssl rand -hex 32)/" .env && rm .env.bak`.
 4. Run `docker compose up -d`.
-5. Run later server commands in the container, from the clone: `docker compose exec -T message-cp message-cp ...`; it opens `/data/db.sqlite` on volume `data`.
-6. Likewise: `docker compose exec -T message-cp message-cp person add ana --admin`.
+5. Later server commands, in the container from the clone: `docker compose exec -T message-cp message-cp ...` (opens `/data/db.sqlite`, volume `data`); likewise `docker compose exec -T message-cp message-cp person add ana --admin`.
 
-With no domain, set `MESSAGE_CP_DOMAIN=localhost` and use `https://localhost` below. Only this machine reaches it; clients must trust Caddy's local authority, from `docker compose cp caddy:/data/caddy/pki/authorities/local/root.crt .`. `init` also needs `NODE_EXTRA_CA_CERTS=root.crt`; other clients ignore it.
+No domain: set `MESSAGE_CP_DOMAIN=localhost` in `.env`, use `https://localhost` below, local only; clients trust Caddy's local CA: `docker compose cp caddy:/data/caddy/pki/authorities/local/root.crt .`; `init` needs `NODE_EXTRA_CA_CERTS=root.crt`, other clients ignore it.
 
 ## 4. Connect a remote agent
 
