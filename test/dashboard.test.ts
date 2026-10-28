@@ -46,7 +46,7 @@ const NO_DELIVERIES =
   "No webhook deliveries yet: add a webhook on the server with message-cp webhook add --url <url> --on <#channel | mention:<agent> | agent:<agent>>, and its deliveries show here once it fires.";
 const NO_INVITES = "No unused invites. One is listed here from when it is made until it is used, cancelled or expires.";
 const NO_APPROVALS =
-  "No approved clients yet: a client approved as one named agent, or as one that registers its own agents, appears here once it connects through the server's authorization flow (serve --public-url), and its token is revoked on the server with message-cp token revoke <id>.";
+  "No approved clients yet: a client approved as one named agent, or as one that registers its own agents, appears here once it connects through the server's authorization flow (serve --public-url), and its token is revoked on the server with message-cp token revoke <id> or, by an admin person, with its Revoke button here.";
 
 const base = () => `http://127.0.0.1:${http.port}`;
 
@@ -3275,6 +3275,7 @@ describe("the page's approved clients", () => {
   interface Stub {
     on: Record<string, () => void>;
     hidden: boolean;
+    disabled?: boolean;
     value: string;
     textContent: string;
     className: string;
@@ -3341,15 +3342,16 @@ describe("the page's approved clients", () => {
   // answers 200 with a body this page cannot read, "nulls" a list it cannot read, "unnamed" an approval whose
   // clientName is missing, "numbered" one whose agent is a number, "unflagged" a single-agent one without registers,
   // "listing" a single-agent one with agents, "bound" a registering one with an agent, "unlisted" a registering one
-  // without agents, "mixed" a registering one whose agents include a number, and "held" waits for release() to answer
-  // as the server does.
+  // without agents, "mixed" a registering one whose agents include a number, "held" waits for release() to answer
+  // as the server does, and a { status, reason, retry } answers with that error.
   type Odd = "unnamed" | "numbered" | "unflagged" | "listing" | "bound" | "unlisted" | "mixed";
-  type Refusal = number | "hang" | "fail" | "junk" | "nulls" | Odd | "held";
-  async function load(token: string, refuse: (url: string) => Refusal | undefined = () => undefined) {
+  type Refusal = number | "hang" | "fail" | "junk" | "nulls" | Odd | "held" | { status: number; reason: string; retry?: boolean };
+  async function load(token: string, refuse: (url: string, init: RequestInit) => Refusal | undefined = () => undefined) {
     const html = await (await fetch(`${base()}/`)).text();
     const script = /<script>([\s\S]*?)<\/script>/.exec(html)![1];
     const elements: Record<string, Stub> = {};
     const urls: string[] = [];
+    const requests: { url: string; method: string }[] = [];
     const timers = handTimers();
     const store = new Map([["message-cp-token", token]]);
     const held: (() => void)[] = [];
@@ -3365,11 +3367,16 @@ describe("the page's approved clients", () => {
       clearTimeout: timers.clear,
       fetch: (url: string, init: RequestInit) => {
         urls.push(url);
-        const status = refuse(url);
+        requests.push({ url, method: init.method ?? "GET" });
+        const status = refuse(url, init);
         if (status === "hang") return new Promise<Response>((_resolve, reject) => init.signal!.addEventListener("abort", () => reject(new Error("aborted"))));
         // The server's answer, even once the page has aborted the request, as one already on its way would arrive.
-        if (status === "held") return new Promise<Response>((resolve) => held.push(() => resolve(fetch(`${base()}${url}`, { headers: init.headers }))));
+        if (status === "held") return new Promise<Response>((resolve) => held.push(() => resolve(fetch(`${base()}${url}`, { ...init, signal: undefined }))));
         if (status === "fail") return Promise.reject(new TypeError("fetch failed"));
+        if (typeof status === "object") {
+          const body = JSON.stringify({ jsonrpc: "2.0", error: { code: -32000, message: status.reason }, id: null });
+          return Promise.resolve(new Response(body, { status: status.status, headers: status.retry ? { "Retry-After": "1" } : {} }));
+        }
         if (status === "junk") return Promise.resolve(new Response("{", { status: 200 }));
         if (status === "nulls") return Promise.resolve(Response.json([null]));
         const single = { id: 1, registers: false, agent: "desk", clientName: "Cursor", clientHost: null, issuedAt: new Date(0).toISOString() };
@@ -3397,7 +3404,9 @@ describe("the page's approved clients", () => {
       entry().on.click();
     };
     const release = () => held.splice(0).forEach((answer) => answer());
-    return { elements, urls, store, polls: timers.polls, deadlines: timers.deadlines, until, poll: timers.poll, entry, openApprovals, held, release };
+    // The page's own writes to /api, without the sign-in to the approval page that an https address also sends.
+    const writes = () => requests.filter((r) => r.method !== "GET" && r.url.startsWith("/api/"));
+    return { elements, urls, requests, writes, store, polls: timers.polls, deadlines: timers.deadlines, until, poll: timers.poll, entry, openApprovals, held, release };
   }
 
   // The sidebar entry's label and count.
@@ -3658,6 +3667,218 @@ describe("the page's approved clients", () => {
       expect(item(page)).toEqual(["Approved clients", ""]);
       expect(page.entry().className).toBe("item");
     }
+  });
+
+  describe("revoking one", () => {
+    let anaToken: string;
+    beforeEach(() => {
+      addPerson(db, "owner", "ana", true);
+      anaToken = addToken(db, "owner", false, false, undefined, "ana").token;
+    });
+    type Page = Awaited<ReturnType<typeof load>>;
+    const rows = (page: Page) => page.elements["post-rows"].children;
+    const revokeButton = (page: Page, id: number) =>
+      rows(page).find((r) => field(r, "tag") === `token ${id}`)!.children.find((c) => c.textContent === "Revoke");
+    const revoke = (page: Page, id: number) => revokeButton(page, id)!.on.click();
+    const note = (page: Page) => page.elements["approval-note"].textContent;
+    const confirm = (page: Page) => page.elements["approval-confirm"];
+    const live = (token: string) => accountForToken(db, token, OWNER_TOKEN) !== undefined;
+    const NOT_ADMIN_APPROVALS =
+      "The server says you are no longer an admin of this account (403), so this page no longer offers revoking approved clients.";
+    // Opens the view and waits for the given number of rows, each with a Revoke button once the token is known as an admin's.
+    const openWith = async (page: Page, count: number, buttons = true) => {
+      await page.openApprovals();
+      await page.until(() => rows(page).length === count && rows(page).every((r) => r.children.some((c) => c.textContent === "Revoke") === buttons));
+    };
+
+    it("offers Revoke to an admin person only, and never sends a revocation with any other token", async () => {
+      const cursor = approve("owner", "desk", { name: "Cursor", host: null });
+      addPerson(db, "owner", "maria");
+      const plain = addToken(db, "owner", false, false, undefined, "maria").token;
+      for (const token of [plain, OWNER_TOKEN, viewer]) {
+        const page = await load(token);
+        await page.until(() => page.requests.some((r) => r.url === "/api/token"));
+        await openWith(page, 1, false);
+        await page.poll();
+        await page.until(() => page.polls.size === 1);
+        expect(rows(page)[0].className).toBe("entry approval");
+        expect(revokeButton(page, cursor.id)).toBeUndefined();
+        page.elements["approval-yes"].on.click();
+        expect(page.writes()).toEqual([]);
+      }
+      const page = await load(anaToken);
+      await openWith(page, 1);
+      expect(rows(page)[0].className).toBe("entry approval revocable");
+      expect(approval(rows(page)[0])).toEqual(["desk", `token ${cursor.id}`, `issued ${issued(cursor.id)}`, "Cursor"]);
+      expect(confirm(page).hidden).toBe(true);
+      expect(page.writes()).toEqual([]);
+    });
+
+    it("revokes a client only after confirming, says what it ended, and reads the list again", async () => {
+      const kept = approve("owner", "laptop", { name: "Claude", host: null });
+      const cursor = approve("owner", "desk", { name: "Cursor", host: null });
+      const codex = approveRegistering("owner", { name: null, host: "codex.example" });
+      const page = await load(anaToken);
+      await openWith(page, 3);
+      // Revoke asks first, naming the client and its agent; Keep it sends nothing.
+      revoke(page, cursor.id);
+      expect(confirm(page).hidden).toBe(false);
+      expect(page.elements["approval-text"].textContent).toBe(
+        `Revoke token ${cursor.id} (Cursor), approved as desk? Sessions of desk that use it stop at their next request. This cannot be undone.`,
+      );
+      page.elements["approval-no"].on.click();
+      expect(confirm(page).hidden).toBe(true);
+      expect(page.writes()).toEqual([]);
+      // One that registers its own agents says so in the agent's place.
+      revoke(page, codex.id);
+      expect(page.elements["approval-text"].textContent).toBe(
+        `Revoke token ${codex.id} (codex.example), which registers its own agents? Sessions of its agents that use it stop at their next request. This cannot be undone.`,
+      );
+      page.elements["approval-no"].on.click();
+      expect(page.writes()).toEqual([]);
+
+      revoke(page, cursor.id);
+      page.elements["approval-yes"].on.click();
+      await page.until(() => note(page) === `Revoked token ${cursor.id} (Cursor).`);
+      expect(page.writes()).toEqual([{ url: `/api/approvals?id=${cursor.id}`, method: "DELETE" }]);
+      expect(confirm(page).hidden).toBe(true);
+      expect(live(cursor.token)).toBe(false);
+      expect(live(kept.token)).toBe(true);
+      expect(live(codex.token)).toBe(true);
+      await page.until(() => rows(page).length === 2);
+      expect(rows(page).map((r) => field(r, "tag"))).toEqual([`token ${codex.id}`, `token ${kept.id}`]);
+      expect(item(page)).toEqual(["Approved clients", "2"]);
+      // Nothing private reached the page.
+      const shown = JSON.stringify(page.elements, (k, v) => (k === "on" ? undefined : v));
+      for (const hidden of [cursor.token, kept.token, codex.token, anaToken]) expect(shown).not.toContain(hidden);
+    });
+
+    it("says each other answer to a revocation in plain words", async () => {
+      const cursor = approve("owner", "desk", { name: "Cursor", host: null });
+      let next: Refusal | undefined;
+      const page = await load(anaToken, (url, init) => (init.method === "DELETE" ? next : undefined));
+      await openWith(page, 1);
+      const revokeOne = async (answer: Refusal | undefined, said: string) => {
+        next = answer;
+        revoke(page, cursor.id);
+        page.elements["approval-yes"].on.click();
+        await page.until(() => note(page) === said);
+        expect(confirm(page).hidden).toBe(true);
+      };
+      await revokeOne({ status: 400, reason: "Give id once" }, "Give id once");
+      await revokeOne({ status: 503, reason: "Database busy", retry: true }, "The server is busy (503). Try again in a moment.");
+      await revokeOne({ status: 413, reason: "Too long" }, "This is too long for the server (413).");
+      await revokeOne(404, `Token ${cursor.id} (Cursor) was already revoked or gone (404).`);
+      await revokeOne("fail", `No answer from the server, so token ${cursor.id} (Cursor) may have been revoked: the list below shows whether.`);
+      next = "hang";
+      revoke(page, cursor.id);
+      page.elements["approval-yes"].on.click();
+      await page.until(() => page.deadlines.size > 0);
+      expect(page.elements["approval-yes"].disabled).toBe(true);
+      for (const [, fn] of page.deadlines) fn();
+      await page.until(() => note(page).startsWith(`The server did not answer in time, so token ${cursor.id} (Cursor) may have been revoked`));
+      expect(page.elements["approval-yes"].disabled).toBe(false);
+      // None of those was the server's own revocation.
+      expect(live(cursor.token)).toBe(true);
+      // The server's own 404, for a client revoked on the server meanwhile, before the next poll.
+      next = undefined;
+      revoke(page, cursor.id);
+      revokeToken(db, cursor.id);
+      page.elements["approval-yes"].on.click();
+      await page.until(() => note(page) === `Token ${cursor.id} (Cursor) was already revoked or gone (404).`);
+      await page.until(() => page.elements["log-note"].textContent === NO_APPROVALS);
+    });
+
+    it("takes the Revoke buttons away on a 403, once the person is no longer an admin, and keeps the list", async () => {
+      const cursor = approve("owner", "desk", { name: "Cursor", host: null });
+      const page = await load(anaToken);
+      await openWith(page, 1);
+      setPersonAdmin(db, "owner", "ana", false);
+      revoke(page, cursor.id);
+      page.elements["approval-yes"].on.click();
+      await page.until(() => note(page) === NOT_ADMIN_APPROVALS);
+      expect(confirm(page).hidden).toBe(true);
+      expect(rows(page).map(approval)).toEqual([["desk", `token ${cursor.id}`, `issued ${issued(cursor.id)}`, "Cursor"]]);
+      expect(revokeButton(page, cursor.id)).toBeUndefined();
+      expect(page.elements["invite-entry"].children).toEqual([]);
+      expect(live(cursor.token)).toBe(true);
+      // The next poll draws the list without them too.
+      await page.poll();
+      await page.until(() => page.polls.size === 1);
+      expect(revokeButton(page, cursor.id)).toBeUndefined();
+    });
+
+    it("asks for a token again on a revocation's 401", async () => {
+      const cursor = approve("owner", "desk", { name: "Cursor", host: null });
+      const page = await load(anaToken, (url, init) => (init.method === "DELETE" ? 401 : undefined));
+      await openWith(page, 1);
+      revoke(page, cursor.id);
+      page.elements["approval-yes"].on.click();
+      await page.until(() => page.elements["status-line"].textContent === "The server refused that token. Enter another.");
+      expect(page.store.size).toBe(0);
+      expect(rows(page)).toEqual([]);
+      expect(page.elements["log"].hidden).toBe(true);
+      expect(confirm(page).hidden).toBe(true);
+      expect(live(cursor.token)).toBe(true);
+    });
+
+    it("drops a revocation's answer that comes after the view closed, another view opened or the token was forgotten", async () => {
+      let hold = false;
+      const page = await load(anaToken, (url, init) => (hold && init.method === "DELETE" ? "held" : undefined));
+      for (const leave of ["close", "other", "forget"]) {
+        const issuedNow = approve("owner", "desk", { name: "Cursor", host: null });
+        await openWith(page, 1);
+        hold = true;
+        revoke(page, issuedNow.id);
+        page.elements["approval-yes"].on.click();
+        await page.until(() => page.held.length === 1);
+        if (leave === "close") page.elements["close-log"].on.click();
+        else if (leave === "other") page.elements["delivery-entry"].children[0].children[0].on.click();
+        else page.elements["forget"].on.click();
+        hold = false;
+        page.release();
+        // The server revoked it, but the page says nothing of it.
+        await page.until(() => !live(issuedNow.token));
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        expect(note(page)).toBe("");
+        expect(confirm(page).hidden).toBe(true);
+        expect(page.elements["approval-yes"].disabled).toBe(false);
+        if (leave === "other") expect(page.elements["log-title"].textContent).toBe("Webhook deliveries");
+        if (leave === "forget") {
+          expect(page.elements["log"].hidden).toBe(true);
+          expect(page.store.size).toBe(0);
+        }
+      }
+    });
+
+    it("closes a confirmation once the list no longer gives its approval as it was, and sends nothing", async () => {
+      const cursor = approve("owner", "desk", { name: "Cursor", host: null });
+      const codex = approveRegistering("owner", { name: "Codex", host: null });
+      const page = await load(anaToken);
+      await openWith(page, 2);
+      // Revoked on the server: the next poll no longer lists it.
+      revoke(page, cursor.id);
+      expect(confirm(page).hidden).toBe(false);
+      revokeToken(db, cursor.id);
+      await page.poll();
+      await page.until(() => rows(page).length === 1);
+      expect(confirm(page).hidden).toBe(true);
+      expect(note(page)).toBe(`Token ${cursor.id} (Cursor) changed or went from the list, so its confirmation closed and nothing was sent.`);
+      page.elements["approval-yes"].on.click();
+      expect(page.writes()).toEqual([]);
+      // One left as it was keeps its confirmation open across polls; one listed differently closes it.
+      revoke(page, codex.id);
+      await page.poll();
+      await page.until(() => page.polls.size === 1);
+      expect(confirm(page).hidden).toBe(false);
+      registerWithIdentity(db, OWNER_ACCOUNT, "codex-1", "x", undefined, codex.id);
+      await page.poll();
+      await page.until(() => confirm(page).hidden);
+      expect(note(page)).toBe(`Token ${codex.id} (Codex) changed or went from the list, so its confirmation closed and nothing was sent.`);
+      page.elements["approval-yes"].on.click();
+      expect(page.writes()).toEqual([]);
+      expect(live(codex.token)).toBe(true);
+    });
   });
 });
 

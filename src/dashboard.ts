@@ -14,8 +14,7 @@ import { MAX_BODY_LENGTH } from "./messages.js";
 // messaged each other in a sidebar, the open one as a log in the middle, and the agents on the right. A search box asks GET /api/search once per search and
 // shows the answer in the middle in place of the open conversation. The sidebar's "Webhook deliveries" entry shows
 // the newest deliveries in the middle the same way, refreshed with each poll, and its "Approved clients" entry, the
-// same way, the newest of the account's approvals as GET /api/approvals lists them; the page never revokes or changes
-// one. It asks GET /api/token once whether the token is read-only or
+// same way, the newest of the account's approvals as GET /api/approvals lists them. It asks GET /api/token once whether the token is read-only or
 // agent-only, and for a person token whose person it is. With a person token it is that person: it posts as them in the
 // open channel with POST /api/post and replies in an open direct conversation of theirs, or starts one with anyone in
 // the account from "New message", with POST /api/send, or creates a channel from "New channel" by its first post, with
@@ -26,7 +25,8 @@ import { MAX_BODY_LENGTH } from "./messages.js";
 // invite for one with POST /api/invites and, after confirming, cancels one with DELETE /api/invites, and, from an
 // agent's details in the agents panel, after confirming, removes the agent with DELETE /api/agents or gives it a new key
 // with POST /api/agents/key, and, from the sidebar's "Webhooks" entry, which lists the account's webhooks with GET
-// /api/webhooks, after confirming, removes one with its deliveries with DELETE /api/webhooks; that is all it ever writes. An invite's link, or an agent's new key, is shown only in
+// /api/webhooks, after confirming, removes one with its deliveries with DELETE /api/webhooks, and, from the "Approved
+// clients" entry, after confirming, revokes an approved client's token with DELETE /api/approvals; that is all it ever writes. An invite's link, or an agent's new key, is shown only in
 // a field of its view, from the answer that made it, and never kept or written anywhere else but the clipboard, when
 // its Copy is pressed. With a full token, which acts as no person, it
 // reads and offers Delete, but not posting or sending, which the server refuses it: in the compose box's place it says
@@ -258,6 +258,11 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .entry.invite { grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "from cancel" "time cancel" "body cancel"; }
 .entry.invite > button { grid-area: cancel; align-self: center; }
 .entry.approval > .agents { grid-column: 1 / -1; overflow-wrap: anywhere; }
+/* An admin's approval row has its Revoke button at the end. */
+.entry.approval.revocable { grid-template-columns: auto auto minmax(0, 1fr) auto; grid-template-areas: "from tag time revoke" "body body body revoke"; }
+.entry.approval.revocable > button { grid-area: revoke; align-self: center; }
+#approval-confirm { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2); padding: var(--s2) var(--s4); border-bottom: 1px solid var(--border); }
+#approval-text { flex: 1 1 100%; margin: 0; }
 /* A webhook: what it fires on, its id, its origin and what it sends, with its Remove button at the end. */
 .entry.webhook { grid-template-columns: auto auto minmax(0, 1fr) auto; grid-template-areas: "from tag . remove" "body body body remove"; }
 .entry.webhook > button { grid-area: remove; align-self: center; }
@@ -344,6 +349,10 @@ const resultsNote = document.getElementById("results-note");
 const resultRows = document.getElementById("result-rows");
 const deliveryEntry = document.getElementById("delivery-entry");
 const approvalEntry = document.getElementById("approval-entry");
+const approvalConfirm = document.getElementById("approval-confirm");
+const approvalText = document.getElementById("approval-text");
+const approvalYes = document.getElementById("approval-yes");
+const approvalNote = document.getElementById("approval-note");
 const webhookEntry = document.getElementById("webhook-entry");
 const webhookConfirm = document.getElementById("webhook-confirm");
 const webhookText = document.getElementById("webhook-text");
@@ -596,7 +605,7 @@ const NO_DELIVERIES =
 const NO_APPROVALS =
   "No approved clients yet: a client approved as one named agent, or as one that registers its own agents, appears here " +
   "once it connects through the server's authorization flow (serve --public-url), and its token is revoked on the server " +
-  "with message-cp token revoke <id>.";
+  "with message-cp token revoke <id> or, by an admin person, with its Revoke button here.";
 // The note showChannels put in an empty channel list, or undefined, so showNewButton can make it follow canPost.
 let noChannels;
 // The tokenGeneration a "New channel" post is in flight for, or undefined, as sending is for the compose box.
@@ -658,6 +667,22 @@ let webhookRowsKey = "";
 const NO_WEBHOOKS =
   "No webhooks. Add one on the server with message-cp webhook add --url <url> --on <#channel | mention:<agent> | agent:<agent>> --account <account>";
 const NOT_ADMIN_WEBHOOKS = "The server says you are no longer an admin of this account (403), so this page no longer lists or removes webhooks.";
+// The tokenGeneration a DELETE /api/approvals is in flight for, or undefined, as removingWebhook is for a webhook.
+let revokingApproval;
+// The approval that DELETE is revoking (the target its confirmation was for), while revokingApproval is set.
+let revokingTarget;
+// The approval the "Approved clients" view asks before revoking ({ id, client, agent, key }, agent being undefined for
+// one that registers its own agents and key its entry as GET /api/approvals gave it), or undefined.
+let approvalTarget;
+// How many times the "Approved clients" view has closed (closeLog), so an answer that comes after it closed changes
+// nothing, as webhookClosings does for the webhooks view. unmarked() bumps it too.
+let approvalClosings = 0;
+// The approvals the view last showed, as GET /api/approvals gave them, and the key its rows were built from (the list
+// and whether they had Revoke buttons), so a poll rebuilds them only when either changes, never taking the focus from a
+// Revoke button, and unmarked() can draw them again without the buttons.
+let shownApprovals = [];
+let approvalRowsKey = "";
+const NOT_ADMIN_APPROVALS = "The server says you are no longer an admin of this account (403), so this page no longer offers revoking approved clients.";
 
 function say(text, isError) {
   statusLine.textContent = text;
@@ -723,6 +748,7 @@ function ask(message) {
   cancelYes.disabled = false;
   removeYes.disabled = false;
   webhookYes.disabled = false;
+  approvalYes.disabled = false;
   // And the agents panel's confirmation, note and any new key it showed.
   closeAgentPanel();
   agentYes.disabled = false;
@@ -828,6 +854,8 @@ document.getElementById("agent-key-copy").addEventListener("click", () => copyAg
 document.getElementById("remove-no").addEventListener("click", () => closeRemovePerson(true));
 webhookYes.addEventListener("click", () => removeWebhook());
 document.getElementById("webhook-no").addEventListener("click", () => closeRemoveWebhook(true));
+approvalYes.addEventListener("click", () => revokeApproval());
+document.getElementById("approval-no").addEventListener("click", () => closeRevokeApproval(true));
 newFrom.addEventListener("change", () => fillNew());
 newForm.addEventListener("submit", (event) => {
   event.preventDefault();
@@ -939,7 +967,13 @@ function closeLog() {
   openChannel = undefined;
   openPair = undefined;
   openDeliveries = false;
+  // Leaving the approved clients drops their confirmation and note, and any revocation's answer still to come.
   openApprovals = false;
+  approvalClosings++;
+  closeRevokeApproval();
+  approvalNote.textContent = "";
+  shownApprovals = [];
+  approvalRowsKey = "";
   // Leaving the people view drops the link it showed, its notes and its confirmation, and any answer still to come.
   openInvites = false;
   inviteClosings++;
@@ -1139,18 +1173,29 @@ function showInviteEntry() {
 }
 
 // After the server's 403 to an admin's request, which says the person is no longer an admin: the page forgets it, so
-// the "People" and "Webhooks" entries and Delete go, and an open people or webhooks view keeps only a note saying why.
+// the "People" and "Webhooks" entries and Delete go, an open people or webhooks view keeps only a note saying why, and
+// an open "Approved clients" view keeps its list without Revoke buttons, with a note saying why.
 function unmarked() {
   meAdmin = false;
-  // An Add or New link still in flight then shows no link, and a webhook's removal still in flight changes nothing.
+  // An Add or New link still in flight then shows no link, and a webhook's removal or an approval's revocation still in
+  // flight changes nothing.
   inviteClosings++;
   webhookClosings++;
+  approvalClosings++;
   showInviteEntry();
   showWebhookEntry();
   showDelete();
   // The agents panel's buttons, confirmation and any new key go too.
   closeAgentPanel();
   if (lastAgents) show(lastAgents);
+  if (openApprovals) {
+    // The focus may be on a Revoke button or in the confirmation, which go, so it moves to the view's Close button.
+    closeRevokeApproval();
+    document.getElementById("close-log").focus();
+    drawApprovals(shownApprovals);
+    approvalNote.textContent = NOT_ADMIN_APPROVALS;
+    return;
+  }
   if (openWebhooks) {
     // The focus may be on a Remove button or in the confirmation, which go, so it moves to the view's Close button.
     closeRemoveWebhook();
@@ -1630,6 +1675,70 @@ async function removeWebhook() {
   if (answer.status === 200 || answer.status === 404 || answer.error) refresh();
 }
 
+// Asks above the list before revoking an approved client; nothing is sent until its "Revoke client" is pressed.
+function openRevokeApproval(target) {
+  if (!meAdmin || !openApprovals) return;
+  approvalTarget = target;
+  approvalNote.textContent = "";
+  approvalText.textContent =
+    "Revoke token " + target.id + " (" + target.client + ")" +
+    (target.agent === undefined
+      ? ", which registers its own agents? Sessions of its agents that use it stop at their next request."
+      : ", approved as " + target.agent + "? Sessions of " + target.agent + " that use it stop at their next request.") +
+    " This cannot be undone.";
+  approvalConfirm.hidden = false;
+  approvalYes.disabled = revokingApproval === tokenGeneration;
+  document.getElementById("approval-no").focus();
+}
+
+// Dismisses the approval's confirmation; when the reader dismissed it, or it was answered, the focus goes to the view's
+// Close button, as the row may be gone.
+function closeRevokeApproval(refocus) {
+  approvalConfirm.hidden = true;
+  approvalText.textContent = "";
+  approvalTarget = undefined;
+  if (refocus) document.getElementById("close-log").focus();
+}
+
+// Revokes the approval being asked about with DELETE /api/approvals and says what it ended from the answer, then reads
+// the list again, as removeWebhook does: a 403, which means the token's person is no longer an admin, unmarks them
+// whatever is open now, as a 401 asks for another token; any other answer after the view closed, or any answer after the
+// token was forgotten, changes nothing.
+async function revokeApproval() {
+  const token = sessionStorage.getItem(KEY);
+  if (!token) return ask();
+  const tokenGen = tokenGeneration;
+  const target = approvalTarget;
+  if (!meAdmin || !openApprovals || !target || revokingApproval === tokenGen) return;
+  revokingApproval = tokenGen;
+  revokingTarget = target;
+  const closings = approvalClosings;
+  approvalYes.disabled = true;
+  const ac = new AbortController();
+  const deadline = setTimeout(() => ac.abort(), TIMEOUT_MS);
+  let answer;
+  try {
+    answer = await inviteWrite(token, ac, "DELETE", "/api/approvals?" + new URLSearchParams({ id: String(target.id) }));
+  } finally {
+    clearTimeout(deadline);
+  }
+  if (tokenGen !== tokenGeneration) return;
+  revokingApproval = undefined;
+  revokingTarget = undefined;
+  approvalYes.disabled = false;
+  if (answer.status === 401) return ask("The server refused that token. Enter another.");
+  if (answer.status === 403) return unmarked();
+  if (closings !== approvalClosings) return;
+  // A confirmation opened for another approval meanwhile stays.
+  if (approvalTarget === target) closeRevokeApproval(true);
+  const named = "token " + target.id + " (" + target.client + ")";
+  if (answer.status === 200) approvalNote.textContent = "Revoked " + named + ".";
+  else if (answer.status === 404) approvalNote.textContent = "Token " + target.id + " (" + target.client + ") was already revoked or gone (404).";
+  else if (answer.error) approvalNote.textContent = answer.error + ", so " + named + " may have been revoked: the list below shows whether.";
+  else approvalNote.textContent = refusal(answer);
+  if (answer.status === 200 || answer.status === 404 || answer.error) refresh();
+}
+
 // Asks under the agents panel's heading before removing the agent name or resetting its key (kind "remove" or "key");
 // nothing is sent until its button is pressed. Any confirmation, note or key shown before goes.
 function openAgentConfirm(kind, name) {
@@ -1930,8 +2039,9 @@ async function checkToken() {
   fullToken = full && own === undefined;
   showInviteEntry();
   showWebhookEntry();
-  // An admin person's agent buttons show at once, not only from the next poll.
+  // An admin person's agent and Revoke buttons show at once, not only from the next poll.
   if (lastAgents) show(lastAgents);
+  if (openApprovals) drawApprovals(shownApprovals);
   showPicker();
   fillNew();
   fillChannel();
@@ -2807,7 +2917,21 @@ async function readDeliveries(token, signal, gen) {
   return { ok: true };
 }
 
-// Reads the newest PAGE approvals and replaces the ones the log holds, as readDeliveries does: they come newest first, and
+// Puts the approvals in the log as approvalRow draws them, with Revoke buttons only for an admin, unless the rows were
+// last built from the same list for the same admin, and keeps them for unmarked(). Answers true once they are in the log;
+// throws, leaving the log as it was, on a list whose entries are not approvals.
+function drawApprovals(items) {
+  const key = (meAdmin ? "admin " : "") + JSON.stringify(items);
+  if (key === approvalRowsKey) return true;
+  const rows = items.map(approvalRow);
+  shownApprovals = items;
+  approvalRowsKey = key;
+  postRows.replaceChildren(...rows);
+  postRows.scrollTop = 0;
+  return true;
+}
+
+// Reads the newest PAGE approvals and replaces the ones the log holds when they changed, as readDeliveries does: they come newest first, and
 // one goes when its token is revoked or, for a single-agent approval, its agent removed. Any failure but a refused token
 // goes in the log's note.
 async function readApprovals(token, signal, gen) {
@@ -2821,20 +2945,27 @@ async function readApprovals(token, signal, gen) {
   if (gen !== generation || !openApprovals) return { ok: true };
   if (page.status === 401) return page;
   // A list whose entries are not approvals is as unreadable as one that is not a list.
-  let shown;
+  let drawn = false;
   try {
-    if (page.items) shown = page.items.map(approvalRow);
+    if (page.items) drawn = drawApprovals(page.items);
   } catch {
     page = { error: "The server sent an answer this page cannot read" };
   }
-  if (shown) {
-    postRows.replaceChildren(...shown);
-    postRows.scrollTop = 0;
-    approvalCount.textContent = String(shown.length);
+  if (drawn) {
+    // A confirmation for an approval the list no longer gives as it was closes, so it never revokes a token it was not
+    // asked about. The one whose revocation is in flight is left to that revocation's answer, which closes it; a
+    // confirmation for any other approval opened meanwhile is checked like any other.
+    const inFlight = revokingApproval === tokenGeneration && revokingTarget === approvalTarget;
+    if (approvalTarget && !inFlight && !page.items.some((a) => JSON.stringify(a) === approvalTarget.key)) {
+      approvalNote.textContent =
+        "Token " + approvalTarget.id + " (" + approvalTarget.client + ") changed or went from the list, so its confirmation closed and nothing was sent.";
+      closeRevokeApproval();
+    }
+    approvalCount.textContent = String(page.items.length);
     logNote.textContent =
-      shown.length === 0
+      page.items.length === 0
         ? NO_APPROVALS
-        : shown.length === PAGE
+        : page.items.length === PAGE
           ? "Only the newest " + PAGE + " approvals are shown."
           : "";
   } else if (page.status === 403) {
@@ -3539,8 +3670,9 @@ function showApprovalEntry() {
 // and lists the agents it registered, or says it has registered none yet. The client chose its name, so it goes in with
 // textContent and, as token list prints it, with control and format characters (a newline, a direction override)
 // replaced, so it cannot pass for another token's id; the id has its own element. Agent names go in with textContent
-// too. Never a token, hash, code or redirect URI, which GET /api/approvals does not give. Throws on an entry that is
-// neither shape GET /api/approvals gives, so readApprovals shows the answer as unreadable.
+// too. Never a token, hash, code or redirect URI, which GET /api/approvals does not give. For an admin person it ends
+// with a Revoke button that asks first. Throws on an entry that is neither shape GET /api/approvals gives, so
+// readApprovals shows the answer as unreadable.
 function approvalRow(a) {
   const single = a && a.registers === false && typeof a.agent === "string" && a.agents === undefined;
   const registering =
@@ -3555,12 +3687,20 @@ function approvalRow(a) {
     throw new TypeError("not an approval");
   }
   const li = document.createElement("li");
-  li.className = "entry approval";
+  li.className = meAdmin ? "entry approval revocable" : "entry approval";
   const time = part("time", "time", "issued " + when(a.issuedAt));
   time.title = a.issuedAt;
   const client = (a.clientName || a.clientHost || "unnamed client").replace(/[\\p{Cc}\\p{Cf}]/gu, "\\uFFFD");
   const who = single ? a.agent : "registers its own agents";
   li.append(part("span", "from", who), part("span", "tag", "token " + a.id), time, part("div", "body", client));
+  if (meAdmin) {
+    const button = part("button", "", "Revoke");
+    button.type = "button";
+    button.setAttribute("aria-label", "Revoke token " + a.id);
+    const target = { id: a.id, client, agent: single ? a.agent : undefined, key: JSON.stringify(a) };
+    button.addEventListener("click", () => openRevokeApproval(target));
+    li.append(button);
+  }
   if (registering) {
     li.append(part("div", "agents", a.agents.length > 0 ? "agents: " + a.agents.join(", ") : "has registered no agents yet"));
   }
@@ -3866,6 +4006,12 @@ export const DASHBOARD_HTML = `<!doctype html>
 <button id="webhook-no" type="button">Keep it</button>
 </div>
 <p id="webhook-note" class="note" role="status"></p>
+<div id="approval-confirm" role="group" aria-labelledby="approval-text" hidden>
+<p id="approval-text"></p>
+<button id="approval-yes" type="button">Revoke client</button>
+<button id="approval-no" type="button">Keep it</button>
+</div>
+<p id="approval-note" class="note" role="status"></p>
 <p id="log-note" class="note"></p>
 <ol id="post-rows" role="log"></ol>
 <div id="writer" hidden>
