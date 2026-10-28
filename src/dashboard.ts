@@ -644,7 +644,8 @@ const NOT_ADMIN_AGENTS = "The server says you are no longer an admin of this acc
 const NOT_ADMIN = "The server says you are no longer an admin of this account (403), so this page no longer offers changing people or invites.";
 // The tokenGeneration a DELETE /api/webhooks is in flight for, or undefined, as cancelling is for an invite.
 let removingWebhook;
-// The webhook the "Webhooks" view asks before removing ({ id, on }), or undefined.
+// The webhook the "Webhooks" view asks before removing ({ id, on, key }, key being its entry as GET /api/webhooks gave it),
+// or undefined.
 let webhookTarget;
 // How many times the "Webhooks" view has closed (closeLog), so an answer that comes after it closed changes nothing, as
 // inviteClosings does for the people view. unmarked() bumps it too.
@@ -2952,6 +2953,13 @@ async function readWebhooks(token, signal, gen) {
     page = { error: "The server sent an answer this page cannot read" };
   }
   if (page.items) {
+    // A confirmation for a webhook the list no longer gives as it was closes, so it never removes a webhook added since
+    // that the server gave the same id. One whose removal is in flight is left to that removal's answer, which closes it.
+    if (webhookTarget && removingWebhook !== tokenGeneration && !page.items.some((w) => JSON.stringify(w) === webhookTarget.key)) {
+      webhookNote.textContent =
+        "Webhook " + webhookTarget.id + " (" + webhookTarget.on + ") changed or went from the list, so its confirmation closed and nothing was sent.";
+      closeRemoveWebhook();
+    }
     if (shown) {
       webhookRowsKey = key;
       postRows.replaceChildren(...shown);
@@ -3622,7 +3630,7 @@ function webhookRow(w) {
   const button = part("button", "", "Remove");
   button.type = "button";
   button.setAttribute("aria-label", "Remove webhook " + w.id);
-  const hook = { id: w.id, on: w.on };
+  const hook = { id: w.id, on: w.on, key: JSON.stringify(w) };
   button.addEventListener("click", () => openRemoveWebhook(hook));
   li.append(part("span", "from", w.on), part("span", "tag", "webhook " + w.id), part("div", "body", facts.join(" · ")), button);
   return li;

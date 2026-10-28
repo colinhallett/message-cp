@@ -6785,6 +6785,35 @@ describe("the page's invites", () => {
       expect(exists(hook.id)).toBe(true);
     });
 
+    it("closes a confirmation once the list no longer gives its webhook as it was, so it never removes one that reused the id", async () => {
+      const hook = addWebhook(db, "owner", "https://example.com/hook", "#general", true);
+      const page = await load(anaToken);
+      await openWebhooks(page);
+      removeButton(page, hook.id).on.click();
+      expect(page.elements["webhook-confirm"].hidden).toBe(false);
+      // Removed on the server, then another added in its place, which SQLite gives the same id.
+      db.prepare("DELETE FROM webhooks WHERE id = ?").run(hook.id);
+      await page.poll();
+      await page.until(() => page.elements["log-note"].textContent === NO_WEBHOOKS);
+      expect(page.elements["webhook-confirm"].hidden).toBe(true);
+      expect(note(page)).toBe(`Webhook ${hook.id} (#general) changed or went from the list, so its confirmation closed and nothing was sent.`);
+      const replacement = addWebhook(db, "owner", "https://example.org/other", "agent:bob", true);
+      expect(replacement.id).toBe(hook.id);
+      await page.poll();
+      await page.until(() => hookRows(page).length === 1);
+      page.elements["webhook-yes"].on.click();
+      expect(page.writes()).toEqual([]);
+      expect(exists(replacement.id)).toBe(true);
+      // A webhook changed in place closes its confirmation too; one left as it was keeps it open across polls.
+      removeButton(page, replacement.id).on.click();
+      await page.poll();
+      expect(page.elements["webhook-confirm"].hidden).toBe(false);
+      db.prepare("UPDATE webhooks SET max_per_hour = 9 WHERE id = ?").run(replacement.id);
+      await page.poll();
+      await page.until(() => page.elements["webhook-confirm"].hidden);
+      expect(page.writes()).toEqual([]);
+    });
+
     it("says a busy server in the view's note, keeps the rows, and keeps polling", async () => {
       addWebhook(db, "owner", "https://example.com/hook", "agent:bob", true);
       let next: "busy" | "odd" | undefined;
