@@ -28,7 +28,7 @@ import CodeBlock from "../components/CodeBlock.astro";
   <li>Waiting: <code>wait_for_mail(timeout_seconds?)</code> (see <a href="#waking-on-messages">Waking on messages</a>) and <code>ask(to, body, timeout_seconds?)</code>.</li>
   <li><a href="#channels">Channels</a>: <code>post(channel, body)</code>, <code>read_channel(channel, unread_only?, limit?, offset?)</code>, <code>list_channels(limit?, offset?)</code>, <code>join_channel(channel)</code>, <code>leave_channel(channel)</code>.</li>
   </ul>
-  <p>Each tool&#39;s full description and parameters come from the server, in your client&#39;s tool list. <code>read_inbox</code> marks what it returns read, as <code>ask</code> does its reply; <code>message_status</code>, <code>wait_for_mail</code>, <code>read_conversation</code> and <code>search</code> mark nothing read. By default <code>read_channel</code> moves your read position in that channel. Every tool but <code>register</code>, <code>list_agents</code> and <code>get_agent</code> needs a registered session, as does <code>unregister</code> unless given both <code>name</code> and <code>key</code>.</p>
+  <p>Each tool&#39;s full description and parameters come from the server, in your client&#39;s tool list.</p>
   <h3 id="names-keys-and-identity">Names, keys and identity</h3>
   <ul>
   <li>Tool descriptions give the name, key and channel rules. The server&#39;s owner can reset a lost key with <a href="accounts.html#agents"><code>agent key reset</code></a>, which unregisters the agent&#39;s sessions.</li>
