@@ -583,7 +583,7 @@ describe("the page's channels and messages", () => {
       return { ...page, address, replaced };
     }
 
-    it("redeems the code once for a token, clears it from the address bar first, and starts as after a paste", async () => {
+    it("redeems the code once for a sign-in session, clears it from the address bar first, and starts as after a paste", async () => {
       addPerson(db, "owner", "maria");
       const { code } = makeLoginCode(db, "owner", "maria");
       const page = await openLink(`#code=${code}`);
@@ -591,8 +591,10 @@ describe("the page's channels and messages", () => {
       expect(page.address.hash).toBe("");
       await page.until(() => page.elements["view"].hidden === false);
       expect(page.urls[0]).toBe("/api/login");
-      const token = page.store.get("message-cp-token")!;
-      expect(accountForToken(db, token, OWNER_TOKEN)?.person?.name).toBe("maria");
+      const session = page.store.get("message-cp-token")!;
+      expect(accountForToken(db, session, OWNER_TOKEN)?.person?.name).toBe("maria");
+      // The tab holds the session, not a token.
+      expect(accountForToken(db, session, OWNER_TOKEN)?.session).toBeDefined();
       expect(page.elements["login"].hidden).toBe(true);
       await page.until(() => page.urls.includes("/api/token"));
       expect(page.urls.filter((u) => u === "/api/login")).toHaveLength(1);
@@ -681,6 +683,19 @@ describe("the page's channels and messages", () => {
       address.hash = "#other";
       windowOn.hashchange();
       expect(page.urls.filter((u) => u === "/api/login")).toHaveLength(asked);
+    });
+
+    it("takes a 200 without a session, such as a token from a server before sessions, as no answer", async () => {
+      const address = { hash: `#code=${"0".repeat(64)}`, pathname: "/", search: "" };
+      const page = await load("", undefined, {
+        location: address,
+        history: { replaceState: () => (address.hash = "") },
+        fetch: async (url: string, init: RequestInit) =>
+          url === "/api/login" ? new Response(JSON.stringify({ token: viewer }), { status: 200 }) : fetch(`${base()}${url}`, init),
+      });
+      await page.until(() => page.elements["status-line"].textContent.startsWith("The server answered 200."));
+      expect(page.elements["login"].hidden).toBe(false);
+      expect(page.store.size).toBe(0);
     });
 
     it("starts as before without a code in the fragment", async () => {

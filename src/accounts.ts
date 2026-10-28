@@ -47,6 +47,11 @@ export interface TokenAccess {
    * new names and acts again only as the agents it registered (those whose `token_id` is this id). Never with `agent`.
    */
   registers?: number;
+  /**
+   * For a dashboard sign-in session (`dashboard_sessions`, from a login link or an invite) in place of its token, the
+   * session's row id. It reaches what its token reaches, except /mcp and /wait. Set only when the bearer was a session id.
+   */
+  session?: number;
 }
 
 /** The person a person token acts as: their row in `agents`, their name and, where read, whether they are an admin. */
@@ -319,6 +324,11 @@ function recordUse(db: Db, token: number, lastUsedAt: number | null): void {
  * marked admin now. A token that registers its own agents comes with its row id. Undefined for anything else, a bound
  * token whose agent or person has been removed included. A created token it accepts is recorded as used now (see
  * `recordUse`), even if a later check refuses the request; nothing is recorded for `ownerToken` or a refused token.
+ *
+ * `token` may also be a dashboard sign-in session id (`dashboard_sessions`, made by `redeemLoginCode`). When no token's
+ * hash matches, the session is found by its hash and its token by `tokens.id`, then every check above applies to that
+ * token's row, so a session of a revoked token, or of a person token whose person was removed, gives undefined as the
+ * token itself would. Its answer is its token's, with `session` set to the session's row id.
  */
 export function accountForToken(db: Db, token: string, ownerToken: string): TokenAccess | undefined {
   const hash = hashToken(token);
@@ -327,8 +337,9 @@ export function accountForToken(db: Db, token: string, ownerToken: string): Toke
     return { account: OWNER_ACCOUNT, readOnly: false, agentOnly: false };
   }
   // The agent and the person are looked for in the token's account only, so a token never acts as another account's.
-  // The person is found by row, so a later person given a removed person's name is not theirs.
-  const row = db
+  // The person is found by row, so a later person given a removed person's name is not theirs. A session is checked
+  // through its token's row by the same query, keyed by `tokens.id` instead of `tokens.hash`.
+  const select = (key: "hash" | "id", value: string | number) => db
     .prepare(
       `SELECT tokens.id AS token_id, tokens.last_used_at, tokens.registers, tokens.account_id, tokens.read_only, tokens.agent_only, tokens.agent_id,
          agents.id, agents.registered_at, agents.instance, agents.name,
@@ -337,9 +348,9 @@ export function accountForToken(db: Db, token: string, ownerToken: string): Toke
          AND agents.removed_at IS NULL AND agents.person = 0
        LEFT JOIN agents people ON people.id = tokens.person_id AND people.account_id = tokens.account_id
          AND people.removed_at IS NULL AND people.person = 1
-       WHERE tokens.hash = ? AND tokens.revoked_at IS NULL`,
+       WHERE tokens.${key} = ? AND tokens.revoked_at IS NULL`,
     )
-    .get(hash) as
+    .get(value) as
     | {
         token_id: number;
         last_used_at: number | null;
@@ -358,16 +369,26 @@ export function accountForToken(db: Db, token: string, ownerToken: string): Toke
         person_admin: number | null;
       }
     | undefined;
+  let row = select("hash", hash);
+  let session: number | undefined;
+  if (!row) {
+    const found = db.prepare("SELECT id, token_id FROM dashboard_sessions WHERE hash = ?").get(hash) as { id: number; token_id: number } | undefined;
+    if (found) {
+      row = select("id", found.token_id);
+      session = found.id;
+    }
+  }
   if (!row || (row.agent_id !== null && row.id === null) || (row.person_id !== null && row.person_row === null)) return undefined;
   recordUse(db, row.token_id, row.last_used_at);
   if (row.person_row !== null && row.person_name !== null) {
     const person: BoundPerson = { id: row.person_row, name: row.person_name, admin: row.person_admin === 1 };
-    return { account: row.account_id, readOnly: false, agentOnly: false, person };
+    return { account: row.account_id, readOnly: false, agentOnly: false, person, ...(session !== undefined && { session }) };
   }
   // An agent token's row also has read_only set (see `issueToken`); it is agent-only here, never both.
   const access: TokenAccess = { account: row.account_id, readOnly: row.read_only === 1 && row.agent_only !== 1, agentOnly: row.agent_only === 1 };
   if (row.id !== null) access.agent = { id: row.id, registeredAt: row.registered_at, instance: row.instance, name: row.name };
   // Only an agent-only token bound to no agent, as `issueToken` stores it; never a full, read-only or person token.
   if (row.registers === 1 && row.agent_only === 1 && row.agent_id === null) access.registers = row.token_id;
+  if (session !== undefined) access.session = session;
   return access;
 }

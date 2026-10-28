@@ -1430,9 +1430,10 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
     });
 
   /**
-   * POST /api/login: `{ code }`, a one-time code from a `message-cp login-link` link or an invite, with no token. Answers `{ token }`,
-   * a new full or person token of the code's account, or 400 with `reason` "cancelled" (an invite an admin cancelled),
-   * "used" or "invalid" and a message that never quotes the code.
+   * POST /api/login: `{ code }`, a one-time code from a `message-cp login-link` link or an invite, with no token. Answers
+   * `{ session }`, the id of a dashboard sign-in session for a new full or person token of the code's account (the token
+   * itself is returned to nobody), or 400 with `reason` "cancelled" (an invite an admin cancelled), "used" or "invalid"
+   * and a message that never quotes the code.
    */
   const apiLogin = (req: IncomingMessage, res: ServerResponse) =>
     withOAuthBody(req, res, (text) => {
@@ -1444,7 +1445,7 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
       }
       if (typeof code !== "string") return sendOAuthJson(res, 400, { reason: "invalid", message: "Give code." });
       try {
-        sendOAuthJson(res, 200, { token: redeemLoginCode(db, code) });
+        sendOAuthJson(res, 200, { session: redeemLoginCode(db, code) });
       } catch (err) {
         if (err instanceof LoginRefused) return sendOAuthJson(res, 400, { reason: err.reason, message: err.message });
         throw err;
@@ -1533,6 +1534,11 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
       !(path === "/api/token" && req.method === "GET")
     ) {
       return reply(res, 403, "Agent tokens cannot use the dashboard API", inviting || managing || hooks || revoking || tokens ? { Connection: "close" } : {});
+    }
+    // A dashboard sign-in session (a login link's or an invite's) reaches what its token reaches but /mcp and /wait, so a
+    // copied tab or cookie cannot act as an agent. It is refused before a slot is taken or a body read.
+    if (access.session !== undefined && (path === "/mcp" || path === "/wait")) {
+      return reply(res, 403, "A dashboard sign-in cannot use MCP or /wait", { Connection: "close" });
     }
     if (path === "/api/token") return apiToken(req, res, access);
     if (path === "/api/agents" && !managing) return apiAgents(req, res, account);

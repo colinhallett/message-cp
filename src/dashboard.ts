@@ -5,9 +5,9 @@ import { INVITE_TTL_MS } from "./login.js";
 import { MAX_BODY_LENGTH } from "./messages.js";
 
 // The page served at GET / by `message-cp serve`. It holds no data and no token: it asks for a token, or redeems the
-// one-time code a `message-cp login-link` link carries in its fragment for one with POST /api/login, keeps it in
-// sessionStorage (that tab only), signs the browser in to the approval page with POST oauth/signin for a full or person
-// token under an https public URL (and out with DELETE on "Forget token", which also signs out its other dashboard tabs),
+// one-time code a `message-cp login-link` link carries in its fragment for a sign-in session with POST /api/login, keeps
+// the token or session in sessionStorage (that tab only), signs the browser in to the approval page with POST
+// oauth/signin for a full or person token under an https public URL (and out with DELETE on "Forget token", which also signs out its other dashboard tabs),
 // and polls GET /api/agents, GET /api/channels, GET /api/messages and, while one is
 // open, a channel's GET /api/channel-posts, the account's GET /api/webhook-deliveries, its GET /api/approvals or, for
 // an admin person, its GET /api/people and GET /api/invites, its GET /api/webhooks or its GET /api/tokens, with it. It shows them as a chat app: channels and the pairs of agents that have
@@ -2362,8 +2362,8 @@ async function checkToken() {
   showNewButton();
 }
 
-// Redeems a login link's code once with POST /api/login, which takes no token, for a new full or person token, kept and
-// started with as a pasted one is. Any token the tab held is forgotten first, and the token form shows while the request
+// Redeems a login link's code once with POST /api/login, which takes no token, for a sign-in session of a new full or
+// person token (never the token itself), kept and started with as a pasted token is. Any token the tab held is forgotten first, and the token form shows while the request
 // is in flight; a token submitted or forgotten meanwhile wins, so the answer is dropped. A used, cancelled, expired or
 // unknown code, or no answer, leaves the form with the reason.
 const LINK_USED = "This link was already used. Make a new one on the server or ask an admin, or enter a token.";
@@ -2390,15 +2390,15 @@ async function login(code) {
       signal: ac.signal,
     });
     const body = await res.json().catch(() => ({}));
-    answer = { status: res.status, token: body && body.token, reason: body && body.reason };
+    answer = { status: res.status, session: body && body.session, reason: body && body.reason };
   } catch {
     answer = {};
   } finally {
     clearTimeout(deadline);
   }
   if (gen !== tokenGeneration || pollGen !== generation) return;
-  if (answer.status === 200 && typeof answer.token === "string" && answer.token) {
-    sessionStorage.setItem(KEY, answer.token);
+  if (answer.status === 200 && typeof answer.session === "string" && answer.session) {
+    sessionStorage.setItem(KEY, answer.session);
     return start();
   }
   if (answer.reason === "used") return ask(LINK_USED);

@@ -221,6 +221,19 @@ CREATE TABLE IF NOT EXISTS http_sessions (
 );
 CREATE INDEX IF NOT EXISTS http_sessions_by_last_used ON http_sessions (last_used);
 
+-- The dashboard sign-ins a login link or an invite started (\`redeemLoginCode\` in src/login.ts), one per redeemed code.
+-- Only a hash of the session id is kept: the id is a bearer credential in place of its token, which \`accountForToken\`
+-- checks afresh on every request, so revoking the token or removing its person ends the session too. Tokens are never
+-- deleted, only revoked, so \`token_id\` needs no ON DELETE. \`hash\` is UNIQUE, which gives the lookup its index.
+CREATE TABLE IF NOT EXISTS dashboard_sessions (
+  id INTEGER PRIMARY KEY,
+  hash TEXT NOT NULL UNIQUE,
+  token_id INTEGER NOT NULL REFERENCES tokens(id),
+  created_at INTEGER NOT NULL
+);
+-- Adding or revoking a token checks its sessions (the foreign key) through this, not by scanning the table.
+CREATE INDEX IF NOT EXISTS dashboard_sessions_by_token ON dashboard_sessions (token_id);
+
 -- MCP clients that registered themselves for \`serve --public-url\`'s authorization flow (src/oauth.ts). \`redirect_uris\` is
 -- a JSON array of the URIs as the client sent them. Belongs to no account. These names are not the removed GitHub
 -- sign-in's \`oauth_*\` tables, which DROP_REMOVED drops, and may not appear there.

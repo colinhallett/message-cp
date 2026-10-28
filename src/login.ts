@@ -8,7 +8,8 @@ import { addWebhook, formatOn, type WebhookEvent } from "./webhooks.js";
 // `message-cp login-link`: a dashboard link carrying a one-time code, made on the server, that signs a browser in as the
 // account's owner (a full token) or as one of its people (a person token), so nobody copies a token. The code is
 // printed once, by the CLI, and stored only as a hash; POST /api/login redeems it once for a new token, which
-// `token list` shows and `token revoke` stops like any other. Nothing here logs anything.
+// `token list` shows and `token revoke` stops like any other, and gives the browser a sign-in session for that token
+// rather than the token itself. Nothing here logs anything.
 //
 // An invite is the same kind of code, for a person, made by an admin person's token over HTTP (POST /api/people and
 // /api/invites) rather than on the server. It lasts INVITE_TTL_MS, is listed (never its code) until it is used, cancelled
@@ -563,9 +564,11 @@ export const cancelInvite = (db: Db, account: AccountId, id: number, now = Date.
 
 /**
  * Redeems `code` for a new token of its account: a person token of its person, found by row and only while it is a
- * live person of the code's own account, else a full token. One transaction finds the code, marks it used and issues
- * the token, so a code gives at most one token, from any number of processes. Throws `LoginRefused` for a cancelled
- * invite, a used code, and for an unknown or expired one or a person since removed; the message never quotes the code.
+ * live person of the code's own account, else a full token. Answers the id of a new dashboard sign-in session for that
+ * token, stored only as a hash in `dashboard_sessions`; the token itself is returned to nobody. One transaction finds
+ * the code, marks it used, issues the token and starts the session, so a code gives at most one, from any number of
+ * processes. Throws `LoginRefused` for a cancelled invite, a used code, and for an unknown or expired one or a person
+ * since removed; the message never quotes the code.
  */
 export const redeemLoginCode = (db: Db, code: string, now = Date.now()): string =>
   db.transaction((): string => {
@@ -588,5 +591,8 @@ export const redeemLoginCode = (db: Db, code: string, now = Date.now()): string 
       if (!person) throw new LoginRefused("invalid");
     }
     db.prepare("UPDATE login_codes SET used_at = ? WHERE id = ?").run(now, row.id);
-    return issueToken(db, row.account_id, false, false, undefined, person).token;
+    const { id } = issueToken(db, row.account_id, false, false, undefined, person);
+    const session = randomBytes(32).toString("hex");
+    db.prepare("INSERT INTO dashboard_sessions (hash, token_id, created_at) VALUES (?, ?, ?)").run(sha256(session), id, now);
+    return session;
   }).immediate();
