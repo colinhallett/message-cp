@@ -1577,7 +1577,8 @@ async function removeAgent() {
 
 // Gives the agent being asked about a new key with POST /api/agents/key and shows the key from the answer once, in the
 // panel's read-only field, with a Copy button. An answer after the panel moved on to another agent, or was closed, or
-// after the token was forgotten, changes nothing and shows no key.
+// after the token was forgotten, shows no key; where the panel was closed and nothing newer shows, a 200 or no answer
+// says the key was or may have been reset.
 async function resetKey() {
   const token = sessionStorage.getItem(KEY);
   if (!token) return ask();
@@ -1614,6 +1615,8 @@ async function resetKey() {
     // where nothing newer is shown, as the key this answer carries is not shown now.
     if (answer.status === 200 && agentFor === undefined) {
       agentNote.textContent = name + "'s key was reset, but this page closed it before showing the new one: reset it again for a key you can see.";
+    } else if (answer.error && agentFor === undefined) {
+      agentNote.textContent = answer.error + ", so " + name + "'s key may have been reset, and this page has no new key to show: reset it again for one.";
     }
     if (answer.status === 200 || answer.error) refresh();
     return;

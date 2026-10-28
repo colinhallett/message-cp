@@ -6529,6 +6529,26 @@ describe("the page's invites", () => {
       expect(note(page)).toBe("");
     });
 
+    it("says a key may have been reset when no answer comes after the reader pressed Cancel", async () => {
+      registerAgent(db, OWNER_ACCOUNT, "writer", "");
+      let next: Refusal | undefined;
+      const page = await load(anaToken, (url, init) => (init.method === "POST" && url.startsWith("/api/agents") ? next : undefined));
+      await page.until(() => actionsOf(page, "writer") !== undefined);
+      openDetails(page, "writer");
+      next = "hang";
+      action(page, "writer", "Reset key").on.click();
+      page.elements["agent-yes"].on.click();
+      await page.until(() => page.deadlines.size > 0 && note(page) === "Resetting writer's key…");
+      page.elements["agent-no"].on.click();
+      for (const [, fn] of page.deadlines) fn();
+      await page.until(
+        () => note(page) === "The server did not answer in time, so writer's key may have been reset, and this page has no new key to show: reset it again for one.",
+      );
+      expect(page.elements["agent-confirm"].hidden).toBe(true);
+      expect(page.elements["agent-key"].value).toBe("");
+      expect(page.elements["agent-key-made"].hidden).toBe(true);
+    });
+
     it("changes nothing in the panel for an answer that comes after it moved on or the token was forgotten", async () => {
       registerAgent(db, OWNER_ACCOUNT, "writer", "");
       registerAgent(db, OWNER_ACCOUNT, "eve", "");
