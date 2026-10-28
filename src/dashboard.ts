@@ -28,10 +28,10 @@ import { MAX_BODY_LENGTH } from "./messages.js";
 // /api/webhooks, adds one with POST /api/webhooks and, after confirming, removes one with its deliveries with DELETE
 // /api/webhooks, from the "Approved clients" entry, after confirming, revokes an approved client's token with DELETE
 // /api/approvals, and, from the sidebar's "Tokens" entry, which lists the account's unrevoked tokens with GET
-// /api/tokens, after confirming, revokes one with DELETE /api/tokens; that is all it ever writes. An invite's link, an
-// agent's new key, or a new webhook's secret, is shown only in
-// a field of its view, from the answer that made it, and never kept or written anywhere else but the clipboard, when
-// its Copy is pressed. A new webhook's URL, header value and body go on the page only into the form's fields, by value,
+// /api/tokens, makes a read-only or agent token with POST /api/tokens and, after confirming, revokes one with DELETE
+// /api/tokens; that is all it ever writes. An invite's link, an agent's new key, a new webhook's secret, or a new token,
+// is shown only in a field of its view, from the answer that made it, and never kept or written anywhere else but the
+// clipboard, when its Copy is pressed. A new webhook's URL, header value and body go on the page only into the form's fields, by value,
 // which are emptied when the server answers that it was added (each only while it still holds what was sent), when its
 // view closes and on unmarked(). With a full token, which acts as no person, it
 // reads and offers Delete, but not posting or sending, which the server refuses it: in the compose box's place it says
@@ -290,6 +290,15 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 #webhook-made { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2); }
 #webhook-for { flex: 1 1 100%; margin: 0; }
 #webhook-secret { flex: 1 1 16rem; min-width: 0; font-family: var(--font-mono); }
+/* The "Tokens" view's "Make a token" form, and the token it made with its Copy button, sit above the list. */
+#token-forms { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2); padding: var(--s3) var(--s4); border-bottom: 1px solid var(--border); }
+#token-forms h3 { flex: 1 1 100%; margin: 0; font-size: var(--text-sm); font-weight: 600; color: var(--muted); }
+#token-forms select { padding: var(--s1); background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); }
+#token-forms .note { margin: 0; }
+#token-make-note, #token-made, #token-for { flex: 1 1 100%; }
+#token-made { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2); }
+#token-for { margin: 0; overflow-wrap: anywhere; }
+#token-value { flex: 1 1 16rem; min-width: 0; padding: var(--s1); font-family: var(--font-mono); background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); }
 .delivery.failed .tag { color: var(--error); background: var(--error-bg); }
 .item { display: flex; align-items: center; gap: var(--s2); text-align: left; background: none; border: 0; border-radius: var(--radius); padding: var(--s1) var(--s2); margin: 1px var(--s2); width: calc(100% - 2 * var(--s2)); }
 .item.current { background: var(--active); font-weight: 600; box-shadow: inset 3px 0 0 var(--accent); }
@@ -400,6 +409,15 @@ const tokenConfirm = document.getElementById("token-confirm");
 const tokenText = document.getElementById("token-text");
 const tokenYes = document.getElementById("token-yes");
 const tokenNote = document.getElementById("token-note");
+const tokenForms = document.getElementById("token-forms");
+const tokenForm = document.getElementById("token-form");
+const tokenKind = document.getElementById("token-kind");
+const tokenMake = document.getElementById("token-make");
+const tokenMakeNote = document.getElementById("token-make-note");
+const tokenMade = document.getElementById("token-made");
+const tokenFor = document.getElementById("token-for");
+const tokenValue = document.getElementById("token-value");
+const tokenCopyNote = document.getElementById("token-copy-note");
 const peopleHead = document.getElementById("people-head");
 const inviteEntry = document.getElementById("invite-entry");
 const inviteForms = document.getElementById("invite-forms");
@@ -743,7 +761,10 @@ let tokenClosings = 0;
 // The list the token rows were last built from, so a poll rebuilds them only when it changes, never taking the focus
 // from a Revoke button.
 let tokenRowsKey = "";
-const NOT_ADMIN_TOKENS = "The server says you are no longer an admin of this account (403), so this page no longer lists or revokes tokens.";
+const NOT_ADMIN_TOKENS = "The server says you are no longer an admin of this account (403), so this page no longer lists, makes or revokes tokens.";
+// The tokenGeneration a POST /api/tokens is in flight for, or undefined, as revokingToken is for a DELETE. The token it
+// makes lives only in its field, never in a variable.
+let makingToken;
 
 function say(text, isError) {
   statusLine.textContent = text;
@@ -813,6 +834,8 @@ function ask(message) {
   hookAdd.disabled = false;
   approvalYes.disabled = false;
   tokenYes.disabled = false;
+  tokenKind.value = "read-only";
+  tokenMake.disabled = false;
   // And the agents panel's confirmation, note and any new key it showed.
   closeAgentPanel();
   agentYes.disabled = false;
@@ -927,6 +950,11 @@ approvalYes.addEventListener("click", () => revokeApproval());
 document.getElementById("approval-no").addEventListener("click", () => closeRevokeApproval(true));
 tokenYes.addEventListener("click", () => revokeToken());
 document.getElementById("token-no").addEventListener("click", () => closeRevokeToken(true));
+tokenForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  makeToken();
+});
+document.getElementById("token-copy").addEventListener("click", () => copyToken());
 newFrom.addEventListener("change", () => fillNew());
 newForm.addEventListener("submit", (event) => {
   event.preventDefault();
@@ -1072,12 +1100,15 @@ function closeLog() {
   webhookNote.textContent = "";
   webhookRowsKey = "";
   closeWebhookForms();
-  // Leaving the tokens view does the same.
+  // Leaving the tokens view does the same, and drops its form and any token it made.
   openTokens = false;
   tokenClosings++;
   closeRevokeToken();
   tokenNote.textContent = "";
   tokenRowsKey = "";
+  tokenForms.hidden = true;
+  dropMadeToken();
+  tokenMakeNote.textContent = "";
   held = 0;
   postRows.replaceChildren();
   postRows.className = "";
@@ -1247,8 +1278,8 @@ function closeWebhookForms() {
   webhookCopyNote.textContent = "";
 }
 
-// Opens the "Tokens" view in the log, for an admin person only, and polls again at once, as openWebhookLog does: the
-// account's unrevoked tokens, oldest first, each with a Revoke button that asks first.
+// Opens the "Tokens" view in the log, for an admin person only, and polls again at once, as openWebhookLog does: its
+// "Make a token" form, then the account's unrevoked tokens, oldest first, each with a Revoke button that asks first.
 function openTokenLog() {
   if (!meAdmin) return;
   closeLog();
@@ -1256,6 +1287,8 @@ function openTokenLog() {
   postRows.className = "top";
   logTitle.textContent = "Tokens";
   logNote.textContent = "Loading…";
+  tokenForms.hidden = false;
+  tokenMake.disabled = makingToken === tokenGeneration;
   log.hidden = false;
   panel("");
   markOpen();
@@ -1338,9 +1371,12 @@ function unmarked() {
     return;
   }
   if (openTokens) {
-    // Likewise for a Revoke button or the token's confirmation.
+    // Likewise for a Revoke button, the token's confirmation, or the "Make a token" form and any token it made.
     closeRevokeToken();
     tokenNote.textContent = "";
+    tokenForms.hidden = true;
+    dropMadeToken();
+    tokenMakeNote.textContent = "";
     document.getElementById("close-log").focus();
     postRows.replaceChildren();
     tokenRowsKey = "";
@@ -2050,6 +2086,111 @@ async function revokeToken() {
   else if (answer.error) tokenNote.textContent = answer.error + ", so token " + target.id + " may or may not have been revoked: the list below shows which.";
   else tokenNote.textContent = refusal(answer);
   if (answer.status === 200 || answer.status === 404 || answer.error) refresh();
+}
+
+// What to do about a token this page may have made but cannot show. Nothing in GET /api/tokens ties an entry to the
+// request that made it, and another tab, another admin or the server's shell may have made a newer one of the same kind
+// for a client in use, so it never points at an entry by recency, kind or maker.
+function unshownTokenAdvice(kind) {
+  return " The list below cannot show which " + kind + " token this attempt made, so revoke one there only if you know it is that one, then make another.";
+}
+
+// Empties the made token's field and its line, and hides them.
+function dropMadeToken() {
+  tokenMade.hidden = true;
+  tokenFor.textContent = "";
+  tokenValue.value = "";
+  tokenCopyNote.textContent = "";
+}
+
+// Makes an unbound read-only or agent token with POST /api/tokens, sending only { kind }, and shows the token from the
+// answer once, in the view's read-only field, with a Copy button; Make token stays disabled while the request is in
+// flight. A 401 asks for another token and a 403 unmarks the person whatever is open now. An answer after the token was
+// forgotten changes nothing; one after the view closed or was unmarked shows no token, and a 200 or no answer then says
+// in tokenNote, where nothing newer is shown, that a token was or may have been made.
+async function makeToken() {
+  const token = sessionStorage.getItem(KEY);
+  if (!token) return ask();
+  const tokenGen = tokenGeneration;
+  if (!meAdmin || !openTokens || makingToken === tokenGen) return;
+  const kind = tokenKind.value === "agent" ? "agent" : "read-only";
+  makingToken = tokenGen;
+  const closings = tokenClosings;
+  tokenMake.disabled = true;
+  // A token an earlier answer showed goes, so it is never taken for the one this request makes.
+  dropMadeToken();
+  tokenMakeNote.textContent = "Making a token…";
+  const ac = new AbortController();
+  const deadline = setTimeout(() => ac.abort(), TIMEOUT_MS);
+  let answer;
+  try {
+    answer = await inviteWrite(token, ac, "POST", "/api/tokens", { kind });
+  } finally {
+    clearTimeout(deadline);
+  }
+  if (tokenGen !== tokenGeneration) return;
+  makingToken = undefined;
+  tokenMake.disabled = false;
+  if (answer.status === 401) return ask("The server refused that token. Enter another.");
+  if (answer.status === 403) return unmarked();
+  if (closings !== tokenClosings) {
+    // The view closed or was unmarked while the server may have made the token, which this answer's token is never
+    // shown for: say so in a Tokens view open again, or still open unmarked, where nothing newer is shown.
+    const named = kind === "agent" ? "an agent token" : "a read-only token";
+    const then = meAdmin ? unshownTokenAdvice(kind) : "";
+    if (openTokens && tokenNote.textContent === "" && answer.status === 200) {
+      tokenNote.textContent = "This page made " + named + ", but its answer came after the view it was made from closed or changed, so it is not shown and never will be." + then;
+    } else if (openTokens && tokenNote.textContent === "" && answer.error) {
+      tokenNote.textContent = answer.error + ", so " + named + " may or may not have been made, and no token can be shown for it." + then;
+    }
+    if (answer.status === 200 || answer.error) refresh();
+    return;
+  }
+  if (answer.status === 200) {
+    const body = answer.body;
+    dropMadeToken();
+    if (body && typeof body === "object" && typeof body.token === "string" && body.token !== "") {
+      tokenMakeNote.textContent = "";
+      tokenFor.textContent =
+        "New " + kind + " token" + (Number.isInteger(body.id) ? " " + body.id : "") +
+        (kind === "agent" ? ", bound to no agent, so a client using it must still name its agent." : ".") +
+        " It shows only here, at most until you leave this view, and is never shown again.";
+      tokenValue.value = body.token;
+      tokenMade.hidden = false;
+      tokenValue.focus();
+    } else {
+      tokenMakeNote.textContent = "A token may have been made, but this page cannot show it." + unshownTokenAdvice(kind);
+    }
+    refresh();
+    return;
+  }
+  if (answer.error) {
+    tokenMakeNote.textContent =
+      answer.error + ", so a token may or may not have been made, and no token can be shown for it." + unshownTokenAdvice(kind);
+    refresh();
+    return;
+  }
+  tokenMakeNote.textContent = refusal(answer);
+}
+
+// Copies the made token to the clipboard; where the browser refuses, selects it to copy by hand, as copyAgentKey does.
+async function copyToken() {
+  const made = tokenValue.value;
+  if (!made) return;
+  const closings = tokenClosings;
+  let copied = false;
+  try {
+    await navigator.clipboard.writeText(made);
+    copied = true;
+  } catch {
+    copied = false;
+  }
+  if (closings !== tokenClosings || tokenValue.value !== made) return;
+  if (!copied) {
+    tokenValue.focus();
+    tokenValue.select();
+  }
+  tokenCopyNote.textContent = copied ? "Copied." : "This browser did not copy it: the token is selected, so copy it yourself.";
 }
 
 // Asks under the agents panel's heading before removing the agent name or resetting its key (kind "remove" or "key");
@@ -4459,6 +4600,21 @@ export const DASHBOARD_HTML = `<!doctype html>
 <button id="approval-no" type="button">Keep it</button>
 </div>
 <p id="approval-note" class="note" role="status"></p>
+<div id="token-forms" hidden>
+<form id="token-form" aria-labelledby="token-title">
+<h3 id="token-title">Make a token</h3>
+<label for="token-kind">Kind</label>
+<select id="token-kind"><option value="read-only">Read-only</option><option value="agent">Agent</option></select>
+<button id="token-make" type="submit">Make token</button>
+</form>
+<p id="token-make-note" class="note" role="status"></p>
+<div id="token-made" hidden>
+<p id="token-for"></p>
+<input id="token-value" type="text" readonly aria-label="New token" autocomplete="off" spellcheck="false">
+<button id="token-copy" type="button">Copy</button>
+<span id="token-copy-note" class="note" role="status"></span>
+</div>
+</div>
 <div id="token-confirm" role="group" aria-labelledby="token-text" hidden>
 <p id="token-text"></p>
 <button id="token-yes" type="button">Revoke token</button>
