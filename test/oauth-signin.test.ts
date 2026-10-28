@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { addAccount, addToken, listTokens, revokeToken } from "../src/accounts.js";
 import { addPerson, registerAgent } from "../src/agents.js";
 import { OWNER_ACCOUNT, openDb, type Db } from "../src/db.js";
+import { makeLoginCode, redeemLoginCode } from "../src/login.js";
 import { startHttp, type HttpServer } from "../src/http.js";
 import { agentNameBase, freeAgentName } from "../src/oauth.js";
 
@@ -190,6 +191,19 @@ describe("DELETE /oauth/signin", () => {
 });
 
 describe("POST /oauth/approve signed in by the cookie", () => {
+  it("signs in and approves with a login link's session as its person, and stops once the session's token is revoked", async () => {
+    addPerson(db, "owner", "maria");
+    const session = redeemLoginCode(db, makeLoginCode(db, "owner", "maria").code);
+    const { status, cookie } = await signIn(session);
+    expect(status).toBe(204);
+    expect(await (await whoami(pair(cookie!))).json()).toEqual(MARIA);
+    const { request } = await pending();
+    const res = await approve({ Origin: origin, Cookie: pair(cookie!) }, { request, state: "s1", agent: "codex", as: MARIA, fresh: true });
+    expect(res.status).toBe(200);
+    revokeToken(db, listTokens(db).find((t) => t.kind === "person")!.id);
+    expect((await whoami(pair(cookie!))).status).toBe(401);
+  });
+
   it("approves from this origin with the cookie and no token, as the cookie's person's account, and the code gives an agent token", async () => {
     const { cookie } = await signIn(personToken());
     const { request, clientId, verifier } = await pending();
