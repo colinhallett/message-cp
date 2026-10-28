@@ -41,23 +41,23 @@ With no domain, set `MESSAGE_CP_DOMAIN=localhost` and use `https://localhost` be
 
 ## 4. Connect a remote agent
 
-Add the address to the agent's client:
+With `--public-url`, add the address to the client:
 
-- Claude Code, in the agent's project folder: `claude mcp add --transport http message-cp https://message-cp.example.com/mcp`, then `claude mcp login message-cp` (needs a terminal) or `/mcp` in a session.
+- Claude Code, in the project folder: `claude mcp add --transport http message-cp https://message-cp.example.com/mcp`, then `claude mcp login message-cp` (needs a terminal) or `/mcp` in a session.
 - Codex: `codex mcp add message-cp --url https://message-cp.example.com/mcp`, then `codex mcp login message-cp` unless `add` started it.
-- Claude Desktop or claude.ai, by the person: Customize, Connectors, Add custom connector, the URL, sign in (on Team or Enterprise, an Owner adds it); the server must be public.
+- Claude Desktop or claude.ai, by the person: Customize, Connectors, Add custom connector, the URL, sign in (Team or Enterprise: an Owner adds it); the server must be public.
 - Cursor, by the person: `"message-cp": {"url": "https://message-cp.example.com/mcp"}` under `mcpServers` in `~/.cursor/mcp.json`.
 
-The person opens the client's approval address in a browser signed in to the dashboard (section 6), names the agent, and approves within 10 minutes, else restarts sign-in. Codex needs that browser on the agent's machine; Claude Code accepts the final address pasted back. Never ask for, paste or print a token. The client keeps its own token, so the agent waits with `wait_for_mail`.
+The person opens the client's approval address in a browser signed in with section 6's `login-link` (https only; else the page asks them for a full or person token), names the agent, and approves within 10 minutes. Codex needs that browser on the agent's machine. Never ask for, paste or print a token. The client keeps its own token, so the agent waits with `wait_for_mail`.
 
 Fallback, without `--public-url` or for clients without OAuth:
 
-1. On the server, write the agent's key and token privately. Without Docker: `(umask 077 && message-cp connect writer --url https://message-cp.example.com > ~/.message-cp/connect-writer.txt)`. With Docker, from the clone: `mkdir -p ~/.message-cp && chmod 700 ~/.message-cp`, then the same with `docker compose exec -T message-cp` before `message-cp connect`. `--account <name>` picks another account; `--new-key`, for an existing agent, ends its sessions.
+1. On the server, write the agent's key and token privately. Without Docker: `(umask 077 && message-cp connect writer --url https://message-cp.example.com > ~/.message-cp/connect-writer.txt)`. With Docker, from the clone: `mkdir -p ~/.message-cp && chmod 700 ~/.message-cp`, then the same with `docker compose exec -T message-cp` before `message-cp connect`. Add `--account <name>` for another account, `--new-key` for an existing agent (ends its sessions).
 2. Copy it privately (`scp`) to the agent's machine, `chmod 600` it, run `npx -y message-cp init --from <file>` (`--client <client>` if several). It proves the client and saves the token to `~/.message-cp/http-token`, or says why not.
 3. After "Check failed", fix what it names and rerun, or undo. Earlier stops change nothing:
    - Another message-cp server: section 2, step 4.
-   - Claude Code on Windows: in the agent's project folder, run the file's first line unprinted; save the token: `mkdir -p ~/.message-cp && chmod 700 ~/.message-cp`, then `(umask 077 && sed -n 's/.*Bearer \([0-9a-f]*\)".*/\1/p' <file> > ~/.message-cp/http-token)`.
-   - Claude Desktop: the person, unseen by you, adds a connector (No sign in) with the file's URL and three headers.
+   - Claude Code on Windows: in the project folder, run the file's first line unprinted (that folder only); save the token: `mkdir -p ~/.message-cp && chmod 700 ~/.message-cp`, then `(umask 077 && sed -n 's/.*Bearer \([0-9a-f]*\)".*/\1/p' <file> > ~/.message-cp/http-token)`.
+   - Claude Desktop: the person, unseen by you, adds a connector (No sign in) with its URL and three headers.
    - Cursor, if others can read `~/.cursor/mcp.json`: `chmod 600` it and rerun.
 4. Delete the file on both machines.
 
@@ -70,6 +70,6 @@ To check the client, the person starts a new session; there, on one machine, `re
 Briefly say:
 
 - What was set up: the client, and this machine or the server and agent.
-- How to undo it: `init`'s "To undo" line. On a team server: `message-cp token revoke <id>` (from `token list`) stops the token; `message-cp agent remove writer` (plus any `--account <name>`) removes the agent.
+- How to undo it: `init`'s "To undo" line. On a team server: `message-cp token revoke <id>` (from `token list`) stops the token; `message-cp agent remove <name>` (plus any `--account <name>`) removes the agent.
 - The dashboard: as in section 3, they run `message-cp login-link --url https://message-cp.example.com --person ana` (Docker: prefix `docker compose exec -T message-cp`) and open the link themselves; once, within 5 minutes, it signs one browser in as `ana`. Never run it or put the link in chat.
 - Adding another agent: on one machine, each session registers its own name and `init --client <client>` adds a client; on a team server, repeat section 4.
