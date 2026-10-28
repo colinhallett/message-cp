@@ -7050,7 +7050,7 @@ describe("the page's invites", () => {
       expect(page.elements["webhook-made"].hidden).toBe(false);
       expect(page.elements["webhook-secret"].value).toBe(secret);
       expect(page.elements["webhook-for"].textContent).toBe(
-        `Webhook ${id}'s secret. It signs each delivery (X-Message-CP-Signature); check it before trusting one. It shows only here, until you leave this view, and is never shown again.`,
+        `Webhook ${id}'s secret. It signs each delivery (X-Message-CP-Signature); check it before trusting one. It shows only here, until you leave this view or add another, and is never shown again.`,
       );
       expect(page.elements["hook-url"].value).toBe("");
       expect(page.elements["hook-header-value"].value).toBe("");

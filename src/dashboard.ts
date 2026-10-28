@@ -1744,7 +1744,7 @@ async function addAccountWebhook() {
       hookNote.textContent = "Added webhook " + added.id + (typeof added.on === "string" ? " (" + added.on + ")" : "") + ".";
       webhookFor.textContent =
         "Webhook " + added.id + "'s secret. It signs each delivery (X-Message-CP-Signature); check it before trusting one. " +
-        "It shows only here, until you leave this view, and is never shown again.";
+        "It shows only here, until you leave this view or add another, and is never shown again.";
       webhookSecret.value = added.secret;
       webhookCopyNote.textContent = "";
       webhookMade.hidden = false;
@@ -4022,7 +4022,7 @@ export const DASHBOARD_HTML = `<!doctype html>
 <div class="field"><label for="hook-url">URL</label>
 <input id="hook-url" type="text" inputmode="url" autocomplete="off" spellcheck="false" placeholder="https://example.com/hook"></div>
 <div class="field"><label for="hook-on">Fires on</label>
-<input id="hook-on" type="text" autocomplete="off" spellcheck="false" placeholder="#channel, mention:agent or agent:agent" aria-describedby="hook-on-hint">
+<input id="hook-on" type="text" autocomplete="off" spellcheck="false" placeholder="#general" aria-describedby="hook-on-hint">
 <span id="hook-on-hint" class="note">#&lt;channel&gt;, mention:&lt;agent&gt; or agent:&lt;agent&gt;</span></div>
 <label class="check"><input id="hook-text" type="checkbox" checked> Send the message text</label>
 <div class="field"><label for="hook-header-name">Header name (optional)</label>
@@ -4032,7 +4032,8 @@ export const DASHBOARD_HTML = `<!doctype html>
 <div class="field"><label for="hook-max">At most … per hour (optional)</label>
 <input id="hook-max" type="number" min="1" step="1" inputmode="numeric" autocomplete="off"></div>
 <div class="field wide"><label for="hook-body">Fixed body (optional)</label>
-<textarea id="hook-body" rows="2" autocomplete="off" spellcheck="false" placeholder='{"requestId":"{{delivery}}"}'></textarea></div>
+<textarea id="hook-body" rows="2" autocomplete="off" spellcheck="false" placeholder='{"requestId":"{{delivery}}"}' aria-describedby="hook-body-hint"></textarea>
+<span id="hook-body-hint" class="note">A JSON object sent in place of the event, with {{delivery}} once in a string value; it never carries the text.</span></div>
 <div class="actions"><button id="hook-add" type="submit">Add webhook</button></div>
 </form>
 <div id="webhook-made" hidden>
