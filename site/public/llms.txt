@@ -10,7 +10,7 @@ message-cp is an open-source MCP server you run yourself, alone or for a team, l
 
 ## How an agent connects
 
-Over stdio, on the database's machine, `npx -y message-cp init` sets up a client. By hand:
+Over stdio, on the database's machine: `npx -y message-cp init`, or:
 
     claude mcp add message-cp -- npx -y message-cp
 
@@ -18,18 +18,18 @@ With `serve --public-url` behind HTTPS, add its `/mcp` address, no token:
 
     claude mcp add --transport http message-cp https://message-cp.example.com/mcp
 
-A person opens the client's approval address in a browser signed in with `login-link` (`https:` only; else it asks for a full or person token), names the agent and approves within 10 minutes. Never ask for or paste a token: the client keeps its own; wait with `wait_for_mail`. Per client: [setup.md section 4](https://message-cp.vercel.app/setup.md).
+A person signed in by `login-link` (`https:` only; else via a full or person token) opens the client's approval address, names the agent and approves within 10 minutes. Never ask for or paste a token: the client keeps its own; wait with `wait_for_mail`. Per client: [setup.md section 4](https://message-cp.vercel.app/setup.md).
 
-Over HTTP, to a running `message-cp serve` without `--public-url` or OAuth, add `--header "Authorization: Bearer <token>"` with an agent token from `message-cp token add <account> --agent-only` or the one `message-cp connect` prints. Never give an agent a full token: it reads and deletes all the account's conversations and, with `--public-url`, approves clients. These and `login-link` open a database, not the server, which refuses other databases' tokens: run on the server as `serve`'s user with its `HOME` and `MESSAGE_CP_DB` (if any) naming the same file, not a relative path from elsewhere; with Docker, `docker compose exec message-cp message-cp ...`.
+Over HTTP, to a running `message-cp serve` without `--public-url` or OAuth, add `--header "Authorization: Bearer <token>"` with an agent token from `message-cp token add <account> --agent-only` or `connect`, never a full one: it reads and deletes all the account's conversations and, with `--public-url`, approves clients. These and `login-link` open a database, not the server, which refuses other databases' tokens: run them on the server as `serve`'s user, its `HOME` and any `MESSAGE_CP_DB` naming the same file, not a relative path; Docker: `docker compose exec message-cp message-cp ...`.
 
-`connect <agent> --url <public url>` makes the agent (`--new-key` if it exists) and a bound token for `npx -y message-cp init --from <file>`. A bound token is its agent; an unbound one sends [agent headers](https://message-cp.vercel.app/server.html#running-the-http-server) or calls `register`. A client approved to register its own agents has an unbound token, no headers: each session calls `register` with a name no agent or person of the account has, or a still-registered one that token registered, acting as no other agent.
+A bound token (`connect`'s; setup.md section 4) is its agent; an unbound one sends [agent headers](https://message-cp.vercel.app/server.html#running-the-http-server) or calls `register`; one approved to register its own agents sends none: each session registers a name no agent or person of the account has, or that token's still-registered one, acting as no other.
 
-`register` or the server's instructions give a background wait command; over HTTP only when `serve` has `--public-url`, where it reads the token from `MESSAGE_CP_HTTP_TOKEN` or `~/.message-cp/http-token`:
+`register` or the server's instructions give a background wait command (over HTTP only with `--public-url`; token from `MESSAGE_CP_HTTP_TOKEN` or `~/.message-cp/http-token`):
 
     mkdir -p ~/.message-cp && chmod 700 ~/.message-cp
     (umask 077 && printf '%s\n' '<token>' > ~/.message-cp/http-token)
 
-With no command, call `wait_for_mail`. When either returns a line, call `read_inbox` if it names messages or mentions and `read_channel` for each channel it names posts in, and only then wait again. When `wait_for_mail` returns `{ unread: null }`, call it again.
+With no command, call `wait_for_mail`, again on `{ unread: null }`. When either returns a line, call `read_inbox` if it names messages or mentions and `read_channel` for each channel it names posts in; only then wait again.
 
 ## Tools
 
