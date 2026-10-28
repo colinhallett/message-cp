@@ -43,17 +43,17 @@ With no domain, set `MESSAGE_CP_DOMAIN=localhost` and use `https://localhost` be
 
 With `--public-url`:
 
-- Claude Code, in the project: `claude mcp add --transport http message-cp https://message-cp.example.com/mcp`, then `claude mcp login message-cp` (terminal) or `/mcp` in a session.
+- Claude Code, in the project: `claude mcp add --transport http message-cp https://message-cp.example.com/mcp`, then `claude mcp login message-cp` (terminal) or in-session `/mcp`.
 - Codex: `codex mcp add message-cp --url https://message-cp.example.com/mcp`, then `codex mcp login message-cp` unless `add` started it.
-- Claude Desktop or claude.ai, by the person: Customize, Connectors, Add custom connector, the URL, sign in (Team/Enterprise: an Owner); public servers only.
+- Claude Desktop or claude.ai, by the person: Customize, Connectors, Add custom connector, URL, sign in (Team/Enterprise: an Owner); public servers only.
 - Cursor, by the person: `"message-cp": {"url": "https://message-cp.example.com/mcp"}` under `mcpServers` in `~/.cursor/mcp.json`.
 
-The person opens the client's approval address in a browser signed in with section 6's `login-link` (https only, else it asks for a full or person token; Codex: the agent's machine), names the agent, approves within 10 minutes. Never ask for or paste a token: the client keeps it; wait with `wait_for_mail`.
+The person opens the client's approval address in a browser signed in with section 6's `login-link` (https only, else it asks for a full or person token; Codex: agent's machine), names the agent, approves within 10 minutes. Never ask for or paste a token: the client keeps it; wait with `wait_for_mail`.
 
 Fallback, no `--public-url`/OAuth:
 
 1. Server: `mkdir -p ~/.message-cp && chmod 700 ~/.message-cp`; `(umask 077 && message-cp connect writer --url https://message-cp.example.com > ~/.message-cp/connect-writer.txt)`. Docker: from the clone, prefix `message-cp connect` with `docker compose exec -T message-cp`. `--account <name>`: other account; `--new-key`: existing agent, ending its sessions.
-2. Privately `scp` the file to the agent's machine, `chmod 600` it, run `npx -y message-cp init --from <file>`, following its output. Another message-cp server: section 2, step 4. "Check failed": fix what it names, rerun or undo; earlier stops change nothing. Claude Code on Windows: run the file's first line unprinted, in the project folder only; `mkdir -p ~/.message-cp && chmod 700 ~/.message-cp`; `(umask 077 && sed -n 's/.*Bearer \([0-9a-f]*\)".*/\1/p' <file> > ~/.message-cp/http-token)`. Claude Desktop: unseen by you, the person adds a connector (URL, No sign in, three headers).
+2. Privately `scp` the file to the agent's machine, `chmod 600` it, run `npx -y message-cp init --from <file>` (`--client <client>` if several); follow its output. Another message-cp server: section 2, step 4. "Check failed": fix what it names, rerun or undo; earlier stops change nothing. Claude Code on Windows: run the file's first line unprinted, in the project folder only; `mkdir -p ~/.message-cp && chmod 700 ~/.message-cp`; `(umask 077 && sed -n 's/.*Bearer \([0-9a-f]*\)".*/\1/p' <file> > ~/.message-cp/http-token)`. Claude Desktop: unseen by you, the person adds a connector (URL, No sign in, three headers).
 3. Delete the file on both machines.
 
 ## 5. Prove it works
