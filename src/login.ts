@@ -1,9 +1,9 @@
 import { createHash, randomBytes } from "node:crypto";
-import { issueToken, type ApprovedClient, type TokenInfo } from "./accounts.js";
+import { accountName, issueToken, type ApprovedClient, type TokenInfo } from "./accounts.js";
 import { KeyResetError, PersonError, PurgeError, addPerson, purgeAgent, removePerson, resetAgentKey, setPersonAdmin, type Purged } from "./agents.js";
 import { publicUrl } from "./connect.js";
 import type { AccountId, Db } from "./db.js";
-import { formatOn, type WebhookEvent } from "./webhooks.js";
+import { addWebhook, formatOn, type WebhookEvent } from "./webhooks.js";
 
 // `message-cp login-link`: a dashboard link carrying a one-time code, made on the server, that signs a browser in as the
 // account's owner (a full token) or as one of its people (a person token), so nobody copies a token. The code is
@@ -349,6 +349,39 @@ export const listWebhooksBy = (db: Db, account: AccountId, by: number, limit: nu
       maxPerHour: r.max_per_hour,
       fixedBody: r.fixed === 1,
     }));
+  }).immediate();
+
+/** What POST /api/webhooks takes: `addWebhook`'s arguments past the account. */
+export interface WebhookInput {
+  url: string;
+  on: string;
+  includeText: boolean;
+  header?: string;
+  maxPerHour?: number;
+  body?: string;
+}
+
+/**
+ * For POST /api/webhooks: adds a webhook to the account as `addWebhook` does, with its checks, and answers it as GET
+ * /api/webhooks lists it plus its secret, shown this once. `by` is the row of the admin person asking. Throws
+ * `NotAdminError` unless they are still a live admin of the account, and `WebhookError` for anything `addWebhook`
+ * refuses, adding nothing either way.
+ */
+export const addWebhookBy = (db: Db, account: AccountId, by: number, w: WebhookInput): AccountWebhook & { secret: string } =>
+  db.transaction(() => {
+    requireAdmin(db, account, by);
+    // Inside this transaction addWebhook's own runs as a savepoint.
+    const added = addWebhook(db, accountName(db, account), w.url, w.on, w.includeText, w.header, w.maxPerHour, w.body);
+    return {
+      id: added.id,
+      on: formatOn(added),
+      origin: new URL(added.url).origin,
+      includeText: added.includeText,
+      headerName: added.headerName,
+      maxPerHour: added.maxPerHour,
+      fixedBody: added.fixedBody,
+      secret: added.secret,
+    };
   }).immediate();
 
 /**
