@@ -381,7 +381,7 @@ export const revokeApprovalBy = (db: Db, account: AccountId, by: number, id: num
     return changed === 0 ? undefined : { id };
   }).immediate();
 
-/** A token that still works, as GET /api/tokens lists it: never the token or its hash. */
+/** An unrevoked token, as GET /api/tokens lists it: never the token or its hash. */
 export interface AccountToken {
   id: number;
   kind: TokenInfo["kind"];

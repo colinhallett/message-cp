@@ -1501,8 +1501,8 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
     // A person token also sends and posts, only as its person (checked by row once the body is read), approves clients
     // (above), and, while its person is an admin, deletes the account's conversations as a full token does, lists, adds,
     // marks, unmarks and removes people, makes, lists and cancels invites, removes agents and resets their keys, lists
-    // and removes webhooks, revokes approved clients, and lists and revokes the account's tokens. It reaches nothing else: not /mcp, /wait, nor any path added
-    // later. It is refused before a slot is taken or a body read.
+    // and removes webhooks, revokes approved clients, and lists and revokes the account's tokens. It reaches nothing
+    // else: not /mcp, /wait, nor any path added later. It is refused before a slot is taken or a body read.
     if (
       access.person &&
       path !== "/api/send" &&
