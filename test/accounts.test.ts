@@ -292,10 +292,10 @@ describe("account and token management", () => {
     const first = listAccounts(db)[1].tokenIds[0];
     const listed = listTokens(db);
     expect(listed).toEqual([
-      { id: first, account: "friend", kind: "full", createdAt: expect.any(String) },
-      { id: viewer.id, account: "friend", kind: "read-only", createdAt: expect.any(String) },
-      { id: agent.id, account: "owner", kind: "agent", createdAt: expect.any(String) },
-      { id: person.id, account: "owner", kind: "person", createdAt: expect.any(String) },
+      { id: first, account: "friend", kind: "full", createdAt: expect.any(String), lastUsedAt: null },
+      { id: viewer.id, account: "friend", kind: "read-only", createdAt: expect.any(String), lastUsedAt: null },
+      { id: agent.id, account: "owner", kind: "agent", createdAt: expect.any(String), lastUsedAt: null },
+      { id: person.id, account: "owner", kind: "person", createdAt: expect.any(String), lastUsedAt: null },
     ]);
     for (const t of listed) expect(new Date(t.createdAt).toISOString()).toBe(t.createdAt);
     const text = JSON.stringify(listed);

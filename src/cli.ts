@@ -140,7 +140,8 @@ if (command === "serve") {
         // An OAuth token's client goes after its kind: its name, else its metadata host, so the operator can tell which to
         // revoke. The client chose its name, so control and format characters (a tab, a newline, an escape) are replaced.
         const client = t.client ? `\tclient ${(t.client.name ?? t.client.host ?? "(unnamed)").replace(/[\p{Cc}\p{Cf}]/gu, "\uFFFD")}` : "";
-        console.log(`${t.id}\t${t.account}\t${t.kind}${client}\tcreated ${t.createdAt}`);
+        const used = t.lastUsedAt === null ? "never used" : `last used ${t.lastUsedAt}`;
+        console.log(`${t.id}\t${t.account}\t${t.kind}${client}\tcreated ${t.createdAt}\t${used}`);
       }
     } else if (command === "token" && action === "revoke" && arg) {
       const id = Number(arg);

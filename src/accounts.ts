@@ -73,6 +73,8 @@ export interface TokenInfo {
   /** For a token the OAuth code exchange issued, the client it was issued to, as `exchangeCode` recorded it. */
   client?: ApprovedClient;
   createdAt: string;
+  /** When a request last used it, to within TOKEN_USE_RESOLUTION_MS (earlier if a busy database skipped a write); null for never since that was recorded. */
+  lastUsedAt: string | null;
 }
 
 /** The client an OAuth token was issued to: its `client_name` then (null for none), and its metadata URL's host (null for a registered client). */
@@ -190,7 +192,7 @@ export function listTokens(db: Db): TokenInfo[] {
   const rows = db
     .prepare(
       `SELECT tokens.id, accounts.name, tokens.read_only, tokens.agent_only, tokens.person_id, tokens.created_at,
-         tokens.oauth, tokens.client_name, tokens.client_host
+         tokens.oauth, tokens.client_name, tokens.client_host, tokens.last_used_at
        FROM tokens JOIN accounts ON accounts.id = tokens.account_id WHERE tokens.revoked_at IS NULL ORDER BY tokens.id`,
     )
     .all() as {
@@ -203,6 +205,7 @@ export function listTokens(db: Db): TokenInfo[] {
     oauth: number | null;
     client_name: string | null;
     client_host: string | null;
+    last_used_at: number | null;
   }[];
   return rows.map((r) => ({
     id: r.id,
@@ -211,6 +214,7 @@ export function listTokens(db: Db): TokenInfo[] {
     kind: r.person_id !== null ? "person" : r.agent_only === 1 ? "agent" : r.read_only === 1 ? "read-only" : "full",
     ...(r.oauth === 1 && { client: { name: r.client_name, host: r.client_host } }),
     createdAt: new Date(r.created_at).toISOString(),
+    lastUsedAt: r.last_used_at === null ? null : new Date(r.last_used_at).toISOString(),
   }));
 }
 
@@ -280,11 +284,34 @@ export function revokeToken(db: Db, id: number): string {
  * to an agent comes with that agent, and only while it is a live agent of the token's own account; a person token
  * comes with its person, only while that row is a live person of the token's own account, and with whether that row is
  * marked admin now. A token that registers its own agents comes with its row id. Undefined for anything else, a bound
- * token whose agent or person has been removed included.
+ * token whose agent or person has been removed included. A created token it accepts is recorded as used now (see
+ * `recordUse`), even if a later check refuses the request; nothing is recorded for `ownerToken` or a refused token.
  */
 /** The name of the account `account`. */
 export const accountName = (db: Db, account: AccountId): string =>
   db.prepare("SELECT name FROM accounts WHERE id = ?").pluck().get(account) as string;
+
+/** How stale a token's `last_used_at` may get before a request that uses it writes it again: a busy token writes about once a minute. */
+export const TOKEN_USE_RESOLUTION_MS = 60_000;
+
+/**
+ * Records on the token of row id `token` that a request used it now, unless it was recorded within
+ * TOKEN_USE_RESOLUTION_MS. Best effort, and outside any transaction: a lock held past the busy timeout skips it quietly,
+ * any other error logs one fixed line, never anything about the token, and the request goes on either way.
+ */
+function recordUse(db: Db, token: number): void {
+  const now = Date.now();
+  try {
+    db.prepare("UPDATE tokens SET last_used_at = ? WHERE id = ? AND (last_used_at IS NULL OR last_used_at < ?)").run(
+      now,
+      token,
+      now - TOKEN_USE_RESOLUTION_MS,
+    );
+  } catch (err) {
+    const code = (err as { code?: unknown } | null)?.code;
+    if (typeof code !== "string" || !code.startsWith("SQLITE_BUSY")) console.error("message-cp: could not record when a token was last used");
+  }
+}
 
 export function accountForToken(db: Db, token: string, ownerToken: string): TokenAccess | undefined {
   const hash = hashToken(token);
@@ -324,6 +351,7 @@ export function accountForToken(db: Db, token: string, ownerToken: string): Toke
       }
     | undefined;
   if (!row || (row.agent_id !== null && row.id === null) || (row.person_id !== null && row.person_row === null)) return undefined;
+  recordUse(db, row.token_id);
   if (row.person_row !== null && row.person_name !== null) {
     const person: BoundPerson = { id: row.person_row, name: row.person_name, admin: row.person_admin === 1 };
     return { account: row.account_id, readOnly: false, agentOnly: false, person };

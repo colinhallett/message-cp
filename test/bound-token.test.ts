@@ -42,7 +42,8 @@ const rows = (sql: string, ...p: unknown[]) => db.prepare(sql).all(...p);
 // Everything but when rows were last used, which every call, refused or not, moves on.
 const everything = () => ({
   agents: rows("SELECT id, account_id, name, bio, registered_at, key_hash, instance, removed_at, removed_name, person, status FROM agents ORDER BY id"),
-  tokens: rows("SELECT * FROM tokens ORDER BY id"),
+  // Without last_used_at, which a request the token authenticates sets even when a later check refuses it.
+  tokens: rows("SELECT id, account_id, hash, created_at, revoked_at, read_only, agent_only, agent_id, person_id, registers FROM tokens ORDER BY id"),
   messages: rows("SELECT * FROM messages ORDER BY id"),
   sessions: rows("SELECT hash, account_id, agent_id, registered_at, instance, ended FROM http_sessions ORDER BY hash"),
 });
