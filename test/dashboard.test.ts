@@ -8353,7 +8353,7 @@ describe("the page's invites", () => {
       await endOne({ status: 400, reason: "Give id once" }, "Give id once");
       await endOne({ status: 503, reason: "Database busy", retry: true }, "The server is busy (503). Try again in a moment.");
       await endOne(404, `Sign-in ${s.id} was already ended or gone (404).`);
-      await endOne("fail", `No answer from the server, so sign-in ${s.id} may or may not have ended: the list below shows which.`);
+      await endOne("fail", `No answer from the server, so sign-in ${s.id} may or may not have ended: the list below shows which once it has been read again.`);
       next = "hang";
       endButton(page, s.id).on.click();
       page.elements["signin-yes"].on.click();

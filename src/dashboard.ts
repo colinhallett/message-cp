@@ -2235,7 +2235,7 @@ async function endSignin() {
   if (signinTarget === target) closeEndSignin(true);
   if (answer.status === 200) signinNote.textContent = "Ended sign-in " + target.id + " (" + target.label + ").";
   else if (answer.status === 404) signinNote.textContent = "Sign-in " + target.id + " was already ended or gone (404).";
-  else if (answer.error) signinNote.textContent = answer.error + ", so sign-in " + target.id + " may or may not have ended: the list below shows which.";
+  else if (answer.error) signinNote.textContent = answer.error + ", so sign-in " + target.id + " may or may not have ended: the list below shows which once it has been read again.";
   else signinNote.textContent = refusal(answer);
   if (answer.status === 200 || answer.status === 404 || answer.error) refresh();
 }
