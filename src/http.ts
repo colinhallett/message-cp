@@ -26,6 +26,7 @@ import {
   addTokenBy,
   cancelInvite,
   dashboardUrl,
+  endSigninBy,
   listAccountPeople,
   listInvites,
   loginLink,
@@ -35,6 +36,7 @@ import {
   removeAgentBy,
   removeWebhookBy,
   addWebhookBy,
+  listSigninsBy,
   listTokensBy,
   revokeApprovalBy,
   revokeTokenBy,
@@ -105,6 +107,9 @@ const FULL_TOKEN_APPROVALS =
 /** What /api/tokens answers a full token, which is no admin person, with its 403. */
 const FULL_TOKEN_TOKENS =
   "A full token cannot list, make or revoke tokens over the API. Run message-cp token list, token add <account> --read-only or --agent-only, or token revoke <id> on the server, or sign in as an admin person: run message-cp login-link --url <public url> --account <account> --person <name> on the server";
+/** What /api/signins answers a full token, which is no admin person, with its 403. */
+const FULL_TOKEN_SIGNINS =
+  "A full token cannot list or end dashboard sign-ins over the API. Sign in as an admin person: run message-cp login-link --url <public url> --account <account> --person <name> on the server, or run message-cp token revoke <id> on the server to end every sign-in of a token";
 /** The body limit for the OAuth registration, approval and token endpoints, which take a few short fields. */
 const MAX_OAUTH_BODY_BYTES = 16 * 1024;
 /** An agent seen this recently counts as online in GET /api/agents, as does one with a GET /wait held now. */
@@ -1191,6 +1196,43 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
     sendJson(res, done);
   };
 
+  /**
+   * /api/signins. GET: one page of the account's live dashboard sign-ins, oldest first, as `listSigninsBy` gives them,
+   * with `current` on the request's own (`current`, its `access.session`): never a session id, its hash or a token.
+   * DELETE `?id=<id>`: ends the account's sign-in `id`, as `endSigninBy` does, the request's own included, answering
+   * `{ id }`, or 404 for an id that is no live sign-in of the account, another account's included. A request already
+   * running on an ended sign-in may finish; its next request gets 401. Neither reads a body, so neither takes a slot.
+   * `NotAdminError`, for a token's person removed or unmarked since the token was checked, answers 403.
+   */
+  const apiSignins = (req: IncomingMessage, res: ServerResponse, account: AccountId, by: number, current: number | undefined) => {
+    const query = new URL(req.url ?? "", "http://x").searchParams;
+    let work: () => unknown;
+    if (req.method === "GET") {
+      const paging = page(query, DEFAULT_LIST_LIMIT, MAX_LIST_LIMIT);
+      if (paging === undefined) return reply(res, 400, `limit must be 1-${MAX_LIST_LIMIT} and offset 0 or more`);
+      work = () => listSigninsBy(db, account, by, current, paging.limit, paging.offset);
+    } else if (req.method === "DELETE") {
+      const ids = query.getAll("id");
+      if (ids.length !== 1) return reply(res, 400, "Give id once");
+      const id = /^[0-9]{1,16}$/.test(ids[0]) ? Number(ids[0]) : NaN;
+      if (!Number.isSafeInteger(id)) return reply(res, 400, "Give id as a whole number");
+      work = () => endSigninBy(db, account, by, id);
+    } else {
+      return reply(res, 405, "Method not allowed", { Allow: "GET, DELETE" });
+    }
+    let done: unknown;
+    try {
+      // null for no such sign-in, kept apart from the undefined `unlessBusy` gives once it has answered 503.
+      done = unlessBusy(res, () => work() ?? null);
+    } catch (err) {
+      if (err instanceof NotAdminError) return reply(res, 403, err.message);
+      throw err;
+    }
+    if (done === undefined) return;
+    if (done === null) return reply(res, 404, "No such sign-in");
+    sendJson(res, done);
+  };
+
   // MCP's authorization flow, served only with a public URL, from which every address it advertises is built: as
   // `mcpEndpoint` builds /mcp, each path is set on the parsed URL, never resolved as a reference.
   const oauth = options.publicUrl === undefined ? undefined : oauthUrls(options.publicUrl);
@@ -1526,6 +1568,9 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
     // Listing, making and revoking the account's tokens, which only an admin person token does. A POST carries a body its
     // 403 leaves unread, so their 403s close the connection as the routes above do.
     const tokens = path === "/api/tokens";
+    // Listing and ending the account's dashboard sign-ins, which only an admin person token or sign-in does. Neither
+    // method reads a body; their 403s close the connection as the routes above do.
+    const signins = path === "/api/signins";
     // An agent token reaches /mcp and /wait, where it reads as its agent does, and of the /api paths only GET /api/token,
     // so the dashboard can say why it will not work; it cannot read or delete the account's conversations there. It is
     // refused before a slot is taken or a body read.
@@ -1534,7 +1579,7 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
       (path === "/api" || path.startsWith("/api/")) &&
       !(path === "/api/token" && req.method === "GET")
     ) {
-      return reply(res, 403, "Agent tokens cannot use the dashboard API", inviting || managing || hooks || revoking || tokens ? { Connection: "close" } : {});
+      return reply(res, 403, "Agent tokens cannot use the dashboard API", inviting || managing || hooks || revoking || tokens || signins ? { Connection: "close" } : {});
     }
     // A dashboard sign-in session (a login link's or an invite's) reaches what its token reaches but /mcp and /wait, so the
     // session itself never acts as an agent. It is refused before a slot is taken or a body read.
@@ -1550,24 +1595,24 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
     if (path === "/api/webhook-deliveries") return apiWebhookDeliveries(req, res, account);
     if (path === "/api/approvals" && !revoking) return apiApprovals(req, res, account);
     // A read-only token reaches the read-only endpoints above and nothing else: /mcp can write, and so can any path added later.
-    if (access.readOnly) return reply(res, 403, "This token is read-only", inviting || managing || hooks || revoking || tokens ? { Connection: "close" } : {});
+    if (access.readOnly) return reply(res, 403, "This token is read-only", inviting || managing || hooks || revoking || tokens || signins ? { Connection: "close" } : {});
     // A person token also sends and posts, only as its person (checked by row once the body is read), approves clients
     // (above), and, while its person is an admin, deletes the account's conversations as a full token does, lists, adds,
     // marks, unmarks and removes people, makes, lists and cancels invites, removes agents and resets their keys, lists,
-    // adds and removes webhooks, revokes approved clients, and lists, makes (read-only and agent only) and revokes the
-    // account's tokens. It reaches nothing else: not /mcp, /wait, nor any path added later. It is refused before a slot
-    // is taken or a body read.
+    // adds and removes webhooks, revokes approved clients, lists, makes (read-only and agent only) and revokes the
+    // account's tokens, and lists and ends its dashboard sign-ins. It reaches nothing else: not /mcp, /wait, nor any path
+    // added later. It is refused before a slot is taken or a body read.
     if (
       access.person &&
       path !== "/api/send" &&
       path !== "/api/post" &&
-      !(access.person.admin && (inviting || managing || hooks || revoking || tokens || path === "/api/conversation"))
+      !(access.person.admin && (inviting || managing || hooks || revoking || tokens || signins || path === "/api/conversation"))
     ) {
       return reply(
         res,
         403,
         access.person.admin
-          ? "An admin person token only reads, sends, posts, deletes, invites, changes people, manages agents, webhooks and tokens and revokes approved clients"
+          ? "An admin person token only reads, sends, posts, deletes, invites, changes people, manages agents, webhooks, tokens and sign-ins and revokes approved clients"
           : "A person token only reads, sends and posts",
         { Connection: "close" },
       );
@@ -1605,6 +1650,11 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
     if (tokens) {
       if (!access.person) return reply(res, 403, FULL_TOKEN_TOKENS, { Connection: "close" });
       return apiTokens(req, res, account, access.person.id);
+    }
+    // And only an admin person lists and ends dashboard sign-ins; a full token is refused before anything runs.
+    if (signins) {
+      if (!access.person) return reply(res, 403, FULL_TOKEN_SIGNINS, { Connection: "close" });
+      return apiSignins(req, res, account, access.person.id, access.session);
     }
     if (path === "/api/conversation") return apiConversation(req, res, account);
     if (path === "/wait") return wait(req, res, account, access.agent, access.registers);

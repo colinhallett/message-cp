@@ -173,7 +173,7 @@ describe("an admin person's token", () => {
       const res = await call(path, token, method);
       expect(res.status, `${method} ${path}`).toBe(403);
       expect(res.headers.get("connection"), `${method} ${path}`).toBe("close");
-      expect(((await res.json()) as { error: { message: string } }).error.message).toBe("An admin person token only reads, sends, posts, deletes, invites, changes people, manages agents, webhooks and tokens and revokes approved clients");
+      expect(((await res.json()) as { error: { message: string } }).error.message).toBe("An admin person token only reads, sends, posts, deletes, invites, changes people, manages agents, webhooks, tokens and sign-ins and revokes approved clients");
     }
     expect(db.prepare("SELECT * FROM messages ORDER BY id").all()).toEqual(before);
   });

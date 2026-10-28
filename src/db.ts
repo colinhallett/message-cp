@@ -94,6 +94,25 @@ CREATE INDEX IF NOT EXISTS login_codes_by_expiry ON login_codes (expires_at);
 -- The same as mcp_authorizations_by_agent, for an agent's row, should one ever be deleted.
 CREATE INDEX IF NOT EXISTS login_codes_by_person ON login_codes (person_id);`;
 
+// The dashboard sign-ins a login link or an invite started (`redeemLoginCode` in src/login.ts), one per redeemed code.
+// Only a hash of the session id is kept: the id is a bearer credential in place of its token, which `accountForToken`
+// checks afresh on every request, so revoking the token or removing its person ends the session too. Tokens are never
+// deleted, only revoked, so `token_id` needs no ON DELETE. `hash` is UNIQUE, which gives the lookup its index.
+// AUTOINCREMENT so a sign-in's id, which GET and DELETE /api/signins hand out, never names a later sign-in once the
+// highest one is ended. A table from before it is rebuilt by rebuildDashboardSessions(), which creates the same table.
+const dashboardSessionsTable = (table: string) => `
+CREATE TABLE IF NOT EXISTS ${table} (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  hash TEXT NOT NULL UNIQUE,
+  token_id INTEGER NOT NULL REFERENCES tokens(id),
+  created_at INTEGER NOT NULL
+);`;
+
+// Dropping a table drops its indexes, so rebuildDashboardSessions() creates this again.
+const DASHBOARD_SESSIONS_INDEXES = `
+-- Adding a token checks its sessions (the foreign key) through this, not by scanning the table.
+CREATE INDEX IF NOT EXISTS dashboard_sessions_by_token ON dashboard_sessions (token_id);`;
+
 // Every table lives here so later changes add to one place.
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS accounts (
@@ -221,18 +240,11 @@ CREATE TABLE IF NOT EXISTS http_sessions (
 );
 CREATE INDEX IF NOT EXISTS http_sessions_by_last_used ON http_sessions (last_used);
 
--- The dashboard sign-ins a login link or an invite started (\`redeemLoginCode\` in src/login.ts), one per redeemed code.
--- Only a hash of the session id is kept: the id is a bearer credential in place of its token, which \`accountForToken\`
--- checks afresh on every request, so revoking the token or removing its person ends the session too. Tokens are never
--- deleted, only revoked, so \`token_id\` needs no ON DELETE. \`hash\` is UNIQUE, which gives the lookup its index.
-CREATE TABLE IF NOT EXISTS dashboard_sessions (
-  id INTEGER PRIMARY KEY,
-  hash TEXT NOT NULL UNIQUE,
-  token_id INTEGER NOT NULL REFERENCES tokens(id),
-  created_at INTEGER NOT NULL
-);
--- Adding a token checks its sessions (the foreign key) through this, not by scanning the table.
-CREATE INDEX IF NOT EXISTS dashboard_sessions_by_token ON dashboard_sessions (token_id);
+${dashboardSessionsTable("dashboard_sessions")}
+${DASHBOARD_SESSIONS_INDEXES}
+-- GET /api/signins finds an account's live tokens through this, then each one's sessions through the index above, rather
+-- than scanning every account's sessions.
+CREATE INDEX IF NOT EXISTS tokens_live_by_account ON tokens (account_id) WHERE revoked_at IS NULL;
 
 -- MCP clients that registered themselves for \`serve --public-url\`'s authorization flow (src/oauth.ts). \`redirect_uris\` is
 -- a JSON array of the URIs as the client sent them. Belongs to no account. These names are not the removed GitHub
@@ -433,6 +445,31 @@ function rebuildLoginCodes(db: Db): void {
   }).immediate();
 }
 
+const dashboardSessionsAutoincrement = (db: Db) =>
+  /\bAUTOINCREMENT\b/i.test(
+    (db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'dashboard_sessions'").get() as { sql: string }).sql,
+  );
+
+/**
+ * Rebuilds a `dashboard_sessions` table from before AUTOINCREMENT as `dashboardSessionsTable`, keeping every row and its
+ * id, as rebuildLoginCodes() does for `login_codes`, so that no sign-in id is handed out again once the highest sign-in
+ * is ended. Under the write lock, so exactly one process rebuilds. No table refers to `dashboard_sessions`.
+ */
+function rebuildDashboardSessions(db: Db): void {
+  if (dashboardSessionsAutoincrement(db)) return;
+  db.transaction(() => {
+    if (dashboardSessionsAutoincrement(db)) return;
+    db.exec(dashboardSessionsTable("dashboard_sessions_autoincrement"));
+    db.exec(
+      `INSERT INTO dashboard_sessions_autoincrement (id, hash, token_id, created_at)
+       SELECT id, hash, token_id, created_at FROM dashboard_sessions ORDER BY id`,
+    );
+    db.exec("DROP TABLE dashboard_sessions");
+    db.exec("ALTER TABLE dashboard_sessions_autoincrement RENAME TO dashboard_sessions");
+    db.exec(DASHBOARD_SESSIONS_INDEXES);
+  }).immediate();
+}
+
 function migrate(db: Db, path: string): void {
   addColumn(db, "key_hash", "TEXT");
   // A random token per registration, so a session can tell its agent from a later one that reuses the id or name.
@@ -503,6 +540,7 @@ function migrate(db: Db, path: string): void {
   addColumn(db, "created_at", "INTEGER", "login_codes");
   addColumn(db, "cancelled_at", "INTEGER", "login_codes");
   rebuildLoginCodes(db);
+  rebuildDashboardSessions(db);
   // GET /api/invites pages an account's unused invites newest first, and storeCode counts its invites, through this.
   db.exec("CREATE INDEX IF NOT EXISTS login_codes_invites ON login_codes (account_id, used_at, id) WHERE invite = 1");
   // storeCode counts the unused `login-link` codes through this, not by scanning invites.
