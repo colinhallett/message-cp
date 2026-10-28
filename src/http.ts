@@ -1147,7 +1147,8 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
    * until a request is recorded: never a token or its hash. POST `{ kind }`, with kind "read-only" or "agent" and no
    * other field: makes a new unbound token of that kind for the account, as `addTokenBy` does, answering `{ id, kind, token }`, never cached; the raw token is in
    * that answer only. Any other body answers 400, or 413 past 64 KB, and makes nothing. DELETE `?id=<id>`: revokes the account's token `id`
-   * of any kind, as `revokeTokenBy` does, the token this request carries included, answering `{ id }`, or 404 for an id
+   * of any kind, as `revokeTokenBy` does, the token this request carries included, answering `{ id, signins }`, with `signins`
+   * the number of the token's dashboard sign-ins that this revoke ended (0 for none), or 404 for an id
    * that is no unrevoked token of the account, another account's included. A request already running on a revoked
    * token may finish; its next request gets 401. GET and DELETE read no body and take no slot; POST takes `asAdmin`'s.
    * `NotAdminError`, for a token's person removed or unmarked since the token was checked, answers 403.

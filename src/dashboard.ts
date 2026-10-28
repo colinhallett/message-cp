@@ -2084,7 +2084,12 @@ async function revokeToken() {
   if (closings !== tokenClosings) return;
   // A confirmation opened for another token meanwhile stays.
   if (tokenTarget === target) closeRevokeToken(true);
-  if (answer.status === 200) tokenNote.textContent = "Revoked token " + target.id + " (" + target.label + ").";
+  if (answer.status === 200) {
+    // An older serve answers no signins; only a whole number above 0 is said.
+    const signins = answer.body && answer.body.signins;
+    const ended = Number.isSafeInteger(signins) && signins > 0 ? " This also ended " + counted(signins, "dashboard sign-in") + "." : "";
+    tokenNote.textContent = "Revoked token " + target.id + " (" + target.label + ")." + ended;
+  }
   else if (answer.status === 404) tokenNote.textContent = "Token " + target.id + " was already revoked or gone (404).";
   else if (answer.error) tokenNote.textContent = answer.error + ", so token " + target.id + " may or may not have been revoked: the list below shows which.";
   else tokenNote.textContent = refusal(answer);
