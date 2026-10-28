@@ -364,6 +364,7 @@ const cancelConfirm = document.getElementById("cancel-confirm");
 const cancelText = document.getElementById("cancel-text");
 const cancelYes = document.getElementById("cancel-yes");
 const cancelNote = document.getElementById("cancel-note");
+const agentsHead = document.getElementById("agents-head");
 const agentNote = document.getElementById("agent-note");
 const agentConfirm = document.getElementById("agent-confirm");
 const agentConfirmText = document.getElementById("agent-confirm-text");
@@ -789,8 +790,8 @@ cancelYes.addEventListener("click", () => cancelInvite());
 document.getElementById("cancel-no").addEventListener("click", () => closeCancelInvite(true));
 removeYes.addEventListener("click", () => removeAccountPerson());
 agentYes.addEventListener("click", () => (agentFor?.kind === "key" ? resetKey() : removeAgent()));
-document.getElementById("agent-no").addEventListener("click", () => closeAgentPanel());
-document.getElementById("agent-key-done").addEventListener("click", () => closeAgentPanel());
+document.getElementById("agent-no").addEventListener("click", () => closeAgentPanel(true));
+document.getElementById("agent-key-done").addEventListener("click", () => closeAgentPanel(true));
 document.getElementById("agent-key-copy").addEventListener("click", () => copyAgentKey());
 document.getElementById("remove-no").addEventListener("click", () => closeRemovePerson(true));
 newFrom.addEventListener("change", () => fillNew());
@@ -1502,8 +1503,8 @@ function openAgentConfirm(kind, name) {
 }
 
 // Ends what the agents panel shows for an agent: its confirmation, its note and any new key, which is emptied from its
-// field.
-function closeAgentPanel() {
+// field. When the reader closed it, the focus goes to the panel's heading, as the button they pressed is hidden.
+function closeAgentPanel(refocus) {
   agentFor = undefined;
   agentConfirm.hidden = true;
   agentConfirmText.textContent = "";
@@ -1512,6 +1513,7 @@ function closeAgentPanel() {
   agentKeyFor.textContent = "";
   agentKey.value = "";
   agentCopyNote.textContent = "";
+  if (refocus) agentsHead.focus();
 }
 
 // Removes the agent being asked about with DELETE /api/agents and says what it ended from the answer's counts, then
@@ -1543,17 +1545,23 @@ async function removeAgent() {
   // the messages the page holds are read again from the start, as removeAccountPerson does.
   const forgot = answer.status === 200 || answer.status === 404 || Boolean(answer.error);
   if (forgot) forgetMessagesOf(target.name, answer.status === 200 || answer.status === 404);
+  // A 403 says the token's person is no longer an admin, whatever the panel shows now.
+  if (answer.status === 403) {
+    const still = agentFor === target;
+    unmarked();
+    if (still) {
+      agentNote.textContent = NOT_ADMIN_AGENTS;
+      agentsHead.focus();
+    }
+    return;
+  }
   if (agentFor !== target) {
     if (forgot) refresh();
     return;
   }
-  if (answer.status === 403) {
-    unmarked();
-    agentNote.textContent = NOT_ADMIN_AGENTS;
-    return;
-  }
   agentConfirm.hidden = true;
   agentConfirmText.textContent = "";
+  agentsHead.focus();
   const name = target.name;
   const body = answer.body;
   if (answer.status === 200) {
@@ -1591,15 +1599,28 @@ async function resetKey() {
   resettingKey = undefined;
   agentYes.disabled = agentFor?.kind === "remove" && removingAgent === tokenGen;
   if (answer.status === 401) return ask("The server refused that token. Enter another.");
-  if (agentFor !== target) return;
   if (answer.status === 403) {
+    const still = agentFor === target;
     unmarked();
-    agentNote.textContent = NOT_ADMIN_AGENTS;
+    if (still) {
+      agentNote.textContent = NOT_ADMIN_AGENTS;
+      agentsHead.focus();
+    }
+    return;
+  }
+  const name = target.name;
+  if (agentFor !== target) {
+    // The panel moved on (Cancel, another agent, or the details closed) while the server may have reset the key: say so
+    // where nothing newer is shown, as the key this answer carries is not shown now.
+    if (answer.status === 200 && agentFor === undefined) {
+      agentNote.textContent = name + "'s key was reset, but this page closed it before showing the new one: reset it again for a key you can see.";
+    }
+    if (answer.status === 200 || answer.error) refresh();
     return;
   }
   agentConfirm.hidden = true;
   agentConfirmText.textContent = "";
-  const name = target.name;
+  agentsHead.focus();
   if (answer.status === 200) {
     const body = answer.body;
     if (body && typeof body.key === "string" && body.key !== "") {
@@ -2959,6 +2980,8 @@ function plural(count, noun) {
 function show(agents) {
   const names = new Set(agents.map((a) => String(a.name)));
   for (const name of openAgents) if (!names.has(name)) openAgents.delete(name);
+  // A confirmation or new key for an agent no longer listed ends; a note saying what ended it stays.
+  if (agentFor && !names.has(agentFor.name) && (!agentConfirm.hidden || !agentKeyMade.hidden)) closeAgentPanel();
   const items = agents.map((a) => {
     const name = String(a.name);
     const bio = String(a.bio);
@@ -3626,7 +3649,7 @@ export const DASHBOARD_HTML = `<!doctype html>
 <p id="choose">Choose a channel or a conversation.</p>
 </main>
 <aside id="agents" aria-label="Agents">
-<h2>Agents</h2>
+<h2 id="agents-head" tabindex="-1">Agents</h2>
 <p id="agent-note" class="note" role="status"></p>
 <div id="agent-confirm" role="group" aria-labelledby="agent-confirm-text" hidden>
 <p id="agent-confirm-text"></p>

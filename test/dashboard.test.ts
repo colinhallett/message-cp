@@ -9,7 +9,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { accountForToken, addAccount, addToken, listAccounts, recordClient, revokeToken } from "../src/accounts.js";
 import { cancelInvite, makeInvite, makeLoginCode, redeemLoginCode } from "../src/login.js";
 import { OWNER_ACCOUNT, openDb, type Db } from "../src/db.js";
-import { addPerson, identityOf, registerAgent, registerWithIdentity, removeAgent, removePerson, setPersonAdmin, setStatus } from "../src/agents.js";
+import { addPerson, identityOf, purgeAgent, registerAgent, registerWithIdentity, removeAgent, removePerson, setPersonAdmin, setStatus } from "../src/agents.js";
 import { joinChannel, leaveChannel, post } from "../src/channels.js";
 import { MAX_BODY_LENGTH, readInbox, sendMessage, unreadSummary } from "../src/messages.js";
 import { startHttp, type HttpServer } from "../src/http.js";
@@ -6507,6 +6507,28 @@ describe("the page's invites", () => {
       }
     });
 
+    it("forgets the admin on a 403 that comes after the panel moved on, and ends a confirmation whose agent left the list", async () => {
+      registerAgent(db, OWNER_ACCOUNT, "writer", "");
+      registerAgent(db, OWNER_ACCOUNT, "eve", "");
+      let hold = false;
+      const page = await load(anaToken, (url, init) => (hold && init.method !== "GET" && url.startsWith("/api/agents") ? { status: 403, reason: "Not an admin" } : undefined));
+      await page.until(() => actionsOf(page, "writer") !== undefined && actionsOf(page, "eve") !== undefined);
+      openDetails(page, "eve");
+      action(page, "eve", "Remove").on.click();
+      // Someone else removes eve: the next poll ends the confirmation for her.
+      purgeAgent(db, "owner", "eve");
+      await page.poll();
+      await page.until(() => agentRow(page, "eve") === undefined);
+      expect(page.elements["agent-confirm"].hidden).toBe(true);
+      openDetails(page, "writer");
+      hold = true;
+      action(page, "writer", "Reset key").on.click();
+      page.elements["agent-yes"].on.click();
+      page.elements["agent-no"].on.click();
+      await page.until(() => actionsOf(page, "writer") === undefined);
+      expect(note(page)).toBe("");
+    });
+
     it("changes nothing in the panel for an answer that comes after it moved on or the token was forgotten", async () => {
       registerAgent(db, OWNER_ACCOUNT, "writer", "");
       registerAgent(db, OWNER_ACCOUNT, "eve", "");
@@ -6536,7 +6558,10 @@ describe("the page's invites", () => {
           expect(page.elements["agent-yes"].disabled).toBe(false);
           page.elements["agent-no"].on.click();
         } else expect(page.elements["agent-confirm"].hidden).toBe(true);
-        expect(note(page)).toBe("");
+        // A key reset after its details closed says so, as its key is not shown; nothing else leaves a note.
+        expect(note(page)).toBe(
+          leave === "close" ? "writer's key was reset, but this page closed it before showing the new one: reset it again for a key you can see." : "",
+        );
         if (label === "Remove") {
           expect(live("writer")).toBeUndefined();
           registerAgent(db, OWNER_ACCOUNT, "writer", "");
