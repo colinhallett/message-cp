@@ -675,8 +675,9 @@ const NOT_ADMIN_WEBHOOKS = "The server says you are no longer an admin of this a
 let revokingToken;
 // The token that DELETE is revoking (the target its confirmation was for), while revokingToken is set.
 let revokingTarget;
-// The token the "Tokens" view asks before revoking ({ id, label, key }, label being its kind and who or what it is for,
-// key its entry as GET /api/tokens gave it), or undefined.
+// The token the "Tokens" view asks before revoking ({ id, label, mine, key }, label being its kind and who or what it is
+// for, mine whether it is a person token of the page's own person, key its entry as GET /api/tokens gave it), or
+// undefined.
 let tokenTarget;
 // How many times the "Tokens" view has closed (closeLog), so an answer that comes after it closed changes nothing, as
 // webhookClosings does. unmarked() bumps it too.
@@ -3843,21 +3844,21 @@ function webhookRow(w) {
 // or hash, which GET /api/tokens does not give. Throws on an entry that is none of the shapes GET /api/tokens gives, so
 // readTokens shows the answer as unreadable.
 function tokenRow(t) {
-  const optional = (v) => v === undefined || v === null || typeof v === "string";
+  const nameOrNull = (v) => v === null || typeof v === "string";
   const kind = t && t.kind;
-  const shaped =
-    kind === "person"
-      ? optional(t.person) && t.person !== undefined && t.agent === undefined && t.registers === undefined
-      : kind === "agent"
-        ? optional(t.agent) && (t.registers === undefined || (t.registers === true && t.agent === undefined)) && t.person === undefined
-        : (kind === "full" || kind === "read-only") && t.person === undefined && t.agent === undefined && t.registers === undefined;
+  // A person token names its person, or null once they were removed, and nothing else.
+  const personShape = kind === "person" && nameOrNull(t.person) && t.agent === undefined && t.registers === undefined;
+  // An agent token names its bound agent (null once removed), or registers its own agents, or is bound to none.
+  const agentShape =
+    kind === "agent" &&
+    t.person === undefined &&
+    (t.agent === undefined ? t.registers === undefined || t.registers === true : nameOrNull(t.agent) && t.registers === undefined);
+  // A full or read-only token names no one.
+  const plainShape = (kind === "full" || kind === "read-only") && t.person === undefined && t.agent === undefined && t.registers === undefined;
+  // An OAuth token, of any kind, also has its client's name and host, each null when the client gave none.
   const client = t && t.client;
-  if (
-    !shaped ||
-    !Number.isInteger(t.id) ||
-    typeof t.createdAt !== "string" ||
-    !(client === undefined || (client && typeof client === "object" && optional(client.name) && optional(client.host) && client.name !== undefined && client.host !== undefined))
-  ) {
+  const clientShape = client === undefined || (client !== null && typeof client === "object" && nameOrNull(client.name) && nameOrNull(client.host));
+  if (!(personShape || agentShape || plainShape) || !clientShape || !Number.isInteger(t.id) || typeof t.createdAt !== "string") {
     throw new TypeError("not a token");
   }
   const facts = [];
