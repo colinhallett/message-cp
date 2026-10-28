@@ -7478,6 +7478,319 @@ describe("the page's invites", () => {
     });
   });
 
+  describe("its tokens view", () => {
+    const tokEntry = (page: Page) => page.elements["token-entry"].children[0]?.children[0] as Stub | undefined;
+    const openTokens = async (page: Page) => {
+      await page.until(() => tokEntry(page) !== undefined);
+      tokEntry(page)!.on.click();
+      await page.until(() => page.elements["log-note"].textContent !== "Loading…" && page.elements["log-title"].textContent === "Tokens");
+    };
+    const tokRows = (page: Page) => page.elements["post-rows"].children.map((r) => r.children.map((c) => c.textContent));
+    const revokeButton = (page: Page, id: number) =>
+      page.elements["post-rows"].children.find((r) => r.children[1].textContent === `token ${id}`)!.children.find((c) => c.textContent === "Revoke")!;
+    const tokUrls = (page: Page) => page.requests.filter((r) => r.url.startsWith("/api/tokens"));
+    const note = (page: Page) => page.elements["token-note"].textContent;
+    const live = (id: number) => db.prepare("SELECT 1 FROM tokens WHERE id = ? AND revoked_at IS NULL").get(id) !== undefined;
+    const made = (id: number) => at(new Date(db.prepare("SELECT created_at FROM tokens WHERE id = ?").pluck().get(id) as number).toISOString());
+    // The ids of the tokens beforeEach made: the read-only viewer, the agent token bound to no agent, and ana's.
+    const idOf = (token: string) => db.prepare("SELECT id FROM tokens WHERE hash = ?").pluck().get(createHash("sha256").update(token).digest("hex")) as number;
+
+    it("shows the Tokens entry to an admin person only, and never asks for the tokens with any other token", async () => {
+      addPerson(db, "owner", "maria");
+      const plain = addToken(db, "owner", false, false, undefined, "maria").token;
+      for (const token of [plain, OWNER_TOKEN, viewer]) {
+        const page = await load(token);
+        await page.until(() => page.elements["approval-entry"].children.length === 1 && page.requests.some((r) => r.url === "/api/token"));
+        await page.poll();
+        expect(page.elements["token-entry"].children).toEqual([]);
+        expect(tokUrls(page)).toEqual([]);
+      }
+      // An agent token is forgotten at once, so it sees no entry either.
+      const agent = await load(agentToken);
+      await agent.until(() => agent.store.size === 0);
+      expect(agent.elements["token-entry"].children).toEqual([]);
+      expect(tokUrls(agent)).toEqual([]);
+      const page = await load(anaToken);
+      await page.until(() => tokEntry(page) !== undefined);
+      expect(tokEntry(page)!.children.map((c) => c.textContent)).toEqual(["Tokens", ""]);
+      // Until the view is opened, the tokens are not read.
+      expect(tokUrls(page)).toEqual([]);
+    });
+
+    it("lists the account's tokens oldest first with what each is for, never a token or hash, nor another account's", async () => {
+      registerAgent(db, OWNER_ACCOUNT, "bob", "x");
+      const bobId = identityOf(db, OWNER_ACCOUNT, "bob")!.id;
+      const full = addToken(db, "owner");
+      const bound = addToken(db, "owner", false, true, bobId);
+      const registering = addToken(db, "owner", false, true, undefined, undefined, true);
+      const oauth = addToken(db, "owner", false, true, bobId);
+      recordClient(db, oauth.id, { name: "Evil\u202eClient\nid 1", host: "client.example" });
+      const hosted = addToken(db, "owner", false, true, undefined, undefined, true);
+      recordClient(db, hosted.id, { name: null, host: "host.example" });
+      addPerson(db, "owner", "gone");
+      const goneToken = addToken(db, "owner", false, false, undefined, "gone");
+      registerAgent(db, OWNER_ACCOUNT, "lost", "x");
+      const lostToken = addToken(db, "owner", false, true, identityOf(db, OWNER_ACCOUNT, "lost")!.id);
+      removePerson(db, "owner", "gone");
+      purgeAgent(db, "owner", "lost");
+      addAccount(db, "other");
+      addPerson(db, "other", "olga", true);
+      const theirs = addToken(db, "other", false, false, undefined, "olga");
+      const page = await load(anaToken);
+      await openTokens(page);
+      const [v, a, me] = [idOf(viewer), idOf(agentToken), idOf(anaToken)];
+      expect(tokRows(page)).toEqual([
+        ["read-only", `token ${v}`, `made ${made(v)}`, "Revoke"],
+        ["agent", `token ${a}`, `made ${made(a)}`, "bound to no agent", "Revoke"],
+        ["person", `token ${me}`, `made ${made(me)}`, "ana", "Revoke"],
+        ["full", `token ${full.id}`, `made ${made(full.id)}`, "Revoke"],
+        ["agent", `token ${bound.id}`, `made ${made(bound.id)}`, "bob", "Revoke"],
+        ["agent", `token ${registering.id}`, `made ${made(registering.id)}`, "registers its own agents", "Revoke"],
+        ["agent", `token ${oauth.id}`, `made ${made(oauth.id)}`, "bob · client Evil\uFFFDClient\uFFFDid 1", "Revoke"],
+        ["agent", `token ${hosted.id}`, `made ${made(hosted.id)}`, "registers its own agents · client host.example", "Revoke"],
+        ["person", `token ${goneToken.id}`, `made ${made(goneToken.id)}`, "person removed", "Revoke"],
+        ["agent", `token ${lostToken.id}`, `made ${made(lostToken.id)}`, "agent removed", "Revoke"],
+      ]);
+      expect(tokEntry(page)!.children.map((c) => c.textContent)).toEqual(["Tokens", "10"]);
+      expect(page.elements["log-note"].textContent).toBe("");
+      const hashes = db.prepare("SELECT hash FROM tokens").pluck().all() as string[];
+      for (const hidden of [viewer, agentToken, anaToken, full.token, bound.token, oauth.token, theirs.token, ...hashes, "olga", `token ${theirs.id}`]) {
+        expect(onPage(page, hidden)).toBe(false);
+      }
+      expect(tokUrls(page).every((r) => r.method === "GET")).toBe(true);
+    });
+
+    it("says when only the first page of tokens is shown", async () => {
+      for (let i = 0; i < 197; i++) addToken(db, "owner", true);
+      const page = await load(anaToken);
+      await openTokens(page);
+      expect(page.elements["log-note"].textContent).toBe("Only the first 200 tokens are shown.");
+      expect(tokRows(page)).toHaveLength(200);
+    });
+
+    it("revokes a token only after confirming, saying what it ended, and reads the list again", async () => {
+      const bobId = (registerAgent(db, OWNER_ACCOUNT, "bob", "x"), identityOf(db, OWNER_ACCOUNT, "bob")!.id);
+      const bound = addToken(db, "owner", false, true, bobId);
+      const page = await load(anaToken);
+      await openTokens(page);
+      await page.until(() => tokRows(page).length === 4);
+      // Revoke asks first; nothing is sent until it is confirmed, and Keep it sends nothing.
+      revokeButton(page, bound.id).on.click();
+      expect(page.elements["token-confirm"].hidden).toBe(false);
+      expect(page.elements["token-text"].textContent).toBe(
+        `Revoke token ${bound.id} (agent, bob)? This cannot be undone, and a request already running with it may finish.`,
+      );
+      page.elements["token-no"].on.click();
+      expect(page.elements["token-confirm"].hidden).toBe(true);
+      expect(page.writes()).toEqual([]);
+      revokeButton(page, bound.id).on.click();
+      page.elements["token-yes"].on.click();
+      await page.until(() => note(page) === `Revoked token ${bound.id} (agent, bob).`);
+      expect(page.writes()).toEqual([{ url: `/api/tokens?id=${bound.id}`, method: "DELETE", body: undefined }]);
+      expect(page.elements["token-confirm"].hidden).toBe(true);
+      expect(live(bound.id)).toBe(false);
+      expect(live(idOf(viewer))).toBe(true);
+      await page.until(() => tokRows(page).length === 3);
+      expect(tokEntry(page)!.children.map((c) => c.textContent)).toEqual(["Tokens", "3"]);
+      // The revoked token is refused from its next request.
+      const res = await fetch(`${base()}/api/agents`, { headers: auth(bound.token) });
+      expect(res.status).toBe(401);
+    });
+
+    it("says each other answer to a revoke in plain words, with Revoke token disabled while it is in flight", async () => {
+      const id = idOf(viewer);
+      let next: Refusal | undefined;
+      const page = await load(anaToken, (url, init) => (init.method === "DELETE" ? next : undefined));
+      await openTokens(page);
+      const revokeOne = async (answer: Refusal | undefined, said: string) => {
+        next = answer;
+        revokeButton(page, id).on.click();
+        page.elements["token-yes"].on.click();
+        await page.until(() => note(page) === said);
+        expect(page.elements["token-confirm"].hidden).toBe(true);
+      };
+      await revokeOne({ status: 400, reason: "Give id once" }, "Give id once");
+      await revokeOne({ status: 503, reason: "Database busy", retry: true }, "The server is busy (503). Try again in a moment.");
+      await revokeOne(413, "This is too long for the server (413).");
+      await revokeOne(404, `Token ${id} was already revoked or gone (404).`);
+      await revokeOne("fail", `No answer from the server, so token ${id} may or may not have been revoked: the list below shows which.`);
+      next = "hang";
+      revokeButton(page, id).on.click();
+      page.elements["token-yes"].on.click();
+      await page.until(() => page.deadlines.size > 0);
+      expect(page.elements["token-yes"].disabled).toBe(true);
+      // A second press while it is in flight sends nothing more.
+      page.elements["token-yes"].on.click();
+      expect(page.writes()).toHaveLength(6);
+      for (const [, fn] of page.deadlines) fn();
+      await page.until(() => note(page).startsWith(`The server did not answer in time, so token ${id} may or may not have been revoked`));
+      expect(page.elements["token-yes"].disabled).toBe(false);
+      // None of those was the server's own revoke.
+      expect(live(id)).toBe(true);
+      // The server's own 404, for a token revoked on the server meanwhile.
+      next = undefined;
+      revokeToken(db, id);
+      await revokeOne(undefined, `Token ${id} was already revoked or gone (404).`);
+      await page.until(() => tokRows(page).length === 2);
+    });
+
+    it("takes the entry and the view away on a 403 to either request, once the person is no longer an admin", async () => {
+      for (const method of ["DELETE", "GET"]) {
+        setPersonAdmin(db, "owner", "ana", true);
+        const page = await load(anaToken);
+        await openTokens(page);
+        await page.until(() => tokRows(page).length > 0);
+        setPersonAdmin(db, "owner", "ana", false);
+        if (method === "DELETE") {
+          revokeButton(page, idOf(viewer)).on.click();
+          page.elements["token-yes"].on.click();
+        } else {
+          await page.poll();
+        }
+        await page.until(() => page.elements["log-note"].textContent.startsWith("The server says you are no longer an admin"));
+        expect(page.elements["log-note"].textContent).toBe(
+          "The server says you are no longer an admin of this account (403), so this page no longer lists or revokes tokens.",
+        );
+        expect(tokEntry(page)).toBeUndefined();
+        expect(page.entry()).toBeUndefined();
+        expect(page.elements["post-rows"].children).toEqual([]);
+        expect(page.elements["token-confirm"].hidden).toBe(true);
+        expect(live(idOf(viewer))).toBe(true);
+        // The next poll does not read the tokens again.
+        const before = page.requests.length;
+        await page.poll();
+        await page.until(() => page.requests.slice(before).some((r) => r.url.startsWith("/api/messages")));
+        expect(page.requests.slice(before).filter((r) => r.url.startsWith("/api/tokens"))).toEqual([]);
+      }
+    });
+
+    it("asks for a token again on a 401 to either request", async () => {
+      for (const method of ["DELETE", "GET"]) {
+        let refuse = false;
+        const page = await load(anaToken, (url, init) => (refuse && url.startsWith("/api/tokens") && (init.method ?? "GET") === method ? 401 : undefined));
+        await openTokens(page);
+        await page.until(() => tokRows(page).length > 0);
+        refuse = true;
+        if (method === "DELETE") {
+          revokeButton(page, idOf(viewer)).on.click();
+          page.elements["token-yes"].on.click();
+        } else {
+          await page.poll();
+        }
+        await page.until(() => page.elements["status-line"].textContent === "The server refused that token. Enter another.");
+        expect(page.store.size).toBe(0);
+        expect(tokEntry(page)).toBeUndefined();
+        expect(page.elements["post-rows"].children).toEqual([]);
+        expect(live(idOf(viewer))).toBe(true);
+      }
+    });
+
+    it("warns before revoking the page's own person's token, and asks for a token at the next poll once it is revoked", async () => {
+      const me = idOf(anaToken);
+      const page = await load(anaToken);
+      await openTokens(page);
+      revokeButton(page, me).on.click();
+      expect(page.elements["token-text"].textContent).toBe(
+        `Revoke token ${me} (person, ana)? This cannot be undone, and a request already running with it may finish.` +
+          " It may be the token this browser is signed in with: revoking it signs this page out at its next request.",
+      );
+      // Another person's token, or another kind, has no such warning.
+      page.elements["token-no"].on.click();
+      revokeButton(page, idOf(viewer)).on.click();
+      expect(page.elements["token-text"].textContent).not.toContain("signed in with");
+      page.elements["token-no"].on.click();
+      revokeButton(page, me).on.click();
+      page.elements["token-yes"].on.click();
+      // The DELETE's 200 reads the list again, whose 401 asks for another token.
+      await page.until(() => page.elements["status-line"].textContent === "The server refused that token. Enter another.");
+      expect(live(me)).toBe(false);
+      expect(page.store.size).toBe(0);
+      expect(tokEntry(page)).toBeUndefined();
+      expect(page.elements["post-rows"].children).toEqual([]);
+    });
+
+    it("closes a confirmation once the list no longer gives its token as it was, sending nothing", async () => {
+      const bobId = (registerAgent(db, OWNER_ACCOUNT, "bob", "x"), identityOf(db, OWNER_ACCOUNT, "bob")!.id);
+      const bound = addToken(db, "owner", false, true, bobId);
+      const page = await load(anaToken);
+      await openTokens(page);
+      revokeButton(page, bound.id).on.click();
+      // A poll that lists it as it was keeps the confirmation open.
+      const before = page.requests.length;
+      await page.poll();
+      await page.until(() => page.requests.slice(before).some((r) => r.url.startsWith("/api/tokens")));
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(page.elements["token-confirm"].hidden).toBe(false);
+      // Its agent removed, the token is listed differently, so the confirmation closes.
+      purgeAgent(db, "owner", "bob");
+      await page.poll();
+      await page.until(() => page.elements["token-confirm"].hidden);
+      expect(note(page)).toBe(`Token ${bound.id} (agent, bob) changed or went from the list, so its confirmation closed and nothing was sent.`);
+      page.elements["token-yes"].on.click();
+      expect(page.writes()).toEqual([]);
+      // One revoked on the server goes from the list, which closes its confirmation too.
+      revokeButton(page, bound.id).on.click();
+      revokeToken(db, bound.id);
+      await page.poll();
+      await page.until(() => page.elements["token-confirm"].hidden);
+      expect(note(page)).toBe(`Token ${bound.id} (agent, agent removed) changed or went from the list, so its confirmation closed and nothing was sent.`);
+      expect(page.writes()).toEqual([]);
+    });
+
+    it("drops a revoke's answer that comes after the view closed, another view opened or the token was forgotten", async () => {
+      let hold = false;
+      const page = await load(anaToken, (url, init) => (hold && init.method === "DELETE" ? "held" : undefined));
+      for (const leave of ["close", "other", "forget"]) {
+        const extra = addToken(db, "owner", true);
+        await openTokens(page);
+        await page.until(() => tokRows(page).some((r) => r[1] === `token ${extra.id}`));
+        hold = true;
+        revokeButton(page, extra.id).on.click();
+        page.elements["token-yes"].on.click();
+        await page.until(() => page.held.length === 1);
+        if (leave === "close") page.elements["close-log"].on.click();
+        else if (leave === "other") page.elements["delivery-entry"].children[0].children[0].on.click();
+        else page.elements["forget"].on.click();
+        hold = false;
+        page.release();
+        // The server revoked it, but the page says nothing of it.
+        await page.until(() => !live(extra.id));
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        expect(note(page)).toBe("");
+        expect(page.elements["token-confirm"].hidden).toBe(true);
+        expect(page.elements["token-yes"].disabled).toBe(false);
+        if (leave === "other") {
+          expect(page.elements["log-title"].textContent).toBe("Webhook deliveries");
+          expect(page.elements["post-rows"].children.every((r) => !r.className.startsWith("entry token"))).toBe(true);
+        }
+        if (leave === "forget") {
+          expect(page.elements["log"].hidden).toBe(true);
+          expect(tokEntry(page)).toBeUndefined();
+        }
+      }
+    });
+
+    it("drops a read that comes after the view closed or the token was forgotten", async () => {
+      for (const leave of ["close", "forget"]) {
+        let hold = false;
+        const page = await load(anaToken, (url) => (hold && url.startsWith("/api/tokens") ? "held" : undefined));
+        await page.until(() => tokEntry(page) !== undefined);
+        hold = true;
+        tokEntry(page)!.on.click();
+        await page.until(() => page.held.length === 1);
+        if (leave === "close") page.elements["close-log"].on.click();
+        else page.elements["forget"].on.click();
+        page.release();
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        expect(page.elements["log"].hidden).toBe(true);
+        expect(page.elements["post-rows"].children).toEqual([]);
+        expect(page.elements["log-note"].textContent).toBe("");
+        if (leave === "close") expect(tokEntry(page)!.children.map((c) => c.textContent)).toEqual(["Tokens", ""]);
+        else expect(tokEntry(page)).toBeUndefined();
+      }
+    });
+  });
+
   it("asks for a token again on a 401 to any of its requests", async () => {
     for (const method of ["POST", "GET"]) {
       let refuse = false;

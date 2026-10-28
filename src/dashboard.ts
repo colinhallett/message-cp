@@ -10,7 +10,7 @@ import { MAX_BODY_LENGTH } from "./messages.js";
 // token under an https public URL (and out with DELETE on "Forget token", which also signs out its other dashboard tabs),
 // and polls GET /api/agents, GET /api/channels, GET /api/messages and, while one is
 // open, a channel's GET /api/channel-posts, the account's GET /api/webhook-deliveries, its GET /api/approvals or, for
-// an admin person, its GET /api/people and GET /api/invites, or its GET /api/webhooks, with it. It shows them as a chat app: channels and the pairs of agents that have
+// an admin person, its GET /api/people and GET /api/invites, its GET /api/webhooks or its GET /api/tokens, with it. It shows them as a chat app: channels and the pairs of agents that have
 // messaged each other in a sidebar, the open one as a log in the middle, and the agents on the right. A search box asks GET /api/search once per search and
 // shows the answer in the middle in place of the open conversation. The sidebar's "Webhook deliveries" entry shows
 // the newest deliveries in the middle the same way, refreshed with each poll, and its "Approved clients" entry, the
@@ -26,8 +26,10 @@ import { MAX_BODY_LENGTH } from "./messages.js";
 // agent's details in the agents panel, after confirming, removes the agent with DELETE /api/agents or gives it a new key
 // with POST /api/agents/key, and, from the sidebar's "Webhooks" entry, which lists the account's webhooks with GET
 // /api/webhooks, adds one with POST /api/webhooks and, after confirming, removes one with its deliveries with DELETE
-// /api/webhooks, and, from the "Approved clients" entry, after confirming, revokes an approved client's token with DELETE
-// /api/approvals; that is all it ever writes. An invite's link, an agent's new key, or a new webhook's secret, is shown only in
+// /api/webhooks, from the "Approved clients" entry, after confirming, revokes an approved client's token with DELETE
+// /api/approvals, and, from the sidebar's "Tokens" entry, which lists the account's unrevoked tokens with GET
+// /api/tokens, after confirming, revokes one with DELETE /api/tokens; that is all it ever writes. An invite's link, an
+// agent's new key, or a new webhook's secret, is shown only in
 // a field of its view, from the answer that made it, and never kept or written anywhere else but the clipboard, when
 // its Copy is pressed. A new webhook's URL, header value and body go on the page only into the form's fields, by value,
 // which are emptied when the server answers that it was added (each only while it still holds what was sent), when its
@@ -270,8 +272,11 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 /* A webhook: what it fires on, its id, its origin and what it sends, with its Remove button at the end. */
 .entry.webhook { grid-template-columns: auto auto minmax(0, 1fr) auto; grid-template-areas: "from tag . remove" "body body body remove"; }
 .entry.webhook > button { grid-area: remove; align-self: center; }
-#webhook-confirm { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2); padding: var(--s2) var(--s4); border-bottom: 1px solid var(--border); }
-#webhook-text { flex: 1 1 100%; margin: 0; }
+/* A token: its kind, its id and when it was made, then who or what it is for, with its Revoke button at the end. */
+.entry.token { grid-template-columns: auto auto minmax(0, 1fr) auto; grid-template-areas: "from tag time revoke" "body body body revoke"; }
+.entry.token > button { grid-area: revoke; align-self: center; }
+#webhook-confirm, #token-confirm { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2); padding: var(--s2) var(--s4); border-bottom: 1px solid var(--border); }
+#webhook-text, #token-text { flex: 1 1 100%; margin: 0; }
 /* The "Webhooks" view's "Add a webhook" form heads the view, its fields wrapping two to a row where there is room. */
 #webhook-forms { display: flex; flex-direction: column; gap: var(--s2); padding: var(--s3) var(--s4); border-bottom: 1px solid var(--border); }
 #webhook-forms h3 { margin: 0; font-size: var(--text-sm); font-weight: 600; color: var(--muted); }
@@ -390,6 +395,11 @@ const webhookMade = document.getElementById("webhook-made");
 const webhookFor = document.getElementById("webhook-for");
 const webhookSecret = document.getElementById("webhook-secret");
 const webhookCopyNote = document.getElementById("webhook-copy-note");
+const tokenEntry = document.getElementById("token-entry");
+const tokenConfirm = document.getElementById("token-confirm");
+const tokenText = document.getElementById("token-text");
+const tokenYes = document.getElementById("token-yes");
+const tokenNote = document.getElementById("token-note");
 const peopleHead = document.getElementById("people-head");
 const inviteEntry = document.getElementById("invite-entry");
 const inviteForms = document.getElementById("invite-forms");
@@ -469,12 +479,13 @@ let pairs = new Map();
 let madePairs = 0;
 // The pair whose messages are open in the log, by pairKey, or undefined.
 let openPair;
-// Whether the webhook deliveries, the approved clients, the invites or the webhooks are open in the log. At most one of
-// openChannel, openPair, openDeliveries, openApprovals, openInvites and openWebhooks is set.
+// Whether the webhook deliveries, the approved clients, the invites, the webhooks or the tokens are open in the log. At
+// most one of openChannel, openPair, openDeliveries, openApprovals, openInvites, openWebhooks and openTokens is set.
 let openDeliveries = false;
 let openApprovals = false;
 let openInvites = false;
 let openWebhooks = false;
+let openTokens = false;
 // What this tab has seen of each channel and pair, by sidebar key: its count of posts or messages when the tab last
 // had it open, or when the first poll for this token read it. An entry's total less this is its unread badge. It lives
 // only here, is never sent or stored, and marks nothing read for any agent; ask() forgets it.
@@ -492,6 +503,8 @@ let approvalCount;
 let inviteCount;
 // The count on the sidebar's webhooks entry while it is made, for an admin person only, likewise.
 let webhookCount;
+// The count on the sidebar's tokens entry while it is made, for an admin person only, likewise.
+let tokenCount;
 // The search's own counter and request, separate from generation and controller, so a newer search, leaving the
 // results or ask() drops a search's answer.
 let searchGeneration = 0;
@@ -716,6 +729,21 @@ let approvalClosings = 0;
 let shownApprovals = [];
 let approvalRowsKey = "";
 const NOT_ADMIN_APPROVALS = "The server says you are no longer an admin of this account (403), so this page no longer offers revoking approved clients.";
+// The tokenGeneration a DELETE /api/tokens is in flight for, or undefined, as removingWebhook is for a webhook.
+let revokingToken;
+// The token that DELETE is revoking (the target its confirmation was for), while revokingToken is set.
+let revokingTokenTarget;
+// The token the "Tokens" view asks before revoking ({ id, label, mine, key }, label being its kind and who or what it is
+// for, mine whether it is a person token of the page's own person, key its entry as GET /api/tokens gave it), or
+// undefined.
+let tokenTarget;
+// How many times the "Tokens" view has closed (closeLog), so an answer that comes after it closed changes nothing, as
+// webhookClosings does. unmarked() bumps it too.
+let tokenClosings = 0;
+// The list the token rows were last built from, so a poll rebuilds them only when it changes, never taking the focus
+// from a Revoke button.
+let tokenRowsKey = "";
+const NOT_ADMIN_TOKENS = "The server says you are no longer an admin of this account (403), so this page no longer lists or revokes tokens.";
 
 function say(text, isError) {
   statusLine.textContent = text;
@@ -741,6 +769,7 @@ function ask(message) {
   meAdmin = false;
   showInviteEntry();
   showWebhookEntry();
+  showTokenEntry();
   fullToken = false;
   people = undefined;
   person = undefined;
@@ -783,6 +812,7 @@ function ask(message) {
   webhookYes.disabled = false;
   hookAdd.disabled = false;
   approvalYes.disabled = false;
+  tokenYes.disabled = false;
   // And the agents panel's confirmation, note and any new key it showed.
   closeAgentPanel();
   agentYes.disabled = false;
@@ -895,6 +925,8 @@ document.getElementById("webhook-copy").addEventListener("click", () => copyWebh
 document.getElementById("webhook-no").addEventListener("click", () => closeRemoveWebhook(true));
 approvalYes.addEventListener("click", () => revokeApproval());
 document.getElementById("approval-no").addEventListener("click", () => closeRevokeApproval(true));
+tokenYes.addEventListener("click", () => revokeToken());
+document.getElementById("token-no").addEventListener("click", () => closeRevokeToken(true));
 newFrom.addEventListener("change", () => fillNew());
 newForm.addEventListener("submit", (event) => {
   event.preventDefault();
@@ -1040,6 +1072,12 @@ function closeLog() {
   webhookNote.textContent = "";
   webhookRowsKey = "";
   closeWebhookForms();
+  // Leaving the tokens view does the same.
+  openTokens = false;
+  tokenClosings++;
+  closeRevokeToken();
+  tokenNote.textContent = "";
+  tokenRowsKey = "";
   held = 0;
   postRows.replaceChildren();
   postRows.className = "";
@@ -1209,6 +1247,22 @@ function closeWebhookForms() {
   webhookCopyNote.textContent = "";
 }
 
+// Opens the "Tokens" view in the log, for an admin person only, and polls again at once, as openWebhookLog does: the
+// account's unrevoked tokens, oldest first, each with a Revoke button that asks first.
+function openTokenLog() {
+  if (!meAdmin) return;
+  closeLog();
+  openTokens = true;
+  postRows.className = "top";
+  logTitle.textContent = "Tokens";
+  logNote.textContent = "Loading…";
+  log.hidden = false;
+  panel("");
+  markOpen();
+  cancel();
+  poll(generation);
+}
+
 // Makes the sidebar's "Webhooks" entry, under its Webhooks heading beside "Webhook deliveries", while the token is an
 // admin person's, and removes it otherwise, as showInviteEntry does.
 function showWebhookEntry() {
@@ -1218,6 +1272,18 @@ function showWebhookEntry() {
   } else if (!webhookCount) {
     webhookCount = part("span", "count", "");
     webhookEntry.append(sidebarItem("webhooks", "Webhooks", "", webhookCount, openWebhookLog));
+  }
+}
+
+// Makes the sidebar's "Tokens" entry, under its Clients heading beside "Approved clients", while the token is an admin
+// person's, and removes it otherwise, as showWebhookEntry does.
+function showTokenEntry() {
+  if (!meAdmin) {
+    tokenEntry.replaceChildren();
+    tokenCount = undefined;
+  } else if (!tokenCount) {
+    tokenCount = part("span", "count", "");
+    tokenEntry.append(sidebarItem("tokens", "Tokens", "", tokenCount, openTokenLog));
   }
 }
 
@@ -1235,17 +1301,19 @@ function showInviteEntry() {
 }
 
 // After the server's 403 to an admin's request, which says the person is no longer an admin: the page forgets it, so
-// the "People" and "Webhooks" entries and Delete go, an open people or webhooks view keeps only a note saying why, and
-// an open "Approved clients" view keeps its list without Revoke buttons, with a note saying why.
+// the "People", "Webhooks" and "Tokens" entries and Delete go, an open people, webhooks or tokens view keeps only a
+// note saying why, and an open "Approved clients" view keeps its list without Revoke buttons, with a note saying why.
 function unmarked() {
   meAdmin = false;
   // An Add or New link still in flight then shows no link, a webhook's addition shows no secret, and a webhook's addition
-  // or removal or an approval's revocation still in flight changes nothing.
+  // or removal, an approval's revocation or a token's revoking still in flight changes nothing.
   inviteClosings++;
   webhookClosings++;
   approvalClosings++;
+  tokenClosings++;
   showInviteEntry();
   showWebhookEntry();
+  showTokenEntry();
   showDelete();
   // The agents panel's buttons, confirmation and any new key go too.
   closeAgentPanel();
@@ -1267,6 +1335,16 @@ function unmarked() {
     postRows.replaceChildren();
     webhookRowsKey = "";
     logNote.textContent = NOT_ADMIN_WEBHOOKS;
+    return;
+  }
+  if (openTokens) {
+    // Likewise for a Revoke button or the token's confirmation.
+    closeRevokeToken();
+    tokenNote.textContent = "";
+    document.getElementById("close-log").focus();
+    postRows.replaceChildren();
+    tokenRowsKey = "";
+    logNote.textContent = NOT_ADMIN_TOKENS;
     return;
   }
   if (!openInvites) return;
@@ -1901,6 +1979,67 @@ async function revokeApproval() {
   if (answer.status === 200 || answer.status === 404 || answer.error) refresh();
 }
 
+// Asks above the list before revoking a token; nothing is sent until its "Revoke token" is pressed. For a person token of
+// the page's own person, it says this may be the token this browser is signed in with: the API does not say which
+// token a request carries.
+function openRevokeToken(target) {
+  if (!meAdmin || !openTokens) return;
+  tokenTarget = target;
+  tokenNote.textContent = "";
+  tokenText.textContent =
+    "Revoke token " + target.id + " (" + target.label + ")? This cannot be undone, and a request already running with it may finish." +
+    (target.mine ? " It may be the token this browser is signed in with: revoking it signs this page out at its next request." : "");
+  tokenConfirm.hidden = false;
+  tokenYes.disabled = revokingToken === tokenGeneration;
+  document.getElementById("token-no").focus();
+}
+
+// Dismisses the token's confirmation; when the reader dismissed it, or it was answered, the focus goes to the view's
+// Close button, as the row may be gone.
+function closeRevokeToken(refocus) {
+  tokenConfirm.hidden = true;
+  tokenText.textContent = "";
+  tokenTarget = undefined;
+  if (refocus) document.getElementById("close-log").focus();
+}
+
+// Revokes the token being asked about with DELETE /api/tokens and says what it ended from the answer, then reads the
+// list again, as removeWebhook does: a 401 asks for another token and a 403 unmarks the person whatever is open now; any
+// other answer after the view closed, or any answer after the token was forgotten, changes nothing.
+async function revokeToken() {
+  const token = sessionStorage.getItem(KEY);
+  if (!token) return ask();
+  const tokenGen = tokenGeneration;
+  const target = tokenTarget;
+  if (!meAdmin || !openTokens || !target || revokingToken === tokenGen) return;
+  revokingToken = tokenGen;
+  revokingTokenTarget = target;
+  const closings = tokenClosings;
+  tokenYes.disabled = true;
+  const ac = new AbortController();
+  const deadline = setTimeout(() => ac.abort(), TIMEOUT_MS);
+  let answer;
+  try {
+    answer = await inviteWrite(token, ac, "DELETE", "/api/tokens?" + new URLSearchParams({ id: String(target.id) }));
+  } finally {
+    clearTimeout(deadline);
+  }
+  if (tokenGen !== tokenGeneration) return;
+  revokingToken = undefined;
+  revokingTokenTarget = undefined;
+  tokenYes.disabled = false;
+  if (answer.status === 401) return ask("The server refused that token. Enter another.");
+  if (answer.status === 403) return unmarked();
+  if (closings !== tokenClosings) return;
+  // A confirmation opened for another token meanwhile stays.
+  if (tokenTarget === target) closeRevokeToken(true);
+  if (answer.status === 200) tokenNote.textContent = "Revoked token " + target.id + " (" + target.label + ").";
+  else if (answer.status === 404) tokenNote.textContent = "Token " + target.id + " was already revoked or gone (404).";
+  else if (answer.error) tokenNote.textContent = answer.error + ", so token " + target.id + " may or may not have been revoked: the list below shows which.";
+  else tokenNote.textContent = refusal(answer);
+  if (answer.status === 200 || answer.status === 404 || answer.error) refresh();
+}
+
 // Asks under the agents panel's heading before removing the agent name or resetting its key (kind "remove" or "key");
 // nothing is sent until its button is pressed. Any confirmation, note or key shown before goes.
 function openAgentConfirm(kind, name) {
@@ -2201,6 +2340,7 @@ async function checkToken() {
   fullToken = full && own === undefined;
   showInviteEntry();
   showWebhookEntry();
+  showTokenEntry();
   // An admin person's agent and Revoke buttons show at once, not only from the next poll.
   if (lastAgents) show(lastAgents);
   if (openApprovals) drawApprovals(shownApprovals);
@@ -3276,6 +3416,55 @@ async function readWebhooks(token, signal, gen) {
   return { ok: true };
 }
 
+// Reads the account's unrevoked tokens, oldest first, and replaces the ones the log holds when they changed, as
+// readWebhooks does; with the view closed, or no longer an admin's, it leaves the log as it is. A 403 says the person is
+// no longer an admin (unmarked). Any other failure but a refused token goes in the log's note. An admin person's own
+// token is always listed, so the list is never empty for one and has no empty-view note.
+async function readTokens(token, signal, gen) {
+  if (!meAdmin) return { ok: true };
+  let page;
+  try {
+    page = await fetchPage(token, signal, "/api/tokens", {}, 0, list);
+  } catch {
+    page = { error: signal.aborted ? "The server did not answer in time" : "Cannot reach the server" };
+  }
+  if (gen !== generation || !openTokens || !meAdmin) return { ok: true };
+  if (page.status === 401) return page;
+  if (page.status === 403) {
+    unmarked();
+    return { ok: true };
+  }
+  let shown;
+  const key = page.items ? JSON.stringify(page.items) : "";
+  try {
+    if (page.items && key !== tokenRowsKey) shown = page.items.map(tokenRow);
+  } catch {
+    page = { error: "The server sent an answer this page cannot read" };
+  }
+  if (page.items) {
+    // A confirmation for a token the list no longer gives as it was closes, so it never revokes one it no longer
+    // describes. The one being revoked is left to that request's answer, which closes it.
+    const inFlight = revokingToken === tokenGeneration && revokingTokenTarget === tokenTarget;
+    if (tokenTarget && !inFlight && !page.items.some((t) => JSON.stringify(t) === tokenTarget.key)) {
+      tokenNote.textContent =
+        "Token " + tokenTarget.id + " (" + tokenTarget.label + ") changed or went from the list, so its confirmation closed and nothing was sent.";
+      closeRevokeToken();
+    }
+    if (shown) {
+      tokenRowsKey = key;
+      postRows.replaceChildren(...shown);
+      postRows.scrollTop = 0;
+    }
+    tokenCount.textContent = String(page.items.length);
+    logNote.textContent = page.items.length === PAGE ? "Only the first " + PAGE + " tokens are shown." : "";
+  } else if (page.status === 503) {
+    logNote.textContent = "The server is busy (503). Retrying…";
+  } else {
+    logNote.textContent = (page.error || "The server answered " + page.status) + ". Retrying…";
+  }
+  return { ok: true };
+}
+
 async function poll(gen) {
   const token = sessionStorage.getItem(KEY);
   if (!token) return ask();
@@ -3287,13 +3476,14 @@ async function poll(gen) {
   const approvals = openApprovals;
   const invites = openInvites;
   const webhooks = openWebhooks;
+  const tokens = openTokens;
   const held = messages.length;
   let result;
   try {
     result = await fetchView(token, ac.signal);
     // The agents and channels go up before the messages and the log are read, so a long or slow history never holds
     // them back. The messages and the log (a channel's posts, the webhook deliveries, the approvals, the people and
-    // invites, or the webhooks) are read side by side, so neither waits on the other or fails with it, and both have finished before the
+    // invites, the webhooks, or the tokens) are read side by side, so neither waits on the other or fails with it, and both have finished before the
     // next poll can read past what they hold.
     if (result.ok && gen === generation) {
       show(result.agents);
@@ -3313,7 +3503,9 @@ async function poll(gen) {
                 ? readPeopleView(token, ac.signal, gen)
                 : webhooks
                   ? readWebhooks(token, ac.signal, gen)
-                  : { ok: true },
+                  : tokens
+                    ? readTokens(token, ac.signal, gen)
+                    : { ok: true },
       ]);
       // A refused token from either read wins, so a failure of the other never leaves the page showing its data.
       const values = [messages, posts].filter((r) => r.status === "fulfilled").map((r) => r.value);
@@ -3558,6 +3750,7 @@ function openKey() {
   if (openApprovals) return "approvals";
   if (openInvites) return "invites";
   if (openWebhooks) return "webhooks";
+  if (openTokens) return "tokens";
   return undefined;
 }
 
@@ -3637,12 +3830,12 @@ function showPairs() {
   pairRows.replaceChildren(...items);
 }
 
-// Marks the open channel, pair, webhook deliveries, webhooks, approved clients or invites in the sidebar, in place, so the button just chosen keeps the focus.
+// Marks the open channel, pair, webhook deliveries, webhooks, approved clients, tokens or invites in the sidebar, in place, so the button just chosen keeps the focus.
 // The open entry's posts or messages all count as seen, so its badge goes.
 function markOpen() {
   const key = openKey();
   if (shownTotals.has(key)) seen.set(key, shownTotals.get(key));
-  const entries = [...channelRows.children, ...pairRows.children, ...deliveryEntry.children, ...webhookEntry.children, ...approvalEntry.children, ...inviteEntry.children];
+  const entries = [...channelRows.children, ...pairRows.children, ...deliveryEntry.children, ...webhookEntry.children, ...approvalEntry.children, ...tokenEntry.children, ...inviteEntry.children];
   for (const li of entries) {
     const button = li.children[0];
     if (!button) continue;
@@ -3945,6 +4138,56 @@ function webhookRow(w) {
   return li;
 }
 
+// A token of the account: its kind, its id, which message-cp token revoke takes, and when it was made, then who or what
+// it is for: a person token's person, or "person removed"; an agent token's bound agent, "agent removed", "registers its
+// own agents", or "bound to no agent"; and an OAuth token's client (its name, else its host, else "unnamed
+// client"), with control and format characters replaced as approvalRow does. A Revoke button asks first. Never a token
+// or hash, which GET /api/tokens does not give. Throws on an entry that is none of the shapes GET /api/tokens gives, so
+// readTokens shows the answer as unreadable.
+function tokenRow(t) {
+  const nameOrNull = (v) => v === null || typeof v === "string";
+  const kind = t && t.kind;
+  // A person token names its person, or null once they were removed, and nothing else.
+  const personShape = kind === "person" && nameOrNull(t.person) && t.agent === undefined && t.registers === undefined;
+  // An agent token names its bound agent (null once removed), or registers its own agents, or is bound to none.
+  const agentShape =
+    kind === "agent" &&
+    t.person === undefined &&
+    (t.agent === undefined ? t.registers === undefined || t.registers === true : nameOrNull(t.agent) && t.registers === undefined);
+  // A full or read-only token names no one.
+  const plainShape = (kind === "full" || kind === "read-only") && t.person === undefined && t.agent === undefined && t.registers === undefined;
+  // An OAuth token, of any kind, also has its client's name and host, each null when the client gave none.
+  const client = t && t.client;
+  const clientShape = client === undefined || (client !== null && typeof client === "object" && nameOrNull(client.name) && nameOrNull(client.host));
+  if (!(personShape || agentShape || plainShape) || !clientShape || !Number.isInteger(t.id) || typeof t.createdAt !== "string") {
+    throw new TypeError("not a token");
+  }
+  const facts = [];
+  if (kind === "person") facts.push(t.person === null ? "person removed" : t.person);
+  else if (kind === "agent") {
+    facts.push(t.registers ? "registers its own agents" : t.agent === null ? "agent removed" : t.agent === undefined ? "bound to no agent" : t.agent);
+  }
+  if (client) facts.push("client " + (client.name || client.host || "unnamed client").replace(/[\\p{Cc}\\p{Cf}]/gu, "\\uFFFD"));
+  const li = document.createElement("li");
+  li.className = "entry token";
+  const time = part("time", "time", "made " + when(t.createdAt));
+  time.title = t.createdAt;
+  const button = part("button", "", "Revoke");
+  button.type = "button";
+  button.setAttribute("aria-label", "Revoke token " + t.id);
+  const target = {
+    id: t.id,
+    label: [kind, ...facts].join(", "),
+    mine: kind === "person" && typeof t.person === "string" && me !== undefined && t.person.toLowerCase() === me.toLowerCase(),
+    key: JSON.stringify(t),
+  };
+  button.addEventListener("click", () => openRevokeToken(target));
+  li.append(part("span", "from", kind), part("span", "tag", "token " + t.id), time);
+  if (facts.length > 0) li.append(part("div", "body", facts.join(" · ")));
+  li.append(button);
+  return li;
+}
+
 // A webhook delivery: what it was for, its status (failed marked), when it was queued, its webhook, its attempts and,
 // once delivered, when. Never a URL, a secret or a message's text, which GET /api/webhook-deliveries does not give.
 // Throws on an entry that is not a delivery as GET /api/webhook-deliveries gives one, so readDeliveries shows the
@@ -4101,6 +4344,7 @@ export const DASHBOARD_HTML = `<!doctype html>
 <ul id="webhook-entry"></ul>
 <h2>Clients</h2>
 <ul id="approval-entry"></ul>
+<ul id="token-entry"></ul>
 <h2 id="people-head" hidden>People</h2>
 <ul id="invite-entry"></ul>
 </nav>
@@ -4203,6 +4447,12 @@ export const DASHBOARD_HTML = `<!doctype html>
 <button id="approval-no" type="button">Keep it</button>
 </div>
 <p id="approval-note" class="note" role="status"></p>
+<div id="token-confirm" role="group" aria-labelledby="token-text" hidden>
+<p id="token-text"></p>
+<button id="token-yes" type="button">Revoke token</button>
+<button id="token-no" type="button">Keep it</button>
+</div>
+<p id="token-note" class="note" role="status"></p>
 <p id="log-note" class="note"></p>
 <ol id="post-rows" role="log"></ol>
 <div id="writer" hidden>
