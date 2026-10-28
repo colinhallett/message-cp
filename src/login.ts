@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
-import { issueToken } from "./accounts.js";
+import { issueToken, type ApprovedClient, type TokenInfo } from "./accounts.js";
 import { KeyResetError, PersonError, PurgeError, addPerson, purgeAgent, removePerson, resetAgentKey, setPersonAdmin, type Purged } from "./agents.js";
 import { publicUrl } from "./connect.js";
 import type { AccountId, Db } from "./db.js";
@@ -377,6 +377,83 @@ export const revokeApprovalBy = (db: Db, account: AccountId, by: number, id: num
     requireAdmin(db, account, by);
     const changed = db
       .prepare("UPDATE tokens SET revoked_at = ? WHERE id = ? AND account_id = ? AND oauth = 1 AND revoked_at IS NULL")
+      .run(Date.now(), id, account).changes;
+    return changed === 0 ? undefined : { id };
+  }).immediate();
+
+/** An unrevoked token, as GET /api/tokens lists it: never the token or its hash. */
+export interface AccountToken {
+  id: number;
+  kind: TokenInfo["kind"];
+  /** For a person token, its person's name, or null once that person was removed, as the token then no longer works. */
+  person?: string | null;
+  /** For an agent token bound to an agent, that agent's name, or null once the agent was removed, as the token then no longer works. */
+  agent?: string | null;
+  /** For an agent token that registers its own agents. */
+  registers?: true;
+  /** For a token the OAuth code exchange issued, the client it was issued to, as `token list` shows it. */
+  client?: ApprovedClient;
+  createdAt: string;
+}
+
+/**
+ * For GET /api/tokens: one page of the account's unrevoked tokens, oldest first, each with its kind as `token list`
+ * gives it. `MESSAGE_CP_HTTP_TOKEN` has no row, so it is never listed. `by` is the row of the admin person asking.
+ * Throws `NotAdminError` unless they are still a live admin of the account.
+ */
+export const listTokensBy = (db: Db, account: AccountId, by: number, limit: number, offset: number): AccountToken[] =>
+  db.transaction(() => {
+    requireAdmin(db, account, by);
+    // The bound agent and person are looked for in the token's own account, and only while live, as `accountForToken`
+    // accepts them.
+    const rows = db
+      .prepare(
+        `SELECT tokens.id, tokens.read_only, tokens.agent_only, tokens.agent_id, tokens.person_id, tokens.registers,
+           tokens.created_at, tokens.oauth, tokens.client_name, tokens.client_host, agents.name AS agent, people.name AS person
+         FROM tokens LEFT JOIN agents ON agents.id = tokens.agent_id AND agents.account_id = tokens.account_id
+           AND agents.removed_at IS NULL AND agents.person = 0
+         LEFT JOIN agents people ON people.id = tokens.person_id AND people.account_id = tokens.account_id
+           AND people.removed_at IS NULL AND people.person = 1
+         WHERE tokens.account_id = ? AND tokens.revoked_at IS NULL ORDER BY tokens.id LIMIT ? OFFSET ?`,
+      )
+      .all(account, limit, offset) as {
+      id: number;
+      read_only: number;
+      agent_only: number;
+      agent_id: number | null;
+      person_id: number | null;
+      registers: number;
+      created_at: number;
+      oauth: number | null;
+      client_name: string | null;
+      client_host: string | null;
+      agent: string | null;
+      person: string | null;
+    }[];
+    return rows.map((r): AccountToken => ({
+      id: r.id,
+      // As `listTokens`: a person token's row has read_only set too (see `issueToken`), so its person comes first.
+      kind: r.person_id !== null ? "person" : r.agent_only === 1 ? "agent" : r.read_only === 1 ? "read-only" : "full",
+      ...(r.person_id !== null && { person: r.person }),
+      ...(r.agent_id !== null && { agent: r.agent }),
+      // Only in the shape `accountForToken` accepts as registering.
+      ...(r.registers === 1 && r.agent_only === 1 && r.agent_id === null && { registers: true as const }),
+      ...(r.oauth === 1 && { client: { name: r.client_name, host: r.client_host } }),
+      createdAt: new Date(r.created_at).toISOString(),
+    }));
+  }).immediate();
+
+/**
+ * For DELETE /api/tokens: revokes the account's unrevoked token `id` of any kind, as `token revoke` does, the token the
+ * request carries included, and answers its id, or undefined, changing nothing, for another account's token, one
+ * already revoked, or an unknown one. `by` is the row of the admin person asking. Throws `NotAdminError` unless they
+ * are still a live admin of the account.
+ */
+export const revokeTokenBy = (db: Db, account: AccountId, by: number, id: number): { id: number } | undefined =>
+  db.transaction(() => {
+    requireAdmin(db, account, by);
+    const changed = db
+      .prepare("UPDATE tokens SET revoked_at = ? WHERE id = ? AND account_id = ? AND revoked_at IS NULL")
       .run(Date.now(), id, account).changes;
     return changed === 0 ? undefined : { id };
   }).immediate();
