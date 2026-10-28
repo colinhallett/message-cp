@@ -532,7 +532,9 @@ describe("message-cp token list", () => {
     const agent = addToken(db, "owner", false, true);
     const res = cli("token", "list");
     expect(res.status).toBe(0);
-    const lines = res.stdout.trimEnd().split("\n").map((l) => l.replace(/created \S+$/, "created"));
+    const raw = res.stdout.trimEnd().split("\n");
+    for (const l of raw) expect(l).toMatch(/\tcreated \d{4}-\d\d-\d\dT[\d:.]+Z\t(never used|last used \d{4}-\d\d-\d\dT[\d:.]+Z)$/);
+    const lines = raw.map((l) => l.replace(/created \S+\t(never used|last used \S+)$/, "created"));
     const ids = db.prepare("SELECT id FROM tokens WHERE revoked_at IS NULL ORDER BY id").pluck().all() as number[];
     expect(lines).toEqual([
       `${ids[0]}\tfriend\tfull\tcreated`,

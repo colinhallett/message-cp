@@ -3,8 +3,9 @@ import { request } from "node:http";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { addAccount, addToken, listAccounts, listTokens, recordClient, revokeToken } from "../src/accounts.js";
+import { TOKEN_USE_RESOLUTION_MS, addAccount, addToken, listAccounts, listTokens, recordClient, revokeToken } from "../src/accounts.js";
 import { addPerson, purgeAgent, registerAgent, removePerson, setPersonAdmin } from "../src/agents.js";
 import { OWNER_ACCOUNT, openDb, type AccountId, type Db } from "../src/db.js";
 import { startHttp, type HttpServer } from "../src/http.js";
@@ -13,6 +14,7 @@ import { NotAdminError, addTokenBy, listTokensBy, revokeTokenBy } from "../src/l
 // An admin person's token lists its account's tokens (GET /api/tokens), makes a read-only or agent one (POST
 // /api/tokens) and revokes one (DELETE /api/tokens?id=), on a server with the owner's account and a friend's.
 const OWNER_TOKEN = "owner-token";
+let file: string;
 let db: Db;
 let http: HttpServer;
 let friend: AccountId;
@@ -21,7 +23,8 @@ let ana: string;
 let anaId: number;
 
 beforeEach(async () => {
-  db = openDb(join(mkdtempSync(join(tmpdir(), "message-cp-tokens-api-")), "db.sqlite"));
+  file = join(mkdtempSync(join(tmpdir(), "message-cp-tokens-api-")), "db.sqlite");
+  db = openDb(file);
   friendFull = addAccount(db, "friend");
   friend = listAccounts(db).find((a) => a.name === "friend")!.id;
   addPerson(db, "owner", "ana", true);
@@ -53,7 +56,9 @@ const make = (body: unknown, token = ana) =>
     body: typeof body === "string" ? body : JSON.stringify(body),
   });
 const message = async (res: Response) => ((await res.json()) as { error: { message: string } }).error.message;
-const snapshot = () => db.prepare("SELECT * FROM tokens ORDER BY id").all();
+// Every column but last_used_at, which a request the token authenticates sets even when a later check refuses it.
+const COLUMNS = "id, account_id, hash, created_at, revoked_at, read_only, agent_only, agent_id, person_id, oauth, client_name, client_host, registers";
+const snapshot = () => db.prepare(`SELECT ${COLUMNS} FROM tokens ORDER BY id`).all();
 const idOf = (account: AccountId, name: string) =>
   db.prepare("SELECT id FROM agents WHERE account_id = ? AND name = ?").pluck().get(account, name) as number;
 const both = [() => list(), () => revoke(anaId)] as const;
@@ -78,6 +83,7 @@ interface TokenJson {
   id: number;
   kind: string;
   createdAt: string;
+  lastUsedAt: string | null;
 }
 
 describe("GET /api/tokens", () => {
@@ -90,7 +96,9 @@ describe("GET /api/tokens", () => {
     const text = await res.text();
     const body = JSON.parse(text) as TokenJson[];
     for (const t of body) expect(t.createdAt).toMatch(/^\d{4}-\d\d-\d\dT/);
-    expect(body.map(({ createdAt, ...rest }) => rest)).toEqual([
+    // Only ana's token, which made this request, has been used.
+    expect(body.map((t) => t.lastUsedAt !== null)).toEqual([true, false, false, false, false, false]);
+    expect(body.map(({ createdAt, lastUsedAt, ...rest }) => rest)).toEqual([
       { id: anaId, kind: "person", person: "ana" },
       { id: made.full.id, kind: "full" },
       { id: made.readOnly.id, kind: "read-only" },
@@ -143,12 +151,13 @@ describe("DELETE /api/tokens", () => {
   it("revokes a token, which gets 401 from its next request, and changes no other", async () => {
     const made = tokens();
     expect((await call("/api/agents", made.readOnly.token)).status).toBe(200);
-    const others = db.prepare("SELECT * FROM tokens WHERE id <> ? ORDER BY id").all(made.readOnly.id);
+    // Without last_used_at: the revoking request records the use of ana's token.
+    const others = db.prepare(`SELECT ${COLUMNS} FROM tokens WHERE id <> ? ORDER BY id`).all(made.readOnly.id);
     const res = await revoke(made.readOnly.id);
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ id: made.readOnly.id });
     expect((await call("/api/agents", made.readOnly.token)).status).toBe(401);
-    expect(db.prepare("SELECT * FROM tokens WHERE id <> ? ORDER BY id").all(made.readOnly.id)).toEqual(others);
+    expect(db.prepare(`SELECT ${COLUMNS} FROM tokens WHERE id <> ? ORDER BY id`).all(made.readOnly.id)).toEqual(others);
     expect(listTokens(db).map((t) => t.id)).not.toContain(made.readOnly.id);
     // Gone, so a second revoke finds nothing.
     expect((await revoke(made.readOnly.id)).status).toBe(404);
@@ -232,7 +241,7 @@ describe("POST /api/tokens", () => {
     const readOnly = (await (await make({ kind: "read-only" })).json()) as { id: number };
     const agent = (await (await make({ kind: "agent" })).json()) as { id: number };
     const body = (await (await list()).json()) as TokenJson[];
-    expect(body.map(({ createdAt, ...rest }) => rest)).toEqual([
+    expect(body.map(({ createdAt, lastUsedAt, ...rest }) => rest)).toEqual([
       { id: anaId, kind: "person", person: "ana" },
       { id: readOnly.id, kind: "read-only" },
       { id: agent.id, kind: "agent" },
@@ -290,7 +299,8 @@ describe("POST /api/tokens", () => {
     const made = tokens();
     const fay = made.theirPerson.token;
     const friendBefore = db.prepare("SELECT * FROM tokens WHERE account_id = ? ORDER BY id").all(friend);
-    const ownerBefore = db.prepare("SELECT * FROM tokens WHERE account_id = ? ORDER BY id").all(OWNER_ACCOUNT);
+    // Without last_used_at: ana's requests record her token's use.
+    const ownerBefore = db.prepare(`SELECT ${COLUMNS} FROM tokens WHERE account_id = ? ORDER BY id`).all(OWNER_ACCOUNT);
     // The owner's admin makes one: the friend's list and tokens are unchanged.
     const ours = (await (await make({ kind: "read-only" })).json()) as { id: number; token: string };
     expect(db.prepare("SELECT * FROM tokens WHERE account_id = ? ORDER BY id").all(friend)).toEqual(friendBefore);
@@ -299,7 +309,7 @@ describe("POST /api/tokens", () => {
     // The friend's admin makes one: it reads the friend's account, not the owner's.
     const theirs = (await (await make({ kind: "read-only" }, fay)).json()) as { id: number; token: string };
     expect(db.prepare("SELECT account_id FROM tokens WHERE id = ?").pluck().get(theirs.id)).toBe(friend);
-    expect(db.prepare("SELECT * FROM tokens WHERE account_id = ? AND id <> ? ORDER BY id").all(OWNER_ACCOUNT, ours.id)).toEqual(ownerBefore);
+    expect(db.prepare(`SELECT ${COLUMNS} FROM tokens WHERE account_id = ? AND id <> ? ORDER BY id`).all(OWNER_ACCOUNT, ours.id)).toEqual(ownerBefore);
     registerAgent(db, friend, "fred");
     const names = async (token: string) => ((await (await call("/api/agents", token)).json()) as { name: string }[]).map((a) => a.name);
     expect(await names(theirs.token)).toContain("fred");
@@ -438,5 +448,135 @@ describe("/api/tokens", () => {
       expect(res.status, method).toBe(405);
       expect(res.headers.get("allow")).toBe("GET, POST, DELETE");
     }
+  });
+});
+
+describe("lastUsedAt", () => {
+  const lastUsed = (id: number) => db.prepare("SELECT last_used_at FROM tokens WHERE id = ?").pluck().get(id) as number | null;
+  const listed = async (token = ana) => new Map(((await (await list("", token)).json()) as TokenJson[]).map((t) => [t.id, t.lastUsedAt]));
+
+  it("is null for a token never used, and set by its first request, in GET /api/tokens and token list", async () => {
+    const made = tokens();
+    expect((await listed()).get(made.readOnly.id)).toBeNull();
+    expect(listTokens(db).find((t) => t.id === made.readOnly.id)?.lastUsedAt).toBeNull();
+    const start = Date.now();
+    expect((await call("/api/agents", made.readOnly.token)).status).toBe(200);
+    const at = (await listed()).get(made.readOnly.id)!;
+    expect(Date.parse(at)).toBeGreaterThanOrEqual(start);
+    expect(at).toBe(new Date(lastUsed(made.readOnly.id)!).toISOString());
+    expect(listTokens(db).find((t) => t.id === made.readOnly.id)?.lastUsedAt).toBe(at);
+    // Ana's token made the list requests; every other token is still unused.
+    expect(lastUsed(anaId)).not.toBeNull();
+    for (const t of [made.full, made.agentOnly, made.bound, made.registering, made.theirs, made.theirPerson, friendFull]) expect(lastUsed(t.id)).toBeNull();
+  });
+
+  it("writes again only once the last write is older than TOKEN_USE_RESOLUTION_MS", async () => {
+    const made = tokens();
+    let now = 1_800_000_000_000;
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+    expect((await call("/api/agents", made.full.token)).status).toBe(200);
+    expect(lastUsed(made.full.id)).toBe(now);
+    const first = now;
+    now += TOKEN_USE_RESOLUTION_MS;
+    expect((await call("/api/agents", made.full.token)).status).toBe(200);
+    expect(lastUsed(made.full.id)).toBe(first);
+    now += 1;
+    expect((await call("/api/agents", made.full.token)).status).toBe(200);
+    expect(lastUsed(made.full.id)).toBe(now);
+  });
+
+  it("writes nothing, so never waits for the write lock, while the last write is within TOKEN_USE_RESOLUTION_MS", async () => {
+    const made = tokens();
+    expect((await call("/api/agents", made.full.token)).status).toBe(200);
+    const first = lastUsed(made.full.id);
+    expect(first).not.toBeNull();
+    const writes = vi.fn();
+    const prepare = db.prepare.bind(db);
+    vi.spyOn(db, "prepare").mockImplementation(((sql: string) => {
+      if (sql.includes("SET last_used_at")) writes();
+      return prepare(sql);
+    }) as typeof db.prepare);
+    // Another process holds the write lock; a write here would wait out the busy timeout (5s) before skipping.
+    const other = new Database(file);
+    other.exec("BEGIN IMMEDIATE");
+    try {
+      const start = Date.now();
+      expect((await call("/api/agents", made.full.token)).status).toBe(200);
+      expect(Date.now() - start).toBeLessThan(2_000);
+    } finally {
+      other.exec("ROLLBACK");
+      other.close();
+    }
+    expect(writes).not.toHaveBeenCalled();
+    expect(lastUsed(made.full.id)).toBe(first);
+  });
+
+  it("counts a request the token authenticates that a later check refuses", async () => {
+    const made = tokens();
+    // A read-only token may not list tokens, but the token itself was accepted.
+    expect((await list("", made.readOnly.token)).status).toBe(403);
+    expect(lastUsed(made.readOnly.id)).not.toBeNull();
+  });
+
+  it("records nothing for a refused token or for MESSAGE_CP_HTTP_TOKEN", async () => {
+    const made = tokens();
+    addPerson(db, "owner", "ben");
+    const ben = addToken(db, "owner", false, false, undefined, "ben");
+    removePerson(db, "owner", "ben");
+    purgeAgent(db, "owner", "bob");
+    revokeToken(db, made.full.id);
+    const before = db.prepare("SELECT id, last_used_at FROM tokens ORDER BY id").all();
+    for (const token of [made.full.token, ben.token, made.bound.token, "unknown"]) expect((await call("/api/agents", token)).status, token).toBe(401);
+    expect((await call("/api/agents", OWNER_TOKEN)).status).toBe(200);
+    expect(db.prepare("SELECT id, last_used_at FROM tokens ORDER BY id").all()).toEqual(before);
+    for (const t of [made.full, ben, made.bound]) expect(lastUsed(t.id)).toBeNull();
+  });
+
+  it("lists another account's use only to that account", async () => {
+    const made = tokens();
+    expect((await call("/api/agents", made.theirs.token)).status).toBe(200);
+    const ours = await listed();
+    expect(ours.has(made.theirs.id)).toBe(false);
+    expect([...ours.keys()]).toEqual([anaId, made.full.id, made.readOnly.id, made.agentOnly.id, made.bound.id, made.registering.id]);
+    const theirs = await listed(made.theirPerson.token);
+    expect(theirs.get(made.theirs.id)).not.toBeNull();
+    expect(theirs.get(friendFull.id)).toBeNull();
+  });
+
+  it("skips the write quietly when the database is busy, and the request still succeeds", async () => {
+    const made = tokens();
+    const errors = vi.spyOn(console, "error");
+    const prepare = db.prepare.bind(db);
+    const spy = vi.spyOn(db, "prepare").mockImplementation(((sql: string) => {
+      if (sql.includes("SET last_used_at")) throw Object.assign(new Error("database is locked"), { code: "SQLITE_BUSY" });
+      return prepare(sql);
+    }) as typeof db.prepare);
+    const res = await call("/api/agents", made.readOnly.token);
+    spy.mockRestore();
+    expect(res.status).toBe(200);
+    expect(lastUsed(made.readOnly.id)).toBeNull();
+    expect(errors).not.toHaveBeenCalled();
+  });
+
+  it("logs one fixed line for any other failure, never the token, its hash or its id, and the request still succeeds", async () => {
+    const made = tokens();
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    const prepare = db.prepare.bind(db);
+    const spy = vi.spyOn(db, "prepare").mockImplementation(((sql: string) => {
+      if (sql.includes("SET last_used_at")) throw new Error(`disk I/O error ${made.readOnly.token} ${hashToken(made.readOnly.token)}`);
+      return prepare(sql);
+    }) as typeof db.prepare);
+    const res = await call("/api/agents", made.readOnly.token);
+    spy.mockRestore();
+    expect(res.status).toBe(200);
+    expect(errors.mock.calls).toEqual([["message-cp: could not record when a token was last used"]]);
+  });
+
+  it("finds the token's row by primary key, without scanning tokens", () => {
+    const plan = db
+      .prepare("EXPLAIN QUERY PLAN UPDATE tokens SET last_used_at = ? WHERE id = ? AND (last_used_at IS NULL OR last_used_at < ?)")
+      .all(1, 1, 0)
+      .map((r) => (r as { detail: string }).detail);
+    expect(plan).toEqual(["SEARCH tokens USING INTEGER PRIMARY KEY (rowid=?)"]);
   });
 });

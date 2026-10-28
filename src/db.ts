@@ -458,6 +458,10 @@ function migrate(db: Db, path: string): void {
   // every other token and every one from before it. Its row is agent-only, read-only and bound to no agent, so a server
   // from before this column takes it for an unbound agent token, never for anything with more access.
   addColumn(db, "registers", "INTEGER NOT NULL DEFAULT 0", "tokens");
+  // When a request last used the token, in ms, as `accountForToken` in accounts.ts records it to within
+  // TOKEN_USE_RESOLUTION_MS; null until a request is recorded, so for every token from before it at first. A server from
+  // before it ignores it.
+  addColumn(db, "last_used_at", "INTEGER", "tokens");
   // 1 for an approval of a client that registers its own agents, which stores no agent_id; 0 for every other. A server
   // from before this column refuses to exchange its code, as it finds no live agent for a null agent_id.
   addColumn(db, "registers", "INTEGER NOT NULL DEFAULT 0", "mcp_authorizations");
