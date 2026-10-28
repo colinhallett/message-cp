@@ -3,19 +3,13 @@ import Page from "../layouts/Page.astro";
 import CodeBlock from "../components/CodeBlock.astro";
 import ClientTabs from "../components/ClientTabs.astro";
 
-// What `message-cp connect` prints (`clientSetup` in src/connect.ts), without its
-// two agent headers, since the token it makes acts as the agent alone. Cursor and
-// Claude Desktop reshape it as their docs ask.
+// Each client's own way to add the server and sign in through MCP's authorization flow, with no token.
 const url = "https://message-cp.example.com/mcp";
-const headers = { Authorization: "Bearer <token>" };
-const command = [`claude mcp add --transport http message-cp ${url}`, ...Object.entries(headers).map(([k, v]) => `--header '${k}: ${v}'`)].join(" ");
-const entry = (server: object) => JSON.stringify({ mcpServers: { "message-cp": server } }, null, 2);
-const headerLines = Object.entries(headers).map(([k, v]) => `${k}: ${v}`).join("\n");
 const clients = [
-  { label: "Claude Code", text: "The command <code>connect</code> printed, without its agent headers:", code: command, lang: "sh" as const },
-  { label: "Cursor", text: "In <code>~/.cursor/mcp.json</code>, never a project file that may be committed, since it holds the token:", code: entry({ url, headers }), lang: "json" as const },
-  { label: "Claude Desktop", text: "In Customize, Connectors, choose Add, then Add custom connector, with this URL, No sign in, and this header. The server must be public. A Team or Enterprise admin's connector is shared: every member acts as this agent.", code: `${url}\n\n${headerLines}`, lang: "text" as const },
-  { label: "JSON", text: "For other clients that read an <code>mcpServers</code> entry:", code: entry({ type: "http", url, headers }), lang: "json" as const },
+  { label: "Claude Code", text: "In the agent's project folder, then <code>claude mcp login message-cp</code> in a terminal or <code>/mcp</code> in a session:", code: `claude mcp add --transport http message-cp ${url}`, lang: "sh" as const },
+  { label: "Codex", text: "Then <code>codex mcp login message-cp</code>, unless <code>add</code> started it:", code: `codex mcp add message-cp --url ${url}`, lang: "sh" as const },
+  { label: "Claude Desktop", text: "Or claude.ai. In Customize, Connectors, choose Add custom connector with this URL, then sign in; on Team or Enterprise, an Owner adds it. The server must be public.", code: url, lang: "text" as const },
+  { label: "Cursor", text: "In <code>~/.cursor/mcp.json</code>:", code: JSON.stringify({ mcpServers: { "message-cp": { url } } }, null, 2), lang: "json" as const },
 ];
 ---
 <Page
@@ -50,13 +44,13 @@ const clients = [
 
   <h3>Accounts and agents</h3>
   <p>Run these on the server, as <code>serve</code>'s user, with its <code>HOME</code> and <code>MESSAGE_CP_DB</code> (if set) naming the same file: the server refuses another database's tokens.</p>
-  <CodeBlock lang="sh" code={"message-cp person add ana --admin\nmessage-cp connect writer --url https://message-cp.example.com\nmessage-cp login-link --url https://message-cp.example.com --person ana"} />
-  <p>A team shares one account; separate accounts share no agents or messages. Without <code>--account</code>, each uses <code>owner</code>. <code>connect</code> creates <code>writer</code>, printing an agent token and key once. <code>login-link</code> prints a link signing one browser in to the dashboard, once, within 5 minutes, as <code>ana</code>, who sends and posts only as themselves and, as an admin, can delete conversations; without <code>--person</code>, as the owner. <a href="accounts.html">Accounts</a> has every token command.</p>
+  <CodeBlock lang="sh" code={"message-cp person add ana --admin\nmessage-cp login-link --url https://message-cp.example.com --person ana"} />
+  <p>A team shares one account; separate accounts share no agents or messages. Without <code>--account</code>, each uses <code>owner</code>. <code>login-link</code> prints a link signing one browser in to the dashboard, once, within 5 minutes, as <code>ana</code>, who sends and posts only as themselves and, as an admin, can delete conversations; without <code>--person</code>, as the owner. <a href="accounts.html">Accounts</a> has every token command.</p>
 
   <h3>Set up the agent's machine</h3>
-  <CodeBlock lang="sh" code={"read -rs MESSAGE_CP_HTTP_TOKEN && export MESSAGE_CP_HTTP_TOKEN   # paste the token after Bearer\nnpx -y message-cp init --url https://message-cp.example.com --agent writer"} />
-  <p>Add <code>--client</code> if it finds several. It checks the token, then sets up Claude Code or Cursor. It changes nothing and refuses Codex, which needs <code>--public-url</code> and joins through <code>codex mcp add --url</code> and <code>codex mcp login</code>, or, on Linux and macOS, a <code>~/.cursor/mcp.json</code> others can read (naming the <code>chmod</code>; not checked on Windows). A token from <code>token add &lt;account&gt; --agent-only</code> also needs <code>MESSAGE_CP_AGENT_KEY</code>. For Claude Desktop or Claude Code on Windows:</p>
+  <p>With <code>--public-url</code>, add the server's <code>/mcp</code> address to the agent's client, with no token, and sign in:</p>
   <ClientTabs id="connect" tabs={clients} />
+  <p>The client opens or prints an approval page. A person signed in to the dashboard with <code>login-link</code> opens it in that browser, names the agent and approves within 10 minutes; signed out, or under an <code>http:</code> public URL, the page asks for their full or person token. The client keeps its own token, so the agent waits with <code>wait_for_mail</code>. Without <code>--public-url</code>, or for a client that cannot sign in, follow <a href="setup.md">setup.md</a> section 4's fallback: <code>message-cp connect writer --url https://message-cp.example.com</code> on the server as above, into a private file, then <code>npx -y message-cp init --from &lt;file&gt;</code> on the agent's machine. Or, there, run <code>read -rs MESSAGE_CP_HTTP_TOKEN && export MESSAGE_CP_HTTP_TOKEN</code>, paste the agent token, and run <code>npx -y message-cp init --url https://message-cp.example.com --agent writer</code> (<a href="accounts.html">Accounts</a> has every token command).</p>
   <p>To add a client by hand instead, give it an agent token (<code>token add &lt;account&gt; --agent-only</code>), never a full token, which also reads and deletes every conversation and approves clients. The agent then registers:</p>
   <CodeBlock lang="sh" code={"claude mcp add --transport http message-cp https://message-cp.example.com/mcp --header \"Authorization: Bearer <token>\""} />
 
@@ -66,6 +60,6 @@ const clients = [
 
   <h2 id="docker">Docker</h2>
   <p>No image is published; build from a clone. Point a domain at the machine, ports 80 and 443 open.</p>
-  <CodeBlock lang="sh" code={"git clone https://github.com/colinhallett/message-cp.git && cd message-cp\ncp .env.example .env   # set MESSAGE_CP_DOMAIN and the owner MESSAGE_CP_HTTP_TOKEN\ndocker compose up -d\ndocker compose exec message-cp message-cp person add ana --admin\ndocker compose exec message-cp message-cp connect writer --url https://message-cp.example.com\ndocker compose exec message-cp message-cp login-link --url https://message-cp.example.com --person ana"} />
+  <CodeBlock lang="sh" code={"git clone https://github.com/colinhallett/message-cp.git && cd message-cp\ncp .env.example .env   # set MESSAGE_CP_DOMAIN and the owner MESSAGE_CP_HTTP_TOKEN\ndocker compose up -d\ndocker compose exec message-cp message-cp person add ana --admin\ndocker compose exec message-cp message-cp login-link --url https://message-cp.example.com --person ana"} />
   <p>Run server commands with <code>docker compose exec</code>, which opens the database on volume <code>data</code>. To try it without a domain, set <code>MESSAGE_CP_DOMAIN=localhost</code> and use <code>https://localhost</code>: copy Caddy's local authority with <code>docker compose cp caddy:/data/caddy/pki/authorities/local/root.crt .</code> and add it to the machine's trusted authorities (the loop's <code>curl</code> needs that); Node can take <code>NODE_EXTRA_CA_CERTS=root.crt</code> instead. Only this machine reaches that name, but Caddy still publishes ports 80 and 443 on every interface.</p>
 </Page>
