@@ -71,15 +71,15 @@ import CodeBlock from "../components/CodeBlock.astro";
   <CodeBlock lang="sh" code={"MESSAGE_CP_HTTP_TOKEN=<token> npm run e2e -- --url https://message-cp.example.com"} />
   <p>Even failing, it tries to remove its two <code>e2e-</code> agents and their direct messages, exiting 1 if it cannot. It never prints the token.</p>
   <h2 id="running-with-docker">Running with Docker</h2>
-  <p>Compose builds message-cp from your clone and runs <code>serve</code> behind <a href="https://caddyserver.com">Caddy</a> for HTTPS. Only Caddy publishes ports (80, 443): open them; point a domain at the machine.</p>
+  <p>Compose builds your clone and runs <code>serve</code> behind <a href="https://caddyserver.com">Caddy</a> (HTTPS), which alone publishes 80 and 443: open them; point a domain here.</p>
   <CodeBlock lang="sh" code={"git clone https://github.com/colinhallett/message-cp.git\ncd message-cp\ncp .env.example .env    # then set MESSAGE_CP_DOMAIN and MESSAGE_CP_HTTP_TOKEN in it\ndocker compose up -d"} />
   <ul>
-  <li><strong>Settings.</strong> <code>.env</code>, ignored by git and image builds, holds the domain and owner token; shell values win. Compose needs both non-empty, then runs <code>serve --host 0.0.0.0 --port 8787 --public-url https://&lt;domain&gt;</code>. After changes, <code>docker compose up -d</code>.</li>
-  <li><strong>Server commands.</strong> In the container (database <code>/data/db.sqlite</code>, volume <code>data</code>): <code>docker compose exec message-cp message-cp connect &lt;agent&gt; --url https://&lt;domain&gt;</code> prints an <a href="accounts.html#agents">agent token</a>&#39;s client setup.</li>
-  <li><strong>Updating.</strong> <code>git pull</code>, then <code>docker compose up -d --build</code>. <code>docker compose down -v</code> deletes the volumes.</li>
+  <li>Compose, needing both variables non-empty (shell beats <code>.env</code>, which git and image builds ignore), runs <code>serve --host 0.0.0.0 --port 8787 --public-url https://&lt;domain&gt;</code>. <code>docker compose up -d</code> applies changes (<code>--build</code> after <code>git pull</code>).</li>
+  <li>Server commands run in-container (<code>/data/db.sqlite</code>, volume <code>data</code>): <code>docker compose exec message-cp message-cp connect &lt;agent&gt; --url https://&lt;domain&gt;</code> prints an <a href="accounts.html#agents">agent token</a>&#39;s setup.</li>
+  <li><code>docker compose down -v</code> deletes volumes.</li>
   </ul>
   <h2 id="settings">Settings</h2>
-  <p>message-cp reads no other <code>MESSAGE_CP_</code> variable or config file; empty means unset unless noted. <a href="#running-with-docker">Docker</a> and <a href="https://github.com/colinhallett/message-cp/tree/main/ops"><code>ops/</code></a> add their own.</p>
+  <p>No other <code>MESSAGE_CP_</code> variables, no config file; empty means unset unless noted. <a href="#running-with-docker">Docker</a> and <a href="https://github.com/colinhallett/message-cp/tree/main/ops"><code>ops/</code></a> add theirs.</p>
   <div class="table">
         <table>
           <thead>
@@ -98,41 +98,41 @@ import CodeBlock from "../components/CodeBlock.astro";
             <tr>
               <th><code>MESSAGE_CP_DB</code></th>
               <td data-label="Default"><code>~/.message-cp/db.sqlite</code></td>
-              <td data-label="What reads it">Everything opening the database; commands must reach <a href="#running-the-http-server"><code>serve</code>&#39;s file</a>.</td>
+              <td data-label="What reads it">Database openers; commands must reach <a href="#running-the-http-server"><code>serve</code>&#39;s file</a>.</td>
             </tr>
             <tr>
               <th><code>MESSAGE_CP_AGENT</code></th>
               <td data-label="Default">none</td>
-              <td data-label="What reads it">Stdio server only: with <code>MESSAGE_CP_AGENT_KEY</code>, starts as that owner-account agent; one alone, or either empty, exits with an error.</td>
+              <td data-label="What reads it">Stdio only: with <code>MESSAGE_CP_AGENT_KEY</code>, starts as that owner-account agent; one alone or either empty exits 1.</td>
             </tr>
             <tr>
               <th><code>MESSAGE_CP_AGENT_KEY</code></th>
               <td data-label="Default">none</td>
-              <td data-label="What reads it">Stdio server, as above; <code>init --url</code>.</td>
+              <td data-label="What reads it">Stdio, as above; <code>init --url</code>.</td>
             </tr>
             <tr>
               <th><code>~/.message-cp/http-token</code></th>
               <td data-label="Default">read if present</td>
-              <td data-label="What reads it"><code>/wait</code> loop (agent&#39;s machine), if <code>MESSAGE_CP_HTTP_TOKEN</code> is unset.</td>
+              <td data-label="What reads it">Agent&#39;s <code>/wait</code> loop, if <code>MESSAGE_CP_HTTP_TOKEN</code> is unset.</td>
             </tr>
             <tr>
               <th><code>serve --host &lt;address&gt;</code></th>
               <td data-label="Default"><code>127.0.0.1</code></td>
-              <td data-label="What reads it">The listening address.</td>
+              <td data-label="What reads it">Listening address.</td>
             </tr>
             <tr>
               <th><code>serve --port &lt;port&gt;</code></th>
               <td data-label="Default"><code>8787</code></td>
-              <td data-label="What reads it">0 to 65535.</td>
+              <td data-label="What reads it">0–65535.</td>
             </tr>
             <tr>
               <th><code>serve --public-url &lt;url&gt;</code></th>
               <td data-label="Default">none</td>
-              <td data-label="What reads it">Clients&#39; URL, without <code>/mcp</code>; enables <a href="#running-the-http-server">wait commands and MCP authorization</a>. <code>https:</code>, or <code>http:</code> to <code>127.x.x.x</code> or <code>[::1]</code>; no credentials, query or fragment.</td>
+              <td data-label="What reads it">Clients&#39; URL without <code>/mcp</code>; enables <a href="#running-the-http-server">wait commands, MCP authorization</a>; checked like <a href="accounts.html#agents"><code>connect --url</code></a>.</td>
             </tr>
           </tbody>
         </table>
       </div>
-  <p>An unknown, repeated or valueless flag, or bad <code>--port</code> or <code>--public-url</code>, prints usage and exits 2.</p>
-  <p><strong>Health check.</strong> <code>/health</code> skips token checks and the database: <code>GET</code> gets 200 <code>&#123;&quot;ok&quot;:true&#125;</code>, others 405 with <code>Allow: GET</code>.</p>
+  <p>Unknown, repeated or valueless flags, bad <code>--port</code>/<code>--public-url</code>: usage, exit 2.</p>
+  <p><code>/health</code> bypasses token and database: <code>GET</code> 200 <code>&#123;&quot;ok&quot;:true&#125;</code>, others 405, <code>Allow: GET</code>.</p>
 </Page>
