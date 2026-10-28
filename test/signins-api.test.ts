@@ -1,3 +1,4 @@
+import Database from "better-sqlite3";
 import { createHash } from "node:crypto";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -150,6 +151,50 @@ describe("DELETE /api/signins", () => {
     const res = await end(admin.session, admin.id);
     expect(res.status).toBe(200);
     expect((await list(admin.session)).status).toBe(401);
+  });
+
+  it("never gives an ended sign-in's id to a later sign-in, so ending it again answers 404 and signs nobody out", async () => {
+    const admin = signIn("owner", "maria");
+    const highest = signIn("owner");
+    expect((await end(admin.session, highest.id)).status).toBe(200);
+    const later = signIn("owner");
+    expect(later.id).toBeGreaterThan(highest.id);
+    expect((await end(admin.session, highest.id)).status).toBe(404);
+    expect((await call("/api/token", later.session)).status).toBe(200);
+  });
+
+  it("rebuilds a dashboard_sessions table from before AUTOINCREMENT, keeping every sign-in, its id and its index", () => {
+    const file = join(mkdtempSync(join(tmpdir(), "message-cp-signins-old-")), "db.sqlite");
+    openDb(file).close();
+    const raw = new Database(file);
+    raw.exec(`
+      DROP TABLE dashboard_sessions;
+      CREATE TABLE dashboard_sessions (
+        id INTEGER PRIMARY KEY,
+        hash TEXT NOT NULL UNIQUE,
+        token_id INTEGER NOT NULL REFERENCES tokens(id),
+        created_at INTEGER NOT NULL
+      );
+      CREATE INDEX dashboard_sessions_by_token ON dashboard_sessions (token_id);
+      INSERT INTO tokens (id, hash, account_id, created_at) VALUES (7, 'h', 1, 1);
+      INSERT INTO dashboard_sessions (id, hash, token_id, created_at) VALUES (3, 'a', 7, 10), (5, 'b', 7, 20);
+    `);
+    raw.close();
+    const reopened = openDb(file);
+    openDb(file).close(); // a second open is harmless
+    expect(reopened.prepare("SELECT sql FROM sqlite_master WHERE name = 'dashboard_sessions'").pluck().get()).toMatch(/id INTEGER PRIMARY KEY AUTOINCREMENT/);
+    expect(reopened.prepare("SELECT id, hash, token_id, created_at FROM dashboard_sessions ORDER BY id").all()).toEqual([
+      { id: 3, hash: "a", token_id: 7, created_at: 10 },
+      { id: 5, hash: "b", token_id: 7, created_at: 20 },
+    ]);
+    expect(
+      reopened.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'dashboard_sessions' AND sql IS NOT NULL").pluck().all(),
+    ).toEqual(["dashboard_sessions_by_token"]);
+    // Ending the highest sign-in leaves its id taken: the next one gets 6.
+    reopened.prepare("DELETE FROM dashboard_sessions WHERE id = 5").run();
+    const session = redeemLoginCode(reopened, makeLoginCode(reopened, "owner").code);
+    expect(reopened.prepare("SELECT id FROM dashboard_sessions WHERE hash = ?").pluck().get(sha256(session))).toBe(6);
+    reopened.close();
   });
 
   it("answers 404, changing nothing, for another account's sign-in, one of a revoked token or removed person, and an unknown id", async () => {
