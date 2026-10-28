@@ -231,7 +231,7 @@ CREATE TABLE IF NOT EXISTS dashboard_sessions (
   token_id INTEGER NOT NULL REFERENCES tokens(id),
   created_at INTEGER NOT NULL
 );
--- Adding or revoking a token checks its sessions (the foreign key) through this, not by scanning the table.
+-- Adding a token checks its sessions (the foreign key) through this, not by scanning the table.
 CREATE INDEX IF NOT EXISTS dashboard_sessions_by_token ON dashboard_sessions (token_id);
 
 -- MCP clients that registered themselves for \`serve --public-url\`'s authorization flow (src/oauth.ts). \`redirect_uris\` is

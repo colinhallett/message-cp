@@ -1535,8 +1535,8 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
     ) {
       return reply(res, 403, "Agent tokens cannot use the dashboard API", inviting || managing || hooks || revoking || tokens ? { Connection: "close" } : {});
     }
-    // A dashboard sign-in session (a login link's or an invite's) reaches what its token reaches but /mcp and /wait, so a
-    // copied tab or cookie cannot act as an agent. It is refused before a slot is taken or a body read.
+    // A dashboard sign-in session (a login link's or an invite's) reaches what its token reaches but /mcp and /wait, so the
+    // session itself never acts as an agent. It is refused before a slot is taken or a body read.
     if (access.session !== undefined && (path === "/mcp" || path === "/wait")) {
       return reply(res, 403, "A dashboard sign-in cannot use MCP or /wait", { Connection: "close" });
     }

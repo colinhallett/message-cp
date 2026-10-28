@@ -391,6 +391,20 @@ describe("POST /api/login", () => {
       expect(await (await fetch(`${base()}/api/token`, { headers: auth(session) })).json()).toMatchObject({ readOnly: false, agentOnly: false });
     });
 
+    it("gets the session's 403 on every /mcp method and /wait for a person's session too", async () => {
+      http = await startHttp(db, { token: OWNER_TOKEN, port: 0 });
+      const session = await redeem("owner", "maria");
+      for (const res of [
+        await mcpInit(session),
+        await fetch(`${base()}/mcp`, { headers: auth(session) }),
+        await fetch(`${base()}/mcp`, { method: "DELETE", headers: auth(session) }),
+        await fetch(`${base()}/wait?agent=maria`, { headers: auth(session) }),
+      ]) {
+        expect(res.status).toBe(403);
+        expect(((await res.json()) as { error: { message: string } }).error.message).toBe("A dashboard sign-in cannot use MCP or /wait");
+      }
+    });
+
     it("lists GET /api/tokens for an admin person's session, the link's own token among them", async () => {
       http = await startHttp(db, { token: OWNER_TOKEN, port: 0 });
       db.prepare("UPDATE agents SET admin = 1 WHERE name = 'maria'").run();
