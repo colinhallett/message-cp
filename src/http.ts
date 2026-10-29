@@ -1049,8 +1049,8 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
 
   /**
    * DELETE /api/agents?name=<name>: removes the account's agent `name` (any case), live or only left as removed rows,
-   * with its direct messages and mentions, as `removeAgentBy` does. Answers `{ name, messages, mentions }`, the
-   * counts deleted, or 404 for a name no agent of the account has had, a person's or another account's agent's included.
+   * with its direct messages and mentions, as `removeAgentBy` does. Answers `{ name, messages, mentions, tokens }`, the
+   * counts deleted and the live agent's tokens that stopped working, or 404 for a name no agent of the account has had, a person's or another account's agent's included.
    */
   const apiRemoveAgent = (req: IncomingMessage, res: ServerResponse, account: AccountId, by: number) =>
     asAdminOnAgent(req, res, (name) => removeAgentBy(db, account, by, name), sendJson);

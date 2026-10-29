@@ -8,6 +8,7 @@ import { runInNewContext } from "node:vm";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { accountForToken, addAccount, addToken, listAccounts, recordClient, revokeToken } from "../src/accounts.js";
 import { cancelInvite, makeInvite, makeLoginCode, redeemLoginCode } from "../src/login.js";
+import { connectAgent } from "../src/connect.js";
 import { OWNER_ACCOUNT, openDb, type Db } from "../src/db.js";
 import { addPerson, identityOf, purgeAgent, registerAgent, registerWithIdentity, removeAgent, removePerson, setPersonAdmin, setStatus } from "../src/agents.js";
 import { joinChannel, leaveChannel, post } from "../src/channels.js";
@@ -6682,7 +6683,7 @@ describe("the page's invites", () => {
       expect(page.writes()).toEqual([]);
       action(page, "writer", "Remove").on.click();
       page.elements["agent-yes"].on.click();
-      await page.until(() => note(page) === "Removed writer: 3 messages and 1 mention deleted.");
+      await page.until(() => note(page) === "Removed writer: 3 messages and 1 mention deleted. It had no working tokens.");
       expect(page.writes()).toEqual([{ url: "/api/agents?name=writer", method: "DELETE", body: undefined }]);
       expect(page.elements["agent-confirm"].hidden).toBe(true);
       expect(live("writer")).toBeUndefined();
@@ -6690,6 +6691,28 @@ describe("the page's invites", () => {
       await page.until(() => agentRow(page, "writer") === undefined && page.elements["pair-rows"].children.length === 0);
       expect(page.requests.filter((r) => r.url.startsWith("/api/messages?") && r.url.includes("offset=0")).length).toBeGreaterThan(1);
       expect(onPage(page, "hi @writer")).toBe(false);
+    });
+
+    it("says how many of its tokens stopped working, and only what it deleted for an older serve", async () => {
+      const writer = connectAgent(db, "owner", "writer", false);
+      connectAgent(db, "owner", "writer", true);
+      for (const name of ["cy", "dee"]) registerAgent(db, OWNER_ACCOUNT, name, "");
+      let next: Refusal | undefined;
+      const page = await load(anaToken, (url, init) => (init.method === "DELETE" ? next : undefined));
+      await page.until(() => ["writer", "cy", "dee"].every((name) => actionsOf(page, name) !== undefined));
+      const removeOne = async (name: string, answer: Refusal | undefined, said: string) => {
+        next = answer;
+        openDetails(page, name);
+        action(page, name, "Remove").on.click();
+        page.elements["agent-yes"].on.click();
+        await page.until(() => note(page) === said);
+      };
+      // The server's own answer: writer's two connect tokens, which are refused from now on.
+      await removeOne("writer", undefined, "Removed writer: 0 messages and 0 mentions deleted. Its 2 tokens stopped working.");
+      expect((await fetch(`${base()}/mcp`, { method: "POST", headers: auth(writer.token) })).status).toBe(401);
+      // An older serve answers { name, messages, mentions } only; anything but a whole number says nothing more.
+      await removeOne("cy", { rewrite: (body) => ({ name: body.name, messages: 1, mentions: 0 }) }, "Removed cy: 1 message and 0 mentions deleted.");
+      await removeOne("dee", { rewrite: (body) => ({ ...body, tokens: "1" }) }, "Removed dee: 0 messages and 0 mentions deleted.");
     });
 
     it("resets a key only after asking, shows the new key once with Copy, and drops it when the details close", async () => {

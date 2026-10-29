@@ -2384,7 +2384,8 @@ function closeAgentPanel(refocus) {
   if (refocus) agentsHead.focus();
 }
 
-// Removes the agent being asked about with DELETE /api/agents and says what it ended from the answer's counts, then
+// Removes the agent being asked about with DELETE /api/agents and says what it ended from the answer's counts (the
+// messages and mentions deleted, and the tokens that stopped working), then
 // reads the agents again, as removeAccountPerson does for a person. After a 200, 404 or no answer it also reads the
 // account's messages again from the start (forgetMessagesOf), even if the panel has moved on to another agent since;
 // any other answer after that, or any answer after the token was forgotten, changes nothing.
@@ -2433,10 +2434,16 @@ async function removeAgent() {
   const name = target.name;
   const body = answer.body;
   if (answer.status === 200) {
+    // An older serve answers no tokens; then only what it deleted is said.
+    const stopped = !(body && Number.isSafeInteger(body.tokens))
+      ? ""
+      : body.tokens === 0
+        ? " It had no working tokens."
+        : " Its " + counted(body.tokens, "token") + " stopped working.";
     agentNote.textContent =
-      body && Number.isInteger(body.messages) && Number.isInteger(body.mentions)
+      (body && Number.isInteger(body.messages) && Number.isInteger(body.mentions)
         ? "Removed " + name + ": " + counted(body.messages, "message") + " and " + counted(body.mentions, "mention") + " deleted."
-        : "Removed " + name + ".";
+        : "Removed " + name + ".") + stopped;
   } else if (answer.status === 404) agentNote.textContent = name + " is already gone (404).";
   else if (answer.error) agentNote.textContent = answer.error + ", so " + name + " may have been removed: the list shows whether.";
   else agentNote.textContent = refusal(answer);
