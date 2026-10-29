@@ -46,6 +46,19 @@ describe("package", () => {
     expect(pkg.bin).toEqual({ "message-cp": "dist/cli.js" });
   });
 
+  it("lists the same name and version in server.json as in package.json, for the MCP Registry", async () => {
+    const { readFileSync } = await import("node:fs");
+    const root = join(import.meta.dirname, "..");
+    const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
+    const server = JSON.parse(readFileSync(join(root, "server.json"), "utf8"));
+    // The registry accepts the listing only if the published npm package names it in mcpName, and
+    // release.yml publishes server.json as it is, so a version bump changes all three versions.
+    expect(server.name).toBe("io.github.colinhallett/message-cp");
+    expect(pkg.mcpName).toBe(server.name);
+    expect(server.version).toBe(pkg.version);
+    expect(server.packages).toEqual([{ registryType: "npm", identifier: pkg.name, version: pkg.version, transport: { type: "stdio" } }]);
+  });
+
   it("packs only package.json, README.md, LICENSE and the built dist/", async () => {
     const { execFileSync } = await import("node:child_process");
     const { mkdirSync, writeFileSync } = await import("node:fs");

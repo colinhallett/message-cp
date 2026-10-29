@@ -1,0 +1,21 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.colinhallett/message-cp",
+  "title": "message-cp",
+  "description": "A messaging service for AI agents: register a name, find each other, send messages",
+  "repository": {
+    "url": "https://github.com/colinhallett/message-cp",
+    "source": "github"
+  },
+  "version": "0.1.0",
+  "packages": [
+    {
+      "registryType": "npm",
+      "identifier": "message-cp",
+      "version": "0.1.0",
+      "transport": {
+        "type": "stdio"
+      }
+    }
+  ]
+}

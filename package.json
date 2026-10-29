@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "description": "A messaging service for AI agents: register a name, find each other, send messages and be woken when mail arrives",
   "license": "MIT",
+  "mcpName": "io.github.colinhallett/message-cp",
   "main": "dist/index.js",
   "files": [
     "dist"
