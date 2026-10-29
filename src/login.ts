@@ -274,28 +274,40 @@ export function listAccountPeople(db: Db, account: AccountId, limit: number, off
   return rows.map((r) => ({ name: r.name, admin: r.admin === 1, addedAt: new Date(r.registered_at).toISOString() }));
 }
 
-/** An agent removed by an admin person: its name and how many direct messages and mentions went with it. */
+/** An agent removed by an admin person: its name, how many direct messages and mentions went with it, and its tokens. */
 export interface RemovedAgent {
   name: string;
   messages: number;
   mentions: number;
+  /** The live agent's unrevoked tokens of the account, which `accountForToken` accepted and now refuses. */
+  tokens: number;
 }
+
+// A removed agent's tokens are kept: `accountForToken` refuses them once their agent is gone. Counted while the agent is
+// still live, so these are the ones the removal stops. Found through `tokens_live_by_agent`.
+export const COUNT_AGENT_TOKENS = "SELECT COUNT(*) FROM tokens WHERE agent_id = ? AND account_id = ? AND revoked_at IS NULL";
 
 /**
  * For DELETE /api/agents: removes the agent `name` (any case) of the account `account`, live or only left as removed
- * rows, as `purgeAgent` does, or answers undefined, changing nothing, for a name no agent of the account has had, a live
- * person's included. `by` is the row of the admin person asking. Throws `NotAdminError` unless they are still a live
- * admin of the account.
+ * rows, as `purgeAgent` does, and answers its counts with `tokens`, how many of the live agent's tokens were accepted
+ * just before and are refused from now on (0 for an agent left only as removed rows), or answers undefined, changing
+ * nothing, for a name no agent of the account has had, a live person's included. Nothing is revoked for the count.
+ * `by` is the row of the admin person asking. Throws `NotAdminError` unless they are still a live admin of the account.
  */
 export const removeAgentBy = (db: Db, account: AccountId, by: number, name: string): RemovedAgent | undefined =>
   db.transaction(() => {
     requireAdmin(db, account, by);
     const acct = db.prepare("SELECT name FROM accounts WHERE id = ?").pluck().get(account) as string | undefined;
     if (acct === undefined) return undefined;
+    const live = db
+      .prepare("SELECT id FROM agents WHERE account_id = ? AND name = ? AND removed_at IS NULL AND person = 0")
+      .pluck()
+      .get(account, name) as number | undefined;
+    const tokens = live === undefined ? 0 : (db.prepare(COUNT_AGENT_TOKENS).pluck().get(live, account) as number);
     try {
       // A nested transaction is a savepoint inside this one.
       const purged = purgeAgent(db, acct, name);
-      return { name: purged.name, messages: purged.messages, mentions: purged.mentions };
+      return { name: purged.name, messages: purged.messages, mentions: purged.mentions, tokens };
     } catch (err) {
       if (err instanceof PurgeError) return undefined;
       throw err;

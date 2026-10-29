@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { addAccount, addToken, listAccounts, listApprovals, listTokens, revokeToken } from "../src/accounts.js";
 import { addPerson, purgeAgent, registerAgent, registerWithIdentity, removeAgent } from "../src/agents.js";
 import { connectAgent } from "../src/connect.js";
-import { NotAdminError, makeLoginCode, redeemLoginCode, revokeApprovalBy } from "../src/login.js";
+import { NotAdminError, makeLoginCode, redeemLoginCode, removeAgentBy, revokeApprovalBy } from "../src/login.js";
 import { OWNER_ACCOUNT, openDb, type AccountId, type Db } from "../src/db.js";
 import { startHttp, type HttpServer } from "../src/http.js";
 
@@ -220,6 +220,18 @@ describe("GET /api/approvals", () => {
     purgeAgent(db, "owner", "gone-agent");
     expect((await get("/mcp", removed.token)).status).toBe(401);
     expect((await approvals(ownerFull)).map((a) => a.id)).toEqual([kept.id]);
+  });
+
+  it("counts an approved client's token bound to the agent when an admin removes it, and not a revoked one or one that registers its own agents", async () => {
+    addPerson(db, "owner", "ana", true);
+    const admin = db.prepare("SELECT id FROM agents WHERE account_id = ? AND name = 'ana'").pluck().get(OWNER_ACCOUNT) as number;
+    const live = await connectClient(ownerFull, "desk", { name: "A" });
+    const revoked = await connectClient(ownerFull, "desk", { name: "B" });
+    const registers = await connectClient(ownerFull, null, { name: "C" });
+    revokeToken(db, revoked.id);
+    expect(removeAgentBy(db, OWNER_ACCOUNT, admin, "desk")).toMatchObject({ name: "desk", tokens: 1 });
+    expect((await get("/mcp", live.token)).status).toBe(401);
+    expect((await get("/mcp", registers.token)).status).not.toBe(401);
   });
 
   it("lists a token that registers its own agents, with none yet and then with two in name order, among the others", async () => {

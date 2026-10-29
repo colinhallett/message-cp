@@ -5,11 +5,12 @@ import { request } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { addAccount, addToken, listAccounts } from "../src/accounts.js";
+import { addAccount, addToken, listAccounts, revokeToken } from "../src/accounts.js";
 import { addPerson, purgeAgent, setPersonAdmin } from "../src/agents.js";
+import { connectAgent } from "../src/connect.js";
 import { OWNER_ACCOUNT, openDb, type AccountId, type Db } from "../src/db.js";
 import { startHttp, type HttpServer } from "../src/http.js";
-import { NotAdminError, removeAgentBy, resetAgentKeyBy } from "../src/login.js";
+import { COUNT_AGENT_TOKENS, NotAdminError, removeAgentBy, resetAgentKeyBy } from "../src/login.js";
 import { Session, createServer } from "../src/server.js";
 import { addWebhook } from "../src/webhooks.js";
 
@@ -112,7 +113,7 @@ describe("DELETE /api/agents", () => {
     const res = await remove("ALICE");
     expect(res.status).toBe(200);
     const text = await res.text();
-    expect(JSON.parse(text)).toEqual({ name: "alice", messages: 4, mentions: 1 });
+    expect(JSON.parse(text)).toEqual({ name: "alice", messages: 4, mentions: 1, tokens: 0 });
     expect(text).not.toContain("secret");
 
     expect(rows("SELECT body FROM messages")).toEqual([]);
@@ -137,8 +138,46 @@ describe("DELETE /api/agents", () => {
     await tool(first.client, "unregister");
     const res = await remove("alice");
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ name: "alice", messages: 2, mentions: 0 });
+    expect(await res.json()).toEqual({ name: "alice", messages: 2, mentions: 0, tokens: 0 });
     expect(rows("SELECT body FROM messages")).toEqual([]);
+  });
+
+  it("counts the live agent's unrevoked connect tokens, which stop working, revoking nothing", async () => {
+    const live = connectAgent(db, "owner", "writer", false);
+    const revoked = connectAgent(db, "owner", "writer", true);
+    const other = connectAgent(db, "owner", "editor", false);
+    revokeToken(db, revoked.tokenId);
+    expect((await call("/mcp", live.token, "POST")).status).not.toBe(401);
+    const tokens = () => rows("SELECT id, account_id, hash, agent_id, revoked_at FROM tokens ORDER BY id");
+    const before = tokens();
+    const res = await remove("writer");
+    expect(res.status).toBe(200);
+    const text = await res.text();
+    expect(JSON.parse(text)).toEqual({ name: "writer", messages: 0, mentions: 0, tokens: 1 });
+    for (const secret of [live.token, live.key, revoked.token]) expect(text).not.toContain(secret);
+    expect((await call("/mcp", live.token, "POST")).status).toBe(401);
+    expect((await call("/mcp", other.token, "POST")).status).not.toBe(401);
+    // Nothing is revoked: the agent's removal is what refuses its tokens.
+    expect(tokens()).toEqual(before);
+  });
+
+  it("counts 0 for an agent left only as removed rows, whose tokens already stopped", async () => {
+    connectAgent(db, "owner", "writer", false);
+    purgeAgent(db, "owner", "writer");
+    expect(await (await remove("writer")).json()).toMatchObject({ name: "writer", tokens: 0 });
+  });
+
+  it("never counts or changes another account's tokens, an agent of the same name's included", async () => {
+    connectAgent(db, "owner", "writer", false);
+    const theirs = connectAgent(db, "friend", "writer", false);
+    const before = rows("SELECT id, account_id, hash, agent_id, revoked_at FROM tokens ORDER BY id");
+    expect(await (await remove("writer")).json()).toMatchObject({ tokens: 1 });
+    expect(rows("SELECT id, account_id, hash, agent_id, revoked_at FROM tokens ORDER BY id")).toEqual(before);
+    expect((await call("/mcp", theirs.token, "POST")).status).not.toBe(401);
+    // Called directly with the friend's agent row but the owner's account, nothing of the friend's is counted.
+    const fay = idOf(friend, "writer");
+    expect(db.prepare(COUNT_AGENT_TOKENS).pluck().get(fay, OWNER_ACCOUNT)).toBe(0);
+    expect(db.prepare(COUNT_AGENT_TOKENS).pluck().get(fay, friend)).toBe(1);
   });
 
   it("takes no slot, so a full cap of held POST bodies does not refuse it", async () => {
@@ -353,6 +392,11 @@ describe("who reaches DELETE /api/agents and POST /api/agents/key", () => {
 });
 
 describe("the plans of removing an agent", () => {
+  it("counts its tokens through tokens_live_by_agent, without scanning tokens", () => {
+    const plan = (db.prepare(`EXPLAIN QUERY PLAN ${COUNT_AGENT_TOKENS}`).all(1, 1) as { detail: string }[]).map((p) => p.detail);
+    expect(plan).toEqual(["SEARCH tokens USING INDEX tokens_live_by_agent (agent_id=?)"]);
+  });
+
   it("deletes its messages through messages_history and messages_by_sender, and their deliveries and replies by index, never scanning", () => {
     const prepare = db.prepare.bind(db);
     const sql: string[] = [];
