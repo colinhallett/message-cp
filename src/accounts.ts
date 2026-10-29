@@ -52,6 +52,16 @@ export interface TokenAccess {
    * session's row id. It reaches what its token reaches, except /mcp and /wait. Set only when the bearer was a session id.
    */
   session?: number;
+  /**
+   * For an agent token the OAuth code exchange issued (an approval), single-agent or registering, the token's row id:
+   * its sessions may ask for a listen token (`issueListenToken`). Never for a listen token itself.
+   */
+  approval?: number;
+  /**
+   * True for a listen token (`issueListenToken`), with `agent` set to its agent: it may only wait for that agent's mail on
+   * GET /wait. Never with `approval`, `registers` or `session`.
+   */
+  listen?: true;
 }
 
 /** The person a person token acts as: their row in `agents`, their name and, where read, whether they are an admin. */
@@ -341,7 +351,7 @@ export function accountForToken(db: Db, token: string, ownerToken: string): Toke
   // through its token's row by the same query, keyed by `tokens.id` instead of `tokens.hash`.
   const select = (key: "hash" | "id", value: string | number) => db
     .prepare(
-      `SELECT tokens.id AS token_id, tokens.last_used_at, tokens.registers, tokens.account_id, tokens.read_only, tokens.agent_only, tokens.agent_id,
+      `SELECT tokens.id AS token_id, tokens.last_used_at, tokens.registers, tokens.oauth, tokens.account_id, tokens.read_only, tokens.agent_only, tokens.agent_id,
          agents.id, agents.registered_at, agents.instance, agents.name,
          tokens.person_id, people.id AS person_row, people.name AS person_name, people.admin AS person_admin
        FROM tokens LEFT JOIN agents ON agents.id = tokens.agent_id AND agents.account_id = tokens.account_id
@@ -355,6 +365,7 @@ export function accountForToken(db: Db, token: string, ownerToken: string): Toke
         token_id: number;
         last_used_at: number | null;
         registers: number;
+        oauth: number | null;
         account_id: number;
         read_only: number;
         agent_only: number;
@@ -376,6 +387,8 @@ export function accountForToken(db: Db, token: string, ownerToken: string): Toke
     if (found) {
       row = select("id", found.token_id);
       session = found.id;
+    } else {
+      return listenAccess(db, hash);
     }
   }
   if (!row || (row.agent_id !== null && row.id === null) || (row.person_id !== null && row.person_row === null)) return undefined;
@@ -389,6 +402,56 @@ export function accountForToken(db: Db, token: string, ownerToken: string): Toke
   if (row.id !== null) access.agent = { id: row.id, registeredAt: row.registered_at, instance: row.instance, name: row.name };
   // Only an agent-only token bound to no agent, as `issueToken` stores it; never a full, read-only or person token.
   if (row.registers === 1 && row.agent_only === 1 && row.agent_id === null) access.registers = row.token_id;
+  // Only an agent token, which is what the code exchange issues; a sign-in session is never one.
+  if (row.oauth === 1 && row.agent_only === 1 && session === undefined) access.approval = row.token_id;
   if (session !== undefined) access.session = session;
   return access;
 }
+
+// A listen token's agent, while it is a live agent of its approval's account that the approval still acts as: the
+// single agent it is bound to, or one it registered. The approval must be an unrevoked agent token the code exchange
+// issued.
+const LISTEN_AGENT = `FROM listen_tokens
+  JOIN tokens ON tokens.id = listen_tokens.token_id AND tokens.revoked_at IS NULL AND tokens.oauth = 1 AND tokens.agent_only = 1
+  JOIN agents ON agents.id = listen_tokens.agent_id AND agents.account_id = tokens.account_id AND agents.removed_at IS NULL
+    AND agents.person = 0 AND (tokens.agent_id = agents.id OR (tokens.registers = 1 AND tokens.agent_id IS NULL AND agents.token_id = tokens.id))`;
+
+/** The access of the listen token with hash `hash`: its agent, and nothing else. Undefined once `LISTEN_AGENT` fails. */
+function listenAccess(db: Db, hash: string): TokenAccess | undefined {
+  const row = db
+    .prepare(`SELECT tokens.account_id, agents.id, agents.registered_at, agents.instance, agents.name ${LISTEN_AGENT} WHERE listen_tokens.hash = ?`)
+    .get(hash) as { account_id: number; id: number; registered_at: number; instance: string | null; name: string } | undefined;
+  if (!row) return undefined;
+  return {
+    account: row.account_id,
+    readOnly: false,
+    agentOnly: true,
+    agent: { id: row.id, registeredAt: row.registered_at, instance: row.instance, name: row.name },
+    listen: true,
+  };
+}
+
+/**
+ * A new listen token for the live agent `identity` of account `account`, through the approval token of row id
+ * `approval`: one that only waits for that agent's mail on GET /wait. It replaces the agent's earlier one, which stops
+ * working. Only its hash is stored. Undefined, storing nothing, unless `identity` is still that registration and
+ * `LISTEN_AGENT` holds for it, so a session never gets one for another approval's agent or another account's.
+ */
+export const issueListenToken = (db: Db, account: AccountId, identity: { id: number; registeredAt: number; instance: string | null }, approval: number): string | undefined =>
+  db.transaction((): string | undefined => {
+    const allowed = db
+      .prepare(
+        `SELECT 1 FROM tokens JOIN agents ON agents.id = ? AND agents.account_id = tokens.account_id AND agents.removed_at IS NULL
+           AND agents.person = 0 AND agents.registered_at = ? AND agents.instance IS ?
+           AND (tokens.agent_id = agents.id OR (tokens.registers = 1 AND tokens.agent_id IS NULL AND agents.token_id = tokens.id))
+         WHERE tokens.id = ? AND tokens.account_id = ? AND tokens.revoked_at IS NULL AND tokens.oauth = 1 AND tokens.agent_only = 1`,
+      )
+      .get(identity.id, identity.registeredAt, identity.instance, approval, account);
+    if (!allowed) return undefined;
+    const token = randomBytes(32).toString("hex");
+    db.prepare(
+      `INSERT INTO listen_tokens (agent_id, token_id, hash, created_at) VALUES (?, ?, ?, ?)
+       ON CONFLICT(agent_id) DO UPDATE SET token_id = excluded.token_id, hash = excluded.hash, created_at = excluded.created_at`,
+    ).run(identity.id, approval, hashToken(token), Date.now());
+    return token;
+  }).immediate();

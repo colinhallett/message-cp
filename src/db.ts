@@ -281,6 +281,20 @@ CREATE INDEX IF NOT EXISTS mcp_authorizations_by_agent ON mcp_authorizations (ag
 
 ${loginCodesTable("login_codes")}
 ${LOGIN_CODES_INDEXES}
+
+-- One listen token per agent, issued to a session connected by approval (\`issueListenToken\` in src/accounts.ts): it only
+-- waits for that agent's mail on GET /wait. Only its hash is kept. \`token_id\` is the approval's token; the listen token
+-- works only while that token is unrevoked and the agent is live, as \`accountForToken\` checks on each request, so
+-- revoking the approval or removing the agent ends it in the transaction that does so. A later one replaces it.
+CREATE TABLE IF NOT EXISTS listen_tokens (
+  id INTEGER PRIMARY KEY,
+  agent_id INTEGER NOT NULL UNIQUE REFERENCES agents(id) ON DELETE CASCADE,
+  token_id INTEGER NOT NULL REFERENCES tokens(id),
+  hash TEXT NOT NULL UNIQUE,
+  created_at INTEGER NOT NULL
+);
+-- The foreign key's check when a token row is deleted finds its listen tokens through this, not by scanning them.
+CREATE INDEX IF NOT EXISTS listen_tokens_by_token ON listen_tokens (token_id);
 `;
 
 // CREATE TABLE IF NOT EXISTS leaves an existing table alone, so columns added later are added here, only when missing.

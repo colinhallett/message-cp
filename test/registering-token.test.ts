@@ -141,7 +141,7 @@ describe("approving a client that registers its own agents", () => {
     const row = tokenRow();
     // read_only too, so a server from before `registers` takes it for an unbound agent token, never more.
     expect(row).toMatchObject({ account_id: OWNER_ACCOUNT, read_only: 1, agent_only: 1, agent_id: null, person_id: null, registers: 1, oauth: 1, client_name: "Codex" });
-    expect(accountForToken(db, token, OWNER_TOKEN)).toEqual({ account: OWNER_ACCOUNT, readOnly: false, agentOnly: true, registers: row.id });
+    expect(accountForToken(db, token, OWNER_TOKEN)).toEqual({ account: OWNER_ACCOUNT, readOnly: false, agentOnly: true, registers: row.id, approval: row.id });
     expect(listTokens(db).find((t) => t.id === row.id)).toMatchObject({ kind: "agent", client: { name: "Codex", host: null } });
   });
 
@@ -149,7 +149,7 @@ describe("approving a client that registers its own agents", () => {
     const token = await approved({ agent: "desk" });
     const desk = identityOf(db, OWNER_ACCOUNT, "desk")!;
     expect(tokenRow()).toMatchObject({ agent_id: desk.id, registers: 0 });
-    expect(accountForToken(db, token, OWNER_TOKEN)).toEqual({ account: OWNER_ACCOUNT, readOnly: false, agentOnly: true, agent: { ...desk, name: "desk" } });
+    expect(accountForToken(db, token, OWNER_TOKEN)).toEqual({ account: OWNER_ACCOUNT, readOnly: false, agentOnly: true, agent: { ...desk, name: "desk" }, approval: tokenRow().id });
     const refused = await call(await open(token), "register", { name: "other", bio: "x" });
     expect(refused).toEqual({ isError: true, text: "This token is already agent 'desk'; it cannot register or remove another name." });
   });
@@ -368,11 +368,12 @@ describe("a registering token on the other paths", () => {
 
 
 describe("query plans", () => {
-  it("adds a token without scanning agents or sessions, finding the agents it registered and its sessions by index", () => {
+  it("adds a token without scanning agents, sessions or listen tokens, finding each of them by index", () => {
     const plan = db
       .prepare("EXPLAIN QUERY PLAN INSERT INTO tokens (account_id, hash, created_at, read_only, agent_only, agent_id, person_id, registers) VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING id")
       .all(OWNER_ACCOUNT, "h", 0, 1, 1, null, null, 1) as { detail: string }[];
     expect(plan.map((r) => r.detail)).toEqual([
+      "SEARCH listen_tokens USING COVERING INDEX listen_tokens_by_token (token_id=?)",
       "SEARCH dashboard_sessions USING COVERING INDEX dashboard_sessions_by_token (token_id=?)",
       "SEARCH agents USING COVERING INDEX agents_by_token (token_id=?)",
     ]);
