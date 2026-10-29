@@ -2,7 +2,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import { mkdirSync, mkdtempSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -12,7 +12,7 @@ import { saveSession } from "../src/sessions.js";
 import { OWNER_ACCOUNT, openDb, type AccountId, type Db } from "../src/db.js";
 import { startHttp, type HttpServer } from "../src/http.js";
 import { sendMessage } from "../src/messages.js";
-import { httpWaitCommand } from "../src/wait.js";
+import { httpWaitCommand, listenTokenFile, listenWaitCommand, saveListenToken } from "../src/wait.js";
 
 // A session connected by approval gets a listen token for its agent: from `register` for a client that registers its own
 // agents, from `listen_token` for a single-agent approval. It only waits for that agent's mail on GET /wait.
@@ -110,7 +110,8 @@ describe("a listen token from register", () => {
     const answer = await registered(token, "alpha");
     expect(answer.listenToken).toMatch(/^[0-9a-f]{64}$/);
     const host = new URL(publicUrl).host.replace(":", "_");
-    expect(answer.saveListenToken).toContain(`~/.message-cp/wait/alpha@${host}`);
+    expect(answer.saveListenToken).toContain(`~/.message-cp/wait/alpha@${host}-`);
+    expect(answer.saveListenToken).toContain(listenTokenFile(publicUrl, OWNER_ACCOUNT, "alpha"));
     expect(answer.saveListenToken).not.toContain(answer.listenToken);
     for (const text of [answer.waitCommand, answer.saveListenToken]) {
       expect(text).not.toContain(answer.listenToken);
@@ -299,8 +300,12 @@ describe("the listen command", () => {
     expect(await save(alpha, home)).toBe(0);
     expect(await save(beta, home)).toBe(0);
     for (const dir of [".message-cp", ".message-cp/wait"]) expect(statSync(join(home, dir)).mode & 0o777).toBe(0o700);
-    const host = new URL(publicUrl).host.replace(":", "_");
-    expect(statSync(join(home, ".message-cp/wait", `alpha@${host}`)).mode & 0o777).toBe(0o600);
+    const file = (name: string) => join(home, listenTokenFile(publicUrl, OWNER_ACCOUNT, name).slice(2));
+    expect(statSync(file("alpha")).mode & 0o777).toBe(0o600);
+    // Saving again over a file someone left readable makes it 0600 again.
+    chmodSync(file("beta"), 0o644);
+    expect(await save(beta, home)).toBe(0);
+    expect(statSync(file("beta")).mode & 0o777).toBe(0o600);
     expect(betaClient.getInstructions()).toContain(beta.waitCommand);
 
     const a = run(alpha.waitCommand, env);
@@ -334,6 +339,24 @@ describe("the listen command", () => {
     expect(await refused.exited).toBe(1);
     expect(refused.err()).toContain("401");
   }, 20_000);
+});
+
+describe("a listen token's file", () => {
+  it("differs between accounts and between servers under one host, and is the one its wait command reads", () => {
+    const files = [
+      listenTokenFile("https://example.com/team-a", OWNER_ACCOUNT, "alpha"),
+      listenTokenFile("https://example.com/team-a", friend, "alpha"),
+      listenTokenFile("https://example.com/team-b", OWNER_ACCOUNT, "alpha"),
+      listenTokenFile("https://example.com:8443/team-a", OWNER_ACCOUNT, "alpha"),
+    ];
+    expect(new Set(files).size).toBe(files.length);
+    for (const f of files) expect(f).toMatch(/^~\/\.message-cp\/wait\/alpha@example\.com(_8443)?-[0-9a-f]{16}$/);
+    // A trailing slash names the same server.
+    expect(listenTokenFile("https://example.com/team-a/", OWNER_ACCOUNT, "alpha")).toBe(files[0]);
+    const server = files[1].slice(files[1].indexOf("@") + 1);
+    expect(listenWaitCommand("https://example.com/team-a", friend, "alpha").endsWith(` ${server}`)).toBe(true);
+    expect(saveListenToken("https://example.com/team-a", friend, "alpha")).toContain(`> ~/.message-cp/wait/alpha@${server})`);
+  });
 });
 
 describe("query plans", () => {

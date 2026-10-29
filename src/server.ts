@@ -196,7 +196,7 @@ export function createServer(db: Db, session = new Session(OWNER_ACCOUNT), optio
   const account = session.account;
   const server = new McpServer(
     { name: "message-cp", version: "0.1.0" },
-    { instructions: instructions(process.env, remote, options.publicUrl, options.agent, options.approval) },
+    { instructions: instructions(process.env, remote, options.publicUrl, options.agent, options.approval, session.account) },
   );
 
   // Aborts when the call is cancelled or, where the transport knows it, the response that would carry its answer closes.
@@ -227,7 +227,7 @@ export function createServer(db: Db, session = new Session(OWNER_ACCOUNT), optio
     const token = options.publicUrl ? issueListenToken(db, account, identity, approval) : undefined;
     // The registration was checked just before, so a refusal means the approval was revoked or the agent removed since.
     if (token === undefined) throw new ToolError("No listen token: this session's approval was revoked or its agent removed.");
-    return { listenToken: token, saveListenToken: saveListenToken(options.publicUrl!, name), waitCommand: listenWaitCommand(options.publicUrl!, name) };
+    return { listenToken: token, saveListenToken: saveListenToken(options.publicUrl!, account, name), waitCommand: listenWaitCommand(options.publicUrl!, account, name) };
   };
 
   // Wraps a tool: bumps last-seen for a registered session and turns ToolError into an error result.

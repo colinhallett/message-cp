@@ -1,5 +1,7 @@
+import { createHash } from "node:crypto";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { OWNER_ACCOUNT, type AccountId } from "./db.js";
 import type { Unread } from "./messages.js";
 import { setting } from "./settings.js";
 
@@ -89,33 +91,42 @@ export function httpWaitCommand(publicUrl: string, name: string): string {
   return `sh -c '${CURL_LOOP}' sh ${shellQuote(waitUrl(publicUrl).href)} ${shellQuote(name)}`;
 }
 
-/** The <server> part of a listen token's file name: the public URL's host and port, with anything but [A-Za-z0-9.-] as `_`. */
-const listenServer = (publicUrl: string) => new URL(publicUrl).host.replace(/[^A-Za-z0-9.-]/g, "_");
+/**
+ * The <server> part of a listen token's file name for the account `account`: the public URL's host and port, with
+ * anything but [A-Za-z0-9.-] as `_`, then `-` and 16 hex digits of a sha256 of the account and the `/wait` URL. Agent
+ * names are unique only within an account, and two servers may share a host under different paths, so both are in it.
+ */
+const listenServer = (publicUrl: string, account: AccountId) =>
+  `${new URL(publicUrl).host.replace(/[^A-Za-z0-9.-]/g, "_")}-${createHash("sha256").update(`${account} ${waitUrl(publicUrl).href}`).digest("hex").slice(0, 16)}`;
 
-/** The file, under `~`, that the listen command for `name` on the server at `publicUrl` reads its listen token from. */
-export const listenTokenFile = (publicUrl: string, name: string) => `~/.message-cp/wait/${name}@${listenServer(publicUrl)}`;
+/** The file, under `~`, that the listen command for `name` of the account `account` on the server at `publicUrl` reads its listen token from. */
+export const listenTokenFile = (publicUrl: string, account: AccountId, name: string) => `~/.message-cp/wait/${name}@${listenServer(publicUrl, account)}`;
 
 /**
- * How an agent saves its listen token to `listenTokenFile`, privately: the directories 0700 and the file 0600. The token
- * is never in it; `<listen token>` is a placeholder the agent replaces.
+ * How an agent saves its listen token to `listenTokenFile`, privately: the directories 0700 and the file 0600. The file
+ * is removed first, so one already there with a wider mode is made again under the umask. The token is never in it;
+ * `<listen token>` is a placeholder the agent replaces.
  */
-export const saveListenToken = (publicUrl: string, name: string) =>
-  `Save listenToken, and nothing else, to ${listenTokenFile(publicUrl, name)}, privately: mkdir -p ~/.message-cp/wait && chmod 700 ~/.message-cp ~/.message-cp/wait, then (umask 077 && printf '%s\\n' '<listen token>' > ~/.message-cp/wait/${shellQuote(`${name}@${listenServer(publicUrl)}`)}), with the token in place of <listen token>. Never put it in a URL, a message or a log.`;
+export const saveListenToken = (publicUrl: string, account: AccountId, name: string) => {
+  const file = `~/.message-cp/wait/${shellQuote(`${name}@${listenServer(publicUrl, account)}`)}`;
+  return `Save listenToken, and nothing else, to ${listenTokenFile(publicUrl, account, name)}, privately: mkdir -p ~/.message-cp/wait && chmod 700 ~/.message-cp ~/.message-cp/wait, then rm -f ${file} && (umask 077 && printf '%s\\n' '<listen token>' > ${file}), with the token in place of <listen token>. Never put it in a URL, a message or a log.`;
+};
 
 /**
- * The shell command that exits once `name` has unread mail on the server at `publicUrl`, for a session connected by
- * approval: like `httpWaitCommand`, but with the agent's listen token from `listenTokenFile`.
+ * The shell command that exits once `name` of the account `account` has unread mail on the server at `publicUrl`, for
+ * a session connected by approval: like `httpWaitCommand`, but with the agent's listen token from `listenTokenFile`.
  */
-export function listenWaitCommand(publicUrl: string, name: string): string {
-  return `sh -c '${LISTEN_LOOP}' sh ${shellQuote(waitUrl(publicUrl).href)} ${shellQuote(name)} ${shellQuote(listenServer(publicUrl))}`;
+export function listenWaitCommand(publicUrl: string, account: AccountId, name: string): string {
+  return `sh -c '${LISTEN_LOOP}' sh ${shellQuote(waitUrl(publicUrl).href)} ${shellQuote(name)} ${shellQuote(listenServer(publicUrl, account))}`;
 }
 
 /**
  * What a connecting session is told about being woken by messages. `agent` is the agent an HTTP session already is,
  * because its token is bound to it: its command names that agent, and it is not told to register. `approval` is set for
- * a session connected by approval, whose command reads a listen token (`listenWaitCommand`) that it is told how to get.
+ * a session connected by approval, whose command reads a listen token (`listenWaitCommand`) that it is told how to get;
+ * `account` is the session's account, which names that token's file.
  */
-export function instructions(env: NodeJS.ProcessEnv = process.env, remote = false, publicUrl?: string, agent?: string, approval = false): string {
+export function instructions(env: NodeJS.ProcessEnv = process.env, remote = false, publicUrl?: string, agent?: string, approval = false, account: AccountId = OWNER_ACCOUNT): string {
   // A remote agent cannot run `wait`, which reads the database file on the server's machine; it can ask /wait if
   // the server knows the URL clients reach it at.
   if (remote && !publicUrl) {
@@ -124,7 +135,7 @@ export function instructions(env: NodeJS.ProcessEnv = process.env, remote = fals
   const command = !remote
     ? waitCommand(setting("AGENT", env) || NAME_PLACEHOLDER, env)
     : approval
-      ? listenWaitCommand(publicUrl!, agent ?? NAME_PLACEHOLDER)
+      ? listenWaitCommand(publicUrl!, account, agent ?? NAME_PLACEHOLDER)
       : httpWaitCommand(publicUrl!, agent ?? NAME_PLACEHOLDER);
   // A session connected by approval has no token its shell can read: it gets a listen token for its agent first.
   const first = !approval
