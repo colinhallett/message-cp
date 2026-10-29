@@ -8,7 +8,7 @@ Thanks for looking. message-cp is built by its owner's [Tessl](https://tessl.io)
 
 ## Building and testing
 
-Needs Node 22.12 or later.
+Needs Node 22.14 or later.
 
 ```sh
 npm ci --ignore-scripts
