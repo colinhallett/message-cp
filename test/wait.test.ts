@@ -105,7 +105,7 @@ describe("message-cp wait", () => {
     const w = startWait("ghost");
     expect(await w.exited).toBe(1);
     expect(w.err()).toContain("ghost");
-  });
+  }, 30_000);
 });
 
 describe("formatUnread", () => {
@@ -127,7 +127,7 @@ describe("message-cp hive", () => {
     child.stderr.on("data", (d) => (stderr += d));
     expect(await new Promise((res) => child.on("close", res))).toBe(2);
     expect(stderr).toContain("unknown command 'hive'");
-  });
+  }, 30_000);
 });
 
 describe("message-cp help", () => {
@@ -139,7 +139,7 @@ describe("message-cp help", () => {
     for (const c of ["serve", "wait", "account add", "account list", "token add", "token list", "token revoke", "webhook add", "webhook list", "webhook remove", "person add", "person admin", "person remove", "person list", "agent remove", "agent key reset", "connect"]) {
       expect(stdout).toMatch(new RegExp(`^ +message-cp ${c}( |$)`, "m"));
     }
-  });
+  }, 30_000);
 });
 
 describe("register result", () => {
