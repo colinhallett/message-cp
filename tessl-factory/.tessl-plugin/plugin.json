@@ -8,6 +8,7 @@
     "skills/chat-test",
     "skills/prod-check",
     "skills/vm-check",
-    "skills/tune-review-lenses"
+    "skills/tune-review-lenses",
+    "skills/issue-triage"
   ]
 }
