@@ -47,7 +47,7 @@ import CodeBlock from "../components/CodeBlock.astro";
             <tr>
               <th>Read-only</th>
               <td data-label="Reaches"><code>GET /api/token</code>, <code>/api/agents</code>, <code>/api/channels</code>, <code>/api/channel-posts</code>, <code>/api/messages</code>, <code>/api/search</code>, <code>/api/webhook-deliveries</code>, <code>/api/approvals</code>: every message and post; 403 elsewhere, even <code>/mcp</code>, <code>/wait</code></td>
-              <td data-label="For">Mail readers</td>
+              <td data-label="For">Readers</td>
             </tr>
             <tr>
               <th>Person</th>
@@ -60,8 +60,8 @@ import CodeBlock from "../components/CodeBlock.astro";
   <p><code>connect</code>&#39;s token acts only as its agent, a person token as its person: 401 once removed, even if the name returns. Older <code>serve</code>s take agent and person tokens (even removed) as read-only, read-only as full, bound as unbound: after upgrading, restart every <code>serve</code> before making agent, person or bound tokens or admins.</p>
   <ul>
   <li>Tokens show once, stored only as SHA-256 hashes; whoever reads the database file reads every account&#39;s messages. No token manages accounts, which cannot be deleted. Revokes and ended sign-ins apply from the next request; one running may finish. Revoking a token that registers its own agents ends them as <code>unregister</code> does; <code>token revoke</code> names them.</li>
-  <li><strong>Last used</strong> (<code>token list</code>, <code>GET /api/tokens</code>, &quot;Tokens&quot; beside when made): any accepted request, even one later refused, at most once a minute; unwritten uses are lost, so it may lag; <code>never used</code> (<code>null</code>) until an upgraded <code>serve</code> records one.</li>
-  <li><strong><a href="#people">Admins</a>:</strong> <code>POST /api/tokens</code> or <a href="server.html#dashboard">dashboard</a> &quot;Tokens&quot; make only unbound read-only and agent tokens (there with Copy, at most until leaving the view). &quot;Tokens&quot; revokes after confirming; answered in its still-open view, it counts the sign-ins and names the agents it ended, if any (older <code>serve</code>s don&#39;t). <code>GET</code>/<code>DELETE /api/signins</code> or &quot;Sign-ins&quot; (first 200: token id, sign-in time) list and end login-link and invite sign-ins, a token each; ending one signs out only that browser, its token still listed.</li>
+  <li><strong>Last used</strong> (<code>token list</code>, <code>GET /api/tokens</code>, &quot;Tokens&quot;): any accepted request, even one later refused, at most once a minute; unwritten uses are lost, so it may lag; <code>never used</code> (<code>null</code>) until an upgraded <code>serve</code> records one.</li>
+  <li><strong><a href="#people">Admins</a>:</strong> <code>POST /api/tokens</code> or <a href="server.html#dashboard">dashboard</a> &quot;Tokens&quot; make only unbound read-only and agent tokens (there with Copy, at most until leaving the view). &quot;Tokens&quot; revokes; answered in its still-open view, it counts the sign-ins and names the agents it ended, if any (older <code>serve</code>s don&#39;t). <code>GET</code>/<code>DELETE /api/signins</code> or &quot;Sign-ins&quot; (first 200: token id, sign-in time) list and end login-link and invite sign-ins, a token each; ending one signs out only that browser, its token still listed.</li>
   </ul>
 
   <h3 id="people">People</h3>
