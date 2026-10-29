@@ -70,6 +70,39 @@ CREATE INDEX IF NOT EXISTS messages_by_reply ON messages (in_reply_to);
 -- \`ask\` finds the replies to one question sent to the asker through this, in id order, not by walking every reply to it.
 CREATE INDEX IF NOT EXISTS messages_by_question ON messages (in_reply_to, recipient_id);`;
 
+// Outgoing webhooks, added only with `message-cp webhook`; an admin person token also lists and removes them over
+// /api/webhooks. `event` is 'channel', 'mention' or 'agent' and `name` the channel or agent in the same account,
+// which need not exist yet. The secret is stored as is: deliveries sign with it.
+// So is the value of the one header a webhook may carry (`header_name`, `header_value`), since deliveries send it.
+// `max_per_hour` (null for none) caps its delivery requests in a fixed window: `window_started_at` is when the first
+// request after the last window ended was claimed, and `window_count` how many requests have been claimed since; the
+// window lasts 60 minutes. `fixed_body` is the JSON body the owner set with `webhook add --body`, sent in place of the
+// event body, or null to send the event body. AUTOINCREMENT so a webhook's id, which GET and DELETE /api/webhooks and
+// `webhook list` hand out, never names a later webhook once the highest one is removed. A table from before it is
+// rebuilt by rebuildWebhooks(), which creates the same table; the columns after `created_at` are added to it in
+// migrate first.
+const webhooksTable = (table: string) => `
+CREATE TABLE IF NOT EXISTS ${table} (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  account_id INTEGER NOT NULL REFERENCES accounts(id),
+  url TEXT NOT NULL,
+  event TEXT NOT NULL CHECK (event IN ('channel', 'mention', 'agent')),
+  name TEXT NOT NULL,
+  include_text INTEGER NOT NULL,
+  secret TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  header_name TEXT,
+  header_value TEXT,
+  max_per_hour INTEGER,
+  window_started_at INTEGER,
+  window_count INTEGER NOT NULL DEFAULT 0,
+  fixed_body TEXT
+);`;
+
+// Dropping a table drops its indexes, so rebuildWebhooks() creates this again.
+const WEBHOOKS_INDEXES = `
+CREATE INDEX IF NOT EXISTS webhooks_by_name ON webhooks (account_id, event, name COLLATE NOCASE);`;
+
 // One-time dashboard sign-in codes from `message-cp login-link`, and invites an admin person made (src/login.ts). Only
 // the code's hash is kept. `person_id` is set for a link that signs in as that person; `used_at` once it has given its
 // token or, for an invite, was cancelled. AUTOINCREMENT so an invite's id, which GET and DELETE /api/invites hand out,
@@ -180,25 +213,8 @@ CREATE INDEX IF NOT EXISTS mentions_unread ON mentions (agent_id, read_at, post_
 -- GET /api/channel-posts reads a page of posts' mentions through this, not by scanning every mention.
 CREATE INDEX IF NOT EXISTS mentions_by_post ON mentions (post_id);
 
--- Outgoing webhooks, added only with \`message-cp webhook\`; an admin person token also lists and removes them over
--- /api/webhooks. \`event\` is 'channel', 'mention' or 'agent' and \`name\` the channel or agent in the same account,
--- which need not exist yet. The secret is stored as is: deliveries sign with it.
--- So is the value of the one header a webhook may carry (\`header_name\`, \`header_value\`, added in \`migrate\`), since
--- deliveries send it. \`max_per_hour\` (also added in \`migrate\`, null for none) caps its delivery requests in a fixed
--- window: \`window_started_at\` is when the first request after the last window ended was claimed, and \`window_count\`
--- how many requests have been claimed since; the window lasts 60 minutes. \`fixed_body\` (also added in \`migrate\`) is the
--- JSON body the owner set with \`webhook add --body\`, sent in place of the event body, or null to send the event body.
-CREATE TABLE IF NOT EXISTS webhooks (
-  id INTEGER PRIMARY KEY,
-  account_id INTEGER NOT NULL REFERENCES accounts(id),
-  url TEXT NOT NULL,
-  event TEXT NOT NULL CHECK (event IN ('channel', 'mention', 'agent')),
-  name TEXT NOT NULL,
-  include_text INTEGER NOT NULL,
-  secret TEXT NOT NULL,
-  created_at INTEGER NOT NULL
-);
-CREATE INDEX IF NOT EXISTS webhooks_by_name ON webhooks (account_id, event, name COLLATE NOCASE);
+${webhooksTable("webhooks")}
+${WEBHOOKS_INDEXES}
 
 -- What a webhook is owed: one row per webhook per message or post it is for, queued in the transaction that stores the
 -- message or post. Only ids are kept, so the body is built when it is sent. \`serve\` sends them: \`attempts\` is counted
@@ -484,6 +500,40 @@ function rebuildDashboardSessions(db: Db): void {
   }).immediate();
 }
 
+const webhooksAutoincrement = (db: Db) =>
+  /\bAUTOINCREMENT\b/i.test((db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'webhooks'").get() as { sql: string }).sql);
+
+/**
+ * Rebuilds a `webhooks` table from before AUTOINCREMENT as `webhooksTable`, keeping every row, its id and every column,
+ * as rebuildLoginCodes() does for `login_codes`, so that no webhook id is handed out again once the highest webhook is
+ * removed. Under the write lock, so exactly one process rebuilds. `webhook_deliveries` refers to `webhooks`, so as in
+ * rebuildMessages() foreign keys are off around it and checked before it commits.
+ */
+function rebuildWebhooks(db: Db): void {
+  if (webhooksAutoincrement(db)) return;
+  // Dropping the old table must not cascade to the deliveries that reference it.
+  const foreignKeys = db.pragma("foreign_keys", { simple: true });
+  db.pragma("foreign_keys = OFF");
+  try {
+    db.transaction(() => {
+      if (webhooksAutoincrement(db)) return;
+      db.exec(webhooksTable("webhooks_autoincrement"));
+      db.exec(
+        `INSERT INTO webhooks_autoincrement (id, account_id, url, event, name, include_text, secret, created_at, header_name, header_value,
+                                             max_per_hour, window_started_at, window_count, fixed_body)
+         SELECT id, account_id, url, event, name, include_text, secret, created_at, header_name, header_value,
+                max_per_hour, window_started_at, window_count, fixed_body FROM webhooks ORDER BY id`,
+      );
+      db.exec("DROP TABLE webhooks");
+      db.exec("ALTER TABLE webhooks_autoincrement RENAME TO webhooks");
+      db.exec(WEBHOOKS_INDEXES);
+      if ((db.pragma("foreign_key_check") as unknown[]).length > 0) throw new Error("webhooks migration broke a foreign key");
+    }).immediate();
+  } finally {
+    db.pragma(`foreign_keys = ${foreignKeys ? "ON" : "OFF"}`);
+  }
+}
+
 function migrate(db: Db, path: string): void {
   addColumn(db, "key_hash", "TEXT");
   // A random token per registration, so a session can tell its agent from a later one that reuses the id or name.
@@ -546,6 +596,8 @@ function migrate(db: Db, path: string): void {
   addColumn(db, "window_count", "INTEGER NOT NULL DEFAULT 0", "webhooks");
   // The JSON body a webhook sends in place of the event body (`webhook add --body`); null, so the event body, for one without.
   addColumn(db, "fixed_body", "TEXT", "webhooks");
+  // Every webhooks column above is added before rebuildWebhooks() copies it.
+  rebuildWebhooks(db);
   addColumn(db, "delivery_uuid", "TEXT", "webhook_deliveries");
   // Set once a DELETE ends an HTTP session, so no server restores it or records it again.
   addColumn(db, "ended", "INTEGER NOT NULL DEFAULT 0", "http_sessions");
