@@ -20,12 +20,12 @@ npm test
 
 ## Releasing
 
-Only the owner releases; the factory never bumps the version, pushes a tag or publishes. `.github/workflows/release.yml` publishes `message-cp` to npm when a tag `v*` is pushed, through [npm trusted publishing](https://docs.npmjs.com/trusted-publishers), so no npm token is stored anywhere. It refuses, before building, a tag that is not `v` plus `version` from `package.json` or that points at a commit not on `main`. It then runs `npm ci --ignore-scripts`, `npm run build` and `npm test`, and publishes with provenance only if they pass. A ruleset lets only repository admins create, move or delete `v*` tags.
+Only the owner releases; the factory never bumps the version, pushes a tag or publishes. `.github/workflows/release.yml` publishes `message-cp` to npm when a tag `v*` is pushed, through [npm trusted publishing](https://docs.npmjs.com/trusted-publishers), so no npm token is stored anywhere. It refuses, before building, a tag that is not `v` plus `version` from `package.json` or that points at a commit not on `main`. It then runs `npm ci --ignore-scripts`, `npm run build` and `npm test`, and publishes with provenance only if they pass. A repository ruleset restricts creating, moving and deleting `v*` tags.
 
 To release a version:
 
 1. Bump `version` in `package.json` on `main`, through a pull request like any other change.
 2. Tag the merged commit on `main` and push the tag: `git tag v<version> <commit>` then `git push origin v<version>`.
-3. Watch the Release run in the repository's Actions tab. If it refuses the tag, delete the tag (`git push origin :refs/tags/v<version>`), fix what it names, and tag again.
+3. Watch the Release run in the repository's Actions tab. If it refuses the tag, delete the tag (`git push origin :refs/tags/v<version>`), fix what it names, and tag again. If the tag passed that check and a later step failed, fix the cause on `main`, bump `version` and tag the new version, or re-run the job if the failure was not in the code.
 
 Once only, before the first release through the workflow: npm can only trust a workflow for a package that already exists, so publish the first version by hand from a clean checkout of `main` (`npm ci --ignore-scripts`, `npm run build`, `npm test`, then `npm publish`). Then, on [npmjs.com](https://www.npmjs.com/package/message-cp), open the package's settings, add a trusted publisher for GitHub Actions with the repository `colinhallett/message-cp` and the workflow file name `release.yml`, and leave the environment empty. Every later version goes through the workflow. A tag for a version already on npm, such as the one published by hand, fails at the publish step.
