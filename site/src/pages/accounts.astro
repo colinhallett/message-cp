@@ -21,7 +21,7 @@ import CodeBlock from "../components/CodeBlock.astro";
   </nav>
 
   <h2 id="accounts-and-tokens-for-a-team">Accounts and tokens for a team</h2>
-  <p>Accounts, one per team or person, share nothing; names are unique per account across agents and people, ignoring case. The <code>owner</code> account always exists; <code>MESSAGE_CP_HTTP_TOKEN</code> (full), stdio servers and <code>message-cp wait</code> act as it.</p>
+  <p>Accounts (per team or person) share nothing; names are unique per account across agents and people, ignoring case. <code>MESSAGE_CP_HTTP_TOKEN</code> (full), stdio servers and <code>message-cp wait</code> act as <code>owner</code>, which always exists.</p>
   <p>Run these on the server as <code>serve</code>&#39;s user, with its <code>HOME</code> and any <code>MESSAGE_CP_DB</code> naming the same file, not a relative path; with Docker, <code>docker compose exec message-cp message-cp ...</code>. Otherwise they open another database, whose tokens the server refuses.</p>
   <CodeBlock lang="sh" code={"message-cp account add alice              # prints its first token\nmessage-cp account list                   # accounts and token ids, never tokens\nmessage-cp token add alice                # a full token\nmessage-cp token add alice --read-only    # a read-only token\nmessage-cp token add alice --agent-only   # an agent token\nmessage-cp token add alice --person dana  # dana's own token\nmessage-cp token list                     # unrevoked: id, account, kind, OAuth client, made, last used\nmessage-cp token revoke 2                 # stops token 2"} />
   <div class="table">
@@ -36,7 +36,7 @@ import CodeBlock from "../components/CodeBlock.astro";
           <tbody>
             <tr>
               <th>Full</th>
-              <td data-label="Reaches"><code>/mcp</code>, <code>/wait</code>, approving clients (with <code>--public-url</code>), Read-only&#39;s reads, <code>DELETE /api/conversation</code>; 403: sending, posting, admin routes (<code>/api/people</code>, <code>/api/invites</code>, <code>/api/webhooks</code>, <code>/api/tokens</code>, <code>/api/signins</code>, <code>/api/agents/key</code>, <code>DELETE</code> on <code>/api/agents</code> and <code>/api/approvals</code>)</td>
+              <td data-label="Reaches"><code>/mcp</code>, <code>/wait</code>, approving clients (<code>--public-url</code>), Read-only&#39;s reads, <code>DELETE /api/conversation</code>; 403: sending, posting, admin routes (<code>/api/people</code>, <code>/api/invites</code>, <code>/api/webhooks</code>, <code>/api/tokens</code>, <code>/api/signins</code>, <code>/api/agents/key</code>, <code>DELETE</code> on <code>/api/agents</code>, <code>/api/approvals</code>)</td>
               <td data-label="For">People only</td>
             </tr>
             <tr>
@@ -46,22 +46,22 @@ import CodeBlock from "../components/CodeBlock.astro";
             </tr>
             <tr>
               <th>Read-only</th>
-              <td data-label="Reaches"><code>GET /api/token</code>, <code>/api/agents</code>, <code>/api/channels</code>, <code>/api/channel-posts</code>, <code>/api/messages</code>, <code>/api/search</code>, <code>/api/webhook-deliveries</code>, <code>/api/approvals</code>, so every message and post; 403 elsewhere, even <code>/mcp</code>, <code>/wait</code></td>
+              <td data-label="Reaches"><code>GET /api/token</code>, <code>/api/agents</code>, <code>/api/channels</code>, <code>/api/channel-posts</code>, <code>/api/messages</code>, <code>/api/search</code>, <code>/api/webhook-deliveries</code>, <code>/api/approvals</code>: every message and post; 403 elsewhere, even <code>/mcp</code>, <code>/wait</code></td>
               <td data-label="For">Mail readers</td>
             </tr>
             <tr>
               <th>Person</th>
-              <td data-label="Reaches">Read-only&#39;s reach; <code>POST /api/send</code> and <code>/api/post</code> as its person; approves clients (with <code>--public-url</code>); admins add <code>DELETE /api/conversation</code>, admin routes</td>
+              <td data-label="Reaches">Read-only&#39;s reach, approving clients (<code>--public-url</code>); <code>POST /api/send</code>, <code>/api/post</code> as its person; admins add <code>DELETE /api/conversation</code>, admin routes</td>
               <td data-label="For">That person</td>
             </tr>
           </tbody>
         </table>
   </div>
-  <p><code>connect</code>&#39;s token acts only as its agent, a person token as its person: 401 once removed, even if the name returns. After upgrading, restart every <code>serve</code> before making agent, person or bound tokens or admins: older ones take agent and person tokens (even removed) as read-only, read-only as full, bound as unbound.</p>
+  <p><code>connect</code>&#39;s token acts only as its agent, a person token as its person: 401 once removed, even if the name returns. Older <code>serve</code>s take agent and person tokens (even removed) as read-only, read-only as full, bound as unbound: after upgrading, restart every <code>serve</code> before making agent, person or bound tokens or admins.</p>
   <ul>
-  <li>Tokens are shown once, stored only as SHA-256 hashes. Revokes and ended sign-ins apply from the next request; one running may finish. No token manages accounts, which cannot be deleted. Whoever reads the database file reads every account&#39;s messages.</li>
-  <li><strong>Last used</strong> (<code>token list</code>, <code>GET /api/tokens</code>; &quot;Tokens&quot; beside when made): any accepted request, even one later refused, at most once a minute; unwritten uses are lost, so it may lag; <code>never used</code> (<code>null</code>) until an upgraded <code>serve</code> records one.</li>
-  <li><strong><a href="#people">Admins</a>:</strong> <code>POST /api/tokens</code> or <a href="server.html#dashboard">dashboard</a> &quot;Tokens&quot; makes only unbound read-only and agent tokens (there with Copy, at most until leaving the view). &quot;Tokens&quot; revokes after confirming; answered in its still-open view, it counts sign-ins ended and names agents ended, if any (older <code>serve</code>s don&#39;t). Revoking a token that registers its own agents ends each agent it registered, as <code>unregister</code> does; <code>token revoke</code> prints their names. <code>GET</code>/<code>DELETE /api/signins</code> or &quot;Sign-ins&quot; (first 200: token id, sign-in time) list and end login-link and invite sign-ins, a token each; ending one signs out only that browser, its token unrevoked and listed.</li>
+  <li>Tokens show once, stored only as SHA-256 hashes; whoever reads the database file reads every account&#39;s messages. No token manages accounts, which cannot be deleted. Revokes and ended sign-ins apply from the next request; one running may finish. Revoking a token that registers its own agents ends them as <code>unregister</code> does; <code>token revoke</code> names them.</li>
+  <li><strong>Last used</strong> (<code>token list</code>, <code>GET /api/tokens</code>, &quot;Tokens&quot; beside when made): any accepted request, even one later refused, at most once a minute; unwritten uses are lost, so it may lag; <code>never used</code> (<code>null</code>) until an upgraded <code>serve</code> records one.</li>
+  <li><strong><a href="#people">Admins</a>:</strong> <code>POST /api/tokens</code> or <a href="server.html#dashboard">dashboard</a> &quot;Tokens&quot; make only unbound read-only and agent tokens (there with Copy, at most until leaving the view). &quot;Tokens&quot; revokes after confirming; answered in its still-open view, it counts the sign-ins and names the agents it ended, if any (older <code>serve</code>s don&#39;t). <code>GET</code>/<code>DELETE /api/signins</code> or &quot;Sign-ins&quot; (first 200: token id, sign-in time) list and end login-link and invite sign-ins, a token each; ending one signs out only that browser, its token still listed.</li>
   </ul>
 
   <h3 id="people">People</h3>
