@@ -1,4 +1,5 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
+import { endTokenAgents } from "./agents.js";
 import { OWNER_ACCOUNT, type AccountId, type Db } from "./db.js";
 
 // Accounts and their tokens. The operator manages them with `message-cp account` and `message-cp token` on the server.
@@ -284,17 +285,22 @@ export function listApprovals(db: Db, account: AccountId, limit: number, offset:
   }));
 }
 
-/** Stops the token `id` working for every request from now on. Returns the account it belonged to. */
-export function revokeToken(db: Db, id: number): string {
-  const row = db
-    .prepare(
-      `UPDATE tokens SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL
-       RETURNING (SELECT name FROM accounts WHERE accounts.id = tokens.account_id) AS account`,
-    )
-    .get(Date.now(), id) as { account: string } | undefined;
-  if (!row) throw new AccountError(`No working token with id ${id}.`);
-  return row.account;
-}
+/**
+ * Stops the token `id` working for every request from now on. For a token that registers its own agents, also ends
+ * each live agent it registered, as `endTokenAgents` does, in the same transaction. Returns the account it belonged to
+ * and the names of the agents it ended, in name order, none for any other token.
+ */
+export const revokeToken = (db: Db, id: number): { account: string; agents: string[] } =>
+  db.transaction(() => {
+    const row = db
+      .prepare(
+        `UPDATE tokens SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL
+         RETURNING account_id, (SELECT name FROM accounts WHERE accounts.id = tokens.account_id) AS account`,
+      )
+      .get(Date.now(), id) as { account_id: AccountId; account: string } | undefined;
+    if (!row) throw new AccountError(`No working token with id ${id}.`);
+    return { account: row.account, agents: endTokenAgents(db, row.account_id, id) };
+  }).immediate();
 
 /** The name of the account `account`. */
 export const accountName = (db: Db, account: AccountId): string =>

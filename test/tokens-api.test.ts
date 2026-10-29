@@ -6,7 +6,7 @@ import { join } from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TOKEN_USE_RESOLUTION_MS, addAccount, addToken, listAccounts, listTokens, recordClient, revokeToken } from "../src/accounts.js";
-import { addPerson, purgeAgent, registerAgent, removePerson, setPersonAdmin } from "../src/agents.js";
+import { addPerson, purgeAgent, registerAgent, registerWithIdentity, removePerson, setPersonAdmin } from "../src/agents.js";
 import { OWNER_ACCOUNT, openDb, type AccountId, type Db } from "../src/db.js";
 import { startHttp, type HttpServer } from "../src/http.js";
 import { NotAdminError, addTokenBy, COUNT_SIGNINS, listTokensBy, makeLoginCode, redeemLoginCode, revokeTokenBy } from "../src/login.js";
@@ -155,7 +155,7 @@ describe("DELETE /api/tokens", () => {
     const others = db.prepare(`SELECT ${COLUMNS} FROM tokens WHERE id <> ? ORDER BY id`).all(made.readOnly.id);
     const res = await revoke(made.readOnly.id);
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ id: made.readOnly.id, signins: 0 });
+    expect(await res.json()).toEqual({ id: made.readOnly.id, signins: 0, agents: [] });
     expect((await call("/api/agents", made.readOnly.token)).status).toBe(401);
     expect(db.prepare(`SELECT ${COLUMNS} FROM tokens WHERE id <> ? ORDER BY id`).all(made.readOnly.id)).toEqual(others);
     expect(listTokens(db).map((t) => t.id)).not.toContain(made.readOnly.id);
@@ -166,9 +166,30 @@ describe("DELETE /api/tokens", () => {
   it("revokes the token the request carries, which gets 401 next, keeping its person", async () => {
     const res = await revoke(anaId);
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ id: anaId, signins: 0 });
+    expect(await res.json()).toEqual({ id: anaId, signins: 0, agents: [] });
     expect((await list()).status).toBe(401);
     expect(db.prepare("SELECT admin, removed_at FROM agents WHERE name = 'ana'").all()).toEqual([{ admin: 1, removed_at: null }]);
+  });
+
+  it("revokes a token that registers its own agents, ending only the agents it registered and naming them", async () => {
+    const codex = addToken(db, "owner", false, true, undefined, undefined, true);
+    const other = addToken(db, "owner", false, true, undefined, undefined, true);
+    registerWithIdentity(db, OWNER_ACCOUNT, "beta", "x", undefined, codex.id);
+    registerWithIdentity(db, OWNER_ACCOUNT, "alpha", "x", undefined, codex.id);
+    registerWithIdentity(db, OWNER_ACCOUNT, "gamma", "x", undefined, other.id);
+    registerAgent(db, OWNER_ACCOUNT, "keyed", "x", "k".repeat(32));
+    registerAgent(db, friend, "alpha", "x");
+    const res = await revoke(codex.id);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ id: codex.id, signins: 0, agents: ["alpha", "beta"] });
+    const live = (account: AccountId) =>
+      db.prepare("SELECT name FROM agents WHERE account_id = ? AND removed_at IS NULL AND person = 0 ORDER BY name").pluck().all(account);
+    expect(live(OWNER_ACCOUNT)).toEqual(["gamma", "keyed"]);
+    expect(live(friend)).toEqual(["alpha"]);
+    expect(db.prepare("SELECT removed_name FROM agents WHERE token_id = ? AND removed_at IS NOT NULL ORDER BY removed_name").pluck().all(codex.id)).toEqual([
+      "alpha",
+      "beta",
+    ]);
   });
 
   it("answers 404, changing nothing, for another account's token, one already revoked and an unknown id", async () => {
@@ -207,20 +228,20 @@ describe("DELETE /api/tokens", () => {
       for (const session of [first.session, extra, other.session]) expect((await call("/api/token", session)).status).toBe(200);
       const res = await revoke(first.token);
       expect(res.status).toBe(200);
-      expect(await res.json()).toEqual({ id: first.token, signins: 2 });
+      expect(await res.json()).toEqual({ id: first.token, signins: 2, agents: [] });
       expect((await call("/api/token", first.session)).status).toBe(401);
       expect((await call("/api/token", extra)).status).toBe(401);
       expect((await call("/api/token", other.session)).status).toBe(200);
       // The sessions are kept: the revoked token is what refuses them.
       expect(db.prepare("SELECT COUNT(*) FROM dashboard_sessions WHERE token_id = ?").pluck().get(first.token)).toBe(2);
       const res2 = await revoke(other.token);
-      expect(await res2.json()).toEqual({ id: other.token, signins: 1 });
+      expect(await res2.json()).toEqual({ id: other.token, signins: 1, agents: [] });
       expect((await call("/api/token", other.session)).status).toBe(401);
     });
 
     it("counts a full token's sign-in from a login link with no person", async () => {
       const full = signIn();
-      expect(await (await revoke(full.token)).json()).toEqual({ id: full.token, signins: 1 });
+      expect(await (await revoke(full.token)).json()).toEqual({ id: full.token, signins: 1, agents: [] });
       expect((await call("/api/token", full.session)).status).toBe(401);
     });
 
@@ -229,7 +250,7 @@ describe("DELETE /api/tokens", () => {
       const ben = signIn("ben");
       removePerson(db, "owner", "ben");
       expect((await call("/api/token", ben.session)).status).toBe(401);
-      expect(await (await revoke(ben.token)).json()).toEqual({ id: ben.token, signins: 0 });
+      expect(await (await revoke(ben.token)).json()).toEqual({ id: ben.token, signins: 0, agents: [] });
     });
 
     it("answers 404 for another account's token, counting and ending none of its sign-ins", async () => {

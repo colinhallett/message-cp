@@ -228,7 +228,7 @@ describe("account and token management", () => {
     expect(() => addToken(db, "nobody")).toThrow(AccountError);
     expect(() => revokeToken(db, 999)).toThrow(AccountError);
     const id = listAccounts(db)[1].tokenIds[0];
-    expect(revokeToken(db, id)).toBe("friend");
+    expect(revokeToken(db, id)).toEqual({ account: "friend", agents: [] });
     expect(() => revokeToken(db, id)).toThrow(AccountError);
   });
 

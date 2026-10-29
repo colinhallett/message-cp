@@ -377,7 +377,8 @@ describe("DELETE /api/approvals", () => {
     const res = await revoke(desk.id, ana);
     expect(res.status).toBe(200);
     const text = await res.text();
-    expect(JSON.parse(text)).toEqual({ id: desk.id });
+    // A single-agent approval ends no agent: desk stays, as before.
+    expect(JSON.parse(text)).toEqual({ id: desk.id, agents: [] });
     expect(text).not.toContain(desk.token);
     expect((await get("/mcp", desk.token, "POST")).status).toBe(401);
     expect((await get("/wait?agent=desk", desk.token)).status).toBe(401);
@@ -389,13 +390,37 @@ describe("DELETE /api/approvals", () => {
     expect(await message(again)).toBe("No such approval");
   });
 
-  it("revokes a token that registers its own agents, keeping the agents it registered", async () => {
+  it("revokes a token that registers its own agents, ending only the agents it registered and naming them", async () => {
     const codex = await connectClient(ownerFull, null, { name: "Codex" });
-    registerWithIdentity(db, OWNER_ACCOUNT, "codex-1", "x", undefined, codex.id);
-    expect((await revoke(codex.id, ana)).status).toBe(200);
-    expect((await get("/wait?agent=codex-1", codex.token)).status).toBe(401);
-    expect(db.prepare("SELECT token_id FROM agents WHERE name = 'codex-1' AND removed_at IS NULL").pluck().get()).toBe(codex.id);
-    expect(await approvals(ownerFull)).toEqual([]);
+    const other = await connectClient(ownerFull, null, { name: "Other" });
+    const desk = await connectClient(ownerFull, "desk", { name: "Cursor" });
+    registerWithIdentity(db, OWNER_ACCOUNT, "beta", "x", undefined, codex.id);
+    registerWithIdentity(db, OWNER_ACCOUNT, "alpha", "x", undefined, codex.id);
+    registerWithIdentity(db, OWNER_ACCOUNT, "gamma", "x", undefined, other.id);
+    registerAgent(db, OWNER_ACCOUNT, "keyed", "x", "k".repeat(32));
+    // One it registered and that already unregistered is not ended again, nor named.
+    registerWithIdentity(db, OWNER_ACCOUNT, "gone", "x", undefined, codex.id);
+    removeAgent(db, OWNER_ACCOUNT, "gone", undefined, undefined, codex.id);
+    // The friend's account has an agent of the same name, which stays.
+    registerAgent(db, friend, "alpha", "x");
+    const res = await revoke(codex.id, ana);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ id: codex.id, agents: ["alpha", "beta"] });
+    const live = (account: AccountId) =>
+      db.prepare("SELECT name FROM agents WHERE account_id = ? AND removed_at IS NULL ORDER BY name").pluck().all(account);
+    // Another client's agent, a single-agent approval's, an agent with a key and the person ana all stay.
+    expect(live(OWNER_ACCOUNT)).toEqual(["ana", "desk", "gamma", "keyed"]);
+    expect(live(friend)).toEqual(["alpha"]);
+    // Ended as unregister ends an agent: the rows stay, marked removed under their real names.
+    expect(
+      db.prepare("SELECT removed_name, token_id FROM agents WHERE account_id = ? AND removed_at IS NOT NULL ORDER BY removed_name").all(OWNER_ACCOUNT),
+    ).toEqual([
+      { removed_name: "alpha", token_id: codex.id },
+      { removed_name: "beta", token_id: codex.id },
+      { removed_name: "gone", token_id: codex.id },
+    ]);
+    expect((await get("/wait?agent=gamma", other.token)).status).not.toBe(401);
+    expect((await approvals(ownerFull)).map((a) => a.id).sort()).toEqual([other.id, desk.id].sort());
   });
 
   it("answers 404, changing nothing, for another account's approval, a token not issued through OAuth and an unknown id", async () => {
@@ -559,5 +584,32 @@ describe("message-cp token list", () => {
     ]);
     const out = res.stdout + res.stderr;
     for (const secret of [named.token, nameless.token, claude.token, agent.token]) expect(out).not.toContain(secret);
+  }, 30_000);
+});
+
+describe("message-cp token revoke", () => {
+  const root = resolve(import.meta.dirname, "..");
+  const cli = (...args: string[]) =>
+    spawnSync(join(root, "node_modules/.bin/tsx"), [join(root, "src/cli.ts"), ...args], {
+      env: { ...process.env, MESSAGE_CP_DB: dbFile },
+      encoding: "utf8",
+    });
+
+  it("ends the agents a token that registers its own agents registered, printing their names, and only those", async () => {
+    const codex = await connectClient(ownerFull, null, { name: "Codex" });
+    const desk = await connectClient(ownerFull, "desk", { name: "Cursor" });
+    registerWithIdentity(db, OWNER_ACCOUNT, "beta", "x", undefined, codex.id);
+    registerWithIdentity(db, OWNER_ACCOUNT, "alpha", "x", undefined, codex.id);
+    const res = cli("token", "revoke", String(codex.id));
+    expect(res.status).toBe(0);
+    expect(res.stdout).toBe("");
+    expect(res.stderr).toBe(`message-cp: revoked token ${codex.id} of account 'owner'. Ended the agents it registered: alpha, beta.\n`);
+    expect(db.prepare("SELECT name FROM agents WHERE account_id = ? AND removed_at IS NULL AND person = 0 ORDER BY name").pluck().all(OWNER_ACCOUNT)).toEqual([
+      "desk",
+    ]);
+    // A single-agent approval's revoke keeps its agent and prints what it always did.
+    const single = cli("token", "revoke", String(desk.id));
+    expect(single.stderr).toBe(`message-cp: revoked token ${desk.id} of account 'owner'.\n`);
+    expect(db.prepare("SELECT 1 FROM agents WHERE account_id = ? AND name = 'desk' AND removed_at IS NULL").get(OWNER_ACCOUNT)).toBeDefined();
   }, 30_000);
 });
