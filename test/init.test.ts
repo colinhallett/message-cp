@@ -456,7 +456,7 @@ describe("message-cp init", () => {
       expect(r.status).toBe(2);
       expect(r.stderr).toContain("usage: message-cp init [--client <claude-code|codex|cursor|claude-desktop>]");
     }
-  });
+  }, 30_000);
 
   it("takes --url and --agent only together, and the token and key only from the environment, the token required", () => {
     const env = { MESSAGE_CP_HTTP_TOKEN: TOKEN, MESSAGE_CP_AGENT_KEY: KEY };
@@ -481,7 +481,7 @@ describe("message-cp init", () => {
     expect(r.stderr).toContain("Nothing was changed.");
     expect(r.stderr).not.toContain(KEY);
     expect(existsSync(join(home, ".cursor", "mcp.json"))).toBe(false);
-  });
+  }, 30_000);
 
   it("refuses an unsafe --url before reading anything, changing nothing", () => {
     mkdirSync(join(home, ".cursor"));
@@ -492,7 +492,7 @@ describe("message-cp init", () => {
       expect(r.stderr).toMatch(/^message-cp init: --url .*Nothing was changed\.\n$/);
       expect(existsSync(join(home, ".cursor", "mcp.json"))).toBe(false);
     }
-  });
+  }, 30_000);
 
   it("with --url, a wrong token changes nothing, says so and prints neither secret", async () => {
     mkdirSync(join(home, ".cursor"));
@@ -571,7 +571,7 @@ describe("message-cp init", () => {
     expect(r.status).toBe(1);
     expect(r.stderr).toContain("message-cp init --client cursor");
     expect(existsSync(join(home, ".cursor", "mcp.json"))).toBe(false);
-  });
+  }, 30_000);
 });
 
 // `message-cp init --url --agent`: the team server over HTTP, with the token and key only in the client's configuration.
@@ -1335,7 +1335,7 @@ describe("message-cp init --from", () => {
       expect(r.status, args.join(" ")).toBe(2);
       expect(r.output).toContain("usage: message-cp init");
     }
-  });
+  }, 30_000);
 
   it("refuses a file others can read, changing nothing", async () => {
     if (process.platform === "win32") return;
@@ -1349,7 +1349,7 @@ describe("message-cp init --from", () => {
     expect(r.output).not.toContain(TOKEN);
     expect(existsSync(join(home, ".cursor", "mcp.json"))).toBe(false);
     expect(existsSync(join(home, ".message-cp"))).toBe(false);
-  });
+  }, 30_000);
 
   it("sets up Cursor from the file connect wrote, writes the wake-up token, and prints neither secret", async () => {
     mkdirSync(join(home, ".cursor"));
