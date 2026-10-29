@@ -1,7 +1,7 @@
 ---
 name: issue-triage
 description: >-
-  Daily sweep of colinhallett/message-cp's open GitHub issues: label each
+  Sweep, run by hand, of colinhallett/message-cp's open GitHub issues: label each
   untriaged issue and leave one comment assessing it against DIRECTION.md and
   the code. Never starts work: files no Linear issue, opens no pull request,
   pushes nothing and closes nothing.

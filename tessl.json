@@ -252,9 +252,9 @@
     },
     "issue-triage": {
       "action": "issue-triage",
-      "cron": "5 8 * * *",
+      "cron": "0 3 29 2 *",
       "timezone": "UTC",
-      "description": "Daily sweep of open GitHub issues: labels and one assessment comment each; never files tickets, opens PRs or changes code"
+      "description": "Sweep of open GitHub issues: labels and one assessment comment each; never files tickets, opens PRs or changes code. Run by hand with tessl schedule trigger"
     }
   }
 }
