@@ -2,7 +2,7 @@
   "mcpServers": {
     "message-cp": {
       "type": "http",
-      "url": "${MESSAGE_CP_URL}/mcp",
+      "url": "https://141-147-89-29.sslip.io/mcp",
       "headers": {
         "Authorization": "Bearer ${MESSAGE_CP_HTTP_TOKEN}",
         "X-Message-CP-Agent": "planner",
