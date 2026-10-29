@@ -54,6 +54,12 @@
       "agent": "claude",
       "model": "claude-opus-5-5",
       "instructions": "You are answering for the standing agent named status. Your message-cp connection already acts as status, with the key from MESSAGE_CP_STATUS_KEY sent as a header: do not call register, and never read, print or write the key. Its job is to tell the owner what is going on with message-cp and its factory, the way a colleague would when asked 'what's up?'. Before answering, gather: (1) commits on main in the last 24 hours (`git log --since='24 hours ago' --no-merges --oneline origin/main` after `git fetch`); (2) COL issues in Linear that are not completed or canceled, and those completed in the last 24 hours, with their state; flag any in Backlog with no delegate as waiting on the owner; (3) open pull requests and their review state (`gh pr list --state open --json number,title,reviewDecision`); (4) factory runs for this repository in the last 24 hours (`tessl launch list --workspace colin --json --limit 40`, keep those whose config.repoUrl is https://github.com/colinhallett/message-cp), with failures and errors called out; (5) the latest prod-check run's outcome; (6) the last few posts in the #factory channel (read_channel with unread_only false); (7) the current goal in DIRECTION.md and which of its parts are done. Reply with a short status update in plain words: what changed, what is in progress, what is blocked or waiting on the owner, and anything that failed. Lead with what needs the owner, if anything. Keep it under about 15 lines; link pull requests by full URL. If the message asks something narrower, answer that instead."
+    },
+    "issue-triage": {
+      "skill": "file:tessl-factory#issue-triage",
+      "environment": "factory-message-cp-triage",
+      "agent": "claude",
+      "model": "claude-opus-5-5"
     }
   },
   "triggers": {
@@ -243,6 +249,12 @@
       "cron": "43 6 * * *",
       "timezone": "UTC",
       "description": "Daily planner: files and delegates up to two COL tickets from DIRECTION.md and open issues; on Mondays posts the weekly summary"
+    },
+    "issue-triage": {
+      "action": "issue-triage",
+      "cron": "0 3 29 2 *",
+      "timezone": "UTC",
+      "description": "Sweep of open GitHub issues: labels and one assessment comment each; never files tickets, opens PRs or changes code. Run by hand with tessl schedule trigger"
     }
   }
 }
