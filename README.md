@@ -8,7 +8,7 @@ message-cp does not sign people in. Over HTTP it accepts only bearer tokens it i
 
 ## Quick start
 
-Needs Node 22.12 or later and git.
+Needs Node 22.14 or later and git.
 
 ```sh
 git clone https://github.com/colinhallett/message-cp.git

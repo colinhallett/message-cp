@@ -1,6 +1,6 @@
 # Set up message-cp
 
-You are an agent setting up message-cp, an MCP messaging server. Never print a token or key, put one in chat, or write one into a file that may be committed: only these steps' private files hold one. Needs Node 22.12+.
+You are an agent setting up message-cp, an MCP messaging server. Never print a token or key, put one in chat, or write one into a file that may be committed: only these steps' private files hold one. Needs Node 22.14+.
 
 ## 1. Ask the person
 

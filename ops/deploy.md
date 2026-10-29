@@ -43,7 +43,7 @@ Once the accounts release is live, delete `<MESSAGE_CP_DB>.before-accounts` when
 
 ## Install
 
-As root, on a machine with Node 22.12 or later, git, curl, `flock` and `setpriv` (util-linux), and a C++ toolchain (`build-essential` on Debian and Ubuntu) in case `better-sqlite3` has no prebuilt binary for the server's Node:
+As root, on a machine with Node 22.14 or later, git, curl, `flock` and `setpriv` (util-linux), and a C++ toolchain (`build-essential` on Debian and Ubuntu) in case `better-sqlite3` has no prebuilt binary for the server's Node:
 
 1. A user for the server, one for builds, and the directories:
 

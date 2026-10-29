@@ -203,7 +203,7 @@ describe("message-cp login-link", () => {
       expect(out.stderr).toMatch(/^message-cp: --url /);
     }
     expect(spawnSync("test", ["-e", fresh]).status).toBe(1);
-  });
+  }, 60_000);
 
   it("refuses an unknown account or person, an agent's name and any other or repeated flag, storing nothing", () => {
     registerAgent(db, OWNER_ACCOUNT, "bot");

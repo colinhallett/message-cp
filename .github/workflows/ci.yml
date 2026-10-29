@@ -20,7 +20,7 @@ jobs:
       fail-fast: false
       matrix:
         # The lowest Node `engines.node` in package.json accepts, and the current LTS.
-        node: ["22.12.0", "lts/*"]
+        node: ["22.14.0", "lts/*"]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
