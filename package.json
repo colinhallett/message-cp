@@ -15,6 +15,10 @@
     "e2e": "node scripts/e2e.mjs"
   },
   "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/colinhallett/message-cp.git"
+  },
   "bugs": {
     "url": "https://github.com/colinhallett/message-cp/issues"
   },

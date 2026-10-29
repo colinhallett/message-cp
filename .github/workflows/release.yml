@@ -1,0 +1,51 @@
+name: Release
+
+# Publishes message-cp to npm when the owner pushes a version tag. npm trusts
+# this workflow, by its file name, through trusted publishing (GitHub's OIDC
+# token), so no npm token is stored anywhere. See "Releasing" in CONTRIBUTING.md.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    name: Publish to npm
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # All history, so the tag check can tell whether the commit is on main.
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "24"
+          # Never use a cache in a release build.
+          package-manager-cache: false
+      # Trusted publishing needs npm 11.5.1 or later.
+      - run: npm install -g npm@11.21.1
+      - name: Check the tag
+        env:
+          TAG: ${{ github.ref_name }}
+          SHA: ${{ github.sha }}
+          MAIN: main
+        run: |
+          version=$(node -p 'require("./package.json").version')
+          if [ "$TAG" != "v$version" ]; then
+            echo "::error::The tag $TAG does not match package.json, whose version is $version: push the tag v$version, or bump version on main first."
+            exit 1
+          fi
+          git fetch --no-tags --quiet origin "+refs/heads/$MAIN:refs/remotes/origin/$MAIN"
+          if ! git merge-base --is-ancestor "$SHA" "origin/$MAIN"; then
+            echo "::error::The tag $TAG points at $SHA, which is not on $MAIN: tag a commit on $MAIN."
+            exit 1
+          fi
+          echo "Publishing message-cp $version from $SHA on $MAIN."
+      - run: npm ci --ignore-scripts
+      - run: npm run build
+      - run: npm test
+      - run: npm publish --provenance
