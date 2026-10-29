@@ -20,7 +20,8 @@ import {
   type Identity,
 } from "./agents.js";
 import { OWNER_ACCOUNT, type AccountId, type Db } from "./db.js";
-import { DEFAULT_WAIT_HOLD_MS, formatUnread, httpWaitCommand, instructions, waitCommand } from "./wait.js";
+import { issueListenToken } from "./accounts.js";
+import { DEFAULT_WAIT_HOLD_MS, formatUnread, httpWaitCommand, instructions, listenWaitCommand, saveListenToken, waitCommand } from "./wait.js";
 import {
   DEFAULT_INBOX_LIMIT,
   MAX_BODY_LENGTH,
@@ -137,6 +138,8 @@ export interface ServerOptions {
   hold?: () => (() => void) | undefined;
   /** Over HTTP, the agent the session's token is bound to, which its instructions name. */
   agent?: string;
+  /** Over HTTP, whether the session's token came from an approval, so its wait command reads a listen token. */
+  approval?: boolean;
   /** A signal that aborts once the response that would carry request `id` has closed, where the transport knows it. */
   closed?: (id: RequestId) => AbortSignal | undefined;
 }
@@ -193,7 +196,7 @@ export function createServer(db: Db, session = new Session(OWNER_ACCOUNT), optio
   const account = session.account;
   const server = new McpServer(
     { name: "message-cp", version: "0.1.0" },
-    { instructions: instructions(process.env, remote, options.publicUrl, options.agent) },
+    { instructions: instructions(process.env, remote, options.publicUrl, options.agent, options.approval, session.account) },
   );
 
   // Aborts when the call is cancelled or, where the transport knows it, the response that would carry its answer closes.
@@ -212,6 +215,19 @@ export function createServer(db: Db, session = new Session(OWNER_ACCOUNT), optio
   const registering = (extra: Extra): number | undefined => {
     const token = extra.authInfo?.extra?.registers;
     return typeof token === "number" ? token : undefined;
+  };
+
+  // Over HTTP, a request whose token came from an approval carries that token's row id, which a listen token is issued through.
+  const approvalOf = (extra: Extra): number | undefined => {
+    const token = extra.authInfo?.extra?.approval;
+    return typeof token === "number" ? token : undefined;
+  };
+  /** A listen token for the session's registration through approval `approval`, with how to save it and its wait command. */
+  const listen = (approval: number, identity: Identity, name: string) => {
+    const token = options.publicUrl ? issueListenToken(db, account, identity, approval) : undefined;
+    // The registration was checked just before, so a refusal means the approval was revoked or the agent removed since.
+    if (token === undefined) throw new ToolError("No listen token: this session's approval was revoked or its agent removed.");
+    return { listenToken: token, saveListenToken: saveListenToken(options.publicUrl!, account, name), waitCommand: listenWaitCommand(options.publicUrl!, account, name) };
   };
 
   // Wraps a tool: bumps last-seen for a registered session and turns ToolError into an error result.
@@ -234,7 +250,7 @@ export function createServer(db: Db, session = new Session(OWNER_ACCOUNT), optio
     "register",
     {
       description:
-        "Register this session as an agent with a name and short bio. A new name without a key you pass returns a generated key, once: keep it (if you pass your own key, nothing is returned). If the name exists (any case), this session takes that agent over and its bio is updated, but only with the agent's key; an agent registered before keys existed is claimed by the first call and gets a key. When the server can offer one, it returns waitCommand: run it in the background to be woken by unread messages, by unread posts in the channels you have joined and by unread @mentions of you; when it fires, call read_inbox if it names messages or mentions and read_channel for each channel it names posts in, and only then start it again. When it returns no waitCommand, or your client cannot run a background command, call wait_for_mail instead, and call it again whenever it returns unread null. A session whose token is bound to one agent is that agent already, and register fails there. A session whose token was approved to register its own agents registers a name no agent or person of the account has, or takes back an agent that same token registered and that is still registered; it is refused any other agent, takes no key and returns none, since the token is that agent's credential.",
+        "Register this session as an agent with a name and short bio. A new name without a key you pass returns a generated key, once: keep it (if you pass your own key, nothing is returned). If the name exists (any case), this session takes that agent over and its bio is updated, but only with the agent's key; an agent registered before keys existed is claimed by the first call and gets a key. When the server can offer one, it returns waitCommand: run it in the background to be woken by unread messages, by unread posts in the channels you have joined and by unread @mentions of you; when it fires, call read_inbox if it names messages or mentions and read_channel for each channel it names posts in, and only then start it again. Over HTTP, a session connected by approval also gets listenToken, once, and saveListenToken, which says how to save it privately to the file for this agent that its waitCommand reads (see listen_token). When it returns no waitCommand, or your client cannot run a background command, call wait_for_mail instead, and call it again whenever it returns unread null. A session whose token is bound to one agent is that agent already, and register fails there. A session whose token was approved to register its own agents registers a name no agent or person of the account has, or takes back an agent that same token registered and that is still registered; it is refused any other agent, takes no key and returns none, since the token is that agent's credential.",
       inputSchema: {
         name: z.string().describe("1-32 characters: letters, digits, '-' and '_'. 'all' is reserved."),
         bio: z.string().describe("A short description of who you are and what you work on."),
@@ -246,9 +262,28 @@ export function createServer(db: Db, session = new Session(OWNER_ACCOUNT), optio
       const { result, identity } = registerWithIdentity(db, account, name, bio, key, registering(extra));
       session.bind(identity);
       if (!remote) return { ...result, waitCommand: waitCommand(result.name) };
+      const approval = approvalOf(extra);
+      if (approval !== undefined && options.publicUrl) return { ...result, ...listen(approval, identity, result.name) };
       return options.publicUrl ? { ...result, waitCommand: httpWaitCommand(options.publicUrl, result.name) } : result;
     }),
   );
+
+  if (options.approval && options.publicUrl) {
+    server.registerTool(
+      "listen_token",
+      {
+        description:
+          "Get a new listen token for the agent this session is, connected by approval: a token that can only wait for this agent's mail on GET /wait, which the waitCommand returned here reads from its own file for this agent. Returns listenToken, once, saveListenToken (how to save it privately to that file) and waitCommand. A new one replaces the agent's earlier listen token, which stops working. It stops working too when the agent is removed or unregistered or the approval is revoked; then the command exits with a 401 or 404 error. Requires register first, unless the approval was for this one agent.",
+        inputSchema: {},
+      },
+      tool((_args: Record<string, never>, extra) => {
+        const own = session.requireAgent();
+        const approval = approvalOf(extra);
+        if (approval === undefined) throw new ToolError("Only a session connected by approval gets a listen token.");
+        return listen(approval, own, own.name);
+      }),
+    );
+  }
 
   server.registerTool(
     "unregister",

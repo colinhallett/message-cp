@@ -1,5 +1,7 @@
+import { createHash } from "node:crypto";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { OWNER_ACCOUNT, type AccountId } from "./db.js";
 import type { Unread } from "./messages.js";
 import { setting } from "./settings.js";
 
@@ -63,33 +65,89 @@ case $c in
 esac
 done`;
 
+// The same loop for a session connected by approval, whose MCP client holds its token: the token is the agent's listen
+// token, read only from ~/.message-cp/wait/<name>@<server>, never from MESSAGE_CP_HTTP_TOKEN or
+// ~/.message-cp/http-token, so agents on one machine never share or overwrite one file. $3 is the <server> part.
+const CURL_401 = "the server refused the token (401)";
+if (!CURL_LOOP.includes(CURL_401)) throw new Error("CURL_LOOP's 401 line changed: update LISTEN_LOOP");
+const LISTEN_LOOP = `f="$HOME/.message-cp/wait/$2@$3"
+t=$(cat "$f" 2>/dev/null)
+[ -n "$t" ] || { echo "message-cp wait: no listen token in $f; call the listen_token tool and save its token there as it says" >&2; exit 1; }
+${CURL_LOOP.slice(CURL_LOOP.indexOf("while :; do")).replace(CURL_401, "the server refused the listen token (401): a newer one replaced it, its agent was removed or its approval revoked")}`;
+
+/** The `/wait` URL on the server at `publicUrl`, built from the parsed URL. */
+function waitUrl(publicUrl: string): URL {
+  const url = new URL(publicUrl);
+  // Set as the path, never resolved as a reference, so no path can change the host.
+  url.pathname = `${url.pathname.replace(/\/+$/, "")}/wait`;
+  return url;
+}
+
 /**
  * The shell command that exits once `name` has unread mail on the server at `publicUrl`, over HTTP. `publicUrl` is one
  * `serve` checked with `publicUrl` in connect.ts; `/wait` is built from the parsed URL.
  */
 export function httpWaitCommand(publicUrl: string, name: string): string {
-  const url = new URL(publicUrl);
-  // Set as the path, never resolved as a reference, so no path can change the host.
-  url.pathname = `${url.pathname.replace(/\/+$/, "")}/wait`;
-  return `sh -c '${CURL_LOOP}' sh ${shellQuote(url.href)} ${shellQuote(name)}`;
+  return `sh -c '${CURL_LOOP}' sh ${shellQuote(waitUrl(publicUrl).href)} ${shellQuote(name)}`;
+}
+
+/**
+ * The <server> part of a listen token's file name for the account `account`: the public URL's host and port, with
+ * anything but [A-Za-z0-9.-] as `_`, then `-` and 16 hex digits of a sha256 of the account and the `/wait` URL. Agent
+ * names are unique only within an account, and two servers may share a host under different paths, so both are in it.
+ */
+const listenServer = (publicUrl: string, account: AccountId) =>
+  `${new URL(publicUrl).host.replace(/[^A-Za-z0-9.-]/g, "_")}-${createHash("sha256").update(`${account} ${waitUrl(publicUrl).href}`).digest("hex").slice(0, 16)}`;
+
+/** The file, under `~`, that the listen command for `name` of the account `account` on the server at `publicUrl` reads its listen token from. */
+export const listenTokenFile = (publicUrl: string, account: AccountId, name: string) => `~/.message-cp/wait/${name}@${listenServer(publicUrl, account)}`;
+
+/**
+ * How an agent saves its listen token to `listenTokenFile`, privately: the directories 0700 and the file 0600. The file
+ * is removed first, so one already there with a wider mode is made again under the umask. The token is never in it;
+ * `<listen token>` is a placeholder the agent replaces.
+ */
+export const saveListenToken = (publicUrl: string, account: AccountId, name: string) => {
+  const file = `~/.message-cp/wait/${shellQuote(`${name}@${listenServer(publicUrl, account)}`)}`;
+  return `Save listenToken, and nothing else, to ${listenTokenFile(publicUrl, account, name)}, privately: mkdir -p ~/.message-cp/wait && chmod 700 ~/.message-cp ~/.message-cp/wait, then rm -f ${file} && (umask 077 && printf '%s\\n' '<listen token>' > ${file}), with the token in place of <listen token>. Never put it in a URL, a message or a log.`;
+};
+
+/**
+ * The shell command that exits once `name` of the account `account` has unread mail on the server at `publicUrl`, for
+ * a session connected by approval: like `httpWaitCommand`, but with the agent's listen token from `listenTokenFile`.
+ */
+export function listenWaitCommand(publicUrl: string, account: AccountId, name: string): string {
+  return `sh -c '${LISTEN_LOOP}' sh ${shellQuote(waitUrl(publicUrl).href)} ${shellQuote(name)} ${shellQuote(listenServer(publicUrl, account))}`;
 }
 
 /**
  * What a connecting session is told about being woken by messages. `agent` is the agent an HTTP session already is,
- * because its token is bound to it: its command names that agent, and it is not told to register.
+ * because its token is bound to it: its command names that agent, and it is not told to register. `approval` is set for
+ * a session connected by approval, whose command reads a listen token (`listenWaitCommand`) that it is told how to get;
+ * `account` is the session's account, which names that token's file.
  */
-export function instructions(env: NodeJS.ProcessEnv = process.env, remote = false, publicUrl?: string, agent?: string): string {
+export function instructions(env: NodeJS.ProcessEnv = process.env, remote = false, publicUrl?: string, agent?: string, approval = false, account: AccountId = OWNER_ACCOUNT): string {
   // A remote agent cannot run `wait`, which reads the database file on the server's machine; it can ask /wait if
   // the server knows the URL clients reach it at.
   if (remote && !publicUrl) {
     return "message-cp does not push messages; an agent has to ask for them. Call read_inbox to check for mail, and list_channels for unread posts. To wait for mail in one call instead, call wait_for_mail. It reads and marks nothing: when it returns a line, call read_inbox if the line names messages or mentions and read_channel for each channel it names posts in, and only then wait again, since a call made before reading returns at once on the same mail. When it returns { unread: null }, its timeout passed without finding mail: call it again.";
   }
-  const command = remote
-    ? httpWaitCommand(publicUrl!, agent ?? NAME_PLACEHOLDER)
-    : waitCommand(setting("AGENT", env) || NAME_PLACEHOLDER, env);
+  const command = !remote
+    ? waitCommand(setting("AGENT", env) || NAME_PLACEHOLDER, env)
+    : approval
+      ? listenWaitCommand(publicUrl!, account, agent ?? NAME_PLACEHOLDER)
+      : httpWaitCommand(publicUrl!, agent ?? NAME_PLACEHOLDER);
+  // A session connected by approval has no token its shell can read: it gets a listen token for its agent first.
+  const first = !approval
+    ? remote && agent
+      ? `as agent '${agent}', which this session already is,`
+      : "register and then"
+    : agent
+      ? `as agent '${agent}', which this session already is, call listen_token, save the listen token it returns as it says, and then`
+      : "register, save the listen token it returns as it says, and then";
   return [
     "message-cp does not push messages; an agent has to ask for them.",
-    `To be woken when a message arrives, ${remote && agent ? `as agent '${agent}', which this session already is,` : "register and then"} run this as a background command (in Claude Code, a Bash call with run_in_background): ${command}`,
+    `To be woken when a message arrives, ${first} run this as a background command (in Claude Code, a Bash call with run_in_background): ${command}`,
     "It exits as soon as you have unread mail, unread posts in a channel you joined with join_channel, or an unread @mention of you, and prints how many, from whom and in which channels, without reading them.",
     "When it fires, call read_inbox if it names messages or mentions and read_channel for each channel it names posts in, and only then start the command again; starting it before reading fires at once on the same mail.",
     "A client that cannot run a background command can call wait_for_mail instead: it holds the call until the same mail arrives or its timeout passes, and returns the same line. Read what it names the same way before calling it again. When it returns { unread: null }, its timeout passed without finding mail: call it again.",

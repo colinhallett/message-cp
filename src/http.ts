@@ -1563,6 +1563,9 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
       return reply(res, 401, "Unauthorized", { "WWW-Authenticate": oauth ? oauth.challenge : "Bearer" });
     }
     const { account } = access;
+    // A listen token (`issueListenToken`) only waits for its own agent's mail on GET /wait; `wait` refuses another agent.
+    // Anything else is refused before a slot is taken or a body read.
+    if (access.listen && path !== "/wait") return reply(res, 403, "A listen token only waits on GET /wait", { Connection: "close" });
     // A POST or PATCH to /api/people or /api/invites carries a body its 403 leaves unread, so their 403s close the
     // connection.
     const inviting = path === "/api/people" || path === "/api/invites";
@@ -1686,7 +1689,7 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
         return reply(res, 404, "Unknown session", { Connection: "close" });
       }
       if (sessions.size + initializing >= maxSessions) return reply(res, 503, "Too many sessions", { Connection: "close" });
-      restore(id, account, identity);
+      restore(id, account, identity, access.approval !== undefined);
     }
     // A request without a session may name the agent its new session acts as. A malformed pair is answered before the
     // cap, so the cap limits only work that can go ahead, closing the connection so its unread body cannot hold it open.
@@ -1743,11 +1746,12 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
     named?: AgentHeaders,
     bodyRead?: () => void,
   ) => {
-    const { account, agent: bound, registers } = access;
+    const { account, agent: bound, registers, approval } = access;
     // Tools read the token's agent from here, so a bound token cannot `register` or remove another name on any session,
-    // and the row id of a token that registers its own agents, so it registers and removes only its own.
-    if (bound) (req as IncomingMessage & { auth?: AuthInfo }).auth = { token: "", clientId: "", scopes: [], extra: { agent: bound.name } };
-    else if (registers !== undefined) (req as IncomingMessage & { auth?: AuthInfo }).auth = { token: "", clientId: "", scopes: [], extra: { registers } };
+    // the row id of a token that registers its own agents, so it registers and removes only its own, and the row id of
+    // an approval's token, which `register` and `listen_token` issue a listen token through.
+    const extra = { ...(bound && { agent: bound.name }), ...(registers !== undefined && { registers }), ...(approval !== undefined && { approval }) };
+    if (Object.keys(extra).length > 0) (req as IncomingMessage & { auth?: AuthInfo }).auth = { token: "", clientId: "", scopes: [], extra };
     let body: unknown;
     if (req.method === "POST") {
       try {
@@ -1827,7 +1831,7 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
       if (sessions.get(sid) === live) recordSession(() => saveSession(db, sid, account, identity));
     });
     live.session = session;
-    await createServer(db, session, { ...serverOptions(live), agent: bound?.name }).connect(transport);
+    await createServer(db, session, { ...serverOptions(live), agent: bound?.name, approval: approval !== undefined }).connect(transport);
     await transport.handleRequest(req, res, body);
   };
 
@@ -1856,9 +1860,10 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
   /**
    * Holds session `id` again, bound to `identity`, which `restorableSession` has just checked. It takes its place in
    * `sessions` at once, so it counts against the cap and a second request on it waits for this one; if it cannot be
-   * initialized it is dropped again.
+   * initialized it is dropped again. `approval` is whether the request's token came from an approval, so the session
+   * offers `listen_token`.
    */
-  const restore = (id: string, account: AccountId, identity: Identity) => {
+  const restore = (id: string, account: AccountId, identity: Identity, approval: boolean) => {
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: () => id, onsessionclosed: endRecorded });
     const live: Live = { lastUsed: Date.now(), transport, account, open: new Map() };
     sessions.set(id, live);
@@ -1874,7 +1879,7 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
     live.session = session;
     live.ready = (async () => {
       try {
-        await createServer(db, session, serverOptions(live)).connect(transport);
+        await createServer(db, session, { ...serverOptions(live), approval }).connect(transport);
         await prime(transport);
       } catch (err) {
         drop(id);
