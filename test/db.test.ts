@@ -5,10 +5,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import Database from "better-sqlite3";
-import { OWNER_ACCOUNT, openDb, preAccountsCopy } from "../src/db.js";
+import { COUNT_WEBHOOKS_COPIED, OWNER_ACCOUNT, openDb, preAccountsCopy } from "../src/db.js";
 import { accountForToken, addAccount, addToken } from "../src/accounts.js";
 import { getAgent, registerAgent } from "../src/agents.js";
 import { deleteConversation, readInbox, sendMessage } from "../src/messages.js";
+import { addWebhook, listWebhooks, removeWebhook } from "../src/webhooks.js";
 
 const OPEN_DB = join(import.meta.dirname, "fixtures", "open-db.ts");
 const SCHEMA_BEFORE_REMOVAL = join(import.meta.dirname, "fixtures", "schema-before-removal.sql");
@@ -425,6 +426,106 @@ describe("openDb", () => {
       expect(messagesSql(db)).toMatch(/AUTOINCREMENT/);
       expect(kept(db)).toEqual(old);
       expect(db.prepare("SELECT name FROM sqlite_master WHERE name = 'messages_autoincrement'").get()).toBeUndefined();
+      db.close();
+    }, 60_000);
+  });
+
+  describe("on a database from before webhook ids were AUTOINCREMENT", () => {
+    /**
+     * A file in main's schema with two webhooks of different accounts, every column set on the higher one, and
+     * deliveries of both, one delivered and one still queued.
+     */
+    function oldDatabase(): string {
+      const file = join(mkdtempSync(join(tmpdir(), "message-cp-")), "db.sqlite");
+      const db = new Database(file);
+      db.exec(readFileSync(SCHEMA_BEFORE_AUTOINCREMENT, "utf8"));
+      db.exec(`
+        INSERT INTO accounts (id, name, created_at) VALUES (1, 'owner', 1), (2, 'friend', 2);
+        INSERT INTO agents (id, account_id, name, bio, registered_at, last_seen, instance) VALUES
+          (1, 1, 'alice', 'a', 10, 20, 'inst-a'),
+          (2, 2, 'bob', 'b', 11, 21, 'inst-b');
+        INSERT INTO messages (id, recipient_id, sender, body, broadcast, created_at) VALUES
+          (1, 1, 'carol', 'one', 0, 30),
+          (2, 2, 'dave', 'two', 0, 31);
+        INSERT INTO webhooks (id, account_id, url, event, name, include_text, secret, created_at) VALUES
+          (2, 1, 'https://example.com/a', 'agent', 'alice', 0, 'secret-a', 40);
+        INSERT INTO webhooks (id, account_id, url, event, name, include_text, secret, created_at, header_name, header_value,
+                              max_per_hour, window_started_at, window_count, fixed_body) VALUES
+          (5, 2, 'https://example.com/b', 'agent', 'bob', 1, 'secret-b', 41, 'Authorization', 'Bearer value', 7, 50, 3, '{"id":"{{delivery}}"}');
+        INSERT INTO webhook_deliveries (id, webhook_id, message_id, created_at, attempts, delivered_at, claimed_until, delivery_uuid) VALUES
+          (1, 2, 1, 42, 1, 43, 44, NULL),
+          (4, 5, 2, 45, 2, NULL, 46, 'uuid-b');
+      `);
+      db.close();
+      return file;
+    }
+
+    const kept = (db: Database.Database) => ({
+      webhooks: db.prepare("SELECT * FROM webhooks ORDER BY id").all(),
+      // Without `held_for`, which `migrate` adds after the rebuild, null on every row from before it.
+      deliveries: (db.prepare("SELECT * FROM webhook_deliveries ORDER BY id").all() as { held_for?: unknown }[]).map(({ held_for, ...d }) => {
+        expect(held_for ?? null).toBeNull();
+        return d;
+      }),
+      indexes: db.prepare("SELECT name, sql FROM sqlite_master WHERE type = 'index' AND tbl_name = 'webhooks' ORDER BY name").all(),
+    });
+    const webhooksSql = (db: Database.Database) =>
+      db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'webhooks'").pluck().get() as string;
+
+    it("rebuilds webhooks with AUTOINCREMENT, keeping every webhook, its id, every column, its index and its deliveries", () => {
+      const file = oldDatabase();
+      const before = new Database(file, { readonly: true });
+      const old = kept(before);
+      before.close();
+      expect(old.webhooks).toHaveLength(2);
+      expect(old.deliveries).toHaveLength(2);
+      expect(old.indexes).toMatchObject([{ name: "webhooks_by_name" }]);
+
+      openDb(file).close();
+      const db = openDb(file); // a second open is harmless
+      expect(webhooksSql(db)).toMatch(/id INTEGER PRIMARY KEY AUTOINCREMENT/);
+      expect(kept(db)).toEqual(old);
+      expect(db.pragma("foreign_key_check")).toEqual([]);
+      expect(db.prepare("SELECT name FROM sqlite_master WHERE name = 'webhooks_autoincrement'").get()).toBeUndefined();
+      db.close();
+    });
+
+    it("never hands out a removed webhook's id again, and removing it still drops its deliveries", () => {
+      const db = openDb(oldDatabase());
+      expect(removeWebhook(db, 5)).toBe("friend");
+      expect(db.prepare("SELECT webhook_id FROM webhook_deliveries").pluck().all()).toEqual([2]);
+      expect(addWebhook(db, "friend", "https://example.com/c", "agent:bob", true).id).toBe(6);
+      expect(listWebhooks(db).map((w) => [w.id, w.account])).toEqual([
+        [2, "owner"],
+        [6, "friend"],
+      ]);
+      db.close();
+    });
+
+    it("checks the copy under the write lock by reading only the two webhooks tables, not other history", () => {
+      const db = openDb(oldDatabase());
+      db.exec("CREATE TABLE webhooks_autoincrement AS SELECT * FROM webhooks");
+      const plan = (db.prepare(`EXPLAIN QUERY PLAN ${COUNT_WEBHOOKS_COPIED}`).all() as { detail: string }[]).map((r) => r.detail);
+      const tables = plan.filter((d) => /\b(SCAN|SEARCH)\b/.test(d)).map((d) => d.split(" ")[1]);
+      expect(tables.filter((t) => t !== "CONSTANT").sort()).toEqual(["webhooks", "webhooks_autoincrement"]);
+      expect(db.prepare(COUNT_WEBHOOKS_COPIED).pluck().get()).toBe(1);
+      db.close();
+    });
+
+    it("is rebuilt once when many processes open it at once", async () => {
+      const file = oldDatabase();
+      const before = new Database(file, { readonly: true });
+      const old = kept(before);
+      before.close();
+
+      const results = await openTogether(file, 20);
+      expect(results.filter((r) => r.code !== 0).map((r) => r.stderr)).toEqual([]);
+
+      const db = new Database(file, { readonly: true });
+      expect(webhooksSql(db)).toMatch(/AUTOINCREMENT/);
+      expect(kept(db)).toEqual(old);
+      expect(db.pragma("foreign_key_check")).toEqual([]);
+      expect(db.prepare("SELECT name FROM sqlite_master WHERE name = 'webhooks_autoincrement'").get()).toBeUndefined();
       db.close();
     }, 60_000);
   });

@@ -7211,14 +7211,16 @@ describe("the page's invites", () => {
       await openWebhooks(page);
       removeButton(page, hook.id).on.click();
       expect(page.elements["webhook-confirm"].hidden).toBe(false);
-      // Removed on the server, then another added in its place, which SQLite gives the same id.
+      // Removed on the server, then another added in its place with the same id. AUTOINCREMENT never hands the id out
+      // again, so the test sets it by hand: the page's own check must still hold should a row ever take it.
       db.prepare("DELETE FROM webhooks WHERE id = ?").run(hook.id);
       await page.poll();
       await page.until(() => page.elements["log-note"].textContent === NO_WEBHOOKS);
       expect(page.elements["webhook-confirm"].hidden).toBe(true);
       expect(note(page)).toBe(`Webhook ${hook.id} (#general) changed or went from the list, so its confirmation closed and nothing was sent.`);
-      const replacement = addWebhook(db, "owner", "https://example.org/other", "agent:bob", true);
-      expect(replacement.id).toBe(hook.id);
+      const added = addWebhook(db, "owner", "https://example.org/other", "agent:bob", true);
+      db.prepare("UPDATE webhooks SET id = ? WHERE id = ?").run(hook.id, added.id);
+      const replacement = { ...added, id: hook.id };
       await page.poll();
       await page.until(() => hookRows(page).length === 1);
       page.elements["webhook-yes"].on.click();
@@ -7258,9 +7260,10 @@ describe("the page's invites", () => {
       expect(note(page)).toBe(`Webhook ${b.id} (agent:bob) changed or went from the list, so its confirmation closed and nothing was sent.`);
       for (const [, fn] of page.deadlines) fn();
       await page.until(() => note(page).startsWith(`The server did not answer in time, so webhook ${a.id} may or may not have been removed`));
-      addWebhook(db, "owner", "https://example.org/a2", "#general", true);
-      const replacement = addWebhook(db, "owner", "https://example.org/b2", "agent:bob", true);
-      expect(replacement.id).toBe(b.id);
+      // AUTOINCREMENT never hands B's id out again, so the replacement takes it by hand.
+      const added = addWebhook(db, "owner", "https://example.org/b2", "agent:bob", true);
+      db.prepare("UPDATE webhooks SET id = ? WHERE id = ?").run(b.id, added.id);
+      const replacement = { ...added, id: b.id };
       await page.poll();
       page.elements["webhook-yes"].on.click();
       expect(page.writes().filter((w) => w.url === `/api/webhooks?id=${b.id}`)).toEqual([]);

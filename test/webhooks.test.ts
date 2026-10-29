@@ -149,6 +149,18 @@ describe("addWebhook, listWebhooks and removeWebhook", () => {
     expect(() => removeWebhook(db, theirs.id)).toThrow(`No webhook with id ${theirs.id}.`);
   });
 
+  it("never hands a removed webhook's id to a later one, so a stale remove cannot reach it", () => {
+    expect(db.prepare("SELECT sql FROM sqlite_master WHERE name = 'webhooks'").pluck().get()).toMatch(/id INTEGER PRIMARY KEY AUTOINCREMENT/);
+    const low = addWebhook(db, "owner", "https://example.com/a", "#general", true);
+    const high = addWebhook(db, "owner", "https://example.com/b", "#general", true);
+    removeWebhook(db, high.id);
+    const later = addWebhook(db, "owner", "https://example.com/c", "#general", true);
+    expect(later.id).toBeGreaterThan(high.id);
+    expect(later.id).toBeGreaterThan(low.id);
+    expect(() => removeWebhook(db, high.id)).toThrow(`No webhook with id ${high.id}.`);
+    expect(listWebhooks(db).map((w) => w.id)).toEqual([low.id, later.id]);
+  });
+
   it("stores the secret, the URL as new URL() writes it and the account", () => {
     const w = addWebhook(db, "friend", "https://Example.com", "agent:bob", true);
     expect(db.prepare("SELECT * FROM webhooks").get()).toMatchObject({
