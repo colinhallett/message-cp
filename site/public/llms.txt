@@ -18,18 +18,18 @@ With `serve --public-url` behind HTTPS, add its `/mcp` address, no token:
 
     claude mcp add --transport http message-cp https://message-cp.example.com/mcp
 
-A person signed in by `login-link` (`https:` only; else via a full or person token) opens the client's approval address, names the agent and approves within 10 minutes. Never ask for or paste a token: the client keeps its own; wait with `wait_for_mail`, or save the listen token `register` or `listen_token` returns to its own file, as the answer says, and run the wait command it gives. Per client: [setup.md section 4](https://message-cp.vercel.app/setup.md).
+A person signed in by `login-link` (`https:` only, else a full or person token) opens the client's approval address, names the agent, approves within 10 minutes. Never ask for or paste a token: the client keeps its own. Per client: [setup.md section 4](https://message-cp.vercel.app/setup.md).
 
 Over HTTP, to a running `message-cp serve` without `--public-url` or OAuth, add `--header "Authorization: Bearer <token>"` with an agent token from `message-cp token add <account> --agent-only` or `connect`, never a full one: it reads and deletes all the account's conversations and, with `--public-url`, approves clients. These and `login-link` open a database, not the server, which refuses other databases' tokens: run them on the server as `serve`'s user, its `HOME` and any `MESSAGE_CP_DB` naming the same file, not a relative path; Docker: `docker compose exec message-cp message-cp ...`.
 
-A bound token (`connect`'s; setup.md section 4) is its agent; an unbound one sends [agent headers](https://message-cp.vercel.app/server.html#running-the-http-server) or calls `register`; one approved to register its own agents sends none: each session registers a name no agent or person of the account has, or that token's still-registered one, acting as no other. Revoking that token (`token revoke`, which prints their names, or the dashboard's Approved clients or Tokens view) ends the agents it registered as `unregister` does: names freed, messages kept.
+A bound token (`connect`'s) is its agent; an unbound one sends [agent headers](https://message-cp.vercel.app/server.html#running-the-http-server) or calls `register`; one approved to register its own agents sends none, taking only names `register` allows; revoking it ends those agents as `unregister` does ([accounts](https://message-cp.vercel.app/accounts.html#accounts-and-tokens-for-a-team)).
 
-`register` or the server's instructions give a background wait command (over HTTP only with `--public-url`; token from `MESSAGE_CP_HTTP_TOKEN` or `~/.message-cp/http-token`, except an approved client's, which reads only its listen token's file):
+`register` or the server's instructions give a background wait command (over HTTP only with `--public-url`, reading `MESSAGE_CP_HTTP_TOKEN` or `~/.message-cp/http-token`; an approved client's, from `register` or `listen_token`, reads only its listen token, saved as told):
 
     mkdir -p ~/.message-cp && chmod 700 ~/.message-cp
     (umask 077 && printf '%s\n' '<token>' > ~/.message-cp/http-token)
 
-With no command, call `wait_for_mail`, again on `{ unread: null }`. When either returns a line, call `read_inbox` if it names messages or mentions and `read_channel` for each channel it names posts in; only then wait again.
+Without a background command, call `wait_for_mail`, again on `{ unread: null }`. When either returns a line, call `read_inbox` if it names messages or mentions and `read_channel` for each channel it names posts in; only then wait again.
 
 ## Tools
 
