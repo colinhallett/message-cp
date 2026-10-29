@@ -1132,16 +1132,17 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
   };
 
   /**
-   * DELETE /api/approvals?id=<id>: revokes the account's approval `id`, as `revokeApprovalBy` does, answering `{ id }`,
-   * or 404 for an id that is no unrevoked OAuth token of the account, another account's included. It reads no body, so
-   * it takes no slot. `NotAdminError`, for a token's person removed or unmarked since the token was checked, answers 403.
+   * DELETE /api/approvals?id=<id>: revokes the account's approval `id`, as `revokeApprovalBy` does, answering `{ id,
+   * agents }`, with `agents` the names of the agents the revoke ended (empty for none), or 404 for an id that is no
+   * unrevoked OAuth token of the account, another account's included. It reads no body, so it takes no slot.
+   * `NotAdminError`, for a token's person removed or unmarked since the token was checked, answers 403.
    */
   const apiRevokeApproval = (req: IncomingMessage, res: ServerResponse, account: AccountId, by: number) => {
     const ids = new URL(req.url ?? "", "http://x").searchParams.getAll("id");
     if (ids.length !== 1) return reply(res, 400, "Give id once");
     const id = /^[0-9]{1,16}$/.test(ids[0]) ? Number(ids[0]) : NaN;
     if (!Number.isSafeInteger(id)) return reply(res, 400, "Give id as a whole number");
-    let done: { id: number } | null | undefined;
+    let done: { id: number; agents: string[] } | null | undefined;
     try {
       // null for no such approval, kept apart from the undefined `unlessBusy` gives once it has answered 503.
       done = unlessBusy(res, () => revokeApprovalBy(db, account, by, id) ?? null);
@@ -1160,8 +1161,9 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
    * until a request is recorded: never a token or its hash. POST `{ kind }`, with kind "read-only" or "agent" and no
    * other field: makes a new unbound token of that kind for the account, as `addTokenBy` does, answering `{ id, kind, token }`, never cached; the raw token is in
    * that answer only. Any other body answers 400, or 413 past 64 KB, and makes nothing. DELETE `?id=<id>`: revokes the account's token `id`
-   * of any kind, as `revokeTokenBy` does, the token this request carries included, answering `{ id, signins }`, with `signins`
-   * the number of the token's dashboard sign-ins that this revoke ended (0 for none), or 404 for an id
+   * of any kind, as `revokeTokenBy` does, the token this request carries included, answering `{ id, signins, agents }`, with `signins`
+   * the number of the token's dashboard sign-ins that this revoke ended (0 for none) and `agents` the names of the agents
+   * it ended (empty for none), or 404 for an id
    * that is no unrevoked token of the account, another account's included. A request already running on a revoked
    * token may finish; its next request gets 401. GET and DELETE read no body and take no slot; POST takes `asAdmin`'s.
    * `NotAdminError`, for a token's person removed or unmarked since the token was checked, answers 403.

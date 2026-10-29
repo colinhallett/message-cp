@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
 import { accountName, issueToken, type ApprovedClient, type TokenInfo } from "./accounts.js";
-import { KeyResetError, PersonError, PurgeError, addPerson, purgeAgent, removePerson, resetAgentKey, setPersonAdmin, type Purged } from "./agents.js";
+import { KeyResetError, PersonError, PurgeError, addPerson, endTokenAgents, purgeAgent, removePerson, resetAgentKey, setPersonAdmin, type Purged } from "./agents.js";
 import { publicUrl } from "./connect.js";
 import type { AccountId, Db } from "./db.js";
 import { addWebhook, formatOn, type WebhookEvent } from "./webhooks.js";
@@ -432,17 +432,19 @@ export const removeWebhookBy = (db: Db, account: AccountId, by: number, id: numb
 
 /**
  * For DELETE /api/approvals: revokes the account's unrevoked token `id` that the OAuth code exchange issued, as `token
- * revoke` does, keeping the agents it acted as or registered, and answers its id, or undefined, changing nothing, for
- * any other id: another account's token, one not issued through OAuth, one already revoked, or an unknown one. `by` is
- * the row of the admin person asking. Throws `NotAdminError` unless they are still a live admin of the account.
+ * revoke` does, and answers its id with `agents`, the names of the agents it ended: for a token that registers its own
+ * agents, each live agent it registered, ended as `endTokenAgents` ends them, in name order; none for a single-agent
+ * approval, whose agent is kept. Undefined, changing nothing, for any other id: another account's token, one not issued
+ * through OAuth, one already revoked, or an unknown one. `by` is the row of the admin person asking. Throws
+ * `NotAdminError` unless they are still a live admin of the account.
  */
-export const revokeApprovalBy = (db: Db, account: AccountId, by: number, id: number): { id: number } | undefined =>
+export const revokeApprovalBy = (db: Db, account: AccountId, by: number, id: number): { id: number; agents: string[] } | undefined =>
   db.transaction(() => {
     requireAdmin(db, account, by);
     const changed = db
       .prepare("UPDATE tokens SET revoked_at = ? WHERE id = ? AND account_id = ? AND oauth = 1 AND revoked_at IS NULL")
       .run(Date.now(), id, account).changes;
-    return changed === 0 ? undefined : { id };
+    return changed === 0 ? undefined : { id, agents: endTokenAgents(db, account, id) };
   }).immediate();
 
 /** An unrevoked token, as GET /api/tokens lists it: never the token or its hash. */
@@ -534,20 +536,22 @@ export const addTokenBy = (db: Db, account: AccountId, by: number, kind: MadeTok
 /**
  * For DELETE /api/tokens: revokes the account's unrevoked token `id` of any kind, as `token revoke` does, the token the
  * request carries included, and answers its id with `signins`, how many of its dashboard sign-ins (`dashboard_sessions`)
- * `accountForToken` still accepted just before and refuses from now on, or undefined, changing and counting nothing, for
+ * `accountForToken` still accepted just before and refuses from now on, and `agents`, the names of the agents it ended
+ * (for a token that registers its own agents, each live agent it registered, as `endTokenAgents` ends them; none for
+ * any other token), or undefined, changing and counting nothing, for
  * another account's token, one already revoked, or an unknown one. A person token whose person is no longer a live
  * person of its account counts 0, as its sign-ins were already refused. Its session rows are kept: `accountForToken`
  * refuses them through the revoked token. `by` is the row of the admin person asking. Throws `NotAdminError` unless
  * they are still a live admin of the account.
  */
-export const revokeTokenBy = (db: Db, account: AccountId, by: number, id: number): { id: number; signins: number } | undefined =>
+export const revokeTokenBy = (db: Db, account: AccountId, by: number, id: number): { id: number; signins: number; agents: string[] } | undefined =>
   db.transaction(() => {
     requireAdmin(db, account, by);
     const changed = db
       .prepare("UPDATE tokens SET revoked_at = ? WHERE id = ? AND account_id = ? AND revoked_at IS NULL")
       .run(Date.now(), id, account).changes;
     if (changed === 0) return undefined;
-    return { id, signins: db.prepare(COUNT_SIGNINS).pluck().get(id) as number };
+    return { id, signins: db.prepare(COUNT_SIGNINS).pluck().get(id) as number, agents: endTokenAgents(db, account, id) };
   }).immediate();
 
 /**
