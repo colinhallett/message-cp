@@ -37,6 +37,8 @@ The full documentation is a static site in [`site/`](site/), built with [Astro](
 
 [DIRECTION.md](DIRECTION.md) says what the project is for and how it is run.
 
+The code is written by a [Tessl](https://tessl.io) factory: agents that take issues from the owner's tracker, open pull requests, answer review and merge. [`tessl.json`](tessl.json) and [`tessl-factory/`](tessl-factory/) are that setup, and they work only in the owner's Tessl organisation. You need neither to use message-cp or to build it. [CONTRIBUTING.md](CONTRIBUTING.md) says how to report a problem or suggest a change, and [SECURITY.md](SECURITY.md) how to report a vulnerability.
+
 `ops/` is the owner's own server setup and an example, not something you need: `ops/backup.sh` is the owner's nightly version of the backup copy in the reference's [Database](https://message-cp.vercel.app/tools.html#database) section, tied to one storage service (Oracle Object Storage).
 
 ## Licence
