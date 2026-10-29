@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import Database from "better-sqlite3";
-import { OWNER_ACCOUNT, openDb, preAccountsCopy } from "../src/db.js";
+import { COUNT_WEBHOOKS_COPIED, OWNER_ACCOUNT, openDb, preAccountsCopy } from "../src/db.js";
 import { accountForToken, addAccount, addToken } from "../src/accounts.js";
 import { getAgent, registerAgent } from "../src/agents.js";
 import { deleteConversation, readInbox, sendMessage } from "../src/messages.js";
@@ -499,6 +499,16 @@ describe("openDb", () => {
         [2, "owner"],
         [6, "friend"],
       ]);
+      db.close();
+    });
+
+    it("checks the copy under the write lock by reading only the two webhooks tables, not other history", () => {
+      const db = openDb(oldDatabase());
+      db.exec("CREATE TABLE webhooks_autoincrement AS SELECT * FROM webhooks");
+      const plan = (db.prepare(`EXPLAIN QUERY PLAN ${COUNT_WEBHOOKS_COPIED}`).all() as { detail: string }[]).map((r) => r.detail);
+      const tables = plan.filter((d) => /\b(SCAN|SEARCH)\b/.test(d)).map((d) => d.split(" ")[1]);
+      expect(tables.filter((t) => t !== "CONSTANT").sort()).toEqual(["webhooks", "webhooks_autoincrement"]);
+      expect(db.prepare(COUNT_WEBHOOKS_COPIED).pluck().get()).toBe(1);
       db.close();
     });
 

@@ -500,6 +500,10 @@ function rebuildDashboardSessions(db: Db): void {
   }).immediate();
 }
 
+/** 1 when rebuildWebhooks() has copied every webhook into its new table. Both tables hold only webhooks, not history. */
+export const COUNT_WEBHOOKS_COPIED =
+  "SELECT (SELECT count(*) FROM webhooks) = (SELECT count(*) FROM webhooks_autoincrement)";
+
 const webhooksAutoincrement = (db: Db) =>
   /\bAUTOINCREMENT\b/i.test((db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'webhooks'").get() as { sql: string }).sql);
 
@@ -507,7 +511,9 @@ const webhooksAutoincrement = (db: Db) =>
  * Rebuilds a `webhooks` table from before AUTOINCREMENT as `webhooksTable`, keeping every row, its id and every column,
  * as rebuildLoginCodes() does for `login_codes`, so that no webhook id is handed out again once the highest webhook is
  * removed. Under the write lock, so exactly one process rebuilds. `webhook_deliveries` refers to `webhooks`, so as in
- * rebuildMessages() foreign keys are off around it and checked before it commits.
+ * rebuildMessages() foreign keys are off around it. Ids are copied as they are, so every delivery still finds its webhook
+ * once every row is copied; it checks that by counting webhooks rather than with foreign_key_check, which would read every
+ * table's history under the write lock.
  */
 function rebuildWebhooks(db: Db): void {
   if (webhooksAutoincrement(db)) return;
@@ -524,10 +530,10 @@ function rebuildWebhooks(db: Db): void {
          SELECT id, account_id, url, event, name, include_text, secret, created_at, header_name, header_value,
                 max_per_hour, window_started_at, window_count, fixed_body FROM webhooks ORDER BY id`,
       );
+      if (db.prepare(COUNT_WEBHOOKS_COPIED).pluck().get() !== 1) throw new Error("webhooks migration lost a webhook");
       db.exec("DROP TABLE webhooks");
       db.exec("ALTER TABLE webhooks_autoincrement RENAME TO webhooks");
       db.exec(WEBHOOKS_INDEXES);
-      if ((db.pragma("foreign_key_check") as unknown[]).length > 0) throw new Error("webhooks migration broke a foreign key");
     }).immediate();
   } finally {
     db.pragma(`foreign_keys = ${foreignKeys ? "ON" : "OFF"}`);
