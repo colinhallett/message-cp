@@ -710,6 +710,9 @@ let peopleRowsKey = "";
 let inviteClosings = 0;
 // The id of the invite whose link the view shows, or undefined, so cancelling that invite takes its link away.
 let shownInvite;
+// How many times showInvite has shown a link, so a write with no answer hides only a link shown before it started, never
+// one another request showed meanwhile.
+let invitesShown = 0;
 // The invite the "People" view asks before cancelling ({ id, person, createdAt }), or undefined.
 let cancelTarget;
 // The list the people view's invites and the "New link" select were last built from, so a poll rebuilds them only when it
@@ -1553,10 +1556,20 @@ function showInvite(body) {
     "It works once and lasts " + INVITE_DAYS + " days, until " + when(invite.expiresAt) + ". It shows only here, until you leave this view.";
   inviteLink.value = link;
   shownInvite = invite.id;
+  invitesShown++;
   copyNote.textContent = "";
   inviteMade.hidden = false;
   inviteLink.focus();
   return true;
+}
+
+// Hides the invite link showInvite showed, with its line and its copy note.
+function hideInvite() {
+  inviteMade.hidden = true;
+  inviteFor.textContent = "";
+  inviteLink.value = "";
+  copyNote.textContent = "";
+  shownInvite = undefined;
 }
 
 // Reads the people and the invites again at once, after a write that may have changed them.
@@ -1581,6 +1594,7 @@ async function addInvitedPerson() {
   }
   adding = tokenGen;
   const closings = inviteClosings;
+  const shown = invitesShown;
   personAdd.disabled = true;
   personNote.textContent = "Adding…";
   const ac = new AbortController();
@@ -1606,7 +1620,10 @@ async function addInvitedPerson() {
     return;
   }
   if (answer.error) {
-    personNote.textContent = answer.error + ", so " + name + " may have been added: the agents panel and the invites below show whether.";
+    // A link may have been made, so the one shown before may be taken for it. A link another request showed meanwhile
+    // stays: it is that request's own result.
+    if (shown === invitesShown) hideInvite();
+    personNote.textContent = answer.error + ", so " + name + " may or may not have been added: the agents panel and the invites below show which once they have been read again.";
     refresh();
     return;
   }
@@ -1626,6 +1643,7 @@ async function makeInvite() {
   }
   linking = tokenGen;
   const closings = inviteClosings;
+  const shown = invitesShown;
   linkMake.disabled = true;
   linkNote.textContent = "Making a link…";
   const ac = new AbortController();
@@ -1648,7 +1666,10 @@ async function makeInvite() {
     return;
   }
   if (answer.error) {
-    linkNote.textContent = answer.error + ", so a link for " + person + " may have been made: the invites below show whether.";
+    // A link may have been made, so the one shown before may be taken for it. A link another request showed meanwhile
+    // stays: it is that request's own result.
+    if (shown === invitesShown) hideInvite();
+    linkNote.textContent = answer.error + ", so a link for " + person + " may or may not have been made: the invites below show which once they have been read again.";
     refresh();
     return;
   }
@@ -1722,17 +1743,12 @@ async function cancelInvite() {
   if (answer.status === 403) return unmarked();
   // A confirmation opened for another invite meanwhile stays.
   if (cancelTarget === invite) closeCancelInvite(true);
-  // Once the server says this invite is gone (200, or 404: used, cancelled or expired), its link, if shown, goes too.
-  if ((answer.status === 200 || answer.status === 404) && shownInvite === invite.id) {
-    inviteMade.hidden = true;
-    inviteFor.textContent = "";
-    inviteLink.value = "";
-    copyNote.textContent = "";
-    shownInvite = undefined;
-  }
+  // Once the server says this invite is gone (200, or 404: used, cancelled or expired), or may be (no answer), its link,
+  // if shown, goes too.
+  if ((answer.status === 200 || answer.status === 404 || answer.error) && shownInvite === invite.id) hideInvite();
   if (answer.status === 200) cancelNote.textContent = "Cancelled " + invite.person + "'s invite.";
   else if (answer.status === 404) cancelNote.textContent = invite.person + "'s invite was already used, cancelled or expired (404).";
-  else if (answer.error) cancelNote.textContent = answer.error + ", so " + invite.person + "'s invite may have been cancelled: the list below shows whether.";
+  else if (answer.error) cancelNote.textContent = answer.error + ", so " + invite.person + "'s invite may or may not have been cancelled: the list below shows which once it has been read again.";
   else cancelNote.textContent = refusal(answer);
   if (answer.status === 200 || answer.status === 404 || answer.error) refresh();
 }
@@ -1763,7 +1779,7 @@ async function markPerson(name, admin) {
   if (answer.status === 403) return unmarked();
   if (answer.status === 200) peopleNote.textContent = admin ? name + " is now an admin." : name + " is no longer an admin.";
   else if (answer.status === 404) peopleNote.textContent = name + " is already gone (404).";
-  else if (answer.error) peopleNote.textContent = answer.error + ", so " + name + " may have been changed: the list below shows whether.";
+  else if (answer.error) peopleNote.textContent = answer.error + ", so " + name + " may or may not have been changed: the list below shows which once it has been read again.";
   else peopleNote.textContent = refusal(answer);
   if (answer.status === 200 || answer.status === 404 || answer.error) refresh();
 }
@@ -1876,7 +1892,7 @@ async function removeAccountPerson() {
         ? "Removed " + name + ": " + counted(body.messages, "message") + " and " + counted(body.mentions, "mention") + " deleted."
         : "Removed " + name + ".") + stopped;
   } else if (answer.status === 404) peopleNote.textContent = name + " is already gone (404).";
-  else if (answer.error) peopleNote.textContent = answer.error + ", so " + name + " may have been removed: the list below shows whether.";
+  else if (answer.error) peopleNote.textContent = answer.error + ", so " + name + " may or may not have been removed: the list below shows which once it has been read again.";
   else peopleNote.textContent = refusal(answer);
   if (answer.status === 200 || answer.status === 404 || answer.error) refresh();
 }
@@ -1940,7 +1956,7 @@ async function removeWebhook() {
         ? "Removed webhook " + hook.id + " and its " + (body.deliveries === 1 ? "1 delivery" : body.deliveries + " deliveries") + "."
         : "Removed webhook " + hook.id + ".";
   } else if (answer.status === 404) webhookNote.textContent = "Webhook " + hook.id + " was already gone (404).";
-  else if (answer.error) webhookNote.textContent = answer.error + ", so webhook " + hook.id + " may have been removed: the list below shows whether.";
+  else if (answer.error) webhookNote.textContent = answer.error + ", so webhook " + hook.id + " may or may not have been removed: the list below shows which once it has been read again.";
   else webhookNote.textContent = refusal(answer);
   if (answer.status === 200 || answer.status === 404 || answer.error) refresh();
 }
@@ -2020,8 +2036,8 @@ async function addAccountWebhook() {
     // Another webhook may have been added, so the secret shown before may no longer be the newest.
     hideWebhookSecret();
     hookNote.textContent =
-      answer.error + ", so the webhook may or may not have been added: the list below shows whether. " +
-      "No secret can be shown for it, so if it is listed, remove it and add it again.";
+      answer.error + ", so the webhook may or may not have been added: the list below shows which once it has been read again. " +
+      "No secret can be shown for it, and the list cannot show which webhook this attempt added, so remove one there only if you know it is that one, then add it again.";
     refresh();
     return;
   }
@@ -2117,7 +2133,7 @@ async function revokeApproval() {
   const named = "token " + target.id + " (" + target.client + ")";
   if (answer.status === 200) approvalNote.textContent = "Revoked " + named + "." + endedAgents(answer.body);
   else if (answer.status === 404) approvalNote.textContent = "Token " + target.id + " (" + target.client + ") was already revoked or gone (404).";
-  else if (answer.error) approvalNote.textContent = answer.error + ", so " + named + " may have been revoked: the list below shows whether.";
+  else if (answer.error) approvalNote.textContent = answer.error + ", so " + named + " may or may not have been revoked: the list below shows which once it has been read again.";
   else approvalNote.textContent = refusal(answer);
   if (answer.status === 200 || answer.status === 404 || answer.error) refresh();
 }
@@ -2192,7 +2208,7 @@ async function revokeToken() {
     tokenNote.textContent = "Revoked token " + target.id + " (" + target.label + ")." + ended + endedAgents(answer.body);
   }
   else if (answer.status === 404) tokenNote.textContent = "Token " + target.id + " was already revoked or gone (404).";
-  else if (answer.error) tokenNote.textContent = answer.error + ", so token " + target.id + " may or may not have been revoked: the list below shows which.";
+  else if (answer.error) tokenNote.textContent = answer.error + ", so token " + target.id + " may or may not have been revoked: the list below shows which once it has been read again.";
   else tokenNote.textContent = refusal(answer);
   if (answer.status === 200 || answer.status === 404 || answer.error) refresh();
 }
@@ -2457,7 +2473,7 @@ async function removeAgent() {
         ? "Removed " + name + ": " + counted(body.messages, "message") + " and " + counted(body.mentions, "mention") + " deleted."
         : "Removed " + name + ".") + stopped;
   } else if (answer.status === 404) agentNote.textContent = name + " is already gone (404).";
-  else if (answer.error) agentNote.textContent = answer.error + ", so " + name + " may have been removed: the list shows whether.";
+  else if (answer.error) agentNote.textContent = answer.error + ", so " + name + " may or may not have been removed: the list shows which once it has been read again.";
   else agentNote.textContent = refusal(answer);
   if (forgot) refresh();
 }

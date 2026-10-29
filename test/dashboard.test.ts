@@ -3816,14 +3816,14 @@ describe("the page's approved clients", () => {
       await revokeOne({ status: 503, reason: "Database busy", retry: true }, "The server is busy (503). Try again in a moment.");
       await revokeOne({ status: 413, reason: "Too long" }, "This is too long for the server (413).");
       await revokeOne(404, `Token ${cursor.id} (Cursor) was already revoked or gone (404).`);
-      await revokeOne("fail", `No answer from the server, so token ${cursor.id} (Cursor) may have been revoked: the list below shows whether.`);
+      await revokeOne("fail", `No answer from the server, so token ${cursor.id} (Cursor) may or may not have been revoked: the list below shows which once it has been read again.`);
       next = "hang";
       revoke(page, cursor.id);
       page.elements["approval-yes"].on.click();
       await page.until(() => page.deadlines.size > 0);
       expect(page.elements["approval-yes"].disabled).toBe(true);
       for (const [, fn] of page.deadlines) fn();
-      await page.until(() => note(page).startsWith(`The server did not answer in time, so token ${cursor.id} (Cursor) may have been revoked`));
+      await page.until(() => note(page).startsWith(`The server did not answer in time, so token ${cursor.id} (Cursor) may or may not have been revoked`));
       expect(page.elements["approval-yes"].disabled).toBe(false);
       // None of those was the server's own revocation.
       expect(live(cursor.token)).toBe(true);
@@ -6251,13 +6251,13 @@ describe("the page's invites", () => {
     await add({ status: 503, reason: "Too many requests" }, "The server is busy (503). Try again in a moment.");
     const many = "This account has made 100 invites in the last 7 days; try again once some expire.";
     await add({ status: 503, reason: many }, many);
-    await add("fail", "No answer from the server, so ben may have been added: the agents panel and the invites below show whether.");
+    await add("fail", "No answer from the server, so ben may or may not have been added: the agents panel and the invites below show which once they have been read again.");
     next = "hang";
     submit(page.elements["person-form"]);
     await page.until(() => page.deadlines.size > 0 && page.elements["person-note"].textContent === "Adding…");
     expect(page.elements["person-add"].disabled).toBe(true);
     for (const [, fn] of page.deadlines) fn();
-    await page.until(() => page.elements["person-note"].textContent.startsWith("The server did not answer in time, so ben may have been added"));
+    await page.until(() => page.elements["person-note"].textContent.startsWith("The server did not answer in time, so ben may or may not have been added"));
     expect(page.elements["person-add"].disabled).toBe(false);
 
     next = 404;
@@ -6266,11 +6266,104 @@ describe("the page's invites", () => {
     await page.until(() => page.elements["link-note"].textContent === "ben is not a person in this account now (404).");
     next = "fail";
     submit(page.elements["link-form"]);
-    await page.until(() => page.elements["link-note"].textContent === "No answer from the server, so a link for ben may have been made: the invites below show whether.");
+    await page.until(() => page.elements["link-note"].textContent === "No answer from the server, so a link for ben may or may not have been made: the invites below show which once they have been read again.");
 
     // No invite is ever shown by a refusal.
     expect(page.elements["invite-made"].hidden).toBe(true);
     expect(page.elements["invite-link"].value).toBe("");
+  });
+
+  it("hides a link shown before once making a link or adding a person gets no answer", async () => {
+    addPerson(db, "owner", "ben");
+    let next: Refusal | undefined;
+    const page = await load(anaToken, (url, init) => (init.method === "POST" ? next : undefined));
+    await page.openInvites();
+    const showLink = async () => {
+      next = undefined;
+      page.elements["link-person"].value = "ben";
+      submit(page.elements["link-form"]);
+      await page.until(() => page.elements["invite-link"].value !== "");
+      expect(page.elements["invite-made"].hidden).toBe(false);
+    };
+    const hidden = () => {
+      expect(page.elements["invite-made"].hidden).toBe(true);
+      expect(page.elements["invite-link"].value).toBe("");
+      expect(page.elements["invite-for"].textContent).toBe("");
+    };
+    await showLink();
+    next = "fail";
+    submit(page.elements["link-form"]);
+    await page.until(() => page.elements["link-note"].textContent === "No answer from the server, so a link for ben may or may not have been made: the invites below show which once they have been read again.");
+    hidden();
+    await showLink();
+    next = "fail";
+    page.elements["person-name"].value = "cara";
+    submit(page.elements["person-form"]);
+    await page.until(() => page.elements["person-note"].textContent === "No answer from the server, so cara may or may not have been added: the agents panel and the invites below show which once they have been read again.");
+    hidden();
+  });
+
+  it("keeps a link another request showed while making a link or adding a person got no answer", async () => {
+    addPerson(db, "owner", "ben");
+    let next: (url: string) => Refusal | undefined = () => undefined;
+    const page = await load(anaToken, (url, init) => (init.method === "POST" ? next(url) : undefined));
+    await page.openInvites();
+    // Adding cara hangs while a link for ben is made and shown; then the add runs out of time.
+    next = (url) => (url === "/api/people" ? "hang" : undefined);
+    page.elements["person-name"].value = "cara";
+    submit(page.elements["person-form"]);
+    await page.until(() => page.deadlines.size > 0 && page.elements["person-note"].textContent === "Adding…");
+    const addDeadlines = [...page.deadlines.values()];
+    page.elements["link-person"].value = "ben";
+    submit(page.elements["link-form"]);
+    await page.until(() => page.elements["invite-link"].value !== "");
+    const link = page.elements["invite-link"].value;
+    addDeadlines.forEach((fn) => fn());
+    await page.until(() => page.elements["person-note"].textContent.startsWith("The server did not answer in time, so cara may or may not have been added"));
+    expect(page.elements["invite-made"].hidden).toBe(false);
+    expect(page.elements["invite-link"].value).toBe(link);
+    // The other way round: a link for ben hangs while cara is added and her link shown; then the link runs out of time.
+    next = (url) => (url === "/api/invites" ? "hang" : undefined);
+    const before = new Set(page.deadlines.keys());
+    submit(page.elements["link-form"]);
+    await page.until(() => page.elements["link-note"].textContent === "Making a link…" && [...page.deadlines.keys()].some((k) => !before.has(k)));
+    const linkDeadlines = [...page.deadlines].filter(([k]) => !before.has(k)).map(([, fn]) => fn);
+    page.elements["person-name"].value = "cara";
+    submit(page.elements["person-form"]);
+    await page.until(() => page.elements["person-note"].textContent === "Added cara.");
+    const caraLink = page.elements["invite-link"].value;
+    expect(caraLink).not.toBe(link);
+    linkDeadlines.forEach((fn) => fn());
+    await page.until(() => page.elements["link-note"].textContent.startsWith("The server did not answer in time, so a link for ben may or may not have been made"));
+    expect(page.elements["invite-made"].hidden).toBe(false);
+    expect(page.elements["invite-link"].value).toBe(caraLink);
+  });
+
+  it("hides the shown link once cancelling its own invite gets no answer, but not for another invite", async () => {
+    addPerson(db, "owner", "ben");
+    makeInvite(db, OWNER_ACCOUNT, ana, "ben");
+    let next: Refusal | undefined;
+    const page = await load(anaToken, (url, init) => (init.method === "DELETE" ? next : undefined));
+    await page.openInvites();
+    page.elements["link-person"].value = "ben";
+    submit(page.elements["link-form"]);
+    await page.until(() => page.elements["invite-link"].value !== "");
+    await page.until(() => rows(page).length === 2);
+    const cancelRow = async (row: number) => {
+      next = "fail";
+      page.elements["cancel-note"].textContent = "";
+      page.elements["post-rows"].children[row].children.find((c) => c.textContent === "Cancel")!.on.click();
+      page.elements["cancel-yes"].on.click();
+      await page.until(() => page.elements["cancel-note"].textContent === "No answer from the server, so ben's invite may or may not have been cancelled: the list below shows which once it has been read again.");
+    };
+    // The older invite, listed second, is not the one shown: its link stays.
+    await cancelRow(1);
+    expect(page.elements["invite-made"].hidden).toBe(false);
+    expect(page.elements["invite-link"].value).not.toBe("");
+    await cancelRow(0);
+    expect(page.elements["invite-made"].hidden).toBe(true);
+    expect(page.elements["invite-link"].value).toBe("");
+    expect(page.elements["invite-for"].textContent).toBe("");
   });
 
   it("says a cancelled invite that is gone is gone, and a busy server is busy", async () => {
@@ -6288,7 +6381,7 @@ describe("the page's invites", () => {
     };
     await cancelOne({ status: 503, reason: "Database busy", retry: true }, "The server is busy (503). Try again in a moment.");
     await cancelOne(404, "ben's invite was already used, cancelled or expired (404).");
-    await cancelOne("fail", "No answer from the server, so ben's invite may have been cancelled: the list below shows whether.");
+    await cancelOne("fail", "No answer from the server, so ben's invite may or may not have been cancelled: the list below shows which once it has been read again.");
   });
 
   it("takes the shown link away once its own invite is cancelled, but not for another invite", async () => {
@@ -6561,14 +6654,14 @@ describe("the page's invites", () => {
         await answer(act, 404, "ben is already gone (404).", true);
         await answer(act, { status: 400, reason: "Give admin as true or false" }, "Give admin as true or false", false);
         await answer(act, { status: 503, reason: "Database busy", retry: true }, "The server is busy (503). Try again in a moment.", false);
-        await answer(act, "fail", `No answer from the server, so ben may have been ${verb}: the list below shows whether.`, true);
+        await answer(act, "fail", `No answer from the server, so ben may or may not have been ${verb}: the list below shows which once it has been read again.`, true);
       }
       // A deadline that passes says so too.
       next = "hang";
       button(page, "ben", "Make admin").on.click();
       await page.until(() => page.deadlines.size > 0 && page.elements["people-note"].textContent === "Making ben an admin…");
       for (const [, fn] of page.deadlines) fn();
-      await page.until(() => page.elements["people-note"].textContent.startsWith("The server did not answer in time, so ben may have been changed"));
+      await page.until(() => page.elements["people-note"].textContent.startsWith("The server did not answer in time, so ben may or may not have been changed"));
       expect(adminOf("ben")).toBe(0);
     });
 
@@ -6796,7 +6889,7 @@ describe("the page's invites", () => {
       await answer("Reset key", 404, "writer is already gone (404).");
       await answer("Remove", { status: 503, reason: "Database busy", retry: true }, "The server is busy (503). Try again in a moment.");
       await answer("Reset key", { status: 503, reason: "Database busy", retry: true }, "The server is busy (503). Try again in a moment.");
-      await answer("Remove", "fail", "No answer from the server, so writer may have been removed: the list shows whether.");
+      await answer("Remove", "fail", "No answer from the server, so writer may or may not have been removed: the list shows which once it has been read again.");
       await answer(
         "Reset key",
         "fail",
@@ -6808,7 +6901,7 @@ describe("the page's invites", () => {
       page.elements["agent-yes"].on.click();
       await page.until(() => page.deadlines.size > 0 && note(page) === "Removing writer…");
       for (const [, fn] of page.deadlines) fn();
-      await page.until(() => note(page).startsWith("The server did not answer in time, so writer may have been removed"));
+      await page.until(() => note(page).startsWith("The server did not answer in time, so writer may or may not have been removed"));
       expect(live("writer")).toBe(1);
     });
 
@@ -7041,14 +7134,14 @@ describe("the page's invites", () => {
       await removeOne({ status: 503, reason: "Database busy", retry: true }, "The server is busy (503). Try again in a moment.");
       await removeOne({ status: 503, reason: "Too many requests" }, "The server is busy (503). Try again in a moment.");
       await removeOne(404, `Webhook ${hook.id} was already gone (404).`);
-      await removeOne("fail", `No answer from the server, so webhook ${hook.id} may have been removed: the list below shows whether.`);
+      await removeOne("fail", `No answer from the server, so webhook ${hook.id} may or may not have been removed: the list below shows which once it has been read again.`);
       next = "hang";
       removeButton(page, hook.id).on.click();
       page.elements["webhook-yes"].on.click();
       await page.until(() => page.deadlines.size > 0);
       expect(page.elements["webhook-yes"].disabled).toBe(true);
       for (const [, fn] of page.deadlines) fn();
-      await page.until(() => note(page).startsWith(`The server did not answer in time, so webhook ${hook.id} may have been removed`));
+      await page.until(() => note(page).startsWith(`The server did not answer in time, so webhook ${hook.id} may or may not have been removed`));
       expect(page.elements["webhook-yes"].disabled).toBe(false);
       // None of those was the server's own removal.
       expect(exists(hook.id)).toBe(true);
@@ -7166,7 +7259,7 @@ describe("the page's invites", () => {
       await page.until(() => page.elements["webhook-confirm"].hidden);
       expect(note(page)).toBe(`Webhook ${b.id} (agent:bob) changed or went from the list, so its confirmation closed and nothing was sent.`);
       for (const [, fn] of page.deadlines) fn();
-      await page.until(() => note(page).startsWith(`The server did not answer in time, so webhook ${a.id} may have been removed`));
+      await page.until(() => note(page).startsWith(`The server did not answer in time, so webhook ${a.id} may or may not have been removed`));
       // AUTOINCREMENT never hands B's id out again, so the replacement takes it by hand.
       const added = addWebhook(db, "owner", "https://example.org/b2", "agent:bob", true);
       db.prepare("UPDATE webhooks SET id = ? WHERE id = ?").run(b.id, added.id);
@@ -7441,7 +7534,7 @@ describe("the page's invites", () => {
       await addOne({ status: 503, reason: "Database busy", retry: true }, "The server is busy (503). Try again in a moment.");
       await addOne(
         "fail",
-        "No answer from the server, so the webhook may or may not have been added: the list below shows whether. No secret can be shown for it, so if it is listed, remove it and add it again.",
+        "No answer from the server, so the webhook may or may not have been added: the list below shows which once it has been read again. No secret can be shown for it, and the list cannot show which webhook this attempt added, so remove one there only if you know it is that one, then add it again.",
       );
       expect(hookCount()).toBe(0);
       // Add stays disabled while the request is in flight, until its deadline, and a second submit sends nothing.
@@ -7792,7 +7885,7 @@ describe("the page's invites", () => {
       await revokeOne({ status: 503, reason: "Database busy", retry: true }, "The server is busy (503). Try again in a moment.");
       await revokeOne(413, "This is too long for the server (413).");
       await revokeOne(404, `Token ${id} was already revoked or gone (404).`);
-      await revokeOne("fail", `No answer from the server, so token ${id} may or may not have been revoked: the list below shows which.`);
+      await revokeOne("fail", `No answer from the server, so token ${id} may or may not have been revoked: the list below shows which once it has been read again.`);
       next = "hang";
       revokeButton(page, id).on.click();
       page.elements["token-yes"].on.click();
