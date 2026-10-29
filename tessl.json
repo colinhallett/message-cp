@@ -60,6 +60,12 @@
       "environment": "factory-message-cp-triage",
       "agent": "claude",
       "model": "claude-opus-5-5"
+    },
+    "agents-md-tidy": {
+      "skill": "file:tessl-factory#agents-md-tidy",
+      "environment": "factory-message-cp-implement",
+      "agent": "claude",
+      "model": "claude-opus-5-5"
     }
   },
   "triggers": {
@@ -255,6 +261,12 @@
       "cron": "0 3 29 2 *",
       "timezone": "UTC",
       "description": "Sweep of open GitHub issues: labels and one assessment comment each; never files tickets, opens PRs or changes code. Run by hand with tessl schedule trigger"
+    },
+    "agents-md-tidy": {
+      "action": "agents-md-tidy",
+      "cron": "29 5 * * 3",
+      "timezone": "UTC",
+      "description": "Weekly: files and delegates one COL ticket that moves a few AGENTS.md rules into tests, lints or area files; files nothing while one is open"
     }
   }
 }
