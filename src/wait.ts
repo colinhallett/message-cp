@@ -66,11 +66,12 @@ done`;
 // The same loop for a session connected by approval, whose MCP client holds its token: the token is the agent's listen
 // token, read only from ~/.message-cp/wait/<name>@<server>, never from MESSAGE_CP_HTTP_TOKEN or
 // ~/.message-cp/http-token, so agents on one machine never share or overwrite one file. $3 is the <server> part.
+const CURL_401 = "the server refused the token (401)";
+if (!CURL_LOOP.includes(CURL_401)) throw new Error("CURL_LOOP's 401 line changed: update LISTEN_LOOP");
 const LISTEN_LOOP = `f="$HOME/.message-cp/wait/$2@$3"
 t=$(cat "$f" 2>/dev/null)
 [ -n "$t" ] || { echo "message-cp wait: no listen token in $f; call the listen_token tool and save its token there as it says" >&2; exit 1; }
-${CURL_LOOP.slice(CURL_LOOP.indexOf("while :; do"))
-  .replace(`the server refused the token (401)`, `the server refused the listen token (401): a newer one replaced it, its agent was removed or its approval revoked`)}`;
+${CURL_LOOP.slice(CURL_LOOP.indexOf("while :; do")).replace(CURL_401, "the server refused the listen token (401): a newer one replaced it, its agent was removed or its approval revoked")}`;
 
 /** The `/wait` URL on the server at `publicUrl`, built from the parsed URL. */
 function waitUrl(publicUrl: string): URL {

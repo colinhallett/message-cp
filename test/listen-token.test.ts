@@ -6,8 +6,9 @@ import { mkdirSync, mkdtempSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { accountForToken, addAccount, addToken, listAccounts, revokeToken } from "../src/accounts.js";
-import { addPerson, purgeAgent, registerAgent, removeAgent } from "../src/agents.js";
+import { LISTEN_AGENT, accountForToken, addAccount, addToken, listAccounts, revokeToken } from "../src/accounts.js";
+import { addPerson, identityOf, purgeAgent, registerAgent, removeAgent } from "../src/agents.js";
+import { saveSession } from "../src/sessions.js";
 import { OWNER_ACCOUNT, openDb, type AccountId, type Db } from "../src/db.js";
 import { startHttp, type HttpServer } from "../src/http.js";
 import { sendMessage } from "../src/messages.js";
@@ -236,6 +237,40 @@ describe("a listen token stops working", () => {
   });
 });
 
+describe("across a restart and during a held wait", () => {
+  /** Restarts the server on the same port, holding a /wait for `waitHoldMs`. */
+  const restart = async (waitHoldMs: number) => {
+    await http.close();
+    http = await startHttp(db, { token: OWNER_TOKEN, port: Number(new URL(publicUrl).port), waitHoldMs, publicUrl });
+  };
+  const mcp = (token: string, body: unknown, sid?: string) =>
+    fetch(`${publicUrl}/mcp`, {
+      method: "POST",
+      headers: { ...auth(token), "Content-Type": "application/json", Accept: "application/json, text/event-stream", ...(sid && { "mcp-session-id": sid }) },
+      body: JSON.stringify(body),
+    });
+
+  it("still offers listen_token on a session restored after a restart", async () => {
+    const { token } = await approved();
+    await registered(token, "alpha");
+    // A session id this server does not hold, recorded as a server before it would have: it is restored.
+    saveSession(db, "restored", OWNER_ACCOUNT, identityOf(db, OWNER_ACCOUNT, "alpha")!);
+    const called = await (await mcp(token, { jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "listen_token", arguments: {} } }, "restored")).text();
+    expect(called).toContain("listenToken");
+    expect(called).not.toContain('isError":true');
+  });
+
+  it("answers 404 to a wait held when its agent is removed", async () => {
+    await restart(5000);
+    const { token } = await approved();
+    const { listenToken } = await registered(token, "alpha");
+    const held = get("/wait", listenToken);
+    await new Promise((r) => setTimeout(r, 500));
+    purgeAgent(db, "owner", "alpha");
+    expect((await held).status).toBe(404);
+  });
+});
+
 describe("the listen command", () => {
   const run = (command: string, env: Record<string, string>) => {
     const child = spawn("sh", ["-c", command], { env: { PATH: process.env.PATH!, ...env } });
@@ -303,14 +338,7 @@ describe("the listen command", () => {
 
 describe("query plans", () => {
   it("finds a listen token, its approval and its agent by index", () => {
-    const plan = db
-      .prepare(
-        `EXPLAIN QUERY PLAN SELECT tokens.account_id FROM listen_tokens
-           JOIN tokens ON tokens.id = listen_tokens.token_id AND tokens.revoked_at IS NULL
-           JOIN agents ON agents.id = listen_tokens.agent_id AND agents.account_id = tokens.account_id
-         WHERE listen_tokens.hash = ?`,
-      )
-      .all("h") as { detail: string }[];
+    const plan = db.prepare(`EXPLAIN QUERY PLAN SELECT tokens.account_id ${LISTEN_AGENT} WHERE listen_tokens.hash = ?`).all("h") as { detail: string }[];
     expect(plan.map((r) => r.detail)).toEqual([
       "SEARCH listen_tokens USING INDEX sqlite_autoindex_listen_tokens_2 (hash=?)",
       "SEARCH tokens USING INTEGER PRIMARY KEY (rowid=?)",

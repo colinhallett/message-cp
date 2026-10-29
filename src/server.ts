@@ -225,7 +225,8 @@ export function createServer(db: Db, session = new Session(OWNER_ACCOUNT), optio
   /** A listen token for the session's registration through approval `approval`, with how to save it and its wait command. */
   const listen = (approval: number, identity: Identity, name: string) => {
     const token = options.publicUrl ? issueListenToken(db, account, identity, approval) : undefined;
-    if (token === undefined) throw new ToolError(NOT_REGISTERED);
+    // The registration was checked just before, so a refusal means the approval was revoked or the agent removed since.
+    if (token === undefined) throw new ToolError("No listen token: this session's approval was revoked or its agent removed.");
     return { listenToken: token, saveListenToken: saveListenToken(options.publicUrl!, name), waitCommand: listenWaitCommand(options.publicUrl!, name) };
   };
 
@@ -276,10 +277,10 @@ export function createServer(db: Db, session = new Session(OWNER_ACCOUNT), optio
         inputSchema: {},
       },
       tool((_args: Record<string, never>, extra) => {
-        const name = session.require();
+        const own = session.requireAgent();
         const approval = approvalOf(extra);
         if (approval === undefined) throw new ToolError("Only a session connected by approval gets a listen token.");
-        return listen(approval, session.registration!, name);
+        return listen(approval, own, own.name);
       }),
     );
   }

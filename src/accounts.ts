@@ -411,7 +411,7 @@ export function accountForToken(db: Db, token: string, ownerToken: string): Toke
 // A listen token's agent, while it is a live agent of its approval's account that the approval still acts as: the
 // single agent it is bound to, or one it registered. The approval must be an unrevoked agent token the code exchange
 // issued.
-const LISTEN_AGENT = `FROM listen_tokens
+export const LISTEN_AGENT = `FROM listen_tokens
   JOIN tokens ON tokens.id = listen_tokens.token_id AND tokens.revoked_at IS NULL AND tokens.oauth = 1 AND tokens.agent_only = 1
   JOIN agents ON agents.id = listen_tokens.agent_id AND agents.account_id = tokens.account_id AND agents.removed_at IS NULL
     AND agents.person = 0 AND (tokens.agent_id = agents.id OR (tokens.registers = 1 AND tokens.agent_id IS NULL AND agents.token_id = tokens.id))`;
