@@ -710,6 +710,9 @@ let peopleRowsKey = "";
 let inviteClosings = 0;
 // The id of the invite whose link the view shows, or undefined, so cancelling that invite takes its link away.
 let shownInvite;
+// How many times showInvite has shown a link, so a write with no answer hides only a link shown before it started, never
+// one another request showed meanwhile.
+let invitesShown = 0;
 // The invite the "People" view asks before cancelling ({ id, person, createdAt }), or undefined.
 let cancelTarget;
 // The list the people view's invites and the "New link" select were last built from, so a poll rebuilds them only when it
@@ -1553,6 +1556,7 @@ function showInvite(body) {
     "It works once and lasts " + INVITE_DAYS + " days, until " + when(invite.expiresAt) + ". It shows only here, until you leave this view.";
   inviteLink.value = link;
   shownInvite = invite.id;
+  invitesShown++;
   copyNote.textContent = "";
   inviteMade.hidden = false;
   inviteLink.focus();
@@ -1590,6 +1594,7 @@ async function addInvitedPerson() {
   }
   adding = tokenGen;
   const closings = inviteClosings;
+  const shown = invitesShown;
   personAdd.disabled = true;
   personNote.textContent = "Adding…";
   const ac = new AbortController();
@@ -1615,8 +1620,9 @@ async function addInvitedPerson() {
     return;
   }
   if (answer.error) {
-    // A link may have been made, so the one shown before may be taken for it.
-    hideInvite();
+    // A link may have been made, so the one shown before may be taken for it. A link another request showed meanwhile
+    // stays: it is that request's own result.
+    if (shown === invitesShown) hideInvite();
     personNote.textContent = answer.error + ", so " + name + " may or may not have been added: the agents panel and the invites below show which once they have been read again.";
     refresh();
     return;
@@ -1637,6 +1643,7 @@ async function makeInvite() {
   }
   linking = tokenGen;
   const closings = inviteClosings;
+  const shown = invitesShown;
   linkMake.disabled = true;
   linkNote.textContent = "Making a link…";
   const ac = new AbortController();
@@ -1659,8 +1666,9 @@ async function makeInvite() {
     return;
   }
   if (answer.error) {
-    // A link may have been made, so the one shown before may be taken for it.
-    hideInvite();
+    // A link may have been made, so the one shown before may be taken for it. A link another request showed meanwhile
+    // stays: it is that request's own result.
+    if (shown === invitesShown) hideInvite();
     linkNote.textContent = answer.error + ", so a link for " + person + " may or may not have been made: the invites below show which once they have been read again.";
     refresh();
     return;

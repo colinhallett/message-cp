@@ -6303,6 +6303,42 @@ describe("the page's invites", () => {
     hidden();
   });
 
+  it("keeps a link another request showed while making a link or adding a person got no answer", async () => {
+    addPerson(db, "owner", "ben");
+    let next: (url: string) => Refusal | undefined = () => undefined;
+    const page = await load(anaToken, (url, init) => (init.method === "POST" ? next(url) : undefined));
+    await page.openInvites();
+    // Adding cara hangs while a link for ben is made and shown; then the add runs out of time.
+    next = (url) => (url === "/api/people" ? "hang" : undefined);
+    page.elements["person-name"].value = "cara";
+    submit(page.elements["person-form"]);
+    await page.until(() => page.deadlines.size > 0 && page.elements["person-note"].textContent === "Adding…");
+    const addDeadlines = [...page.deadlines.values()];
+    page.elements["link-person"].value = "ben";
+    submit(page.elements["link-form"]);
+    await page.until(() => page.elements["invite-link"].value !== "");
+    const link = page.elements["invite-link"].value;
+    addDeadlines.forEach((fn) => fn());
+    await page.until(() => page.elements["person-note"].textContent.startsWith("The server did not answer in time, so cara may or may not have been added"));
+    expect(page.elements["invite-made"].hidden).toBe(false);
+    expect(page.elements["invite-link"].value).toBe(link);
+    // The other way round: a link for ben hangs while cara is added and her link shown; then the link runs out of time.
+    next = (url) => (url === "/api/invites" ? "hang" : undefined);
+    const before = new Set(page.deadlines.keys());
+    submit(page.elements["link-form"]);
+    await page.until(() => page.elements["link-note"].textContent === "Making a link…" && [...page.deadlines.keys()].some((k) => !before.has(k)));
+    const linkDeadlines = [...page.deadlines].filter(([k]) => !before.has(k)).map(([, fn]) => fn);
+    page.elements["person-name"].value = "cara";
+    submit(page.elements["person-form"]);
+    await page.until(() => page.elements["person-note"].textContent === "Added cara.");
+    const caraLink = page.elements["invite-link"].value;
+    expect(caraLink).not.toBe(link);
+    linkDeadlines.forEach((fn) => fn());
+    await page.until(() => page.elements["link-note"].textContent.startsWith("The server did not answer in time, so a link for ben may or may not have been made"));
+    expect(page.elements["invite-made"].hidden).toBe(false);
+    expect(page.elements["invite-link"].value).toBe(caraLink);
+  });
+
   it("hides the shown link once cancelling its own invite gets no answer, but not for another invite", async () => {
     addPerson(db, "owner", "ben");
     makeInvite(db, OWNER_ACCOUNT, ana, "ben");
