@@ -3758,10 +3758,11 @@ describe("the page's approved clients", () => {
       page.elements["approval-no"].on.click();
       expect(confirm(page).hidden).toBe(true);
       expect(page.writes()).toEqual([]);
-      // One that registers its own agents says so in the agent's place.
+      // One that registers its own agents says so in the agent's place, and that it ends them, naming those the list had.
       revoke(page, codex.id);
       expect(page.elements["approval-text"].textContent).toBe(
-        `Revoke token ${codex.id} (codex.example), which registers its own agents? Sessions of its agents that use it stop at their next request. This cannot be undone.`,
+        `Revoke token ${codex.id} (codex.example), which registers its own agents? This also ends the agents it registered, as unregister does: ` +
+          `their names are freed and their messages kept. When this list was read, it had none. This cannot be undone.`,
       );
       page.elements["approval-no"].on.click();
       expect(page.writes()).toEqual([]);
@@ -3777,6 +3778,23 @@ describe("the page's approved clients", () => {
       await page.until(() => rows(page).length === 2);
       expect(rows(page).map((r) => field(r, "tag"))).toEqual([`token ${codex.id}`, `token ${kept.id}`]);
       expect(item(page)).toEqual(["Approved clients", "2"]);
+
+      // Revoking the one that registers its own agents names, from the server's answer, the agents it ended.
+      registerWithIdentity(db, OWNER_ACCOUNT, "beta", "x", undefined, codex.id);
+      registerWithIdentity(db, OWNER_ACCOUNT, "alpha", "x", undefined, codex.id);
+      await page.poll();
+      await page.until(() => rows(page).some((r) => r.children.some((c) => c.textContent === "agents: alpha, beta")));
+      revoke(page, codex.id);
+      expect(page.elements["approval-text"].textContent).toBe(
+        `Revoke token ${codex.id} (codex.example), which registers its own agents? This also ends the agents it registered, as unregister does: ` +
+          `their names are freed and their messages kept. When this list was read, they were alpha, beta. This cannot be undone.`,
+      );
+      // One more registers after the list was read: the answer names what was actually ended.
+      registerWithIdentity(db, OWNER_ACCOUNT, "gamma", "x", undefined, codex.id);
+      page.elements["approval-yes"].on.click();
+      await page.until(() => note(page) === `Revoked token ${codex.id} (codex.example). This also ended the agents it registered: alpha, beta, gamma.`);
+      expect(identityOf(db, OWNER_ACCOUNT, "alpha")).toBeUndefined();
+      await page.until(() => rows(page).length === 1);
       // Nothing private reached the page.
       const shown = JSON.stringify(page.elements, (k, v) => (k === "on" ? undefined : v));
       for (const hidden of [cursor.token, kept.token, codex.token, anaToken]) expect(shown).not.toContain(hidden);
@@ -7708,6 +7726,26 @@ describe("the page's invites", () => {
       // The revoked token is refused from its next request.
       const res = await fetch(`${base()}/api/agents`, { headers: auth(bound.token) });
       expect(res.status).toBe(401);
+    });
+
+    it("says a token that registers its own agents ends them, and names those the revoke ended", async () => {
+      const codex = addToken(db, "owner", false, true, undefined, undefined, true);
+      registerWithIdentity(db, OWNER_ACCOUNT, "alpha", "x", undefined, codex.id);
+      registerWithIdentity(db, OWNER_ACCOUNT, "beta", "x", undefined, codex.id);
+      const page = await load(anaToken);
+      await openTokens(page);
+      await page.until(() => tokRows(page).some((r) => r[1] === `token ${codex.id}`));
+      revokeButton(page, codex.id).on.click();
+      expect(page.elements["token-text"].textContent).toBe(
+        `Revoke token ${codex.id} (agent, registers its own agents)? This cannot be undone, and a request already running with it may finish. ` +
+          "It also ends the agents it registered, as unregister does: their names are freed and their messages kept.",
+      );
+      page.elements["token-yes"].on.click();
+      await page.until(
+        () => note(page) === `Revoked token ${codex.id} (agent, registers its own agents). This also ended the agents it registered: alpha, beta.`,
+      );
+      expect(identityOf(db, OWNER_ACCOUNT, "alpha")).toBeUndefined();
+      expect(identityOf(db, OWNER_ACCOUNT, "beta")).toBeUndefined();
     });
 
     it("says how many dashboard sign-ins a revoke ended, and only a whole number above 0", async () => {

@@ -399,6 +399,27 @@ export const removeAgent = (db: Db, account: AccountId, name: string, key?: stri
     return { removed: row.name, keptMessages };
   }).immediate();
 
+/**
+ * Ends every live agent the token of row id `token`, one that registers its own agents, registered in the account
+ * `account`, as `removeAgent` ends one: its name is freed, its row kept, marked removed, with its messages. Returns
+ * their names, in name order; none for any other token, as only a token that registers its own agents is ever stored
+ * on an agent (`registerWithIdentity`). Run inside the transaction that revokes the token, so no reader sees one
+ * without the other.
+ */
+export function endTokenAgents(db: Db, account: AccountId, token: number): string[] {
+  // The new name is the one removedName gives. Every expression in SET reads the row as it was, so removed_name takes
+  // the live name. The unary + keeps
+  // SQLite finding the rows through agents_by_token, as listApprovals does.
+  const ended = db
+    .prepare(
+      `UPDATE agents SET name = 'removed:' || id, removed_name = name, removed_at = ?, key_hash = ?, instance = ?, status = NULL, status_at = NULL
+       WHERE token_id = ? AND +account_id = ? AND removed_at IS NULL AND person = 0 RETURNING removed_name`,
+    )
+    .pluck()
+    .all(Date.now(), REMOVED_KEY_HASH, REMOVED_INSTANCE, token, account) as string[];
+  return ended.sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+}
+
 export class PurgeError extends Error {}
 
 export interface Purged {

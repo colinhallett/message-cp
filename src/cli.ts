@@ -146,7 +146,10 @@ if (command === "serve") {
     } else if (command === "token" && action === "revoke" && arg) {
       const id = Number(arg);
       if (!/^[0-9]+$/.test(arg) || !Number.isSafeInteger(id)) usage();
-      console.error(`message-cp: revoked token ${id} of account '${revokeToken(db, id)}'.`);
+      const revoked = revokeToken(db, id);
+      // Agent names match NAME_PATTERN, so they are printed as they are.
+      const ended = revoked.agents.length > 0 ? ` Ended the agents it registered: ${revoked.agents.join(", ")}.` : "";
+      console.error(`message-cp: revoked token ${id} of account '${revoked.account}'.${ended}`);
     } else usage();
   } catch (err) {
     if (!(err instanceof AccountError)) throw err;

@@ -751,8 +751,9 @@ const NOT_ADMIN_WEBHOOKS = "The server says you are no longer an admin of this a
 let revokingApproval;
 // The approval that DELETE is revoking (the target its confirmation was for), while revokingApproval is set.
 let revokingTarget;
-// The approval the "Approved clients" view asks before revoking ({ id, client, agent, key }, agent being undefined for
-// one that registers its own agents and key its entry as GET /api/approvals gave it), or undefined.
+// The approval the "Approved clients" view asks before revoking ({ id, client, agent, agents, key }, agent being
+// undefined for one that registers its own agents, agents the names the list last gave for one, undefined for any
+// other, and key its entry as GET /api/approvals gave it), or undefined.
 let approvalTarget;
 // How many times the "Approved clients" view has closed (closeLog), so an answer that comes after it closed changes
 // nothing, as webhookClosings does for the webhooks view. unmarked() bumps it too.
@@ -767,9 +768,9 @@ const NOT_ADMIN_APPROVALS = "The server says you are no longer an admin of this 
 let revokingToken;
 // The token that DELETE is revoking (the target its confirmation was for), while revokingToken is set.
 let revokingTokenTarget;
-// The token the "Tokens" view asks before revoking ({ id, label, mine, key }, label being its kind and who or what it is
-// for, mine whether it is a person token of the page's own person, key its entry as GET /api/tokens gave it), or
-// undefined.
+// The token the "Tokens" view asks before revoking ({ id, label, mine, registers, key }, label being its kind and who or
+// what it is for, mine whether it is a person token of the page's own person, registers whether it registers its own
+// agents, key its entry as GET /api/tokens gave it), or undefined.
 let tokenTarget;
 // How many times the "Tokens" view has closed (closeLog), so an answer that comes after it closed changes nothing, as
 // webhookClosings does. unmarked() bumps it too.
@@ -2063,7 +2064,9 @@ function openRevokeApproval(target) {
   approvalText.textContent =
     "Revoke token " + target.id + " (" + target.client + ")" +
     (target.agent === undefined
-      ? ", which registers its own agents? Sessions of its agents that use it stop at their next request."
+      ? ", which registers its own agents? This also ends the agents it registered, as unregister does: their names are " +
+        "freed and their messages kept." +
+        (target.agents.length > 0 ? " When this list was read, they were " + target.agents.join(", ") + "." : " When this list was read, it had none.")
       : ", approved as " + target.agent + "? Sessions of " + target.agent + " that use it stop at their next request.") +
     " This cannot be undone.";
   approvalConfirm.hidden = false;
@@ -2112,11 +2115,19 @@ async function revokeApproval() {
   // A confirmation opened for another approval meanwhile stays.
   if (approvalTarget === target) closeRevokeApproval(true);
   const named = "token " + target.id + " (" + target.client + ")";
-  if (answer.status === 200) approvalNote.textContent = "Revoked " + named + ".";
+  if (answer.status === 200) approvalNote.textContent = "Revoked " + named + "." + endedAgents(answer.body);
   else if (answer.status === 404) approvalNote.textContent = "Token " + target.id + " (" + target.client + ") was already revoked or gone (404).";
   else if (answer.error) approvalNote.textContent = answer.error + ", so " + named + " may have been revoked: the list below shows whether.";
   else approvalNote.textContent = refusal(answer);
   if (answer.status === 200 || answer.status === 404 || answer.error) refresh();
+}
+
+// What a revoke's 200 says of the agents it ended, from its answer's agents: their names, or nothing when it ended none
+// or the answer has no list of names (an older serve answers none).
+function endedAgents(body) {
+  const agents = body && body.agents;
+  if (!Array.isArray(agents) || agents.length === 0 || !agents.every((n) => typeof n === "string")) return "";
+  return " This also ended the agents it registered: " + agents.join(", ") + ".";
 }
 
 // Asks above the list before revoking a token; nothing is sent until its "Revoke token" is pressed. For a person token of
@@ -2128,6 +2139,7 @@ function openRevokeToken(target) {
   tokenNote.textContent = "";
   tokenText.textContent =
     "Revoke token " + target.id + " (" + target.label + ")? This cannot be undone, and a request already running with it may finish." +
+    (target.registers ? " It also ends the agents it registered, as unregister does: their names are freed and their messages kept." : "") +
     (target.mine ? " It may be the token this browser is signed in with: revoking it signs this page out at its next request." : "");
   tokenConfirm.hidden = false;
   tokenYes.disabled = revokingToken === tokenGeneration;
@@ -2177,7 +2189,7 @@ async function revokeToken() {
     // An older serve answers no signins; only a whole number above 0 is said.
     const signins = answer.body && answer.body.signins;
     const ended = Number.isSafeInteger(signins) && signins > 0 ? " This also ended " + counted(signins, "dashboard sign-in") + "." : "";
-    tokenNote.textContent = "Revoked token " + target.id + " (" + target.label + ")." + ended;
+    tokenNote.textContent = "Revoked token " + target.id + " (" + target.label + ")." + ended + endedAgents(answer.body);
   }
   else if (answer.status === 404) tokenNote.textContent = "Token " + target.id + " was already revoked or gone (404).";
   else if (answer.error) tokenNote.textContent = answer.error + ", so token " + target.id + " may or may not have been revoked: the list below shows which.";
@@ -4428,7 +4440,7 @@ function approvalRow(a) {
     const button = part("button", "", "Revoke");
     button.type = "button";
     button.setAttribute("aria-label", "Revoke token " + a.id);
-    const target = { id: a.id, client, agent: single ? a.agent : undefined, key: JSON.stringify(a) };
+    const target = { id: a.id, client, agent: single ? a.agent : undefined, agents: single ? undefined : a.agents, key: JSON.stringify(a) };
     button.addEventListener("click", () => openRevokeApproval(target));
     li.append(button);
   }
@@ -4557,6 +4569,7 @@ function tokenRow(t) {
     id: t.id,
     label: [kind, ...facts].join(", "),
     mine: kind === "person" && typeof t.person === "string" && me !== undefined && t.person.toLowerCase() === me.toLowerCase(),
+    registers: t.registers === true,
     key: tokenKey(t),
   };
   button.addEventListener("click", () => openRevokeToken(target));

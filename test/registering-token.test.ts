@@ -6,7 +6,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { AccountError, accountForToken, addAccount, addToken, issueToken, listAccounts, listTokens, revokeToken } from "../src/accounts.js";
-import { addPerson, identityOf, registerAgent, registerWithIdentity, removeAgent } from "../src/agents.js";
+import { KeyResetError, addPerson, identityOf, registerAgent, registerWithIdentity, removeAgent, resetAgentKey } from "../src/agents.js";
+import { sendMessage } from "../src/messages.js";
 import { connectAgent } from "../src/connect.js";
 import { OWNER_ACCOUNT, openDb, type AccountId, type Db } from "../src/db.js";
 import { startHttp, type HttpServer } from "../src/http.js";
@@ -356,18 +357,102 @@ describe("a registering token on the other paths", () => {
     expect((await wait("?agent=codex-1")).status).toBe(204);
   });
 
-  it("stops every session of its agents once revoked, keeping the agents", async () => {
+  it("stops every session of its agents once revoked, and ends the agents", async () => {
     const token = await approved();
     const sid = await sessionOf(token, "codex-1");
-    revokeToken(db, tokenRow().id as number);
+    expect(revokeToken(db, tokenRow().id as number).agents).toEqual(["codex-1"]);
     expect((await toolsList(sid, token)).status).toBe(401);
     expect((await fetch(`${base()}/wait?agent=codex-1`, { headers: auth(token) })).status).toBe(401);
-    expect(identityOf(db, OWNER_ACCOUNT, "codex-1")).toBeDefined();
+    expect(identityOf(db, OWNER_ACCOUNT, "codex-1")).toBeUndefined();
   });
+
 });
 
 
+describe("revoking a token that registers its own agents", () => {
+  const live = () => db.prepare("SELECT name FROM agents WHERE account_id = ? AND removed_at IS NULL AND person = 0 ORDER BY name").pluck().all(OWNER_ACCOUNT);
+
+  for (const [path, revoke] of [
+    ["DELETE /api/approvals", (id: number, admin: string) => fetch(`${base()}/api/approvals?id=${id}`, { method: "DELETE", headers: auth(admin) })],
+    ["DELETE /api/tokens", (id: number, admin: string) => fetch(`${base()}/api/tokens?id=${id}`, { method: "DELETE", headers: auth(admin) })],
+  ] as const) {
+    it(`through ${path}, ends the agents it registered, keeping their messages, frees their names, and a new approval registers them again`, async () => {
+      addPerson(db, "owner", "ana", true);
+      const ana = addToken(db, "owner", false, false, undefined, "ana").token;
+      const token = await approved();
+      const id = tokenRow().id as number;
+      const first = await open(token);
+      await call(first, "register", { name: "alpha", bio: "x" });
+      const second = await open(token);
+      await call(second, "register", { name: "beta", bio: "x" });
+      registerAgent(db, OWNER_ACCOUNT, "sender", "x");
+      sendMessage(db, OWNER_ACCOUNT, "sender", "alpha", "hello alpha");
+      sendMessage(db, OWNER_ACCOUNT, "sender", "beta", "hello beta");
+      expect(live()).toEqual(["alpha", "beta", "sender"]);
+
+      const res = await revoke(id, ana);
+      expect(res.status).toBe(200);
+      expect(((await res.json()) as { agents: string[] }).agents).toEqual(["alpha", "beta"]);
+      expect(live()).toEqual(["sender"]);
+      // The messages to them stay, as when an agent unregisters.
+      expect(db.prepare("SELECT body FROM messages ORDER BY id").pluck().all()).toEqual(["hello alpha", "hello beta"]);
+      // The rows are removed, not just unreachable: a key reset finds no live agent of either name.
+      for (const name of ["alpha", "beta"]) expect(() => resetAgentKey(db, "owner", name)).toThrow(KeyResetError);
+      // A new approval of the client registers alpha again, as a new agent with none of the old one's mail.
+      const again = await open(await approved());
+      expect((await call(again, "register", { name: "alpha", bio: "x" })).isError).toBe(false);
+      expect(JSON.parse((await call(again, "read_inbox")).text)).toEqual([]);
+      expect(live()).toEqual(["alpha", "sender"]);
+    });
+  }
+
+  it("leaves every other token's revoke as it was: no agent ends", async () => {
+    const desk = await approved({ agent: "desk" });
+    const deskId = tokenRow().id as number;
+    registerAgent(db, OWNER_ACCOUNT, "keyed", "x", "k".repeat(32));
+    addPerson(db, "owner", "maria");
+    const bound = connectAgent(db, "owner", "writer", false).tokenId;
+    const others = [
+      deskId,
+      bound,
+      addToken(db, "owner").id,
+      addToken(db, "owner", true).id,
+      addToken(db, "owner", false, true).id,
+      addToken(db, "owner", false, false, undefined, "maria").id,
+    ];
+    const before = db.prepare("SELECT * FROM agents ORDER BY id").all();
+    for (const id of others) expect(revokeToken(db, id)).toEqual({ account: "owner", agents: [] });
+    expect(db.prepare("SELECT * FROM agents ORDER BY id").all()).toEqual(before);
+    // The single-agent approval's agent stays, as before.
+    expect(identityOf(db, OWNER_ACCOUNT, "desk")).toBeDefined();
+    expect((await fetch(`${base()}/wait?agent=desk`, { headers: auth(desk) })).status).toBe(401);
+  });
+
+  it("ends nothing in another account, even an agent stored with the token's id", async () => {
+    const token = await approved();
+    const id = tokenRow().id as number;
+    await call(await open(token), "register", { name: "alpha", bio: "x" });
+    // No path stores another account's token on an agent; this one is written by hand, to show the account is checked.
+    registerAgent(db, friend, "alpha", "x");
+    db.prepare("UPDATE agents SET token_id = ? WHERE account_id = ? AND name = 'alpha'").run(id, friend);
+    expect(revokeToken(db, id).agents).toEqual(["alpha"]);
+    expect(identityOf(db, friend, "alpha")).toBeDefined();
+    expect(identityOf(db, OWNER_ACCOUNT, "alpha")).toBeUndefined();
+  });
+
+});
+
 describe("query plans", () => {
+  it("ends a revoked token's agents through agents_by_token, without scanning agents", () => {
+    const plan = db
+      .prepare(
+        `EXPLAIN QUERY PLAN UPDATE agents SET name = 'removed:' || id, removed_name = name, removed_at = ?, key_hash = ?, instance = ?, status = NULL, status_at = NULL
+         WHERE token_id = ? AND +account_id = ? AND removed_at IS NULL AND person = 0 RETURNING removed_name`,
+      )
+      .all(0, "removed", "removed", 1, OWNER_ACCOUNT) as { detail: string }[];
+    expect(plan.map((r) => r.detail)).toEqual(["SEARCH agents USING INDEX agents_by_token (token_id=?)"]);
+  });
+
   it("adds a token without scanning agents or sessions, finding the agents it registered and its sessions by index", () => {
     const plan = db
       .prepare("EXPLAIN QUERY PLAN INSERT INTO tokens (account_id, hash, created_at, read_only, agent_only, agent_id, person_id, registers) VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING id")
