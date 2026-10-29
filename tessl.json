@@ -66,6 +66,12 @@
       "environment": "factory-message-cp-implement",
       "agent": "claude",
       "model": "claude-opus-5-5"
+    },
+    "release-notes": {
+      "skill": "file:tessl-factory#release-notes",
+      "environment": "factory-message-cp-release",
+      "agent": "claude",
+      "model": "claude-opus-5-5"
     }
   },
   "triggers": {
@@ -235,6 +241,27 @@
         ]
       },
       "action": "planner"
+    },
+    "release-tagged": {
+      "on": [
+        "github:push"
+      ],
+      "when": {
+        "event.ref": {
+          "matches": "^refs/tags/v"
+        },
+        "event.deleted": false,
+        "event.repository.full_name": "colinhallett/message-cp"
+      },
+      "concurrency": {
+        "keys": [
+          {
+            "key": "release-notes:{{ event.ref }}",
+            "limit": 1
+          }
+        ]
+      },
+      "action": "release-notes"
     }
   },
   "schedules": {
