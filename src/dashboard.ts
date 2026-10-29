@@ -2385,10 +2385,10 @@ function closeAgentPanel(refocus) {
 }
 
 // Removes the agent being asked about with DELETE /api/agents and says what it ended from the answer's counts (the
-// messages and mentions deleted, and the tokens that stopped working), then
-// reads the agents again, as removeAccountPerson does for a person. After a 200, 404 or no answer it also reads the
-// account's messages again from the start (forgetMessagesOf), even if the panel has moved on to another agent since;
-// any other answer after that, or any answer after the token was forgotten, changes nothing.
+// messages and mentions deleted, and the tokens that stopped working), then reads the agents again, as
+// removeAccountPerson does for a person. After a 200, 404 or no answer it also reads the account's messages again from
+// the start (forgetMessagesOf), even if the panel has moved on to another agent since; any other answer after that, or
+// any answer after the token was forgotten, changes nothing.
 async function removeAgent() {
   const token = sessionStorage.getItem(KEY);
   if (!token) return ask();

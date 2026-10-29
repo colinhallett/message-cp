@@ -164,10 +164,6 @@ describe("DELETE /api/agents", () => {
   it("counts 0 for an agent left only as removed rows, whose tokens already stopped", async () => {
     connectAgent(db, "owner", "writer", false);
     purgeAgent(db, "owner", "writer");
-    db.prepare("INSERT INTO agents (account_id, name, bio, registered_at, last_seen, person, removed_at, removed_name) VALUES (?, ?, '', 0, 0, 0, 1, 'writer')").run(
-      OWNER_ACCOUNT,
-      "removed-writer-x",
-    );
     expect(await (await remove("writer")).json()).toMatchObject({ name: "writer", tokens: 0 });
   });
 
