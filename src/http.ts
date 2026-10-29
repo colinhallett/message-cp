@@ -1133,8 +1133,9 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
 
   /**
    * DELETE /api/approvals?id=<id>: revokes the account's approval `id`, as `revokeApprovalBy` does, answering `{ id,
-   * agents }`, with `agents` the names of the agents the revoke ended (empty for none), or 404 for an id that is no unrevoked OAuth token of the account, another account's included. It reads no body, so
-   * it takes no slot. `NotAdminError`, for a token's person removed or unmarked since the token was checked, answers 403.
+   * agents }`, with `agents` the names of the agents the revoke ended (empty for none), or 404 for an id that is no
+   * unrevoked OAuth token of the account, another account's included. It reads no body, so it takes no slot.
+   * `NotAdminError`, for a token's person removed or unmarked since the token was checked, answers 403.
    */
   const apiRevokeApproval = (req: IncomingMessage, res: ServerResponse, account: AccountId, by: number) => {
     const ids = new URL(req.url ?? "", "http://x").searchParams.getAll("id");

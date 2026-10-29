@@ -408,8 +408,7 @@ export const removeAgent = (db: Db, account: AccountId, name: string, key?: stri
  */
 export function endTokenAgents(db: Db, account: AccountId, token: number): string[] {
   // The new name is the one removedName gives. Every expression in SET reads the row as it was, so removed_name takes
-  // the live name. The unary + keeps
-  // SQLite finding the rows through agents_by_token, as listApprovals does.
+  // the live name. The unary + keeps SQLite finding the rows through agents_by_token, as listApprovals does.
   const ended = db
     .prepare(
       `UPDATE agents SET name = 'removed:' || id, removed_name = name, removed_at = ?, key_hash = ?, instance = ?, status = NULL, status_at = NULL
@@ -417,7 +416,10 @@ export function endTokenAgents(db: Db, account: AccountId, token: number): strin
     )
     .pluck()
     .all(Date.now(), REMOVED_KEY_HASH, REMOVED_INSTANCE, token, account) as string[];
-  return ended.sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+  // In the order listApprovals lists them: names are ASCII and agents.name is COLLATE NOCASE, so case is ignored, and
+  // no two live names of an account differ only in case.
+  const key = (n: string) => n.toLowerCase();
+  return ended.sort((a, b) => (key(a) < key(b) ? -1 : key(a) > key(b) ? 1 : 0));
 }
 
 export class PurgeError extends Error {}

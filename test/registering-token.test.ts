@@ -406,6 +406,15 @@ describe("revoking a token that registers its own agents", () => {
     });
   }
 
+  it("names the agents it ended in the order the approvals list gives them, ignoring case", async () => {
+    const token = await approved();
+    const id = tokenRow().id as number;
+    for (const name of ["beta", "Alpha", "Gamma", "delta"]) await call(await open(token), "register", { name, bio: "x" });
+    const listed = (await (await fetch(`${base()}/api/approvals`, { headers: auth(ownerFull) })).json()) as { agents?: string[] }[];
+    expect(listed[0].agents).toEqual(["Alpha", "beta", "delta", "Gamma"]);
+    expect(revokeToken(db, id).agents).toEqual(["Alpha", "beta", "delta", "Gamma"]);
+  });
+
   it("leaves every other token's revoke as it was: no agent ends", async () => {
     const desk = await approved({ agent: "desk" });
     const deskId = tokenRow().id as number;
