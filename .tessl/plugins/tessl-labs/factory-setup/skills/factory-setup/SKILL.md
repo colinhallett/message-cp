@@ -1,192 +1,262 @@
 ---
 name: factory-setup
 description: >-
-  Set up, explain, or change a Tessl factory on a repository: agents that act
-  on events in the repo, such as triaging new tickets, shipping tickets as
-  pull requests, keeping pull requests moving, reviewing code, or running a
-  job on a schedule. Use when someone wants Tessl agents to do work in their
-  repo, asks what a factory is or what theirs does, or wants to add to,
-  change, or customize it.
+  Set up a Tessl factory on a repository: Tessl agents that turn tickets into
+  pull requests, answer reviews and fix checks on them, and review every pull
+  request. Use when someone wants Tessl agents to do work in their repo, or
+  asks what a factory is. To explain or change a factory that exists, use the
+  understand-factory and change-factory skills.
 ---
 
 # Factory setup
 
 A factory is a set of automations on a repository. Each one is a rule: when
-something happens (a ticket is filed, a pull request gets a review, a time of
-day arrives), a Tessl agent runs a skill in the cloud and does one job.
+something happens (a ticket is handed to Tessl, a pull request gets a review),
+a Tessl agent runs in the cloud and does one job.
 
-Your job is to help the user pick the first automation that is useful to
-them, set it up safely, show it working, and then help them see what else
-they could add. Fit the factory to how the user works. Do not assume they use
-pull requests, Linear, or any other tool until you have checked.
+Your job is to set up the same factory the Tessl web app sets up, without
+asking the person to make choices, then offer the extras only an agent that
+can read the repository can recommend.
 
-Rules for the whole session:
+## What done looks like
 
-- Ask about one thing at a time.
-- Use plain words. See [Plain words](#plain-words).
-- Change nothing in the repository, the Tessl workspace, or GitHub until the
-  user has said yes in step 1.
-- Pass `--workspace <workspace>` to every `tessl` command that takes it. `gh`
-  and `git` commands do not take it.
+Setup is done when the repository has a Tessl project; Ticket to PR is on;
+Code Review is on, or the person chose not to install its app; the person has
+had the "Your factory is live." message, the first-ticket offer and the
+suggested next steps; and every step they accepted is done.
 
-## 1. Orient the user
+Read where things stand, take the first situation that applies, do its next
+action, and look again.
 
-Before you run anything that changes state, tell the user in a few short
-sentences:
+1. **The person asked what a factory is, what theirs does, or to change it.**
+   Explain in a few sentences, or use
+   [understand-factory](../understand-factory/SKILL.md) or
+   [change-factory](../change-factory/SKILL.md). Set nothing up.
+2. **The CLI is obsolete or not logged in.** For an obsolete CLI follow
+   [Check the Tessl CLI](references/cli-version.md). When `tessl whoami`
+   fails, ask the person to run `tessl login` and wait. A newer CLI build is
+   not a reason to stop: mention `tessl cli update` once in the live message.
+3. **The folder is not a GitHub repository.** Say automations run on a GitHub
+   repository and ask which one to use.
+4. **No project for this repository, or you do not know its org.**
+   [Find or create it](#the-project).
+5. **The Tessl App cannot reach the repository.** [Get it there](#the-tessl-app).
+6. **Ticket to PR is not on.** [Turn it on](#ticket-to-pr).
+7. **Code Review is not on, and the person has not said to skip it.**
+   [Turn it on](#code-review).
+8. **The live message has not been sent.** [Send it](#its-live).
+9. **The first ticket has not been offered.** [Offer it](#the-first-ticket).
+10. **The suggested next steps have not been sent.**
+    [Send them](#suggested-next-steps).
+11. **The person accepted a next step that is not done.** Do it, as its
+    step says.
 
-1. What a factory is (the paragraph at the top, in your own words).
-2. Three or four examples from [the starter automations](references/starters.md)
-   that could fit this kind of repository.
-3. What setup will create: a Tessl project linked to the repo, one cloud
-   environment for the agents, the Tessl GitHub App on this repo, a few
-   entries in `tessl.json`, and maybe a label.
-4. That runs use Tessl credits, and that a first test run costs a few hundred
-   credits.
-5. That every automation can be turned off by removing it from `tessl.json`.
+If what you find fits none of these, say what you found and ask.
 
-Then ask: "Do you want to go ahead?" Stop if they say no.
+## Invariants
 
-## 2. Preflight
+### Talking to the person
 
-1. Work from the repository root. If there is no `tessl.json`, tell the user to
-   run `tessl init` and stop.
-2. Run `git status`. If there are uncommitted changes, say so and ask the user
-   to commit them or put them aside before you continue. Do not move or stash
-   them yourself.
-3. Run `tessl whoami`. If it fails, ask the user to run `tessl login`.
-4. Run `tessl project repair --json`. The workspace is
-   `linkedProject.workspaceName`. If there is no linked project, ask which
-   workspace to use, then run `tessl project link --workspace <workspace>`, or
-   `tessl project create --workspace <workspace>` if no project matches.
-5. Run `tessl org list --json`. If the organization's `credits.state` is not
-   `ok`, tell the user that factory runs will not start until the
-   organization has credits, and ask whether to continue.
-6. Find the GitHub repo (`gh repo view --json nameWithOwner`). Check that the
-   Tessl GitHub App can write to it: `tessl integrations show github-app-agent`
-   and `tessl github token --repo <owner/repo>`. If either fails, ask the user
-   to install the Tessl GitHub App on the repo from workspace settings. Say
-   that it asks for read and write access so agents can comment, push
-   branches, and open pull requests. Wait until they say it is done.
+1. Ask nothing that a default answers. The only things to ask for are what
+   only the person can do (log in, install an app), which org or workspace
+   when the rules below leave more than one, the first ticket, and which
+   suggested next steps to take.
+2. Use plain words; see [Plain words](#plain-words). Never show a generated
+   identifier, such as a workspace name that starts with `ws-`; with one
+   workspace, say "your Tessl workspace".
+3. Give a browser link whenever you create or check something the person may
+   want to see, from the command's `webUrl` ([Browser links](references/links.md)),
+   as a plain URL. Add `onboarding=true` to every link on the Tessl web app's
+   host: `?onboarding=true`, or `&onboarding=true` when the link already has a
+   query. Links to other sites, such as GitHub, stay as they are.
+4. Say what you have checked and what you have not. Never say the factory is
+   running until its Loops are listed, or that a run worked until you have
+   seen what it did.
+5. After a side request, answer it, then go back to the situation you were
+   on.
 
-## 3. Learn how the user works
+### Changes
 
-Read before you ask:
+6. Change nothing in the repository before the factory is live: no
+   `tessl init`, no `tessl.json`, no commit. Afterwards, change it only for an
+   extra the person accepted, and ask before each push and merge.
+7. Never set up an automation the project already has
+   ([What is there already](references/set-up-in-tessl.md#what-is-there-already)),
+   and never change a Code Review setting on a repository whose review is
+   already on.
+8. When a command is refused, by the agent's permission system or by GitHub,
+   do not retry or work around it: ask the person to run it.
+9. Every command acts on the org and workspace this setup chose: pass
+   `--org <org id>` to `tessl code repo` and `--workspace <workspace>` to
+   `tessl integrations show`, so neither falls back to a local or default
+   one.
 
-- `CLAUDE.md`, `AGENTS.md`, and `CONTRIBUTING.md`, for rules about branches,
-  pull requests, and releases.
-- `git log --first-parent -30 <default branch>`. Merge commits mean work
-  arrives through pull requests. Plain commits mean people push to the
-  default branch.
-- `gh pr list --state merged --limit 10` and
-  `gh api repos/<owner>/<repo>/rules/branches/<default branch>`.
-- Where tickets live: open GitHub issues (`gh issue list --limit 5`), or a
-  Linear connection (`tessl integrations show linear --json`).
-- CI: the files in `.github/workflows/`.
+## Environment facts
 
-Tell the user what you found in two or three sentences, for example "You push
-straight to main, file GitHub issues, and have no CI." Ask them to correct
-it. Then ask: "Is there one thing you want Tessl to take off your plate
-first?"
+- Ticket to PR is three automations set up in Tessl in one call: "ship
+  tickets" (Implement ticket), "answer reviews and fix checks" (Shepherd PR)
+  and "follow ticket changes". They are on as soon as the call returns, with
+  cloud environments Tessl creates. [Set up automations in
+  Tessl](references/set-up-in-tessl.md) has the calls.
+- A run starts about 90 seconds after the event and uses Tessl credits.
+  `tessl org list --json` gives each org's `credits.state` and
+  `credits.remaining`.
+- Two GitHub Apps: the Tessl App lets agents comment, push branches and open
+  pull requests; Tessl Review runs Code Review.
+- `tessl api <path>` calls the Tessl API with the person's login; send a body
+  with `--input <file>`.
+- `gh repo view --json nameWithOwner,isFork,parent,visibility` gives the
+  repository. A fork gets its own factory, not its parent's.
 
-## 4. Show the current factory
+## Judgment
 
-Read `tessl.json`. Find the `actions`, `triggers`, and `schedules`, and the
-environments they use (`tessl environment view <env>`). Check Code Review with
-`tessl integrations show github-app-code-review`.
+- While you set up, read the repository for the first ticket and suggested
+  next steps: package manifests, lockfiles and CI install steps (what a cloud run needs to build
+  and test), the services its tests need, its agent context (`AGENTS.md`,
+  `CLAUDE.md`), and its review history. Use what you find when offering the
+  first ticket, and save the other recommendations for the suggested next steps.
+- A person who wants something other than Ticket to PR, such as a schedule or
+  a trigger of their own, gets the factory first, then
+  [change-factory](../change-factory/SKILL.md) for the rest.
 
-If nothing is set up, say so and go to step 5.
+## The project
 
-If something is set up, tell the user in plain words which automations are
-on, what starts each one, and which skills are their own copies. Then
-suggest one or two automations from [the starters](references/starters.md)
-that fit what they already have and how they work, and say what each would
-save them. For example: "Tessl already ships your labelled issues. A triage
-automation could read each new issue and add the label when the issue is
-small and clear." Ask what they want to do: add an automation, remove one,
-change what starts one, or [edit a skill](references/customize.md).
+1. **The org.** From `tessl org list --json`: the only one; otherwise the one
+   that already has a project for this repository; otherwise the one whose
+   Tessl App can see the repository
+   (`/v1/orgs/<org id>/integrations`, then
+   `/v1/orgs/<org id>/integrations/<integration id>/repositories?scope=account&q=<repo>`);
+   otherwise ask which, by name. When its `credits.state` is not `ok`, say
+   once that runs will not start until it has credits, and carry on.
+2. **The project.** List the org's projects with
+   `tessl api '/v1/orgs/<org id>/projects?filter[q]=<owner>/<repo>'` and take
+   the one whose `sourceUri` is `https://github.com/<owner>/<repo>` and whose
+   `repoSubpath` is empty. `filter[q]` also matches names and other
+   repositories, so match those two fields yourself.
+3. **Otherwise create it** in the org's workspace
+   (`tessl api /v1/orgs/<org id>/workspaces`: the only one, or the one the
+   person names) with `tessl api -X POST /v1/projects --input <file>` and
+   `{"workspaceId": "<workspace id>", "name": "<repo>", "sourceType": "git",
+   "sourceUri": "https://github.com/<owner>/<repo>", "repoSubpath": ""}`. When
+   the name is taken, add `-2`, `-3` and so on.
+4. Keep the project's id and give the person its link: the web app's
+   `/go/projects/<project id>`, on the host the other commands' `webUrl`
+   values use (such as `https://tessl.io`). The create call returns no link. A refusal
+   about permissions: [check permissions](references/permissions.md) and ask
+   for exactly what is missing.
 
-## 5. Pick the first automation
+## The Tessl App
 
-Set up one automation first. Add more once it works.
+`tessl api /experimental/projects/<project id>/factory/helper-access` gives
+`data.attributes.status`: `accessible` or `missing`. When it is `missing`,
+give one link from `tessl integrations show github-app-agent --json`, as
+[Browser links](references/links.md) says, and say it asks for read and write
+access so agents can comment, push branches and open pull requests. Wait until
+the person says it is done, then go on to Ticket to PR: this check keeps
+answering `missing` for up to five minutes after access is granted, and the
+Ticket to PR call refuses with "Connect the Tessl App to this repository" while
+access is really missing. When it refuses, say the access can take a few
+minutes to show, and try again.
 
-- If the user named a goal in step 3, set up the starter that meets it.
-- If not, offer two or three starters from [the starters](references/starters.md)
-  that fit how they work, each in one sentence, with your recommendation
-  first.
-- If they push straight to the default branch, do not offer automations that
-  need a pull request on every change. Offer the ones that work without pull
-  requests, and say that "ship tickets" opens one pull request per ticket.
-- If they want something no starter covers, follow
-  [Write your own automation](references/starters.md#write-your-own-automation).
+## Ticket to PR
 
-Before you build it, say what it does in plain words: what starts it, what
-the agent does, what it changes, and how to stop it. Ask: "Is this what you
-want?"
+Turn it on as [Ticket to PR](references/set-up-in-tessl.md#ticket-to-pr) says. The
+issue source is Linear when the Linear connection has a team routed to this
+project ([Linear prerequisites](references/linear.md)); otherwise GitHub
+issues with the `tessl` label. Do not ask. When the project already has an
+implement automation, the call keeps its source. Confirm the three Loops are
+listed and active.
 
-## 6. Create the environment
+## Code Review
 
-Use one environment named `<repo>-factory`. If it exists, show its access and
-ask before you change it. If not, create it with the access that the chosen
-starter lists:
+`tessl code repo view <owner/repo> --json`. When `repository.review.enabled`
+is true, leave every setting as it is. Otherwise, when the Tessl Review app
+cannot see the repository, give the `webUrl` from
+`tessl integrations show github-app-code-review --json`, say it reviews every
+pull request, including Tessl's, and that the person can say to skip it; wait
+until they say it is done or to skip. Then turn it on to review every push:
+`tessl code repo update <owner/repo> --review-enabled --review-trigger every-push`,
+and confirm with `tessl code repo view`. A refusal needs an organization
+admin; say so and carry on without it.
 
-`tessl environment create <repo>-factory <flags>`, then confirm it with
-`tessl environment view <repo>-factory`.
+## It's live
 
-If `tessl environment create --help` has no flag that the starter needs, ask
-the user to create the environment in the web app, under workspace settings,
-Environments, with that access.
+One message that starts "Your factory is live.":
 
-## 7. Write tessl.json
+- What is on, what starts each, and the project's Loops link (the project
+  link with `/loops` added), using the issue source the Ticket to PR plan
+  reported (`issueSource`), which is an existing automation's when the
+  project had one: "Add the `<label>` label to an issue and Tessl opens a pull
+  request for it", or for Linear, "Delegate an issue to Tessl".
+- How to stop each: removing that label or taking the issue back stops one
+  ticket; pausing a Loop on that page stops it for every ticket.
+- The org's remaining credits, from `credits.remaining`.
+- That their agent can later explain what the factory did
+  ([understand-factory](../understand-factory/SKILL.md)) or change it
+  ([change-factory](../change-factory/SKILL.md)).
 
-1. Pick where the change goes:
-   - If the user works through pull requests, create a branch named
-     `setup-tessl-factory` from the default branch and make every file change
-     on it.
-   - If the user pushes straight to the default branch, ask whether to commit
-     there or use a `setup-tessl-factory` branch.
-2. Add the entries that the starter lists. Keep every other key in the file.
-3. If the starter uses a label, create it if it is missing, for example
-   `gh label create tessl`.
-4. If the starter works on pull requests, check the branch rules from step 3,
-   auto-merge, and "dismiss approvals on push". Tell the user how each one
-   changes what the automation does. Change nothing without asking.
-5. Run `tessl doctor --automations`. Fix what it reports. Tell the user what
-   each warning means for them, not what it says. For example, "event
-   delivery not confirmed" means "Tessl has not received a GitHub event from
-   this repo yet. This is normal until the change is on the default branch."
-6. Show the user the diff and say in one sentence what each entry does.
+## The first ticket
 
-## 8. Go live and show it working
+Offer it as [The first ticket](references/set-up-in-tessl.md#the-first-ticket)
+says: a few of the open issues the web would offer, and a useful starter issue
+you propose from the checked-out repository.
+Giving Tessl a ticket starts a run that uses credits, so this is the one choice
+in setup; when the person declines, say how to give it one later and go on.
+When they pick one, follow its run as [Testing the
+factory](references/testing.md) says, and send the suggested next steps while
+it runs. Report only what you saw: the run starting, its pull request, or what
+stopped it.
 
-1. Ask: "Do you want me to push this?" If yes, push the commit, or commit on
-   `setup-tessl-factory` and open a pull request. The automations start only
-   once `tessl.json` is on the default branch.
-2. When it is on the default branch, send the user to the project's Loops tab
-   in the Tessl web app. Say which loops they will see and what starts each.
-3. Ask: "Do you want me to show you it working?" If yes, follow
-   [Testing the factory](references/testing.md).
+## Suggested next steps
 
-## 9. Recap and suggest what is next
+One message under the heading "Suggested next steps". Open with one line: the
+factory is doing its job, and these steps make it better at this repository.
+Then at most three steps as peers, each ending with what it gains the person,
+not with a caveat. Learn from past work always comes first; suggest the others
+only when the evidence from the repository supports them, and give that
+evidence:
 
-Tell the user:
+- **Learn from past work:** each week Tessl reads the factory's runs and the
+  pull requests' reviews, records the problems that keep coming back as
+  findings, and turns them into tickets the factory builds. If accepted, turn
+  on all four Loops with the suggested environment for tickets, as [Learn from
+  past work](references/set-up-in-tessl.md#learn-from-past-work) says.
+- **A setup script for cloud runs,** when building or testing needs tools,
+  dependencies or services, such as a lockfile to install from or a database
+  the tests use. Name what you found and what `.tessl/cloud-launch-setup.sh`
+  would install, so the next run builds and tests like CI does. If accepted,
+  write it as [the setup hook reference](references/setup-hook.md) says, on a branch with a pull request,
+  check it on a cloud machine before the merge as [Check the setup hook in the
+  cloud](references/cloud-check.md) says, never by running it here, and ask
+  before pushing and merging.
+- **prepare-repo,** when agent context is thin or missing: it reads the
+  repository's review history, CI failures and fix commits, and turns what it
+  finds into agent context, checks and review rules, so the next pull request
+  starts from what the first one had to work out
+  ([prepare-repo](../prepare-repo/SKILL.md)). It changes nothing until the
+  person picks what to keep.
+- **Code Review,** when it ended up off: say that Tessl did not review the
+  pull request it opened, because review is off for this repository, and that
+  with it on every pull request gets findings and the agent answering reviews
+  fixes them. Say nothing about whether anyone else reviewed it. Turn it on as
+  [Code Review](#code-review) says, or point to **Code reviews** in the web
+  app when that was refused.
 
-- Which automations are on, what starts each one, and the link to its loop.
-- How to stop one: remove it from `tessl.json`, or remove the label from a
-  ticket.
-- One or two automations from [the starters](references/starters.md) that
-  would fit next, and what each would save them. Ask if they want to add one
-  now.
+End with one question that assumes a start: which step to begin with, and
+which one you would begin with now. Do not call the steps optional, and do
+not offer "none"; a person who wants to stop says so, and then leave it. Add
+one line on what else they can ask for later, such as other automations from
+[the starters](references/starters.md).
 
 ## Plain words
 
 Say the plain words. If a command or screen shows the Tessl term, say what it
 means in one line.
 
-| Plain words                                                                           | Tessl term            |
-| ------------------------------------------------------------------------------------- | --------------------- |
-| automation                                                                            | loop, trigger, action |
-| cloud environment: the machine and access the agent gets                              | environment           |
-| check the setup                                                                       | `tessl doctor`        |
-| review rules: what Code Review looks for                                              | lens                  |
-| keep pull requests moving: answer review comments, fix failing checks                 | shepherd              |
-| wait time: Tessl waits about 90 seconds after an event, so quick events start one run | debounce              |
+- **automation:** a Loop, trigger or action.
+- **the Tessl App:** the GitHub App that lets agents write to the repository,
+  also shown as `github-app-agent`.
+- **cloud environment:** the machine and access the agent gets in Tessl's
+  cloud.
+- **answer reviews and fix checks:** on Tessl's pull requests, an agent
+  answers review comments and fixes failing checks (shepherd).

@@ -1,6 +1,15 @@
 {
   "name": "tessl-labs/factory-setup",
-  "version": "0.3.0",
-  "description": "Set up, explain, and change a Tessl factory on a repository: pick automations that fit how you work, such as triaging tickets, shipping tickets as pull requests, keeping pull requests moving, code review, and scheduled jobs.",
-  "skills": ["skills/factory-setup"]
+  "version": "0.23.1",
+  "description": "Set up, understand, and change a Tessl factory on a repository: pick automations that fit how you work, such as shipping tickets as pull requests, answering reviews and fixing checks on those pull requests, code review, and scheduled jobs; prepare the repository for agents; write issues for the factory to build; then see what the factory has done, find out why a run failed or never started, and change or extend it.",
+  "skills": [
+    "skills/factory-setup",
+    "skills/prepare-repo",
+    "skills/check-cloud-setup",
+    "skills/understand-factory",
+    "skills/change-factory",
+    "skills/write-factory-skill",
+    "skills/create-github-issue",
+    "skills/create-linear-issue"
+  ]
 }
