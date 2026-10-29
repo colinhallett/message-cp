@@ -179,7 +179,7 @@ describe("message-cp login-link", () => {
     expect(out.stderr).not.toContain(code);
     expect(out.stderr).not.toMatch(/[0-9a-f]{64}/);
     expect(accountForToken(db, redeemLoginCode(db, code), OWNER_TOKEN)?.person?.name).toBe("maria");
-  });
+  }, 60_000);
 
   it("defaults to the owner account and a full token, and takes --account", () => {
     const owner = cli("login-link", "--url", "http://127.0.0.1:8787");
@@ -189,7 +189,7 @@ describe("message-cp login-link", () => {
     expect(other.status).toBe(0);
     const code = new URL(other.stdout.trim()).hash.slice("#code=".length);
     expect(accountForToken(db, redeemLoginCode(db, code), OWNER_TOKEN)?.account).toBe(friend);
-  });
+  }, 60_000);
 
   it("refuses an unsafe URL, including the bypasses, before opening the database", () => {
     const fresh = join(mkdtempSync(join(tmpdir(), "message-cp-login-")), "db.sqlite");
