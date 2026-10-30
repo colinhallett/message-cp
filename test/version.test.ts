@@ -24,12 +24,14 @@ afterEach(async () => {
 });
 
 it("reports package.json's version to a client over stdio", async () => {
+  // Without the caller's agent variables, so a shell set up for HTTP init (MESSAGE_CP_AGENT_KEY alone) cannot stop the server starting.
+  const { MESSAGE_CP_AGENT: _agent, MESSAGE_CP_AGENT_KEY: _key, ...env } = process.env;
   client = new Client({ name: "test", version: "0" });
   await client.connect(
     new StdioClientTransport({
       command: "npx",
       args: ["tsx", join(root, "src/index.ts")],
-      env: { ...process.env, MESSAGE_CP_DB: dbFile() } as Record<string, string>,
+      env: { ...env, MESSAGE_CP_DB: dbFile() } as Record<string, string>,
     }),
   );
   expect(client.getServerVersion()).toEqual({ name: "message-cp", version: packageVersion });
