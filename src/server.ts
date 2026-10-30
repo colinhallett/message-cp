@@ -1,6 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { RequestHandlerExtra } from "@modelcontextprotocol/sdk/shared/protocol.js";
 import type { RequestId, ServerNotification, ServerRequest } from "@modelcontextprotocol/sdk/types.js";
+import { createRequire } from "node:module";
 import { z } from "zod";
 import {
   DEFAULT_LIST_LIMIT,
@@ -188,6 +189,9 @@ async function poll<T>(deadline: number, signal: AbortSignal, answer: () => T | 
   }
 }
 
+/** The version in package.json, one directory up from this file whether it runs from src/ (tsx) or dist/ (a build or the npm package). */
+export const VERSION: string = createRequire(import.meta.url)("../package.json").version;
+
 /** One server per session. */
 export function createServer(db: Db, session = new Session(OWNER_ACCOUNT), options: ServerOptions = {}): McpServer {
   const remote = options.remote ?? false;
@@ -195,7 +199,7 @@ export function createServer(db: Db, session = new Session(OWNER_ACCOUNT), optio
   session.attach(db);
   const account = session.account;
   const server = new McpServer(
-    { name: "message-cp", version: "0.1.0" },
+    { name: "message-cp", version: VERSION },
     { instructions: instructions(process.env, remote, options.publicUrl, options.agent, options.approval, session.account) },
   );
 

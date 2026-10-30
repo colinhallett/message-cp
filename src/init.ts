@@ -27,6 +27,7 @@ import { fileURLToPath } from "node:url";
 import { NAME_PATTERN, NOT_REGISTERED, PurgeError, purgeAgent } from "./agents.js";
 import { ConnectError, mcpEndpoint } from "./connect.js";
 import { dbPath, openDb } from "./db.js";
+import { VERSION } from "./server.js";
 import { shellQuote } from "./wait.js";
 
 // `message-cp init`: adds the stdio server `npx -y message-cp` to one coding agent's user-level MCP configuration on
@@ -573,7 +574,7 @@ export async function proveServer(server: { command: string; args: string[] }, e
   for (const [k, v] of Object.entries(env)) if (v !== undefined && k !== "MESSAGE_CP_AGENT" && k !== "MESSAGE_CP_AGENT_KEY") childEnv[k] = v;
   childEnv.MESSAGE_CP_DB = db;
 
-  const client = new Client({ name: "message-cp-init", version: "1.0.0" });
+  const client = new Client({ name: "message-cp-init", version: VERSION });
   let failure: unknown;
   let step = "starting the server";
   let stderr = "";
@@ -642,7 +643,7 @@ export async function proveServer(server: { command: string; args: string[] }, e
 
 /** A client of the team server `r`, sending `headers` on every request. */
 function remoteClient(r: Remote, headers: Record<string, string>) {
-  const client = new Client({ name: "message-cp-init", version: "1.0.0" });
+  const client = new Client({ name: "message-cp-init", version: VERSION });
   const transport = new StreamableHTTPClientTransport(r.endpoint, { requestInit: { headers } });
   return { client, transport };
 }
