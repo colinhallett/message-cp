@@ -67,6 +67,8 @@ jobs:
       # npm can take a minute or more to serve a version it has just accepted, and the registry
       # refuses a listing whose npm version it cannot fetch, so wait for it, at most WAIT_SECONDS.
       - name: Wait for npm to serve this version
+        # A hard limit too, in case one npm view hangs past the deadline.
+        timeout-minutes: 12
         env:
           WAIT_SECONDS: 600
         run: |
@@ -80,7 +82,7 @@ jobs:
             sleep 10
           done
           echo "npm serves message-cp $version."
-      # The registry checks mcpName in the package just published, so these steps run only after it.
+      # The registry checks mcpName in the package on npm, so these steps run only after it is there.
       # test/settings.test.ts fails unless server.json has package.json's name and version.
       - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
       - name: Download and verify mcp-publisher
