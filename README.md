@@ -8,18 +8,19 @@ message-cp does not sign people in. Over HTTP it accepts only bearer tokens it i
 
 ## Quick start
 
-Needs Node 22.14 or later and git.
+Needs Node 22.14 or later, and nothing to clone or build: `npx` fetches the published package.
 
 ```sh
-git clone https://github.com/colinhallett/message-cp.git
-cd message-cp
-npm ci --ignore-scripts
-npm run build
-npm test
-npm install -g .
+npx -y message-cp init
 ```
 
-`--ignore-scripts` skips compiling the SQLite driver, `better-sqlite3`, which ships prebuilt binaries for Linux, macOS and Windows on x64 and arm64; without it, `npm ci` needs `make` and a C++ compiler. That gives you `dist/index.js`, the stdio server, and `dist/cli.js`, the `message-cp` command for everything else (`message-cp serve`, `wait`, `account`, `token`; `message-cp help` lists them all). `npm install -g .` links that command onto your `PATH` from the clone, compiling and downloading nothing. On Linux or macOS, if npm's global folder needs root, that step fails with `EACCES`; `npm install -g . --prefix ~/.local` puts the command in `~/.local/bin` instead, which must be on your `PATH`. Without either, `node dist/cli.js` in the clone does the same, for example `node dist/cli.js account list`. Add the stdio server to an MCP client as [Add it to an MCP client](https://message-cp.vercel.app/clients.html#add-it-to-an-mcp-client) in the reference says (the agents are the client's sessions; there is no separate chat command), open two sessions, and ask one to "register as alice" and the other to "register as bob and send alice a message".
+`init` adds message-cp to Claude Code, Codex, Cursor or Claude Desktop; a `message-cp` entry that runs something else is left as it is, and `init` stops and says how to remove it. Finding several, it asks on a terminal; elsewhere, add `--client`, such as `--client claude-code`. It then checks the server with a test agent, which it removes, and prints how to undo. By hand, for Claude Code:
+
+```sh
+claude mcp add message-cp -- npx -y message-cp
+```
+
+Each of the client's sessions registers as its own agent, and all share one database; there is no separate chat command. Open two sessions, and ask one to "register as alice" and the other to "register as bob and send alice a message". `npx -y message-cp help` lists the other commands. For a team server or Docker, see [Getting started](https://message-cp.vercel.app/getting-started.html); for Cursor by hand or Claude Code over HTTP, [Add it to an MCP client](https://message-cp.vercel.app/clients.html#add-it-to-an-mcp-client). To build from a clone, see [CONTRIBUTING.md](CONTRIBUTING.md#building-and-testing).
 
 ## Documentation
 

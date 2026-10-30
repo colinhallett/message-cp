@@ -8,15 +8,20 @@ Thanks for looking. message-cp is built by its owner's [Tessl](https://tessl.io)
 
 ## Building and testing
 
-Needs Node 22.14 or later.
+This is for changing the code; to use message-cp, the [README quick start](README.md#quick-start) installs it from npm. Needs Node 22.14 or later and git.
 
 ```sh
+git clone https://github.com/colinhallett/message-cp.git
+cd message-cp
 npm ci --ignore-scripts
 npm run build
 npm test
+npm install -g .
 ```
 
-[README.md](README.md#quick-start) explains `--ignore-scripts`. [DIRECTION.md](DIRECTION.md) says what the project is for and what it deliberately leaves out, and [AGENTS.md](AGENTS.md) holds the rules every change follows.
+`--ignore-scripts` skips compiling the SQLite driver, `better-sqlite3`, which ships prebuilt binaries for Linux, macOS and Windows on x64 and arm64; without it, `npm ci` needs `make` and a C++ compiler. That gives you `dist/index.js`, the stdio server, and `dist/cli.js`, the `message-cp` command for everything else (`message-cp serve`, `wait`, `account`, `token`; `message-cp help` lists them all). `npm install -g .` links that command onto your `PATH` from the clone, compiling and downloading nothing. On Linux or macOS, if npm's global folder needs root, that step fails with `EACCES`; `npm install -g . --prefix ~/.local` puts the command in `~/.local/bin` instead, which must be on your `PATH`. Without either, `node dist/cli.js` in the clone does the same, for example `node dist/cli.js account list`.
+
+[DIRECTION.md](DIRECTION.md) says what the project is for and what it deliberately leaves out, and [AGENTS.md](AGENTS.md) holds the rules every change follows.
 
 ## Releasing
 
