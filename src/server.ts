@@ -195,7 +195,7 @@ export function createServer(db: Db, session = new Session(OWNER_ACCOUNT), optio
   session.attach(db);
   const account = session.account;
   const server = new McpServer(
-    { name: "message-cp", version: "0.1.0" },
+    { name: "message-cp", version: "0.1.1" },
     { instructions: instructions(process.env, remote, options.publicUrl, options.agent, options.approval, session.account) },
   );
 
