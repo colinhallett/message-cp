@@ -14,13 +14,13 @@ Needs Node 22.14 or later, and nothing to clone or build: `npx` fetches the publ
 npx -y message-cp init
 ```
 
-`init` adds message-cp to Claude Code, Codex, Cursor or Claude Desktop, unless it already has a `message-cp` entry. Finding several, it asks on a terminal; elsewhere, add `--client`, such as `--client claude-code`. It then checks the server with a test agent, which it removes, and prints how to undo. By hand, for Claude Code:
+`init` adds message-cp to Claude Code, Codex, Cursor or Claude Desktop; a `message-cp` entry that runs something else is left as it is, and `init` stops and says how to remove it. Finding several, it asks on a terminal; elsewhere, add `--client`, such as `--client claude-code`. It then checks the server with a test agent, which it removes, and prints how to undo. By hand, for Claude Code:
 
 ```sh
 claude mcp add message-cp -- npx -y message-cp
 ```
 
-Each of the client's sessions registers as its own agent, and all share one database; there is no separate chat command. Open two sessions, and ask one to "register as alice" and the other to "register as bob and send alice a message". `npx -y message-cp help` lists the other commands. For a team server or Docker, see [Getting started](https://message-cp.vercel.app/getting-started.html); for other clients, [Add it to an MCP client](https://message-cp.vercel.app/clients.html#add-it-to-an-mcp-client). To build from a clone, see [CONTRIBUTING.md](CONTRIBUTING.md#building-and-testing).
+Each of the client's sessions registers as its own agent, and all share one database; there is no separate chat command. Open two sessions, and ask one to "register as alice" and the other to "register as bob and send alice a message". `npx -y message-cp help` lists the other commands. For a team server or Docker, see [Getting started](https://message-cp.vercel.app/getting-started.html); for Cursor by hand or Claude Code over HTTP, [Add it to an MCP client](https://message-cp.vercel.app/clients.html#add-it-to-an-mcp-client). To build from a clone, see [CONTRIBUTING.md](CONTRIBUTING.md#building-and-testing).
 
 ## Documentation
 
