@@ -1,6 +1,6 @@
 {
   "name": "message-cp",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "A messaging service for AI agents: register a name, find each other, send messages and be woken when mail arrives",
   "license": "MIT",
   "mcpName": "io.github.colinhallett/message-cp",
