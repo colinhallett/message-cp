@@ -39,10 +39,13 @@ jobs:
           OWNER: colinhallett
           REPOSITORY_URL: ${{ github.server_url }}/${{ github.repository }}
         run: |
-          if [ "$ACTOR" != "$OWNER" ] || [ "$TRIGGERING_ACTOR" != "$OWNER" ]; then
-            echo "::error::Only $OWNER can start a release by hand; this run was started by $TRIGGERING_ACTOR."
-            exit 1
-          fi
+          # A re-run keeps the first run's actor, so both have to be the owner.
+          for who in "$ACTOR" "$TRIGGERING_ACTOR"; do
+            if [ "$who" != "$OWNER" ]; then
+              echo "::error::Only $OWNER can start a release by hand; this run was started or re-run by $who."
+              exit 1
+            fi
+          done
           if ! git check-ref-format "refs/tags/$TAG" || ! git ls-remote --exit-code --tags "$REPOSITORY_URL" "refs/tags/$TAG" > /dev/null; then
             echo "::error::There is no tag $TAG: give the name of a version tag that exists, such as v1.2.3."
             exit 1
@@ -77,6 +80,12 @@ jobs:
             echo "::error::The tag $TAG points at $SHA, which is not on $MAIN: tag a commit on $MAIN."
             exit 1
           fi
+          # A run started by hand runs on main, so npm's provenance would name main's commit rather
+          # than the tag's: such a run only finishes a release that npm already has.
+          if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ] && [ "$(npm view --prefer-online "message-cp@$version" version 2>/dev/null)" != "$version" ]; then
+            echo "::error::npm does not have message-cp $version, and a run started by hand never runs npm publish: re-run the Release run of the tag $TAG itself, or bump version on main and tag the new version."
+            exit 1
+          fi
           echo "Publishing message-cp $version from $SHA on $MAIN."
       - run: npm ci --ignore-scripts
       - run: npm run build
@@ -90,7 +99,8 @@ jobs:
             echo "npm already has message-cp $version, so this run skips npm publish and carries on to the MCP Registry."
             echo "published=true" >> "$GITHUB_OUTPUT"
           fi
-      - if: steps.npm.outputs.published != 'true'
+      # The tag check refused a run started by hand unless npm has this version, so this is a pushed tag's run.
+      - if: steps.npm.outputs.published != 'true' && github.event_name != 'workflow_dispatch'
         run: npm publish --provenance
       # npm can take a minute or more to serve a version it has just accepted, and the registry
       # refuses a listing whose npm version it cannot fetch, so wait for it, at most WAIT_SECONDS.
