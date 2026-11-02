@@ -2,8 +2,9 @@
 
 The fresh-clone check runs the hook on the user's machine. This check runs it
 on the cloud machine before the change reaches the default branch. Each check
-is one cloud run and uses its credits; say so when you start it, without
-asking. Run it again after each fix to the hook.
+is one cloud run that runs the script to prove it works before it merges, and
+it uses credits; say so in one line when you start it, without asking. Run it
+again after each fix to the hook.
 
 The check runs a branch's hook, so it starts only after the user has agreed to
 push when going live: the setup branch, or, when the user pushes straight to the

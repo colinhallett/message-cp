@@ -2,8 +2,8 @@
 
 Where each link comes from:
 
-- **Project:** `webUrl` from `tessl project repair --json` when this folder is
-  linked; otherwise the web app's `/go/projects/<project id>`.
+- **Project:** the web app's `/go/projects/<project id>`; when this folder
+  has a `tessl.json`, `webUrl` from `tessl project repair --json`.
 - **Project Loops:** the project link with `/loops` added.
 - **GitHub App:** `installUrl` from
   `tessl integrations show github-app-agent --json` when the app is not

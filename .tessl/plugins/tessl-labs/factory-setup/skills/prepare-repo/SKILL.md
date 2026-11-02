@@ -29,9 +29,17 @@ Rules for the whole session:
   decision point for the user to confirm. Never ask the user to judge
   something that needs them to know the history of a pull request.
 - Write decision-point messages in the [message shape](#message-shape).
-- Use plain words. See [Plain words](../factory-setup/SKILL.md#plain-words).
+- Use plain words. See
+  [Plain words](../factory-setup/references/plain-words.md).
 - Change nothing in the repository, the Tessl workspace, or GitHub until the
   user has confirmed the last group of proposals in step 5.
+- A person watches this session, and a command that exits with an error reads
+  as something going wrong. Run each command in a form that gives a clean,
+  non-error response, and read the answer from what it prints: a list over a
+  view of one thing, a file check before a command that needs the file, and
+  what you already know over asking again. When a command still exits with an
+  error, handle it from what it printed and carry on with the step that
+  applies; tell the person the next step, not the error.
 
 ## Decision points
 

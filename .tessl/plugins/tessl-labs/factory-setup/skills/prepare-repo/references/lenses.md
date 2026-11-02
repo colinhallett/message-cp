@@ -127,7 +127,7 @@ from the profile later.
 
 When you show the result, tell the user:
 
-- The Tessl Review GitHub App looks for `.tessl-code-review.yml` on the
+- The Tessl Reviewer GitHub App looks for `.tessl-code-review.yml` on the
   default branch. When the profile is new, reviews keep running the default
   lenses until the pull request that adds it merges. When the profile is
   already on the default branch, what the App reads depends on the pull

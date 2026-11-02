@@ -140,7 +140,8 @@ person's account only, with `tessl install -g tessl/code-review`, which
 leaves the repository unchanged; a plain `tessl install` would add it to
 `tessl.json`, and every cloud run would install it too. Each
 lens is `review-lenses/<name>/SKILL.md`, listed under `lenses:` with its
-globs. Keep to eight lenses or fewer that apply to any one change. It takes
+globs. Keep to 12 lenses or fewer that apply to any one change, unless the
+organization has a different limit. It takes
 effect once merged to the default branch. The profile and lenses are read from
 each pull request, so suggest protecting them with `CODEOWNERS`.
 

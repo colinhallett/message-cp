@@ -57,7 +57,7 @@ failing checks, and tells you when the pull request is ready to merge."
 
 "Tessl reviews every pull request and leaves findings as review comments."
 
-- When the Tessl Review app is not connected, or cannot see the repository,
+- When the Tessl Reviewer app is not connected, or cannot see the repository,
   [check permissions](permissions.md), then give the user the `webUrl` from
   `tessl integrations show github-app-code-review --json` to install the app or
   grant it the repository, and wait until they say it is done.

@@ -12,8 +12,9 @@ prove that the Loops exist, so check for each Loop by name.
 2. Tell the user you are waiting up to 10 minutes for the Loops to appear.
    Then run
    `tessl schedule list --project-id <linked project id> --all --json`
-   once a minute, with the project ID from
-   `linkedProject.id` in `tessl project repair --json`. The command returns
+   once a minute, with the project ID setup chose, or `linkedProject.id` from
+   `tessl project repair --json` now that the folder has a `tessl.json`. The
+   command returns
    only that project's Loops, so other projects in the same workspace and
    Loops with the same name never match. A Loop has appeared when an entry in
    `data` has `attributes.label` set to its name and its

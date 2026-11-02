@@ -13,7 +13,9 @@ directly change at once, with commands.
 
 ## What done looks like
 
-- The person agreed to the change in plain words before you made it.
+- The person agreed to the change in plain words
+  ([Plain words](../factory-setup/references/plain-words.md)) before you made
+  it.
 - A change to `tessl.json` or the hook is on the default branch, or in an
   open pull request they can merge, and you gave them its link. A setting
   change, or a change to a Loop set up in Tessl, shows its new value in the
@@ -38,6 +40,13 @@ directly change at once, with commands.
 5. Before a change that costs more credits, such as reviewing every push or a
    larger model, say so.
 6. Never print, ask for, or handle the value of a secret.
+7. A person watches this session, and a command that exits with an error reads
+   as something going wrong. Run each command in a form that gives a clean,
+   non-error response, and read the answer from what it prints: a list over a
+   view of one thing, a file check before a command that needs the file, and
+   what you already know over asking again. When a command still exits with an
+   error, handle it from what it printed and carry on with the step that
+   applies; tell the person the next step, not the error.
 
 ## The references you build on
 
@@ -77,11 +86,12 @@ environment) needs no branch.
 
 A Loop whose `attributes.definitionSource` is `app` was set up in Tessl, not in
 `tessl.json`: "ship tickets", "answer reviews and fix checks", "follow ticket
-changes", and Learn from past work usually are. Pausing, resuming or deleting
+changes", "fix merge conflicts", and Learn from past work usually are. Pausing, resuming or deleting
 it is a command, as [Stop, pause, or change one later](../factory-setup/references/set-up-in-tessl.md#stop-pause-or-change-one-later)
 says, and needs no branch. Any other change, its instructions included, needs
 it moved into `tessl.json` first, as [Move a Loop into tessl.json](../factory-setup/references/set-up-in-tessl.md#move-a-loop-into-tessljson)
-says, which opens a pull request; once it merges, change it like any other
+says: every Loop set up in Tessl moves together, in one pull request. Once
+it merges, change it like any other
 `tessl.json` automation. Never edit a Loop set up in Tessl through the API.
 
 ## 2. Make the change
@@ -121,14 +131,14 @@ Say what will change and what the person gains or loses, and ask. Then:
   (approve once its findings are resolved), or `--no-review-enabled` to turn
   it off. Confirm with `tessl code repo view <owner/repo> --org <org> --json`.
   Changing these needs an organization admin.
-- **Stop or remove an automation.** On a Loop set up in Tessl, pause it
-  (`tessl schedule pause <loop id>`, undone with `tessl schedule resume`) or
-  delete it (`tessl schedule delete <loop id>`); ask which. For a `tessl.json`
-  automation, remove its triggers, or its action and
-  everything that names it, from `tessl.json`. That stops new runs once it is
-  on the default branch; it does not cancel a run in progress. Do not use
-  `tessl schedule pause` for these: a Loop defined in `tessl.json` is changed
-  through the file. Before you ask, say what stops working, from that
+- **Stop or remove an automation.** Any Loop can be paused
+  (`tessl schedule pause <loop id>`, undone with `tessl schedule resume`); it
+  needs no branch and resumes the Loop as it was. On a Loop set up in Tessl,
+  the other choice is to delete it (`tessl schedule delete <loop id>`). For a
+  `tessl.json` automation, the other choice is to remove its triggers, or its
+  action and everything that names it, from `tessl.json`, which stops new runs
+  once it is on the default branch. Ask which. Neither cancels a run in
+  progress. Before you ask, say what stops working, from that
   automation's section in `triggers.md` or `starters.md`. For "follow ticket
   changes": taking an issue back no longer cancels its run at once, closing an
   issue no longer closes its pull request, and a reply to Tessl's question no
@@ -158,7 +168,8 @@ Say what will change and what the person gains or loses, and ask. Then:
 - **Add another automation.** First check what the project already has, as
   [What is there already](../factory-setup/references/set-up-in-tessl.md#what-is-there-already)
   says, and never add one it has. "Ship tickets" (with "answer reviews and fix
-  checks" and "follow ticket changes") and Learn from past work are set up in
+  checks", "follow ticket changes" and "fix merge conflicts") and Learn from
+  past work are set up in
   Tessl, as [setting up automations in Tessl](../factory-setup/references/set-up-in-tessl.md)
   says, with no branch. For any other, follow its starter in `starters.md` and its
   entries in `triggers.md`: create its environment when it needs its own, add

@@ -84,29 +84,48 @@ If what you find fits none of these, say what you found and ask.
    ([What is there already](references/set-up-in-tessl.md#what-is-there-already)),
    and never change a Code Review setting on a repository whose review is
    already on.
+
+### Commands
+
 8. When a command is refused, by the agent's permission system or by GitHub,
    do not retry or work around it: ask the person to run it.
 9. Every command acts on the org and workspace this setup chose: pass
    `--org <org id>` to `tessl code repo` and `--workspace <workspace>` to
    `tessl integrations show`, so neither falls back to a local or default
    one.
+10. A person watches this session, and a command that exits with an error
+    reads as the setup going wrong, even when it only answered "not there
+    yet". Run each command in a form that gives a clean, non-error response,
+    and read the answer from what it prints: a list over a view of one thing
+    (`tessl code repo list`, not `tessl code repo view`, until the repository
+    is listed), a file check before a command that needs the file
+    (`tessl.json` before `tessl project repair`), and what an earlier step
+    told you over asking again. The commands below are written in that form;
+    keep to them. When a command still exits with an error, handle it from
+    what it printed, take the situation that applies, and tell the person the
+    next step, not the error. Something they have to do themselves, such as
+    `tessl login`, is a next step, not an error.
 
 ## Environment facts
 
-- Ticket to PR is three automations set up in Tessl in one call: "ship
-  tickets" (Implement ticket), "answer reviews and fix checks" (Shepherd PR)
-  and "follow ticket changes". They are on as soon as the call returns, with
-  cloud environments Tessl creates. [Set up automations in
-  Tessl](references/set-up-in-tessl.md) has the calls.
+- Ticket to PR is four automations set up in Tessl in one call: "ship
+  tickets" (Implement ticket), "answer reviews and fix checks" (Shepherd PR),
+  "follow ticket changes" and "fix merge conflicts" (Merge conflict sweep).
+  They are on as soon as the call returns, with cloud environments Tessl
+  creates. To change what they do, they move into the repository's
+  `tessl.json`, with any Learn from past work Loops, in one pull request, and
+  change there. [Set up
+  automations in Tessl](references/set-up-in-tessl.md) has the calls.
 - A run starts about 90 seconds after the event and uses Tessl credits.
   `tessl org list --json` gives each org's `credits.state` and
   `credits.remaining`.
 - Two GitHub Apps: the Tessl App lets agents comment, push branches and open
-  pull requests; Tessl Review runs Code Review.
+  pull requests; Tessl Reviewer runs Code Review.
 - `tessl api <path>` calls the Tessl API with the person's login; send a body
   with `--input <file>`.
 - `gh repo view --json nameWithOwner,isFork,parent,visibility` gives the
-  repository. A fork gets its own factory, not its parent's.
+  repository, once `git remote -v` shows a GitHub remote (situation 3
+  otherwise). A fork gets its own factory, not its parent's.
 
 ## Judgment
 
@@ -141,7 +160,9 @@ If what you find fits none of these, say what you found and ask.
    the name is taken, add `-2`, `-3` and so on.
 4. Keep the project's id and give the person its link: the web app's
    `/go/projects/<project id>`, on the host the other commands' `webUrl`
-   values use (such as `https://tessl.io`). The create call returns no link. A refusal
+   values use (such as `https://tessl.io`), saying it is the repository's home
+   in Tessl, where its automations and runs will show. The create call
+   returns no link. A refusal
    about permissions: [check permissions](references/permissions.md) and ask
    for exactly what is missing.
 
@@ -164,20 +185,27 @@ Turn it on as [Ticket to PR](references/set-up-in-tessl.md#ticket-to-pr) says. T
 issue source is Linear when the Linear connection has a team routed to this
 project ([Linear prerequisites](references/linear.md)); otherwise GitHub
 issues with the `tessl` label. Do not ask. When the project already has an
-implement automation, the call keeps its source. Confirm the three Loops are
+implement automation, the call keeps its source. Confirm the four Loops are
 listed and active.
 
 ## Code Review
 
-`tessl code repo view <owner/repo> --json`. When `repository.review.enabled`
-is true, leave every setting as it is. Otherwise, when the Tessl Review app
-cannot see the repository, give the `webUrl` from
-`tessl integrations show github-app-code-review --json`, say it reviews every
-pull request, including Tessl's, and that the person can say to skip it; wait
-until they say it is done or to skip. Then turn it on to review every push:
-`tessl code repo update <owner/repo> --review-enabled --review-trigger every-push`,
-and confirm with `tessl code repo view`. A refusal needs an organization
-admin; say so and carry on without it.
+`tessl code repo list --org <org id> --json` lists the repositories the Tessl
+Reviewer app can see; the repository is the entry in `repositories` whose
+`fullName` is `<owner/repo>`, compared ignoring case. When two entries share
+the name, use the one on the owner's account, and pass its `id` instead of
+the name below. When its `review.enabled` is true, leave every setting as it
+is. When there is no entry, the Tessl Reviewer app cannot see the repository:
+give the `webUrl` from `tessl integrations show github-app-code-review --json`,
+say it reviews every pull request, including Tessl's, and that the person can
+say to skip it; wait until they say it is done or to skip, then list again. An
+entry whose `attentionReason` is not null is one the app cannot write to:
+give its `installation.manageUrl` to fix the access, and wait the same way.
+Then turn it on to review every push:
+`tessl code repo update <owner/repo> --org <org id> --review-enabled --review-trigger every-push`,
+and confirm with `tessl code repo view <owner/repo> --org <org id> --json`. A
+refusal, of the list or the update, needs an organization admin; say so and
+carry on without it.
 
 ## It's live
 
@@ -194,6 +222,10 @@ One message that starts "Your factory is live.":
 - That their agent can later explain what the factory did
   ([understand-factory](../understand-factory/SKILL.md)) or change it
   ([change-factory](../change-factory/SKILL.md)).
+- That Tessl manages these automations: to change what they do, such as
+  adding "run the linter before you push", their agent moves them into
+  `tessl.json` in the repository with one pull request, and from then on they
+  change them there.
 
 ## The first ticket
 
@@ -250,13 +282,6 @@ one line on what else they can ask for later, such as other automations from
 
 ## Plain words
 
-Say the plain words. If a command or screen shows the Tessl term, say what it
-means in one line.
-
-- **automation:** a Loop, trigger or action.
-- **the Tessl App:** the GitHub App that lets agents write to the repository,
-  also shown as `github-app-agent`.
-- **cloud environment:** the machine and access the agent gets in Tessl's
-  cloud.
-- **answer reviews and fix checks:** on Tessl's pull requests, an agent
-  answers review comments and fixes failing checks (shepherd).
+Say the plain words. When a command, link or screen shows a Tessl term, say
+what it means in one line, once, at that point, and only when it bears on what
+the person does next. [Plain words](references/plain-words.md) has each line.

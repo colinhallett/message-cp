@@ -188,8 +188,10 @@ they have fixed the cause. Do not file another issue or trigger another run
 without asking; each run costs credits.
 
 When `first_failed` is `cloud-launch-setup`, say the setup hook
-(`.tessl/cloud-launch-setup.sh`) failed and offer to fix it. Other values,
-such as `clone` or `manifest-sync`, name the step that failed instead. Give
+(`.tessl/cloud-launch-setup.sh`) failed and offer to fix it. Other values
+name the step that failed before the agent started; say it in plain words:
+`clone` gets the repository, `manifest-sync` syncs its config, `skill-install`
+installs the skill. Give
 the failing command from `failureReason.details` when it is present. Only
 workspace admins see `details`; when it is missing, say so and point to the
 run link.

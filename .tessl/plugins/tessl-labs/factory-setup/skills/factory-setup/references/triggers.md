@@ -1,7 +1,8 @@
 # Triggers reference
 
 These are the `tessl.json` entries for each starter. "Ship tickets", "answer
-reviews and fix checks", "follow ticket changes", and Learn from past work are
+reviews and fix checks", "follow ticket changes", "fix merge conflicts", and
+Learn from past work are
 normally [set up in Tessl](set-up-in-tessl.md) instead, with no entries here; use
 these entries for them only when the person wants them in `tessl.json`.
 
@@ -57,6 +58,7 @@ A declared action can choose its run settings from its inputs:
   rendered against the inputs the run is given. One that renders to exactly an
   overlay's name applies it; any other applies nothing. A selector without
   `{{ }}` must name a declared overlay, and an overlay's name never holds `{{`.
+  An action takes at most 1,000 overlays and 100 selectors.
 - **`params`**: per input, `"string"` (required: with no value it refuses the
   run, whether or not a template reads it; an input with no entry refuses only
   when a template reads it), or
@@ -605,7 +607,8 @@ waiting issue stays put until a person moves it.
 ## Learn from past work
 
 Replace `<org-id>` with the organization's `id` from `tessl org list --json`
-and `<project-id>` with `linkedProject.id` from `tessl project repair --json`.
+and `<project-id>` with the project's id from setup, or `linkedProject.id`
+from `tessl project repair --json` when the folder has a `tessl.json`.
 Each runs weekly, on its own day, with the environment from
 [Learn from past work](starters.md#learn-from-past-work), except
 `turn-findings-into-tickets`, which files tickets and so runs with an

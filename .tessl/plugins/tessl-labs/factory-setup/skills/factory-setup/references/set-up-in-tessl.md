@@ -1,13 +1,14 @@
 # Set up automations in Tessl
 
-"Ship tickets", "answer reviews and fix checks", "follow ticket changes", and
-"Learn from past work" are set up in Tessl directly, the same way the web app
+"Ship tickets", "answer reviews and fix checks", "follow ticket changes", "fix
+merge conflicts", and "Learn from past work" are set up in Tessl directly, the same way the web app
 sets them up: no `tessl.json` entries, no pull request, and they are on as
 soon as the call returns. Every other starter is set up in `tessl.json`.
 
 Call these with `tessl api`, which uses the user's own login. `<project id>`
-is `linkedProject.id` from `tessl project repair --json`; `<org id>` is the
-organization preflight chose.
+is the project's id from [The project](../SKILL.md#the-project), or, when
+this folder has a `tessl.json`, `linkedProject.id` from
+`tessl project repair --json`; `<org id>` is the organization preflight chose.
 
 ## What is there already
 
@@ -26,9 +27,11 @@ for one from `tessl.json`, and `attributes.label` is its name.
 
 ## Ticket to PR
 
-One call sets up all three automations together: "ship tickets" (Tessl's
-name: Implement ticket), "answer reviews and fix checks" (Shepherd PR), and
-"follow ticket changes".
+One call sets up all four automations together: "ship tickets" (Tessl's
+name: Implement ticket), "answer reviews and fix checks" (Shepherd PR),
+"follow ticket changes", and "fix merge conflicts" (Merge conflict sweep),
+which after each push to the default branch starts "answer reviews and fix
+checks" on every Tessl pull request that now conflicts.
 
 1. Check the Tessl App can reach the repository:
    `tessl api /experimental/projects/<project id>/factory/helper-access`.
@@ -41,15 +44,15 @@ name: Implement ticket), "answer reviews and fix checks" (Shepherd PR), and
    `data.attributes.loops` is one automation, with its triggers, and an
    `existingLoopId` when the project already has it; `data.attributes.issueSource`
    is the source setup will use.
-3. What it creates, for the person: three automations, each with its own
+3. What it creates, for the person: four automations, each with its own
    cloud environment that Tessl creates (`factory-<workspace>-<project>-<stage>`,
    with GitHub write access, and Linear access for Linear). Anyone who can add
    the label to an issue can start one, which on GitHub needs triage access,
    and on Tessl's pull requests so can review comments from anyone who is not
    a bot; on a public repository say that this is anyone who can comment. The
    model, the environment and what starts each one cannot be changed on these
-   automations; the `change-factory` skill can move one into `tessl.json` for
-   that.
+   automations; the `change-factory` skill moves all four into `tessl.json`
+   for that.
 4. Set it up. Write the body to a file and send it:
    `{"issueSource": {"type": "github", "label": "tessl"}}`, or
    `{"issueSource": {"type": "linear"}}`, then
@@ -57,7 +60,7 @@ name: Implement ticket), "answer reviews and fix checks" (Shepherd PR), and
    It creates the label if it is missing. The answer's
    `data.attributes.loops` lists each automation's `stage`, Loop `id`, and
    whether it was `created` or was already there. Calling it again is safe.
-5. Check the three Loops are listed in
+5. Check the four Loops are listed in
    `tessl schedule list --project-id <project id> --all --json`, active.
 
 When it refuses:
@@ -166,28 +169,46 @@ Loop's schedule from `tessl schedule list` when you tell the user.
 - Remove one: `tessl schedule delete <loop id>`. To set it up again later,
   call the route again.
 - Any other change, such as instructions like "run the linter before you
-  push", the model, the environment, or who can start it: move the Loop into
-  `tessl.json`, then change it there. Never edit a Loop set up in Tessl through
+  push", the model, the environment, or who can start it: move it into
+  `tessl.json`, then change it there. All of the project's Loops set up in
+  Tessl move together. Never edit a Loop set up in Tessl through
   the API.
 
 ## Move a Loop into tessl.json
 
-The move opens a pull request on the repository, so ask the person first and
-name each Loop it moves. It moves one Loop: move only the ones the change
-needs.
+Move every Loop the project has set up in Tessl, together, in one pull
+request, whichever one the change is for: the four Ticket to PR Loops, and
+the Learn from past work Loops the project has, which may be none. Moving
+opens a pull request on the repository, so ask the person first and name each
+Loop it moves.
 
-1. `tessl api -X POST /experimental/schedules/<loop id>/move-to-repo`, with the
-   Loop's id from `tessl schedule list`. `data.attributes.pullRequestUrl` is
-   the pull request that adds the Loop to `tessl.json`, creating the file when
-   there is none. Give the person its link and every entry in
-   `data.attributes.warnings`. When a move is already open, the same call
-   returns that pull request.
-2. The person can do the same with **Move to tessl.json** on the Loop's page,
-   from the project's Loops page.
-3. A refusal about the Tessl App means it cannot reach the repository: get it
+1. List the Loops to move:
+   `tessl schedule list --project-id <project id> --all --json`. Take every
+   entry whose `attributes.definitionSource` is `app` and that is not archived.
+2. Move them in one call. Write `{"loopIds": ["<loop id>", ...]}` to a file,
+   then
+   `tessl api -X POST /experimental/projects/<project id>/move-to-repo --input <file>`.
+   It takes at most 10 Loops. It opens one pull request from the default
+   branch that adds them all to `tessl.json`, creating the file when there is
+   none: `data.attributes.pullRequestUrl`. Each entry in
+   `data.attributes.loops` gives a Loop's `id`, the key it has in the file
+   (`repoKey`) and its `warnings`. When these Loops already wait on one pull
+   request, the same call returns it.
+3. When it refuses with a `message` that names a Loop it cannot move, such as
+   one a Tessl setting manages, leave that Loop out and call again. When it
+   says some of the Loops are already being moved by another pull request,
+   give the person that link: it has to merge or close first.
+4. Give the person the pull request's link and every warning. Its action keys
+   must not change before it merges: a renamed key makes Tessl add a second
+   Loop while the old one keeps running.
+5. **Move to tessl.json** on a Loop's page in the web app moves only that
+   Loop, so use the call above.
+6. A refusal about the Tessl App means it cannot reach the repository: get it
    there as [factory-setup](../SKILL.md#the-tessl-app) says.
-4. Once the pull request merges, Tessl replaces the Loop with the one
-   `tessl.json` declares, keeping its runs. Change it there, through a branch
-   and a pull request.
+7. Once the pull request merges, Tessl replaces each Loop with the one
+   `tessl.json` declares, keeping its runs. Check that
+   `tessl schedule list --project-id <project id> --all --json` shows each
+   with `definitionSource` `repo`. From then on change them there, through a
+   branch and a pull request.
 
 None of these cancels a run already in progress.

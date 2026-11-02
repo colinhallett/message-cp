@@ -3,7 +3,7 @@
   "mode": "vendored",
   "dependencies": {
     "tessl-labs/factory-setup": {
-      "version": "0.23.1"
+      "version": "0.23.3"
     }
   },
   "actions": {
