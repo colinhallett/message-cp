@@ -85,6 +85,7 @@
         "event.data.state.type": "unstarted"
       },
       "concurrency": {
+        "debounce": "60s",
         "keys": [
           {
             "key": "implement:{{ event.data.id }}",
