@@ -829,6 +829,15 @@ describe("runInit with a team server", () => {
     expect(all(t)).not.toContain(KEY);
   });
 
+  it("from the file connect prints, leaves an earlier entry as it is and says to remove it, not to set a key", async () => {
+    fakeCommand("claude");
+    const t = options({ remote: remote({ key: undefined, from: "connect.txt" }), check: async () => true, run: fakeRunner({ [CLAUDE_GET]: { status: 0, stdout: claudeGetHttp() } }).run });
+    expect(await runInit(t.o)).toBe(1);
+    expect(t.err[1]).toBe("If it is an earlier init's entry, for this token with the agent's name and key or for another token, remove it so init writes this token alone.");
+    expect(t.proved()).toBe(0);
+    expect(all(t)).not.toContain(TOKEN);
+  });
+
   it("run again, says already set up", async () => {
     fakeCommand("claude");
     const t = options({ run: fakeRunner({ [CLAUDE_GET]: { status: 0, stdout: claudeGetHttp() } }).run });
@@ -967,7 +976,11 @@ describe("checkRemote and proveRemote", () => {
   it("without an agent, as from the file connect prints, takes the bound token's agent without registering, waking or marking anything read", async () => {
     registerAgent(db, OWNER_ACCOUNT, "bob", "x");
     sendMessage(db, OWNER_ACCOUNT, "bob", "writer", "waiting mail");
-    const before = () => [db.prepare("SELECT * FROM messages ORDER BY id").all(), db.prepare("SELECT name, removed_at FROM agents ORDER BY id").all()];
+    const before = () => [
+      db.prepare("SELECT * FROM messages ORDER BY id").all(),
+      db.prepare("SELECT name, removed_at FROM agents ORDER BY id").all(),
+      db.prepare("SELECT * FROM channel_reads").all(),
+    ];
     const was = before();
     const unchecked: UncheckedRemote = { endpoint, token: agentToken, from: "connect.txt" };
     expect(await checkRemote(unchecked)).toBe(true);

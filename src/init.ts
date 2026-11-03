@@ -988,7 +988,11 @@ export async function runInit(o: InitOptions): Promise<number> {
         : `message-cp init: ${label} already has a server named message-cp that is not ${remote.endpoint.href} as agent '${remote.agent}' with this ${remote.key === undefined ? "token" : "token and key"}; it was left as it is.`,
     );
     if (remote?.bound && remote.key === undefined) {
-      o.err("If it is an earlier init's entry with the agent's name and key, set MESSAGE_CP_AGENT_KEY so init can check that key, or remove it so init writes the token alone.");
+      o.err(
+        remote.from === undefined
+          ? "If it is an earlier init's entry with the agent's name and key, set MESSAGE_CP_AGENT_KEY so init can check that key, or remove it so init writes the token alone."
+          : "If it is an earlier init's entry, for this token with the agent's name and key or for another token, remove it so init writes this token alone.",
+      );
     }
     o.err(`To remove it, then run message-cp init again: ${setUp.undo}`);
     return 1;
