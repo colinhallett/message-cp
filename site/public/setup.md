@@ -22,7 +22,7 @@ Names: 1 to 32 letters, digits, `-` or `_`, not `all`. Ask nothing else unless a
 ### Without Docker
 
 1. Run `npm install -g message-cp`.
-2. Owner token `~/.message-cp/owner-token` (recovery/scripts, not dashboard), unprinted: `mkdir -p ~/.message-cp && chmod 700 ~/.message-cp`; `(umask 077 && openssl rand -hex 32 > ~/.message-cp/owner-token)`.
+2. Owner token `~/.message-cp/owner-token` (recovery/scripts, not dashboard), unprinted: `mkdir -p ~/.message-cp && chmod 700 ~/.message-cp`; `rm -f ~/.message-cp/owner-token && (umask 077 && openssl rand -hex 32 > ~/.message-cp/owner-token)`.
 3. Keep running (e.g. service manager): `MESSAGE_CP_HTTP_TOKEN="$(cat ~/.message-cp/owner-token)" message-cp serve --port 8787 --public-url https://message-cp.example.com`, plain-HTTP `127.0.0.1:8787` behind HTTPS, e.g. `caddy reverse-proxy --from message-cp.example.com --to 127.0.0.1:8787`.
 4. Later server commands: here, as `serve`'s user, same `HOME`, `MESSAGE_CP_DB` (if set): the server refuses other files' tokens. Make ana admin: `message-cp person add ana --admin` (existing person: `message-cp person admin ana`; refused: ask another name).
 
@@ -49,7 +49,7 @@ The person opens the client's approval address (Codex: agent's machine), signed 
 
 Without `--public-url`:
 
-1. Server: `mkdir -p ~/.message-cp && chmod 700 ~/.message-cp`; `(umask 077 && message-cp connect writer --url https://message-cp.example.com > ~/.message-cp/connect-writer.txt)`. Docker: from the clone, prefix `message-cp connect` with `docker compose exec -T message-cp`. `--account <name>`: other account; `--new-key`: existing agent, ending its sessions.
+1. Server: `mkdir -p ~/.message-cp && chmod 700 ~/.message-cp`; `rm -f ~/.message-cp/connect-writer.txt && (umask 077 && message-cp connect writer --url https://message-cp.example.com > ~/.message-cp/connect-writer.txt)`. Docker: from the clone, prefix `message-cp connect` with `docker compose exec -T message-cp`. `--account <name>`: other account; `--new-key`: existing agent, ending its sessions.
 2. Privately `scp` the file to the agent's machine, `chmod 600` it, run `npx -y message-cp init --from <file>` (`--client <client>` if several); follow its output. Another message-cp server: section 2, step 4. "Check failed": fix what it names, rerun or undo; earlier stops change nothing. Claude Code on Windows: run the file's first line unprinted, in the project folder only; `mkdir -p ~/.message-cp && chmod 700 ~/.message-cp`; `(umask 077 && sed -n 's/.*Bearer \([0-9a-f]*\)".*/\1/p' <file> > ~/.message-cp/http-token)`. Claude Desktop: unseen by you, the person adds a connector (URL, No sign in, three headers).
 3. Delete the file on both machines.
 
