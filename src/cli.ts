@@ -6,7 +6,7 @@ import { AgentListError, KeyResetError, PersonError, PurgeError, ToolError, addP
 import { AccountError, addAccount, addToken, listAccounts, listTokens, revokeToken, type NewToken } from "./accounts.js";
 import { ConnectError, clientSetup, connectAgent, mcpEndpoint, publicUrl as checkedPublicUrl } from "./connect.js";
 import { OWNER_ACCOUNT, openDb } from "./db.js";
-import { CLIENT_IDS, InitError, askOnTerminal, ownServer, proveRemote, proveServer, readConnectFile, realRunner, runInit, type ClientId, type Remote } from "./init.js";
+import { CLIENT_IDS, InitError, askOnTerminal, ownServer, proveRemote, proveServer, readConnectFile, realRunner, runInit, type ClientId, type UncheckedRemote } from "./init.js";
 import { LOGIN_CODE_TTL_MS, LoginError, dashboardUrl, loginLink, makeLoginCode } from "./login.js";
 import { hasUnread, unreadSummary } from "./messages.js";
 import { setting } from "./settings.js";
@@ -318,8 +318,9 @@ if (command === "serve") {
   }
   db.close();
 } else if (command === "connect") {
-  // Run on the server, like `agent`. The token and the agent's key are printed this once, to stdout, inside the client
-  // setup; stderr says what was made and how to revoke the token, and never carries a token, a key or a hash.
+  // Run on the server, like `agent`. The token is printed this once, to stdout, inside the client setup, and the agent's
+  // key never is, since the token is bound to the agent; stderr says what was made and how to revoke the token, and
+  // never carries a token, a key or a hash.
   const usage = () => {
     console.error(`usage: ${USAGE.connect}`);
     process.exit(2);
@@ -351,7 +352,7 @@ if (command === "serve") {
         : `message-cp: agent '${c.name}' in account '${c.account}'.`,
     );
     console.error(
-      `message-cp: agent token ${c.tokenId} for account '${c.account}'. The output holds this token and the agent's key, shown only now; keep them. To revoke the token: message-cp token list, then message-cp token revoke ${c.tokenId}.`,
+      `message-cp: agent token ${c.tokenId} for account '${c.account}'. The output holds this token, shown only now; keep it. To revoke the token: message-cp token list, then message-cp token revoke ${c.tokenId}.`,
     );
     console.log(clientSetup(endpoint, c).replace(/\n$/, ""));
   } catch (err) {
@@ -422,7 +423,7 @@ if (command === "serve") {
   if (opts.has("--url") !== opts.has("--agent")) usage();
   if (opts.has("--from") && opts.has("--url")) usage();
   const client = opts.get("--client") as ClientId | undefined;
-  let remote: Remote | undefined;
+  let remote: UncheckedRemote | undefined;
   if (opts.has("--from")) {
     try {
       remote = readConnectFile(opts.get("--from")!);
@@ -457,7 +458,7 @@ if (command === "serve") {
     run: realRunner,
     interactive: Boolean(process.stdin.isTTY && process.stdout.isTTY),
     ask: askOnTerminal,
-    prove: () => (remote === undefined ? proveServer(ownServer()) : proveRemote(remote)),
+    prove: (checked) => (checked === undefined ? proveServer(ownServer()) : proveRemote(checked)),
     out: (line) => console.log(line),
     err: (line) => console.error(line),
   });

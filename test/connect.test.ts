@@ -204,13 +204,14 @@ describe("connectAgent", () => {
 });
 
 describe("clientSetup", () => {
-  it("shell-quotes every argument and gives the same URL and headers as JSON", () => {
-    const out = clientSetup(new URL("https://h.example/a b/mcp"), { name: "o'k", key: "k$(x)", token: "t" });
+  it("shell-quotes every argument and gives the same URL and only the Authorization header as JSON", () => {
+    const out = clientSetup(new URL("https://h.example/a b/mcp"), { token: "t$(x)" });
     const { args, headers, json } = parse(out);
     expect(args.slice(0, 6)).toEqual(["claude", "mcp", "add", "--transport", "http", "message-cp"]);
     expect(args[6]).toBe("https://h.example/a%20b/mcp");
-    expect(headers).toEqual({ Authorization: "Bearer t", "X-Message-CP-Agent": "o'k", "X-Message-CP-Agent-Key": "k$(x)" });
-    expect(out).toContain(`--header 'X-Message-CP-Agent-Key: k$(x)'`);
+    expect(headers).toEqual({ Authorization: "Bearer t$(x)" });
+    expect(out).toContain(`--header 'Authorization: Bearer t$(x)'`);
+    expect(out).not.toContain("X-Message-CP-Agent");
     expect(json).toEqual({ mcpServers: { "message-cp": { type: "http", url: args[6], headers } } });
   });
 });
@@ -223,18 +224,19 @@ describe("message-cp connect", () => {
     const { args, headers, json } = parse(res.stdout);
     expect(args[6]).toBe(`http://127.0.0.1:${http.port}/mcp`);
     expect(json.mcpServers["message-cp"]).toEqual({ type: "http", url: args[6], headers });
-    expect(headers["X-Message-CP-Agent"]).toBe("demo");
+    expect(Object.keys(headers)).toEqual(["Authorization"]);
     const token = headers.Authorization!.replace(/^Bearer /, "");
-    const key = headers["X-Message-CP-Agent-Key"]!;
+    // The token is the only secret printed: the agent's key, 64 hex digits like it, is not in stdout.
+    expect(new Set(res.stdout.match(/[0-9a-f]{32,}/g))).toEqual(new Set([token]));
+    expect(res.stdout).not.toContain("X-Message-CP-Agent");
 
     // Nothing secret on stderr: it names the agent, the account, the token id and how to revoke it.
     const tokenId = listTokens(db).find((t) => t.kind === "agent")!.id;
     expect(res.stderr).toBe(
       "message-cp: agent 'demo' in account 'owner'.\n" +
-        `message-cp: agent token ${tokenId} for account 'owner'. The output holds this token and the agent's key, shown only now; keep them. To revoke the token: message-cp token list, then message-cp token revoke ${tokenId}.\n`,
+        `message-cp: agent token ${tokenId} for account 'owner'. The output holds this token, shown only now; keep it. To revoke the token: message-cp token list, then message-cp token revoke ${tokenId}.\n`,
     );
     expect(res.stderr).not.toContain(token);
-    expect(res.stderr).not.toContain(key);
     expect(res.stderr).not.toMatch(/[0-9a-f]{32}/);
 
     // Exactly the printed URL and headers, as a client configured from the JSON sends them.
@@ -271,10 +273,11 @@ describe("message-cp connect", () => {
     expect(res.stderr.split("\n")[0]).toBe(
       "message-cp: new key for agent 'demo' of account 'owner'; its old key no longer works and its current sessions have ended.",
     );
-    const { headers } = parse(res.stdout);
-    expect(headers["X-Message-CP-Agent-Key"]).not.toBe(key);
-    expect(() => registerAgent(db, OWNER_ACCOUNT, "demo", undefined, headers["X-Message-CP-Agent-Key"])).not.toThrow();
-    expect(res.stderr).not.toContain(headers["X-Message-CP-Agent-Key"]!);
+    // The old key no longer works; the new one is not printed, since the token alone acts as the agent.
+    expect(() => registerAgent(db, OWNER_ACCOUNT, "demo", undefined, key)).toThrow();
+    const token = parse(res.stdout).headers.Authorization!.replace(/^Bearer /, "");
+    expect(new Set(res.stdout.match(/[0-9a-f]{32,}/g))).toEqual(new Set([token]));
+    expect(accountForToken(db, token, TOKEN)?.agent?.name).toBe("demo");
   }, 60_000);
 
   it("uses --account for the agent and the token", () => {

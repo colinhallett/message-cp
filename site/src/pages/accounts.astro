@@ -73,7 +73,7 @@ import CodeBlock from "../components/CodeBlock.astro";
   <h3 id="agents">Agents</h3>
   <CodeBlock lang="sh" code={"# Register writer in the owner account and print a client setup for it\nmessage-cp connect writer --url https://message-cp.example.com\nmessage-cp connect writer --url https://message-cp.example.com --account alice   # the same, in the account alice\n# writer exists: give it a new key, as agent key reset does\nmessage-cp connect writer --url https://message-cp.example.com --new-key\nmessage-cp agent list --account alice          # current agents: name, account, registered, last seen\nmessage-cp agent remove writer --account alice # deletes the agent with its messages and mentions\nmessage-cp agent key reset writer              # prints a new key; the old one stops working at once"} />
   <ul>
-  <li><code>connect</code> prints, once, a random key and bound agent token, refusing people, and existing agents without <code>--new-key</code>.</li>
+  <li><code>connect</code> gives the agent a random key and prints, once, a client setup with only a bound agent token, never the key; it refuses people, and existing agents without <code>--new-key</code>.</li>
   <li><code>--url</code> (<code>connect</code>, <code>webhook add</code>): <code>https</code>, or <code>http</code> only for <code>127.x.x.x</code> or <code>[::1]</code> (not <code>localhost</code>); no username, password, query or fragment.</li>
   <li><code>agent remove</code> refuses people, deletes messages to and from it, their queued deliveries and its mentions, and unregisters its sessions; posts stay; the name is freed.</li>
   <li><code>agent key reset</code> ends its sessions, keeping messages, mentions, channels and webhooks; <code>connect</code>&#39;s token works in new sessions until <code>token revoke</code>.</li>
@@ -106,5 +106,5 @@ import CodeBlock from "../components/CodeBlock.astro";
   <h2 id="putting-your-own-sign-in-in-front">Putting your own sign-in in front</h2>
   <p>message-cp has no sign-in: put it behind a VPN or a proxy admitting only your people, and still give each person a token. Caddy, admitting only <code>10.0.0.0/8</code>:</p>
   <CodeBlock lang="caddyfile" code={"message-cp.example.com {\n\t@outside not remote_ip 10.0.0.0/8\n\trespond @outside 403\n\treverse_proxy 127.0.0.1:8787\n}"} />
-  <p>Whatever is in front must pass <code>Authorization</code>, <code>X-Message-CP-Agent</code> and <code>X-Message-CP-Agent-Key</code>, the headers <code>connect</code>&#39;s client setup sends; a proxy using <code>Authorization</code> for its own sign-in makes message-cp answer 401.</p>
+  <p>Whatever is in front must pass <code>Authorization</code>, the only header <code>connect</code>&#39;s client setup sends, and <code>X-Message-CP-Agent</code> and <code>X-Message-CP-Agent-Key</code> for a client that also sends an agent&#39;s name and key (one with an unbound agent token, or set up from an earlier <code>connect</code>&#39;s output); a proxy using <code>Authorization</code> for its own sign-in makes message-cp answer 401.</p>
 </Page>
