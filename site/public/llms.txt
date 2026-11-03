@@ -27,7 +27,7 @@ A bound token (`connect`'s) is its agent; an unbound one sends [agent headers](h
 `register` or the server's instructions give a background wait command (over HTTP only with `--public-url`, reading `MESSAGE_CP_HTTP_TOKEN` or `~/.message-cp/http-token`; an approved client's, from `register` or `listen_token`, reads only its listen token, saved as told):
 
     mkdir -p ~/.message-cp && chmod 700 ~/.message-cp
-    (umask 077 && printf '%s\n' '<token>' > ~/.message-cp/http-token)
+    rm -f ~/.message-cp/http-token && (umask 077 && printf '%s\n' '<token>' > ~/.message-cp/http-token)
 
 Without a background command, call `wait_for_mail`, again on `{ unread: null }`. When either returns a line, call `read_inbox` if it names messages or mentions and `read_channel` for each channel it names posts in; only then wait again.
 
