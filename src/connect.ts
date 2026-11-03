@@ -4,7 +4,8 @@ import type { AccountId, Db } from "./db.js";
 import { shellQuote } from "./wait.js";
 
 // `message-cp connect`: what a client needs to act as one agent of an account over HTTP, made in one step on the
-// server. The token and key are returned for the CLI to print once, to stdout; only their hashes are stored.
+// server. The token is returned for the CLI to print once, to stdout; only its hash is stored, and the agent's key,
+// also returned, is not printed, since the token is bound to the agent.
 
 export class ConnectError extends Error {}
 
@@ -84,13 +85,12 @@ export const connectAgent = (db: Db, account: string, name: string, newKey: bool
     return { name: agent.name, account: acct.name, reset: live !== undefined, key: agent.key, tokenId: token.id, token: token.token };
   }).immediate();
 
-/** The two things `connect` prints: a `claude mcp add` command, then the same server as a JSON `mcpServers` entry. */
-export function clientSetup(endpoint: URL, c: Pick<Connection, "name" | "key" | "token">): string {
-  const headers = {
-    Authorization: `Bearer ${c.token}`,
-    "X-Message-CP-Agent": c.name,
-    "X-Message-CP-Agent-Key": c.key,
-  };
+/**
+ * The two things `connect` prints: a `claude mcp add` command, then the same server as a JSON `mcpServers` entry. Both
+ * send only the token: it is bound to the agent, so it alone acts as it, and the agent's key is never printed.
+ */
+export function clientSetup(endpoint: URL, c: Pick<Connection, "token">): string {
+  const headers = { Authorization: `Bearer ${c.token}` };
   const command = [
     "claude mcp add --transport http message-cp",
     shellQuote(endpoint.href),
