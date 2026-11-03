@@ -952,21 +952,34 @@ describe("sendPending", () => {
     });
 
     it("reads only what each webhook may send, through an index, so a held backlog is not read on each pass", async () => {
-      const plan = db
-        .prepare(
-          `EXPLAIN QUERY PLAN SELECT id, attempts FROM webhook_deliveries
-           WHERE webhook_id = ? AND delivered_at IS NULL AND attempts < ? AND (claimed_until IS NULL OR claimed_until <= ?)
-           ORDER BY id LIMIT ?`,
-        )
-        .all(1, 3, 0, 1) as { detail: string }[];
-      const detail = plan.map((p) => p.detail).join("\n");
-      expect(detail).toMatch(/USING INDEX webhook_deliveries_pending_by_webhook \(webhook_id=\? AND delivered_at=\?\)/);
-      expect(detail).not.toMatch(/TEMP B-TREE/);
-
       const r = await receiver();
       const hook = addWebhook(db, "owner", r.url, "agent:bob", true, undefined, 1);
       for (let i = 0; i < 50; i++) sendMessage(db, OWNER_ACCOUNT, "alice", "bob", `m${i}`);
-      expect(await sendPending(db)).toEqual({ delivered: 1, failed: 0 });
+      const prepare = db.prepare.bind(db);
+      const sql: string[] = [];
+      const spy = vi.spyOn(db, "prepare").mockImplementation(((s: string) => {
+        if (s.includes("FROM webhook_deliveries") && s.includes("WHERE webhook_id = ?")) sql.push(s);
+        return prepare(s);
+      }) as typeof db.prepare);
+      try {
+        expect(await sendPending(db)).toEqual({ delivered: 1, failed: 0 });
+      } finally {
+        spy.mockRestore();
+      }
+      expect(sql).toHaveLength(1);
+      const binds = Array.from(sql[0].matchAll(/\?/g), () => null);
+      const plan = (db.prepare(`EXPLAIN QUERY PLAN ${sql[0]}`).all(...binds) as { detail: string }[]).map((p) => p.detail);
+      // Rows come out in id order straight from the index, with no TEMP B-TREE to sort a backlog.
+      expect(plan).toEqual([
+        "SEARCH webhook_deliveries USING INDEX webhook_deliveries_pending_by_webhook (webhook_id=? AND delivered_at=?)",
+        "CORRELATED SCALAR SUBQUERY 1",
+        "SEARCH a USING INTEGER PRIMARY KEY (rowid=?)",
+        "CORRELATED SCALAR SUBQUERY 2",
+        "SEARCH m USING INTEGER PRIMARY KEY (rowid=?)",
+        "CORRELATED SCALAR SUBQUERY 3",
+        "SEARCH x USING INDEX sqlite_autoindex_mentions_1 (agent_id=? AND post_id=?)",
+      ]);
+
       expect(await sendPending(db)).toEqual({ delivered: 0, failed: 0 });
       expect(pending()).toHaveLength(49);
       windowPasses(hook.id);
