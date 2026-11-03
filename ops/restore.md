@@ -32,7 +32,7 @@ A backup holds every account's data: every message and channel post, the webhook
 
    Any file `sqlite3` makes beside the copy while it checks it (a `-journal`, `-wal` or `-shm`) is in `$WORK` too. If the object fails the check (it was overwritten with something else, or the transfer broke off), fetch an earlier version of it into the same directory, replacing `backup.sqlite.gz`: `oci os object list-object-versions --bucket-name <bucket> --prefix message-cp-<date>` lists them, and `oci os object get` takes `--version-id`. Then run the check again.
 
-3. **Stop** everything that opens the database: `serve`, and any `hive` or stdio server using the same file. With `serve` under systemd: `systemctl stop <serve unit>`. Do not restore under a running server; it keeps its own handle and WAL.
+3. **Stop** everything that opens the database. Where the server deploys itself (see [deploy.md](deploy.md)), first stop the deploy timer and keep deploys out, in the shell from step 1: `systemctl stop message-cp-deploy.timer`, then `exec 9>/opt/message-cp/deploy.lock && flock 9`. `flock` returns once a running `deploy.sh` has finished, and any run started while you hold the lock exits at once; without this, a deploy run (a merge landing, or a rollback it retries) restarts the server while you restore. Where the nightly backup is installed (see [README.md](README.md)), stop it too, since `backup.sh` opens the database: `systemctl stop message-cp-backup.timer message-cp-backup.service` (stopping the timer alone leaves a backup already running). Then stop `serve`, any stdio server, and any `message-cp` command such as `wait`, all on the same file. With `serve` under systemd: `systemctl stop <serve unit>`. Do not restore under a running server; it keeps its own handle and WAL.
 4. **Swap** the files, keeping the old ones, in the same shell. Set `DB` to the file the server uses (the backup unit's drop-in names the same one):
 
    ```sh
@@ -46,7 +46,7 @@ A backup holds every account's data: every message and channel post, the webhook
    ```
 
    The commands are joined with `&&`, so the restored file is installed only once the old files are all in `$OLD`; if any step fails, nothing after it runs. `$OLD` is made under `umask 077`, so it is 0700 too. Move the `-wal` and `-shm` files with the database: a WAL left behind from the old file would be replayed onto the restored one.
-5. **Start** `serve` again (`systemctl start <serve unit>`), then check from an agent that `list_agents` shows the agents and `read_inbox` works. The server switches the file back to WAL mode when it opens it.
+5. **Start** `serve` again (`systemctl start <serve unit>`), then check from an agent that `list_agents` shows the agents and `read_inbox` works. The server switches the file back to WAL mode when it opens it. Then, if you took the lock in step 3, let go of it (`exec 9>&-`), and start again each timer you stopped: `systemctl start message-cp-deploy.timer message-cp-backup.timer` where you stopped both, else name only the one you stopped. Leaving the root shell also lets go of the lock, but does not start the timers.
 6. **Clean up**: `rm -rf "$WORK"`, or leave the shell, whose trap deletes it. Once you are satisfied, delete `$OLD` as well: it holds the old database, which is as private as a backup.
 
 Anything written after the backup was taken (at most a day) is lost; there is no point-in-time recovery.
