@@ -7,7 +7,7 @@ import { registerAgent, registerWithIdentity, removeAgent } from "../src/agents.
 import { post } from "../src/channels.js";
 import { OWNER_ACCOUNT, openDb, type AccountId, type Db } from "../src/db.js";
 import { startHttp, type HttpServer } from "../src/http.js";
-import { listAccountMessages, readInbox, sendMessage } from "../src/messages.js";
+import { deleteConversation, listAccountMessages, readInbox, sendMessage } from "../src/messages.js";
 import { addWebhook } from "../src/webhooks.js";
 
 // DELETE /api/conversation, on a server with the owner's account and a friend's.
@@ -125,10 +125,30 @@ describe("DELETE /api/conversation", () => {
   });
 
   it("finds the pair's messages and their webhook deliveries by index, without scanning other history", () => {
-    const plan = (sql: string) =>
-      (db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all() as { detail: string }[]).map((p) => p.detail).join("\n");
-    const messages = plan("SELECT id FROM messages WHERE recipient_id = 1 AND sender = 'a' COLLATE NOCASE");
-    expect(messages).toMatch(/USING COVERING INDEX messages_by_sender \(recipient_id=\? AND sender=\?\)/);
+    const prepare = db.prepare.bind(db);
+    const sql: string[] = [];
+    const spy = vi.spyOn(db, "prepare").mockImplementation(((s: string) => {
+      if (s.includes("DELETE FROM messages")) sql.push(s);
+      return prepare(s);
+    }) as typeof db.prepare);
+    try {
+      deleteConversation(db, OWNER_ACCOUNT, "alice", "bob");
+    } finally {
+      spy.mockRestore();
+    }
+    expect(sql).toHaveLength(1);
+    const messages = (db.prepare(`EXPLAIN QUERY PLAN ${sql[0]}`).all(OWNER_ACCOUNT, "alice", "bob") as { detail: string }[]).map(
+      (r) => r.detail,
+    );
+    expect(messages).toEqual([
+      "SEARCH messages USING COVERING INDEX messages_by_sender (recipient_id=? AND sender=?)",
+      "LIST SUBQUERY 1",
+      "SEARCH agents USING INDEX sqlite_autoindex_agents_1 (account_id=?)",
+      "SEARCH webhook_deliveries USING COVERING INDEX webhook_deliveries_by_message (message_id=?)",
+      "SEARCH messages USING COVERING INDEX messages_by_reply (in_reply_to=?)",
+    ]);
+    // The child-table lookup the ON DELETE CASCADE makes: SQLite runs it itself, so there is no prepared statement to capture.
+    const plan = (s: string) => (db.prepare(`EXPLAIN QUERY PLAN ${s}`).all() as { detail: string }[]).map((p) => p.detail).join("\n");
     expect(plan("SELECT id FROM webhook_deliveries WHERE message_id = 1")).toMatch(/USING COVERING INDEX webhook_deliveries_by_message/);
   });
 
