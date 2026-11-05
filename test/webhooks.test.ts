@@ -8,14 +8,15 @@ import { join, resolve } from "node:path";
 import Database from "better-sqlite3";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { addAccount } from "../src/accounts.js";
-import { registerWithIdentity, removeAgent } from "../src/agents.js";
+import { addPerson, identityOf, markWaiting, registerWithIdentity, removeAgent } from "../src/agents.js";
 import { post } from "../src/channels.js";
 import { OWNER_ACCOUNT, openDb, type AccountId, type Db } from "../src/db.js";
 import { startHttp } from "../src/http.js";
-import { sendMessage } from "../src/messages.js";
+import { QUEUE_MESSAGE_SQL, readInbox, sendMessage } from "../src/messages.js";
 import {
   WebhookError,
   addWebhook,
+  formatOn,
   deliveryBody,
   listAccountDeliveries,
   listWebhooks,
@@ -78,15 +79,16 @@ describe("webhookUrl", () => {
 });
 
 describe("webhookOn", () => {
-  it("parses the three forms", () => {
+  it("parses the four forms", () => {
     expect(webhookOn("#general")).toEqual({ event: "channel", name: "general" });
+    expect(webhookOn("agent:*")).toEqual({ event: "agent", name: "*" });
     expect(webhookOn("mention:alice")).toEqual({ event: "mention", name: "alice" });
     expect(webhookOn("agent:bob_2")).toEqual({ event: "agent", name: "bob_2" });
     expect(webhookOn("#all")).toEqual({ event: "channel", name: "all" });
   });
 
   it("refuses anything else", () => {
-    for (const on of ["general", "#", "mention:", "agent:", "#a b", "#a\n", "channel:x", "agent:" + "x".repeat(33), "@alice", "Agent:x", "mention:all", "agent:all", "agent:ALL"]) {
+    for (const on of ["general", "#", "mention:", "agent:", "#a b", "#a\n", "channel:x", "agent:" + "x".repeat(33), "@alice", "Agent:x", "mention:all", "agent:all", "agent:ALL", "mention:*", "#*", "agent:**", "agent:*x", "agent: *", "agent:*\n"]) {
       expect(() => webhookOn(on), on).toThrow(WebhookError);
     }
   });
@@ -252,6 +254,46 @@ describe("addWebhook, listWebhooks and removeWebhook", () => {
     }
     expect(() => addWebhook(db, "owner", "https://example.com/", "agent:bob", false, undefined, undefined, ok[0])).toThrow(/--no-text/);
     expect(listWebhooks(db)).toEqual([]);
+  });
+
+  it("takes {{agent}} any number of times, each in a string value, only for an agent: webhook", () => {
+    const ok = [
+      '{"id":"{{delivery}}","to":"{{agent}}"}',
+      '{"id":"{{delivery}}"}',
+      '{"id":"{{delivery}}","to":"{{agent}}","again":["x-{{agent}}-{{agent}}"]}',
+      '{"id":"{{delivery}}-{{agent}}"}',
+    ];
+    for (const body of ok) {
+      expect(webhookBody(body, true), body).toBe(body);
+      for (const on of ["agent:bob", "agent:*"]) expect(addWebhook(db, "owner", "https://example.com/", on, true, undefined, undefined, body).fixedBody).toBe(true);
+    }
+    // In a key, dropped by a later duplicate key, or escaped so a receiver would parse it unreplaced.
+    const misplaced = [
+      '{"id":"{{delivery}}","{{agent}}":"x"}',
+      '{"id":"{{delivery}}","to":"{{agent}}","to":"fixed"}',
+      '{"id":"{{delivery}}","to":"\\u007b{agent}}"}',
+    ];
+    for (const body of misplaced) expect(() => webhookBody(body, true), body).toThrow("Invalid --body: put each {{agent}} inside a JSON string value.");
+    const bad = [...misplaced, '{"to":"{{agent}}"}', '{"id":"{{delivery}}","to":{{agent}}}', '{"id":"{{agent}}","again":"{{delivery}}{{delivery}}"}'];
+    for (const body of bad) {
+      expect(() => webhookBody(body, true), body).toThrow(/^Invalid --body/);
+      expect(() => addWebhook(db, "owner", "https://example.com/", "agent:*", true, undefined, undefined, body)).toThrow(WebhookError);
+    }
+    const before = listWebhooks(db).length;
+    for (const on of ["#general", "mention:bob"]) {
+      expect(() => addWebhook(db, "owner", "https://example.com/", on, true, undefined, undefined, ok[0])).toThrow(
+        "Invalid --body: {{agent}} is only for --on agent:<agent> or agent:*.",
+      );
+    }
+    expect(() => webhookBody(ok[0]!)).toThrow(/only for --on agent:/);
+    expect(() => webhookBody('{"id":"{{delivery}}","to":"\\u007b{agent}}"}')).toThrow(/only for --on agent:/);
+    expect(listWebhooks(db)).toHaveLength(before);
+  });
+
+  it("stores agent:* as the name '*', listed as agent:*", () => {
+    const w = addWebhook(db, "owner", "https://example.com/", "agent:*", true);
+    expect(w).toMatchObject({ event: "agent", name: "*" });
+    expect(listWebhooks(db).map(formatOn)).toEqual(["agent:*"]);
   });
 
   it("gives an existing database the table on open", () => {
@@ -443,6 +485,119 @@ describe("queued deliveries", () => {
     addWebhook(db, "friend", "https://example.com/", "mention:carol", true);
     post(db, friend, friendAlice, "random", "@carol are you there");
     expect(queued()).toEqual([]);
+  });
+
+  describe("for agent:*", () => {
+    it("queues a direct message to every agent of its account, registered before or after it, one delivery each", () => {
+      member(OWNER_ACCOUNT, "alice");
+      member(OWNER_ACCOUNT, "bob");
+      const every = addWebhook(db, "owner", "https://example.com/", "agent:*", true);
+      member(OWNER_ACCOUNT, "carol");
+      sendMessage(db, OWNER_ACCOUNT, "alice", "bob", "to bob");
+      sendMessage(db, OWNER_ACCOUNT, "alice", "carol", "to carol");
+      expect(queued()).toEqual([
+        { webhook: every.id, body: expect.objectContaining({ event: "agent", recipient: "bob", text: "to bob" }) },
+        { webhook: every.id, body: expect.objectContaining({ event: "agent", recipient: "carol", text: "to carol" }) },
+      ]);
+    });
+
+    it("queues a broadcast once per agent that received it, and never for a person", () => {
+      member(OWNER_ACCOUNT, "alice");
+      member(OWNER_ACCOUNT, "bob");
+      member(OWNER_ACCOUNT, "carol");
+      addPerson(db, "owner", "colin");
+      addWebhook(db, "owner", "https://example.com/", "agent:*", true);
+      expect(sendMessage(db, OWNER_ACCOUNT, "alice", "all", "to everyone").recipients).toEqual(["bob", "carol", "colin"]);
+      expect(queued().map((d) => d.body!.recipient)).toEqual(["bob", "carol"]);
+      db.exec("DELETE FROM webhook_deliveries");
+      sendMessage(db, OWNER_ACCOUNT, "alice", "colin", "to a person");
+      expect(queued()).toEqual([]);
+    });
+
+    it("leaves an agent:<name> webhook of a person firing as before", () => {
+      member(OWNER_ACCOUNT, "alice");
+      addPerson(db, "owner", "colin");
+      const hook = addWebhook(db, "owner", "https://example.com/", "agent:colin", true);
+      addWebhook(db, "owner", "https://example.com/", "agent:*", true);
+      sendMessage(db, OWNER_ACCOUNT, "alice", "colin", "to a person");
+      expect(queued().map((d) => d.webhook)).toEqual([hook.id]);
+    });
+
+    it("queues beside an agent:<name> webhook for the same agent, each its own delivery, and never for a post", () => {
+      const alice = member(OWNER_ACCOUNT, "alice");
+      member(OWNER_ACCOUNT, "bob");
+      const every = addWebhook(db, "owner", "https://example.com/", "agent:*", true);
+      const bob = addWebhook(db, "owner", "https://example.com/", "agent:Bob", true);
+      sendMessage(db, OWNER_ACCOUNT, "alice", "bob", "hi");
+      post(db, OWNER_ACCOUNT, alice, "general", "@bob hi");
+      expect(queued().map((d) => d.webhook)).toEqual([every.id, bob.id]);
+    });
+
+    it("never queues for another account's agent:* webhook", () => {
+      member(OWNER_ACCOUNT, "alice");
+      member(OWNER_ACCOUNT, "bob");
+      member(friend, "alice");
+      member(friend, "bob");
+      const owner = addWebhook(db, "owner", "https://example.com/", "agent:*", true);
+      const theirs = addWebhook(db, "friend", "https://example.com/", "agent:*", true);
+      sendMessage(db, OWNER_ACCOUNT, "alice", "bob", "owner dm");
+      sendMessage(db, OWNER_ACCOUNT, "alice", "all", "owner all");
+      expect(queued().map((d) => d.webhook)).toEqual([owner.id, owner.id]);
+      db.exec("DELETE FROM webhook_deliveries");
+      sendMessage(db, friend, "alice", "all", "friend all");
+      expect(queued()).toEqual([{ webhook: theirs.id, body: expect.objectContaining({ recipient: "bob", text: "friend all" }) }]);
+    });
+
+    it("holds each recipient's delivery while that agent waits, dropping it once that agent reads it", async () => {
+      member(OWNER_ACCOUNT, "alice");
+      member(OWNER_ACCOUNT, "bob");
+      member(OWNER_ACCOUNT, "carol");
+      const got: string[] = [];
+      const server = createHttpServer((req, res) => {
+        const chunks: Buffer[] = [];
+        req.on("data", (c: Buffer) => chunks.push(c));
+        req.on("end", () => {
+          got.push(JSON.parse(Buffer.concat(chunks).toString("utf8")).to);
+          res.writeHead(200).end();
+        });
+      });
+      await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+      try {
+        const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/hook`;
+        addWebhook(db, "owner", url, "agent:*", true, undefined, undefined, '{"id":"{{delivery}}","to":"{{agent}}"}');
+        markWaiting(db, OWNER_ACCOUNT, identityOf(db, OWNER_ACCOUNT, "bob")!);
+        sendMessage(db, OWNER_ACCOUNT, "alice", "all", "everyone");
+        expect(db.prepare("SELECT held_for FROM webhook_deliveries ORDER BY id").all()).toEqual([
+          { held_for: identityOf(db, OWNER_ACCOUNT, "bob")!.id },
+          { held_for: null },
+        ]);
+        // carol is not waiting, so hers goes; bob's is held while bob waits, and dropped once bob reads it.
+        expect(await sendPending(db)).toEqual({ delivered: 1, failed: 0 });
+        expect(got).toEqual(["carol"]);
+        readInbox(db, OWNER_ACCOUNT, identityOf(db, OWNER_ACCOUNT, "bob")!);
+        db.prepare("UPDATE agents SET waiting_until = ? WHERE name = 'bob'").run(Date.now() - 1);
+        expect(await sendPending(db)).toEqual({ delivered: 0, failed: 0 });
+        expect(got).toEqual(["carol"]);
+        expect(db.prepare("SELECT count(*) FROM webhook_deliveries WHERE delivered_at IS NULL").pluck().get()).toBe(0);
+      } finally {
+        server.closeAllConnections();
+        await new Promise((r) => server.close(r));
+      }
+    });
+
+    it("finds the recipient's agent:<name> and the agent:* webhooks through webhooks_by_name, as sendMessage prepares it", () => {
+      member(OWNER_ACCOUNT, "alice");
+      member(OWNER_ACCOUNT, "bob");
+      const prepare = vi.spyOn(db, "prepare");
+      sendMessage(db, OWNER_ACCOUNT, "alice", "bob", "hi");
+      const prepared = prepare.mock.calls.map(([sql]) => sql);
+      prepare.mockRestore();
+      expect(prepared).toContain(QUEUE_MESSAGE_SQL);
+      const plan = db.prepare(`EXPLAIN QUERY PLAN ${QUEUE_MESSAGE_SQL}`).all(1, 0, 1, 0, OWNER_ACCOUNT, "bob", 0) as { detail: string }[];
+      const details = plan.map((p) => p.detail);
+      expect(details).toContain("SEARCH webhooks USING COVERING INDEX webhooks_by_name (account_id=? AND event=? AND name=?)");
+      expect(details.join("\n")).not.toMatch(/SCAN/);
+    });
   });
 
   it("names a recipient removed after the message was queued as it was when sent", () => {
@@ -869,6 +1024,70 @@ describe("sendPending", () => {
       expect(JSON.parse(plain.got[0]!.body)).toMatchObject({ event: "agent", recipient: "bob", sender: "alice", text: "hello bob" });
     });
 
+    it("replaces every {{agent}} with the recipient's name, for agent:* and agent:<name>, signed over the bytes sent", async () => {
+      const r = await receiver();
+      member(OWNER_ACCOUNT, "carol");
+      const every = addWebhook(db, "owner", r.url, "agent:*", true, undefined, undefined, '{"id":"{{delivery}}","to":"{{agent}}","path":"a/{{agent}}"}');
+      sendMessage(db, OWNER_ACCOUNT, "alice", "bob", "one");
+      sendMessage(db, OWNER_ACCOUNT, "alice", "carol", "two");
+      expect(await sendPending(db)).toEqual({ delivered: 2, failed: 0 });
+      const bodies = r.got.map((g) => JSON.parse(g.body) as { id: string; to: string; path: string });
+      expect(bodies.map((b) => [b.to, b.path])).toEqual([
+        ["bob", "a/bob"],
+        ["carol", "a/carol"],
+      ]);
+      expect(bodies[0]!.id).toMatch(new RegExp(`^${UUID}$`));
+      expect(bodies[0]!.id).not.toBe(bodies[1]!.id);
+      for (const g of r.got) expect(g.headers["x-message-cp-signature"]).toBe(signature(every.secret, g.body));
+      db.exec("DELETE FROM webhooks");
+      const one = await receiver();
+      addWebhook(db, "owner", one.url, "agent:bob", true, undefined, undefined, '{"id":"{{delivery}}","to":"{{agent}}"}');
+      sendMessage(db, OWNER_ACCOUNT, "alice", "bob", "three");
+      expect(await sendPending(db)).toEqual({ delivered: 1, failed: 0 });
+      expect(JSON.parse(one.got[0]!.body)).toMatchObject({ to: "bob" });
+    });
+
+    it("sends a #channel or mention: body stored with {{agent}} before it was a placeholder as it was stored", async () => {
+      const r = await receiver();
+      const stored = '{"id":"{{delivery}}","note":"{{agent}}"}';
+      for (const on of ["#general", "mention:bob"]) addWebhook(db, "owner", r.url, on, true, undefined, undefined, '{"id":"{{delivery}}"}');
+      db.prepare("UPDATE webhooks SET fixed_body = ?").run(stored);
+      post(db, OWNER_ACCOUNT, { ...identityOf(db, OWNER_ACCOUNT, "alice")!, name: "alice" }, "general", "hi @bob");
+      expect(await sendPending(db)).toEqual({ delivered: 2, failed: 0 });
+      for (const g of r.got) expect(JSON.parse(g.body).note).toBe("{{agent}}");
+    });
+
+    it("sends an agent: body stored with {{agent}} in a key before it was a placeholder as it was stored", async () => {
+      const r = await receiver();
+      const stored = '{"id":"{{delivery}}","bob":"keep","{{agent}}":"literal","to":"{{agent}}"}';
+      addWebhook(db, "owner", r.url, "agent:bob", true, undefined, undefined, '{"id":"{{delivery}}"}');
+      db.prepare("UPDATE webhooks SET fixed_body = ?").run(stored);
+      sendMessage(db, OWNER_ACCOUNT, "alice", "bob", "hi");
+      expect(await sendPending(db)).toEqual({ delivered: 1, failed: 0 });
+      expect(JSON.parse(r.got[0]!.body)).toMatchObject({ bob: "keep", "{{agent}}": "literal", to: "{{agent}}" });
+    });
+
+    it("names an agent removed after the message was queued as it was when sent", async () => {
+      const r = await receiver();
+      addWebhook(db, "owner", r.url, "agent:*", true, undefined, undefined, '{"id":"{{delivery}}","to":"{{agent}}"}');
+      sendMessage(db, OWNER_ACCOUNT, "alice", "bob", "hi");
+      removeAgent(db, OWNER_ACCOUNT, "bob", undefined, identityOf(db, OWNER_ACCOUNT, "bob")!);
+      expect(await sendPending(db)).toEqual({ delivered: 1, failed: 0 });
+      expect(JSON.parse(r.got[0]!.body)).toMatchObject({ to: "bob" });
+    });
+
+    it("counts every recipient's deliveries of one agent:* webhook against its one --max-per-hour", async () => {
+      const r = await receiver();
+      member(OWNER_ACCOUNT, "carol");
+      member(OWNER_ACCOUNT, "dave");
+      addWebhook(db, "owner", r.url, "agent:*", true, undefined, 2, '{"id":"{{delivery}}","to":"{{agent}}"}');
+      sendMessage(db, OWNER_ACCOUNT, "alice", "all", "everyone");
+      expect(await sendPending(db)).toEqual({ delivered: 2, failed: 0 });
+      expect(await sendPending(db)).toEqual({ delivered: 0, failed: 0 });
+      expect(r.got.map((g) => JSON.parse(g.body).to)).toEqual(["bob", "carol"]);
+      expect(db.prepare("SELECT count(*) FROM webhook_deliveries WHERE delivered_at IS NULL AND attempts = 0").pluck().get()).toBe(1);
+    });
+
     it("never sends one account's fixed body with another account's deliveries", async () => {
       const mine = await receiver();
       const theirs = await receiver();
@@ -1129,6 +1348,15 @@ describe("message-cp webhook", () => {
     ]);
     expect(list.stdout + list.stderr).not.toContain("requestId");
     expect(db.prepare("SELECT fixed_body FROM webhooks WHERE id = 1").get()).toEqual({ fixed_body: body });
+  }, 60_000);
+
+  it("adds an agent:* webhook with {{agent}} in its --body and lists it as agent:*, refusing {{agent}} for a #channel", () => {
+    const body = '{"id":"{{delivery}}","to":"{{agent}}"}';
+    expect(cli("webhook", "add", "--url", "https://example.com/hook", "--on", "agent:*", "--body", body).status).toBe(0);
+    expect(cli("webhook", "list").stdout).toBe("1\towner\thttps://example.com/hook\tagent:*\ttext\tbody: fixed\n");
+    const refused = cli("webhook", "add", "--url", "https://example.com/hook", "--on", "#general", "--body", body);
+    expect(refused.status).toBe(1);
+    expect(refused.stderr).toContain("{{agent}} is only for --on agent:<agent> or agent:*");
   }, 60_000);
 
   it("refuses a bad --body, or --body with --no-text, with exit 1, storing nothing and never echoing the body", () => {

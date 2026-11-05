@@ -13,7 +13,9 @@ import { MAX_INBOX_LIMIT } from "./messages.js";
 // of its deliveries; its value is stored as is too, and never printed, logged or returned. And it may carry a limit on
 // how many delivery requests it gets per window of 60 minutes; deliveries past it wait in the queue for a later window.
 // And it may carry a fixed JSON body the owner sets, sent in place of the event body, signed the same way, with its one
-// `{{delivery}}` replaced by an id of that delivery that every retry repeats; the body is never printed or logged.
+// `{{delivery}}` replaced by an id of that delivery that every retry repeats, and, for direct messages, each `{{agent}}`
+// replaced by the name of the agent the message went to; the body is never printed or logged. `agent:*` is for direct
+// messages to every agent of the account, stored with the name `*`, which no agent can have.
 
 export class WebhookError extends Error {}
 
@@ -25,7 +27,7 @@ export interface Webhook {
   account: string;
   url: string;
   event: WebhookEvent;
-  /** The channel or agent name, as given. */
+  /** The channel or agent name, as given, or `*` for every agent of the account (`agent:*`). */
   name: string;
   includeText: boolean;
   /** The name of the header its deliveries carry, or null for none; its value is never given out. */
@@ -64,14 +66,20 @@ export function webhookUrl(raw: string): string {
   return url.href;
 }
 
+/** The name an `agent:*` webhook is stored with: it fires for a direct message to any agent of its account. */
+export const EVERY_AGENT = "*";
+
 /**
- * Parses `--on`: `#<channel>`, `mention:<agent>` or `agent:<agent>`, each name following the agent-name rules. An agent
- * cannot be named `all`, so `mention:all` and `agent:all` are refused; `#all` is an ordinary channel.
+ * Parses `--on`: `#<channel>`, `mention:<agent>`, `agent:<agent>` or `agent:*`, each name following the agent-name
+ * rules. An agent cannot be named `all`, so `mention:all` and `agent:all` are refused; `#all` is an ordinary channel.
  */
 export function webhookOn(on: string): { event: WebhookEvent; name: string } {
+  if (on === `agent:${EVERY_AGENT}`) return { event: "agent", name: EVERY_AGENT };
   const [, prefix, name] = /^(#|mention:|agent:)(.*)$/s.exec(on) ?? [];
   if (prefix === undefined || !NAME_PATTERN.test(name!)) {
-    throw new WebhookError("Invalid --on: use #<channel>, mention:<agent> or agent:<agent>, names of 1-32 letters, digits, '-' and '_'.");
+    throw new WebhookError(
+      "Invalid --on: use #<channel>, mention:<agent>, agent:<agent> or agent:*, names of 1-32 letters, digits, '-' and '_'.",
+    );
   }
   if (prefix !== "#" && name!.toLowerCase() === "all") {
     throw new WebhookError("Invalid --on: 'all' is reserved and names no agent.");
@@ -134,19 +142,23 @@ export function webhookMaxPerHour(raw: string): number {
 
 /** What a fixed body's placeholder is replaced with: the delivery's id, the same on every attempt of it. */
 export const WEBHOOK_PLACEHOLDER = "{{delivery}}";
+/** What a fixed body's optional agent placeholder is replaced with, each time: the name of the message's recipient. */
+export const WEBHOOK_AGENT_PLACEHOLDER = "{{agent}}";
 /** The longest `--body`, in UTF-8 bytes. */
 export const WEBHOOK_MAX_BODY_BYTES = 4096;
 
-/** How many times `text` contains the placeholder. */
-const placeholders = (text: string) => text.split(WEBHOOK_PLACEHOLDER).length - 1;
+/** How many times `text` contains `placeholder`. */
+const count = (text: string, placeholder: string) => text.split(placeholder).length - 1;
 
 /**
  * Checks `--body`: a JSON object of at most `WEBHOOK_MAX_BODY_BYTES`, with `WEBHOOK_PLACEHOLDER` written as is exactly
  * once in the text, inside a string value that parsing keeps (not in a key, and not dropped by a later duplicate key),
- * and nowhere else in any parsed string or key, `\u` escapes included. Returns it unchanged, so a delivery sends the
- * owner's own bytes with only the placeholder replaced. Errors never repeat the body.
+ * and nowhere else in any parsed string or key, `\u` escapes included. With `agent`, for an `agent:` webhook,
+ * `WEBHOOK_AGENT_PLACEHOLDER` may also be written as is, any number of times, each inside a string value parsing keeps;
+ * without it, it may not appear at all. Returns it unchanged, so a delivery sends the owner's own bytes with only the
+ * placeholders replaced. Errors never repeat the body.
  */
-export function webhookBody(raw: string): string {
+export function webhookBody(raw: string, agent = false): string {
   if (Buffer.byteLength(raw, "utf8") > WEBHOOK_MAX_BODY_BYTES) {
     throw new WebhookError(`Invalid --body: it is over ${WEBHOOK_MAX_BODY_BYTES} bytes.`);
   }
@@ -160,27 +172,50 @@ export function webhookBody(raw: string): string {
     throw new WebhookError("Invalid --body: give a JSON object.");
   }
   const misplaced = new WebhookError(`Invalid --body: put ${WEBHOOK_PLACEHOLDER} exactly once, inside a JSON string value.`);
-  if (placeholders(raw) !== 1) throw misplaced;
-  // Parsed again with the literal placeholder swapped for a value found nowhere else, as a delivery swaps it, so the
-  // count is of what a receiver parses: one sentinel in a string value, and no placeholder left in any string or key.
+  if (count(raw, WEBHOOK_PLACEHOLDER) !== 1) throw misplaced;
+  const agents = count(raw, WEBHOOK_AGENT_PLACEHOLDER);
+  const agentMisplaced = agent
+    ? new WebhookError(`Invalid --body: put each ${WEBHOOK_AGENT_PLACEHOLDER} inside a JSON string value.`)
+    : new WebhookError(`Invalid --body: ${WEBHOOK_AGENT_PLACEHOLDER} is only for --on agent:<agent> or agent:*.`);
+  if (agents > 0 && !agent) throw agentMisplaced;
+  // Parsed again with each literal placeholder swapped for a value found nowhere else, as a delivery swaps it, so the
+  // count is of what a receiver parses: one sentinel in a string value, each agent sentinel in a string value, and no
+  // placeholder left in any string or key.
   const sentinel = randomUUID();
+  const agentSentinel = randomUUID();
   let sentinels = 0;
+  let agentSentinels = 0;
   let others = 0;
+  let agentOthers = 0;
   const walk = (v: unknown) => {
     if (typeof v === "string") {
-      sentinels += v.split(sentinel).length - 1;
-      others += placeholders(v);
+      sentinels += count(v, sentinel);
+      agentSentinels += count(v, agentSentinel);
+      others += count(v, WEBHOOK_PLACEHOLDER);
+      agentOthers += count(v, WEBHOOK_AGENT_PLACEHOLDER);
     } else if (Array.isArray(v)) v.forEach(walk);
     else if (typeof v === "object" && v !== null) {
       for (const [k, x] of Object.entries(v)) {
-        others += placeholders(k) + k.split(sentinel).length - 1;
+        others += count(k, WEBHOOK_PLACEHOLDER) + count(k, sentinel);
+        agentOthers += count(k, WEBHOOK_AGENT_PLACEHOLDER) + count(k, agentSentinel);
         walk(x);
       }
     }
   };
-  walk(JSON.parse(raw.replace(WEBHOOK_PLACEHOLDER, () => sentinel)));
+  walk(JSON.parse(raw.replace(WEBHOOK_PLACEHOLDER, () => sentinel).replaceAll(WEBHOOK_AGENT_PLACEHOLDER, () => agentSentinel)));
   if (sentinels !== 1 || others !== 0) throw misplaced;
+  if (agentOthers !== 0 || agentSentinels !== agents) throw agentMisplaced;
   return raw;
+}
+
+/** True when `webhookBody` would take `raw` for an `agent:` webhook, so each `{{agent}}` in it is in a string value. */
+function agentPlaceable(raw: string): boolean {
+  try {
+    webhookBody(raw, true);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /** How `--on` names a webhook's event, for printing. */
@@ -209,7 +244,7 @@ export const addWebhook = (
     }
     // A fixed body never carries the text, so --no-text with it would mean nothing.
     if (body !== undefined && !includeText) throw new WebhookError("--body and --no-text cannot go together: a fixed body never carries the text.");
-    const fixed = body === undefined ? null : webhookBody(body);
+    const fixed = body === undefined ? null : webhookBody(body, event === "agent");
     const row = db.prepare("SELECT id, name FROM accounts WHERE name = ?").get(account) as { id: AccountId; name: string } | undefined;
     if (!row) throw new WebhookError(`No account named '${account}'.`);
     const secret = randomBytes(32).toString("hex");
@@ -533,6 +568,13 @@ export async function sendPending(db: Db, options: SendOptions = {}): Promise<{ 
       if (!id) return;
       // `webhookBody` checked that the placeholder is there once, inside a string, and a UUID needs no escaping.
       text = row.fixed_body.replace(WEBHOOK_PLACEHOLDER, () => id.delivery_uuid);
+      // Each agent placeholder of an `agent:` webhook's body is inside a string too, and gets the name escaped as one.
+      // Only there, and only when the stored body passes today's check: a body stored before `{{agent}}` existed, for a
+      // `#channel` or `mention:` webhook or with the text in a key, keeps any such text as it is.
+      if (body.event === "agent" && agentPlaceable(row.fixed_body)) {
+        const agent = JSON.stringify(body.recipient!).slice(1, -1);
+        text = text.replaceAll(WEBHOOK_AGENT_PLACEHOLDER, () => agent);
+      }
     }
     let ok = false;
     try {

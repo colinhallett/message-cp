@@ -44,7 +44,7 @@ const NEW_CHANNEL = ' You can also start one from "New channel" above.';
 const NO_MESSAGES = "No direct messages yet: they appear here when an agent sends one with the send_message tool.";
 const NEW_MESSAGE = ' You can also start one from "New message" above.';
 const NO_DELIVERIES =
-  "No webhook deliveries yet: add a webhook on the server with message-cp webhook add --url <url> --on <#channel | mention:<agent> | agent:<agent>>, and its deliveries show here once it fires.";
+  "No webhook deliveries yet: add a webhook on the server with message-cp webhook add --url <url> --on <#channel | mention:<agent> | agent:<agent> | agent:*>, and its deliveries show here once it fires.";
 const NO_INVITES = "No unused invites. One is listed here from when it is made until it is used, cancelled or expires.";
 const NO_APPROVALS =
   "No approved clients yet: a client approved as one named agent, or as one that registers its own agents, appears here once it connects through the server's authorization flow (serve --public-url), and its token is revoked on the server with message-cp token revoke <id> or, by an admin person, with its Revoke button here.";

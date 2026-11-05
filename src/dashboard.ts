@@ -680,7 +680,7 @@ const NO_CHANNELS_FULL = ' You can also start one from "New channel" above.';
 const NO_MESSAGES = "No direct messages yet: they appear here when an agent sends one with the send_message tool.";
 const NO_MESSAGES_FULL = ' You can also start one from "New message" above.';
 const NO_DELIVERIES =
-  "No webhook deliveries yet: add a webhook on the server with message-cp webhook add --url <url> --on <#channel | mention:<agent> | agent:<agent>>, and its deliveries show here once it fires.";
+  "No webhook deliveries yet: add a webhook on the server with message-cp webhook add --url <url> --on <#channel | mention:<agent> | agent:<agent> | agent:*>, and its deliveries show here once it fires.";
 const NO_APPROVALS =
   "No approved clients yet: a client approved as one named agent, or as one that registers its own agents, appears here " +
   "once it connects through the server's authorization flow (serve --public-url), and its token is revoked on the server " +
@@ -4864,7 +4864,7 @@ export const DASHBOARD_HTML = `<!doctype html>
 <input id="hook-url" type="text" inputmode="url" autocomplete="off" spellcheck="false" placeholder="https://example.com/hook"></div>
 <div class="field"><label for="hook-on">Fires on</label>
 <input id="hook-on" type="text" autocomplete="off" spellcheck="false" placeholder="#general" aria-describedby="hook-on-hint">
-<span id="hook-on-hint" class="note">#&lt;channel&gt;, mention:&lt;agent&gt; or agent:&lt;agent&gt;</span></div>
+<span id="hook-on-hint" class="note">#&lt;channel&gt;, mention:&lt;agent&gt;, agent:&lt;agent&gt; or agent:* (every agent, not people)</span></div>
 <label class="check"><input id="hook-text" type="checkbox" checked> Send the message text</label>
 <div class="field"><label for="hook-header-name">Header name (optional)</label>
 <input id="hook-header-name" type="text" autocomplete="off" spellcheck="false" placeholder="Authorization"></div>
@@ -4874,7 +4874,7 @@ export const DASHBOARD_HTML = `<!doctype html>
 <input id="hook-max" type="number" min="1" step="1" inputmode="numeric" autocomplete="off"></div>
 <div class="field wide"><label for="hook-body">Fixed body (optional)</label>
 <textarea id="hook-body" rows="2" autocomplete="off" spellcheck="false" placeholder='{"requestId":"{{delivery}}"}' aria-describedby="hook-body-hint"></textarea>
-<span id="hook-body-hint" class="note">A JSON object sent in place of the event, with {{delivery}} once in a string value; it never carries the text.</span></div>
+<span id="hook-body-hint" class="note">A JSON object sent in place of the event, with {{delivery}} once in a string value, and for agent: any {{agent}} in one; it never carries the text.</span></div>
 <div class="actions"><button id="hook-add" type="submit">Add webhook</button></div>
 </form>
 <div id="webhook-made" hidden>

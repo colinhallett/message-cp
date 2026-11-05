@@ -18,7 +18,7 @@ const USAGE = {
   serve: "message-cp serve [--host <address>] [--port <port>] [--public-url <url>]",
   wait: "message-cp wait <name>",
   account: "message-cp account add <name> | message-cp account list | message-cp token add <account> [--read-only | --agent-only | --person <name>] | message-cp token list | message-cp token revoke <token id>",
-  webhook: "message-cp webhook add --url <url> --on <#channel | mention:<agent> | agent:<agent>> [--account <name>] [--no-text] [--header-stdin] [--max-per-hour <n>] [--body <json>] | message-cp webhook list [--account <name>] | message-cp webhook remove <webhook id>",
+  webhook: "message-cp webhook add --url <url> --on <#channel | mention:<agent> | agent:<agent> | agent:*> [--account <name>] [--no-text] [--header-stdin] [--max-per-hour <n>] [--body <json>] | message-cp webhook list [--account <name>] | message-cp webhook remove <webhook id>",
   person:
     "message-cp person add <name> [--account <name>] [--admin] | message-cp person admin <name> [--off] [--account <name>] | message-cp person remove <name> [--account <name>] | message-cp person list [--account <name>]",
   agent: "message-cp agent list [--account <name>] | message-cp agent remove <name> [--account <name>] | message-cp agent key reset <name> [--account <name>]",
