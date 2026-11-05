@@ -1821,6 +1821,11 @@ function forgetMessagesOf(name, gone) {
       }
     }
   }
+  dropMessages();
+}
+
+// Drops the messages the page holds, as forgetMessagesOf does, without forgetting what this tab had seen of any pair.
+function dropMessages() {
   heldMessages = 0;
   messages = [];
   pairs = new Map([...pairs].filter(([, p]) => p.count === 0).map(([k, p]) => [k, { ...p, newest: 0 }]));
@@ -3456,16 +3461,16 @@ async function readLog(token, signal, gen, channel) {
 // not among them, updating its receipt in the open log. read_at is only ever set, never cleared, so a message is never
 // marked unread again. A message read while the pages were read moves the rest one place earlier, so the row after a
 // page boundary (or after a full last page) may have been skipped: a held message there is left as it was until a later
-// poll. The answer leaves out messages to a person, so it only looks at the first held messages, those the page held
-// before this poll read the agents, and only at those whose recipient that answer (agents) lists as an agent: a person
-// added later never counts as one, and a message sent to a person whose name is an agent's now was deleted with that
+// poll. The answer leaves out messages to a person, so it only looks at the held messages up to newest, the last one the
+// page held before this poll read the agents (by id, as readMessages may have read them all again since), and only at
+// those whose recipient that answer (agents) lists as an agent: a person added later never counts as one, and a message sent to a person whose name is an agent's now was deleted with that
 // person, so it turns to read as any deleted message does. A held message still among them with starting true (a
 // webhook delivered it) is marked starting, and never unmarked. A failed read, or one answered after a newer poll or
 // another token, changes nothing. When none of those is still unread there is nothing to learn, so it asks nothing. It
 // marks nothing read for any agent.
-async function readReceipts(token, signal, gen, held, agents) {
+async function readReceipts(token, signal, gen, newest, agents) {
   const names = new Set(agents.filter((a) => a.person !== true).map((a) => String(a.name).toLowerCase()));
-  const candidates = messages.slice(0, held).filter((m) => m.read !== true && names.has(String(m.to).toLowerCase()));
+  const candidates = messages.filter((m) => m.id <= newest && m.read !== true && names.has(String(m.to).toLowerCase()));
   if (candidates.length === 0) return { ok: true };
   const unread = await fetchAll(token, signal, "/api/messages", list, { unread: "true" });
   if (gen !== generation) return { ok: true };
@@ -3514,14 +3519,22 @@ async function readMentions(token, signal, gen, channel) {
 }
 
 // Reads the account's direct messages past the ones the page holds and appends each page as it comes, as readLog does
-// for a channel. Messages are only ever added, oldest first. GET /api/messages marks nothing read.
+// for a channel. Messages are added oldest first, but another tab, a CLI command or an agent's removal can delete some
+// the page holds, which moves every later one to a lower offset. So each read starts at the last message the page
+// holds: a page that does not start with it means some were deleted, and the page drops what it holds and reads them
+// all again, rather than read past new messages until a reload. GET /api/messages marks nothing read.
 async function readMessages(token, signal, gen) {
   for (;;) {
-    const page = await fetchPage(token, signal, "/api/messages", {}, heldMessages, list);
+    const last = messages[messages.length - 1];
+    const page = await fetchPage(token, signal, "/api/messages", {}, last ? heldMessages - 1 : 0, list);
     // A newer poll, or another token, while this page was read: leave the messages to it.
     if (gen !== generation) return { ok: true };
     if (!page.items) return page;
-    appendMessages(page.items);
+    if (last && page.items[0]?.id !== last.id) {
+      dropMessages();
+      continue;
+    }
+    appendMessages(last ? page.items.slice(1) : page.items);
     if (page.items.length < PAGE) {
       messagesNote.textContent = heldMessages === 0 ? messagesEmpty() : "";
       return { ok: true };
@@ -3877,7 +3890,7 @@ async function poll(gen) {
   const webhooks = openWebhooks;
   const tokens = openTokens;
   const signins = openSignins;
-  const held = messages.length;
+  const newest = messages.length > 0 ? messages[messages.length - 1].id : 0;
   let result;
   try {
     result = await fetchView(token, ac.signal);
@@ -3925,7 +3938,7 @@ async function poll(gen) {
       // Once the messages are read, whether each one the page holds has been read since; never before, so every held
       // message is among those it asks about.
       if (!refused && messages.status === "fulfilled" && messages.value.ok && gen === generation) {
-        values.push(await readReceipts(token, ac.signal, gen, held, result.agents));
+        values.push(await readReceipts(token, ac.signal, gen, newest, result.agents));
       }
       // Once the open channel's posts are read, whether each mention they hold has been read since.
       if (!refused && channel !== undefined && posts.status === "fulfilled" && posts.value.ok && gen === generation) {
