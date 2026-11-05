@@ -4864,7 +4864,7 @@ export const DASHBOARD_HTML = `<!doctype html>
 <input id="hook-url" type="text" inputmode="url" autocomplete="off" spellcheck="false" placeholder="https://example.com/hook"></div>
 <div class="field"><label for="hook-on">Fires on</label>
 <input id="hook-on" type="text" autocomplete="off" spellcheck="false" placeholder="#general" aria-describedby="hook-on-hint">
-<span id="hook-on-hint" class="note">#&lt;channel&gt;, mention:&lt;agent&gt;, agent:&lt;agent&gt; or agent:* (every agent)</span></div>
+<span id="hook-on-hint" class="note">#&lt;channel&gt;, mention:&lt;agent&gt;, agent:&lt;agent&gt; or agent:* (every agent, not people)</span></div>
 <label class="check"><input id="hook-text" type="checkbox" checked> Send the message text</label>
 <div class="field"><label for="hook-header-name">Header name (optional)</label>
 <input id="hook-header-name" type="text" autocomplete="off" spellcheck="false" placeholder="Authorization"></div>

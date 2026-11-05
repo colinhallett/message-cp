@@ -174,8 +174,10 @@ export function webhookBody(raw: string, agent = false): string {
   const misplaced = new WebhookError(`Invalid --body: put ${WEBHOOK_PLACEHOLDER} exactly once, inside a JSON string value.`);
   if (count(raw, WEBHOOK_PLACEHOLDER) !== 1) throw misplaced;
   const agents = count(raw, WEBHOOK_AGENT_PLACEHOLDER);
-  if (agents > 0 && !agent) throw new WebhookError(`Invalid --body: ${WEBHOOK_AGENT_PLACEHOLDER} is only for --on agent:<agent> or agent:*.`);
-  const agentMisplaced = new WebhookError(`Invalid --body: put each ${WEBHOOK_AGENT_PLACEHOLDER} inside a JSON string value.`);
+  const agentMisplaced = agent
+    ? new WebhookError(`Invalid --body: put each ${WEBHOOK_AGENT_PLACEHOLDER} inside a JSON string value.`)
+    : new WebhookError(`Invalid --body: ${WEBHOOK_AGENT_PLACEHOLDER} is only for --on agent:<agent> or agent:*.`);
+  if (agents > 0 && !agent) throw agentMisplaced;
   // Parsed again with each literal placeholder swapped for a value found nowhere else, as a delivery swaps it, so the
   // count is of what a receiver parses: one sentinel in a string value, each agent sentinel in a string value, and no
   // placeholder left in any string or key.
@@ -554,10 +556,14 @@ export async function sendPending(db: Db, options: SendOptions = {}): Promise<{ 
     else {
       const id = deliveryId.get(randomUUID(), ...claimed) as { delivery_uuid: string } | undefined;
       if (!id) return;
-      // `webhookBody` checked that the placeholder is there once, inside a string, and a UUID needs no escaping; each
-      // agent placeholder, only in an `agent:` webhook's body, is inside a string too, and gets the name escaped as one.
-      const agent = JSON.stringify(body.recipient ?? "").slice(1, -1);
-      text = row.fixed_body.replace(WEBHOOK_PLACEHOLDER, () => id.delivery_uuid).replaceAll(WEBHOOK_AGENT_PLACEHOLDER, () => agent);
+      // `webhookBody` checked that the placeholder is there once, inside a string, and a UUID needs no escaping.
+      text = row.fixed_body.replace(WEBHOOK_PLACEHOLDER, () => id.delivery_uuid);
+      // Each agent placeholder of an `agent:` webhook's body is inside a string too, and gets the name escaped as one.
+      // Only there: a `#channel` or `mention:` body stored before `{{agent}}` existed keeps any such text as it is.
+      if (body.event === "agent") {
+        const agent = JSON.stringify(body.recipient!).slice(1, -1);
+        text = text.replaceAll(WEBHOOK_AGENT_PLACEHOLDER, () => agent);
+      }
     }
     let ok = false;
     try {

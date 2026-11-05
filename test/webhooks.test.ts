@@ -286,6 +286,7 @@ describe("addWebhook, listWebhooks and removeWebhook", () => {
       );
     }
     expect(() => webhookBody(ok[0]!)).toThrow(/only for --on agent:/);
+    expect(() => webhookBody('{"id":"{{delivery}}","to":"\\u007b{agent}}"}')).toThrow(/only for --on agent:/);
     expect(listWebhooks(db)).toHaveLength(before);
   });
 
@@ -532,7 +533,7 @@ describe("queued deliveries", () => {
       expect(queued().map((d) => d.webhook)).toEqual([every.id, bob.id]);
     });
 
-    it("never queues for another account's agent:* webhook, nor for an agent named like it", () => {
+    it("never queues for another account's agent:* webhook", () => {
       member(OWNER_ACCOUNT, "alice");
       member(OWNER_ACCOUNT, "bob");
       member(friend, "alice");
@@ -1044,6 +1045,25 @@ describe("sendPending", () => {
       sendMessage(db, OWNER_ACCOUNT, "alice", "bob", "three");
       expect(await sendPending(db)).toEqual({ delivered: 1, failed: 0 });
       expect(JSON.parse(one.got[0]!.body)).toMatchObject({ to: "bob" });
+    });
+
+    it("sends a #channel or mention: body stored with {{agent}} before it was a placeholder as it was stored", async () => {
+      const r = await receiver();
+      const stored = '{"id":"{{delivery}}","note":"{{agent}}"}';
+      for (const on of ["#general", "mention:bob"]) addWebhook(db, "owner", r.url, on, true, undefined, undefined, '{"id":"{{delivery}}"}');
+      db.prepare("UPDATE webhooks SET fixed_body = ?").run(stored);
+      post(db, OWNER_ACCOUNT, { ...identityOf(db, OWNER_ACCOUNT, "alice")!, name: "alice" }, "general", "hi @bob");
+      expect(await sendPending(db)).toEqual({ delivered: 2, failed: 0 });
+      for (const g of r.got) expect(JSON.parse(g.body).note).toBe("{{agent}}");
+    });
+
+    it("names an agent removed after the message was queued as it was when sent", async () => {
+      const r = await receiver();
+      addWebhook(db, "owner", r.url, "agent:*", true, undefined, undefined, '{"id":"{{delivery}}","to":"{{agent}}"}');
+      sendMessage(db, OWNER_ACCOUNT, "alice", "bob", "hi");
+      removeAgent(db, OWNER_ACCOUNT, "bob", undefined, identityOf(db, OWNER_ACCOUNT, "bob")!);
+      expect(await sendPending(db)).toEqual({ delivered: 1, failed: 0 });
+      expect(JSON.parse(r.got[0]!.body)).toMatchObject({ to: "bob" });
     });
 
     it("counts every recipient's deliveries of one agent:* webhook against its one --max-per-hour", async () => {
