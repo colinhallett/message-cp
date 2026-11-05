@@ -1057,6 +1057,16 @@ describe("sendPending", () => {
       for (const g of r.got) expect(JSON.parse(g.body).note).toBe("{{agent}}");
     });
 
+    it("sends an agent: body stored with {{agent}} in a key before it was a placeholder as it was stored", async () => {
+      const r = await receiver();
+      const stored = '{"id":"{{delivery}}","bob":"keep","{{agent}}":"literal","to":"{{agent}}"}';
+      addWebhook(db, "owner", r.url, "agent:bob", true, undefined, undefined, '{"id":"{{delivery}}"}');
+      db.prepare("UPDATE webhooks SET fixed_body = ?").run(stored);
+      sendMessage(db, OWNER_ACCOUNT, "alice", "bob", "hi");
+      expect(await sendPending(db)).toEqual({ delivered: 1, failed: 0 });
+      expect(JSON.parse(r.got[0]!.body)).toMatchObject({ bob: "keep", "{{agent}}": "literal", to: "{{agent}}" });
+    });
+
     it("names an agent removed after the message was queued as it was when sent", async () => {
       const r = await receiver();
       addWebhook(db, "owner", r.url, "agent:*", true, undefined, undefined, '{"id":"{{delivery}}","to":"{{agent}}"}');

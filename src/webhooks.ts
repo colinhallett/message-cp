@@ -208,6 +208,16 @@ export function webhookBody(raw: string, agent = false): string {
   return raw;
 }
 
+/** True when `webhookBody` would take `raw` for an `agent:` webhook, so each `{{agent}}` in it is in a string value. */
+function agentPlaceable(raw: string): boolean {
+  try {
+    webhookBody(raw, true);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** How `--on` names a webhook's event, for printing. */
 export const formatOn = (w: Pick<Webhook, "event" | "name">) => (w.event === "channel" ? `#${w.name}` : `${w.event}:${w.name}`);
 
@@ -559,8 +569,9 @@ export async function sendPending(db: Db, options: SendOptions = {}): Promise<{ 
       // `webhookBody` checked that the placeholder is there once, inside a string, and a UUID needs no escaping.
       text = row.fixed_body.replace(WEBHOOK_PLACEHOLDER, () => id.delivery_uuid);
       // Each agent placeholder of an `agent:` webhook's body is inside a string too, and gets the name escaped as one.
-      // Only there: a `#channel` or `mention:` body stored before `{{agent}}` existed keeps any such text as it is.
-      if (body.event === "agent") {
+      // Only there, and only when the stored body passes today's check: a body stored before `{{agent}}` existed, for a
+      // `#channel` or `mention:` webhook or with the text in a key, keeps any such text as it is.
+      if (body.event === "agent" && agentPlaceable(row.fixed_body)) {
         const agent = JSON.stringify(body.recipient!).slice(1, -1);
         text = text.replaceAll(WEBHOOK_AGENT_PLACEHOLDER, () => agent);
       }
