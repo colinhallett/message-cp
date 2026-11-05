@@ -12,7 +12,7 @@ import { connectAgent } from "../src/connect.js";
 import { OWNER_ACCOUNT, openDb, type Db } from "../src/db.js";
 import { addPerson, identityOf, purgeAgent, registerAgent, registerWithIdentity, removeAgent, removePerson, setPersonAdmin, setStatus } from "../src/agents.js";
 import { joinChannel, leaveChannel, post } from "../src/channels.js";
-import { MAX_BODY_LENGTH, readInbox, sendMessage, unreadSummary } from "../src/messages.js";
+import { MAX_BODY_LENGTH, deleteConversation, readInbox, sendMessage, unreadSummary } from "../src/messages.js";
 import { startHttp, type HttpServer } from "../src/http.js";
 import { addWebhook } from "../src/webhooks.js";
 
@@ -1226,7 +1226,8 @@ describe("the page's channels and messages", () => {
     const page = await load(viewer);
     const pairs = page.elements["pair-rows"];
     await page.until(() => pairs.children.length === 1 && tip(pairs.children[0]) === "201 messages");
-    expect(page.urls).toContain("/api/messages?limit=200&offset=200");
+    // Each page after the first starts at the last message the page before gave.
+    expect(page.urls).toContain("/api/messages?limit=200&offset=199");
     open(pairs.children[0]);
     const log = page.elements["post-rows"];
     expect(log.children).toHaveLength(201);
@@ -1237,7 +1238,8 @@ describe("the page's channels and messages", () => {
     page.urls.length = 0;
     await page.poll();
     await page.until(() => log.children.length === 202);
-    expect(page.urls.filter((url) => url.startsWith("/api/messages?limit"))).toEqual(["/api/messages?limit=200&offset=201"]);
+    // From the last message held, so the page can tell none it holds was deleted meanwhile.
+    expect(page.urls.filter((url) => url.startsWith("/api/messages?limit"))).toEqual(["/api/messages?limit=200&offset=200"]);
     // The receipts read every page of the unread messages, which are all 203 here.
     await page.until(() => page.urls.includes("/api/messages?unread=true&limit=200&offset=200"));
     expect(page.urls.filter((url) => url.startsWith("/api/messages?unread"))).toEqual([
@@ -1247,6 +1249,36 @@ describe("the page's channels and messages", () => {
     expect(entries(log).slice(-1)).toEqual([["bob", "reply"]]);
     await page.until(() => pairs.children.length === 2);
     expect(log.children).toHaveLength(202);
+  });
+
+  it("shows a new message in the open pair after another client deleted messages the page holds", async () => {
+    for (const name of ["alice", "bob", "carol"]) registerAgent(db, OWNER_ACCOUNT, name, "x");
+    for (let i = 0; i < 3; i++) sendMessage(db, OWNER_ACCOUNT, "carol", "bob", `old ${i}`);
+    sendMessage(db, OWNER_ACCOUNT, "alice", "bob", "first");
+    const page = await load(viewer);
+    const pairs = page.elements["pair-rows"];
+    await page.until(() => pairs.children.length === 2);
+    open(pairs.children.find((row) => item(row)[0] === "alice ↔ bob")!);
+    const log = page.elements["post-rows"];
+    expect(entries(log)).toEqual([["alice", "first"]]);
+    await page.until(page.scheduled);
+
+    // Another tab, a CLI command or an e2e run's cleanup deletes a conversation this page holds.
+    expect(deleteConversation(db, OWNER_ACCOUNT, "carol", "bob")).toBe(3);
+    sendMessage(db, OWNER_ACCOUNT, "alice", "bob", "second");
+    await page.poll();
+    await page.until(() => entries(log).length === 2);
+    expect(entries(log)).toEqual([["alice", "first"], ["alice", "second"]]);
+    await page.until(() => pairs.children.length === 1);
+    expect(item(pairs.children[0])[0]).toBe("alice ↔ bob");
+    expect(tip(pairs.children[0])).toBe("2 messages");
+
+    // And on the poll after, only what is new is added.
+    sendMessage(db, OWNER_ACCOUNT, "bob", "alice", "third");
+    await page.until(page.scheduled);
+    await page.poll();
+    await page.until(() => entries(log).length === 3);
+    expect(entries(log)).toEqual([["alice", "first"], ["alice", "second"], ["bob", "third"]]);
   });
 
   it("clears the pairs and the open conversation when the server refuses the token", async () => {
