@@ -72,7 +72,7 @@ CREATE INDEX IF NOT EXISTS messages_by_question ON messages (in_reply_to, recipi
 
 // Outgoing webhooks, added only with `message-cp webhook`; an admin person token also lists and removes them over
 // /api/webhooks. `event` is 'channel', 'mention' or 'agent' and `name` the channel or agent in the same account,
-// which need not exist yet. The secret is stored as is: deliveries sign with it.
+// which need not exist yet, or '*' with 'agent' for every agent of the account (`agent:*`), a name no agent can have. The secret is stored as is: deliveries sign with it.
 // So is the value of the one header a webhook may carry (`header_name`, `header_value`), since deliveries send it.
 // `max_per_hour` (null for none) caps its delivery requests in a fixed window: `window_started_at` is when the first
 // request after the last window ended was claimed, and `window_count` how many requests have been claimed since; the

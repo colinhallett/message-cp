@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { addAccount, addToken, listAccounts } from "../src/accounts.js";
-import { addPerson, setPersonAdmin } from "../src/agents.js";
+import { addPerson, registerAgent, setPersonAdmin } from "../src/agents.js";
 import { OWNER_ACCOUNT, openDb, type AccountId, type Db } from "../src/db.js";
 import { startHttp, type HttpServer } from "../src/http.js";
 import { NotAdminError, addWebhookBy, listWebhooksBy, removeWebhookBy } from "../src/login.js";
@@ -237,6 +237,24 @@ describe("POST /api/webhooks", () => {
     expect(got!.headers["x-message-cp-signature"]).toBe(`sha256=${createHmac("sha256", made.secret).update(got!.body).digest("hex")}`);
   });
 
+  it("adds an agent:* webhook with {{agent}} in its body, as webhook add does, and refuses {{agent}} for a #channel", async () => {
+    const r = await receiver();
+    registerAgent(db, OWNER_ACCOUNT, "alice", "x");
+    registerAgent(db, OWNER_ACCOUNT, "bob", "x");
+    const res = await add({ url: r.url, on: "agent:*", body: '{"id":"{{delivery}}","to":"{{agent}}"}' });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ on: "agent:*", fixedBody: true });
+    registerAgent(db, OWNER_ACCOUNT, "carol", "x");
+    sendMessage(db, OWNER_ACCOUNT, "alice", "bob", "hi");
+    sendMessage(db, OWNER_ACCOUNT, "alice", "carol", "hi");
+    expect(await sendPending(db)).toEqual({ delivered: 2, failed: 0 });
+    expect(r.got.map((g) => JSON.parse(g.body).to)).toEqual(["bob", "carol"]);
+    const refused = await add({ url: r.url, on: "#general", body: '{"id":"{{delivery}}","to":"{{agent}}"}' });
+    expect(refused.status).toBe(400);
+    expect(await refused.text()).toContain("{{agent}} is only for --on agent:<agent> or agent:*");
+    expect(listWebhooks(db, "owner")).toHaveLength(1);
+  });
+
   it("answers 400 with addWebhook's refusal, never repeating the URL or header value, and adds nothing", async () => {
     hooks();
     const before = snapshot();
@@ -248,7 +266,7 @@ describe("POST /api/webhooks", () => {
       [{ url: "https://h/?x=/o/", on: "#general" }, "--url must not carry a username, password, query or fragment."],
       [{ url: "https://h/#/o/", on: "#general" }, "--url must not carry a username, password, query or fragment."],
       [{ url: "https://user:pw@h/", on: "#general" }, "--url must not carry a username, password, query or fragment."],
-      [{ url: "https://h/", on: "general" }, "Invalid --on: use #<channel>, mention:<agent> or agent:<agent>, names of 1-32 letters, digits, '-' and '_'."],
+      [{ url: "https://h/", on: "general" }, "Invalid --on: use #<channel>, mention:<agent>, agent:<agent> or agent:*, names of 1-32 letters, digits, '-' and '_'."],
       [{ url: "https://h/", on: "agent:all" }, "Invalid --on: 'all' is reserved and names no agent."],
       [{ url: "https://h/", on: "#general", header: "no colon header-value" }, "Invalid header: give one line '<Name>: <value>'."],
       [{ url: "https://h/", on: "#general", header: "Host: header-value" }, "Invalid header: message-cp controls Host itself; choose another header."],

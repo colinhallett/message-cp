@@ -73,6 +73,17 @@ export function validateBody(body: string, kind = "Message"): void {
 }
 
 /**
+ * Queues a stored message for every `agent:<recipient>` webhook of the account and, unless the recipient is a person,
+ * every `agent:*` one (stored with the name `*`), held for the recipient while it is waiting for mail (`markWaiting`),
+ * so `sendPending` leaves it to the waiting agent. Both are found through `webhooks_by_name`. Parameters: the message id,
+ * the time now, the recipient's id, the time now again, the account, the recipient's name and its `person` flag.
+ */
+export const QUEUE_MESSAGE_SQL = `INSERT INTO webhook_deliveries (webhook_id, message_id, created_at, held_for)
+  SELECT id, ?, ?, (SELECT a.id FROM agents a WHERE a.id = ? AND a.waiting_until > ?)
+  FROM webhooks WHERE account_id = ? AND event = 'agent' AND name COLLATE NOCASE IN (?, CASE WHEN ? = 0 THEN '*' END)
+  ORDER BY id`;
+
+/**
  * Stores one delivery per recipient: the named agent, or for `all` every agent of the account registered right now
  * except the sender. Read state therefore belongs to each recipient. A message belongs to its recipient's account,
  * which is always the sender's. `own` is the sending agent's registration, whose status line the send clears; a
@@ -106,33 +117,27 @@ export function sendMessage(
             .get(inReplyTo, account, own.id, own.registeredAt, own.instance);
         if (!answered) throw new ToolError(`No message ${inReplyTo} was sent to you.`);
       }
-      let recipients: { id: number; name: string }[];
+      let recipients: { id: number; name: string; person: number }[];
       if (broadcast) {
         recipients = db
-          .prepare("SELECT id, name FROM agents WHERE account_id = ? AND name <> ? AND removed_at IS NULL ORDER BY name")
+          .prepare("SELECT id, name, person FROM agents WHERE account_id = ? AND name <> ? AND removed_at IS NULL ORDER BY name")
           .all(account, from) as typeof recipients;
       } else {
         const agent = getAgent(db, account, to);
         if (!agent) throw new ToolError(`No agent named '${to}'.`);
         recipients = db
-          .prepare("SELECT id, name FROM agents WHERE account_id = ? AND name = ? AND removed_at IS NULL")
+          .prepare("SELECT id, name, person FROM agents WHERE account_id = ? AND name = ? AND removed_at IS NULL")
           .all(account, agent.name) as typeof recipients;
       }
       const insert = db.prepare(
         "INSERT INTO messages (recipient_id, sender, body, broadcast, created_at, in_reply_to) VALUES (?, ?, ?, ?, ?, ?)",
       );
-      // Each recipient's row is owed to every `agent:<recipient>` webhook of the account, held for the recipient while
-      // it is waiting for mail (`markWaiting`), so `sendPending` leaves it to the waiting agent.
-      const queue = db.prepare(
-        `INSERT INTO webhook_deliveries (webhook_id, message_id, created_at, held_for)
-         SELECT id, ?, ?, (SELECT a.id FROM agents a WHERE a.id = ? AND a.waiting_until > ?)
-         FROM webhooks WHERE account_id = ? AND event = 'agent' AND name = ? COLLATE NOCASE ORDER BY id`,
-      );
+      const queue = db.prepare(QUEUE_MESSAGE_SQL);
       const now = Date.now();
       const stored: SendResult["messages"] = [];
       for (const r of recipients) {
         const id = insert.run(r.id, from, body, broadcast ? 1 : 0, now, inReplyTo ?? null).lastInsertRowid;
-        queue.run(id, now, r.id, now, account, r.name);
+        queue.run(id, now, r.id, now, account, r.name, r.person);
         stored.push({ id: Number(id), to: r.name });
       }
       // Sending clears the sender's status line, on its own registration only, so a send from a session whose agent was
