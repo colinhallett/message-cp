@@ -82,6 +82,7 @@ function tokens() {
 interface TokenJson {
   id: number;
   kind: string;
+  registers?: true;
   createdAt: string;
   lastUsedAt: string | null;
 }
@@ -107,8 +108,8 @@ describe("GET /api/tokens", () => {
       { id: made.registering.id, kind: "agent", registers: true, client: { name: "Claude", host: "claude.ai" } },
     ]);
     // The kinds agree with `token list`.
-    const cli = new Map(listTokens(db).map((t) => [t.id, t.kind]));
-    for (const t of body) expect(t.kind).toBe(cli.get(t.id));
+    const cli = new Map(listTokens(db).map((t) => [t.id, t]));
+    for (const t of body) expect([t.kind, t.registers]).toEqual([cli.get(t.id)!.kind, cli.get(t.id)!.registers]);
     const all = [ana, made.full, made.readOnly, made.agentOnly, made.bound, made.registering, made.theirs, made.theirPerson, friendFull, revoked].map((t) =>
       typeof t === "string" ? t : t.token,
     );

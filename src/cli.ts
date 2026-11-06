@@ -17,7 +17,7 @@ import { WebhookError, addWebhook, formatOn, listWebhooks, removeWebhook, webhoo
 const USAGE = {
   serve: "message-cp serve [--host <address>] [--port <port>] [--public-url <url>]",
   wait: "message-cp wait <name>",
-  account: "message-cp account add <name> | message-cp account list | message-cp token add <account> [--read-only | --agent-only | --person <name>] | message-cp token list | message-cp token revoke <token id>",
+  account: "message-cp account add <name> | message-cp account list | message-cp token add <account> [--read-only | --agent-only | --registers | --person <name>] | message-cp token list | message-cp token revoke <token id>",
   webhook: "message-cp webhook add --url <url> --on <#channel | mention:<agent> | agent:<agent> | agent:*> [--account <name>] [--no-text] [--header-stdin] [--max-per-hour <n>] [--body <json>] | message-cp webhook list [--account <name>] | message-cp webhook remove <webhook id>",
   person:
     "message-cp person add <name> [--account <name>] [--admin] | message-cp person admin <name> [--off] [--account <name>] | message-cp person remove <name> [--account <name>] | message-cp person list [--account <name>]",
@@ -114,16 +114,19 @@ if (command === "serve") {
   };
   const [action, arg, extra, ...more] = rest;
   // Only `token add <account>` takes a flag: --read-only, for a token that can only read, --agent-only, for one that
-  // cannot act as a person, or --person <name>, for one that sends and posts only as that person.
+  // cannot act as a person, --registers, for an agent token bound to no agent that registers its own agents, as an
+  // approval with "This client registers its own agents" issues, or --person <name>, for one that sends and posts only
+  // as that person.
   const tokenAdd = command === "token" && action === "add";
   const readOnly = tokenAdd && extra === "--read-only";
-  const agentOnly = tokenAdd && extra === "--agent-only";
+  const registers = tokenAdd && extra === "--registers";
+  const agentOnly = tokenAdd && (extra === "--agent-only" || registers);
   const person = tokenAdd && extra === "--person" ? more.shift() : undefined;
   if ((extra !== undefined && !readOnly && !agentOnly && (person === undefined || person.startsWith("--"))) || more.length > 0) usage();
   const db = openDb();
   const printToken = (t: NewToken) => {
     const kind = t.readOnly ? "read-only token" : t.agentOnly ? "agent token" : t.person ? "person token" : "token";
-    const as = t.person ? `, sending and posting only as '${t.person}'` : "";
+    const as = t.person ? `, sending and posting only as '${t.person}'` : t.registers ? ", which registers its own agents" : "";
     console.error(`message-cp: ${kind} ${t.id} for account '${t.account}'${as}. It is shown only now; keep it.`);
     console.log(t.token);
   };
@@ -134,14 +137,15 @@ if (command === "serve") {
         console.log(`${a.name}\tcreated ${a.createdAt}\ttokens: ${a.tokenIds.length ? a.tokenIds.join(", ") : "none"}`);
       }
     } else if (command === "token" && action === "add" && arg && !arg.startsWith("--")) {
-      printToken(addToken(db, arg, readOnly, agentOnly, undefined, person));
+      printToken(addToken(db, arg, readOnly, agentOnly, undefined, person, registers));
     } else if (command === "token" && action === "list" && arg === undefined) {
       for (const t of listTokens(db)) {
         // An OAuth token's client goes after its kind: its name, else its metadata host, so the operator can tell which to
         // revoke. The client chose its name, so control and format characters (a tab, a newline, an escape) are replaced.
         const client = t.client ? `\tclient ${(t.client.name ?? t.client.host ?? "(unnamed)").replace(/[\p{Cc}\p{Cf}]/gu, "\uFFFD")}` : "";
         const used = t.lastUsedAt === null ? "never used" : `last used ${t.lastUsedAt}`;
-        console.log(`${t.id}\t${t.account}\t${t.kind}${client}\tcreated ${t.createdAt}\t${used}`);
+        const own = t.registers ? "\tregisters its own agents" : "";
+        console.log(`${t.id}\t${t.account}\t${t.kind}${own}${client}\tcreated ${t.createdAt}\t${used}`);
       }
     } else if (command === "token" && action === "revoke" && arg) {
       const id = Number(arg);
