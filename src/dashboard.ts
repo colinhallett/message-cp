@@ -6,8 +6,8 @@ import { MAX_BODY_LENGTH } from "./messages.js";
 
 // The page served at GET / by `message-cp serve`. It holds no data and no token: it asks for a token, or redeems the
 // one-time code a `message-cp login-link` link carries in its fragment for a sign-in session with POST /api/login, keeps
-// the token or session in sessionStorage (that tab only), with any others "Add a token" saved there under the reader's
-// names to switch between, signs the browser in to the approval page with POST
+// the token or session in sessionStorage (that tab only), with any others "Add a token" saved there under names to
+// switch between, signs the browser in to the approval page with POST
 // oauth/signin for a full or person token under an https public URL (and out with DELETE on "Forget token", which also signs out its other dashboard tabs),
 // and polls GET /api/agents, GET /api/channels, GET /api/messages and, while one is
 // open, a channel's GET /api/channel-posts, the account's GET /api/webhook-deliveries, its GET /api/approvals or, for
@@ -363,8 +363,9 @@ const SCRIPT = `
 "use strict";
 const KEY = "message-cp-token";
 // The tokens this tab keeps signed in besides, once "Add a token" has been used: a JSON list of { name, token, refused },
-// name being the reader's own label for it, never one the server gives. It lives in sessionStorage, like KEY, which
-// still holds the one every request uses. With a single token it is not written, so the page is as it was before.
+// name being the reader's label for it or, left blank, its person or kind as GET /api/token said; the server never
+// says which account a token is for. It lives in sessionStorage, like KEY, which still holds the one every request
+// uses. With a single token it is not written, so the page is as it was before.
 const SAVED = "message-cp-tokens";
 const REFUSED = "The server refused that token. Enter another.";
 const PAGE = 200;
@@ -610,6 +611,7 @@ function signout() {
 // Forgets this tab's token and, unless clear is false, clears the sign-in cookie; if the server does not confirm that,
 // says so on the token form with a button to try again, while the token form is still showing and no newer token has
 // been entered.
+const UNCONFIRMED = "The server did not confirm signing this browser out of the page that approves clients, so it may still approve until the browser closes.";
 function forget(clear = true) {
   keepTokens([]);
   ask();
@@ -618,7 +620,7 @@ function forget(clear = true) {
   if (!clear) return;
   signout().then((ok) => {
     if (ok || gen !== tokenGeneration || form.hidden) return;
-    say("The server did not confirm signing this browser out of the page that approves clients, so it may still approve until the browser closes.", true);
+    say(UNCONFIRMED, true);
     signoutRetry.hidden = false;
   });
 }
@@ -841,13 +843,13 @@ function cancel() {
 function ask(message) {
   const held = sessionStorage.getItem(KEY);
   sessionStorage.removeItem(KEY);
-  // A refused token stays saved, marked, so the switcher says so and offers it no more until it is entered again; an
-  // agent token, which never works here, is dropped. A list left with one refused token keeps nothing.
+  // A refused token stays saved, marked, so the switcher says so and offers it no more until it is entered again or
+  // forgotten; an agent token, which never works here, is dropped.
   if (held && (message === REFUSED || message === AGENT_TOKEN)) {
     let list = savedTokens();
     if (message === AGENT_TOKEN) list = list.filter((t) => t.token !== held);
     else for (const t of list) if (t.token === held) t.refused = true;
-    keepTokens(list.length === 1 && list[0].refused ? [] : list);
+    keepTokens(list);
   }
   cancel();
   // Forget whether the last token could post, its person, and who the page posted as, so the next token starts
@@ -1052,6 +1054,7 @@ addButton.addEventListener("click", () => {
 tokenPick.addEventListener("change", () => {
   const chosen = savedTokens()[Number(tokenPick.value)];
   if (chosen && !chosen.refused && chosen.token !== sessionStorage.getItem(KEY)) switchTo(chosen.token);
+  else showTokens();
 });
 
 // Signing out forgets this tab's token, clears the approval page's sign-in cookie for the whole browser once any sign-in
@@ -1059,16 +1062,21 @@ tokenPick.addEventListener("change", () => {
 // there is no oauth/signin, and the DELETE gets 404, which changes nothing.
 // With other tokens saved, it forgets only this one, removing it and its name from SAVED, clears the cookie the same way
 // (a full or person token it moves to signs in again) and moves to the first saved token not refused, or to the token
-// form with the saved ones listed; other tabs are told nothing.
+// form with the saved ones listed; other tabs are told nothing. If the server does not confirm the clearing, it says so
+// while the token it moved to is still the one in use, without forget()'s "Sign out again", which would forget them all.
 forgetButton.addEventListener("click", () => {
   const held = sessionStorage.getItem(KEY);
   const rest = savedTokens().filter((t) => t.token !== held);
   if (rest.length > 0) {
-    keepTokens(rest.length === 1 && rest[0].refused ? [] : rest);
-    signout();
+    keepTokens(rest);
+    const cleared = signout();
     const next = rest.find((t) => !t.refused);
     if (next) switchTo(next.token);
     else ask();
+    const gen = tokenGeneration;
+    cleared.then((ok) => {
+      if (!ok && gen === tokenGeneration) say(UNCONFIRMED, true);
+    });
     return;
   }
   forget();
