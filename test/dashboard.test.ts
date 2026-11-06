@@ -580,6 +580,8 @@ describe("the page's channels and messages", () => {
   });
 
   describe("several saved tokens", () => {
+    const UNCONFIRMED_SIGNOUT =
+      "The server did not confirm signing this browser out of the page that approves clients, so it may still approve until the browser closes.";
     // Two accounts with the same agent names and their own messages, a person token for owner's colin and a read-only
     // token for the other account.
     function twoAccounts() {
@@ -729,6 +731,44 @@ describe("the page's channels and messages", () => {
       expect(page.store.size).toBe(0);
       expect(page.elements["login"].hidden).toBe(false);
       expect(page.elements["token-name"].hidden).toBe(true);
+    });
+
+    it("keeps saying an unconfirmed sign-out after Forget this one across polls, and signs out again keeping the other token", async () => {
+      const { colin, otherReader } = twoAccounts();
+      let refuse = true;
+      const methods: string[] = [];
+      const page = await load(otherReader, undefined, {
+        fetch: async (url: string, init: RequestInit) => {
+          if (url !== "oauth/signin") return fetch(`${base()}${url}`, init);
+          methods.push(init.method ?? "GET");
+          return new Response(null, { status: init.method === "DELETE" && refuse ? 503 : 204 });
+        },
+      });
+      const signins = () => methods;
+      await page.until(() => names(page).join() === "yan,zed");
+      add(page, colin, "colin");
+      await page.until(() => names(page).length === 3 && signins().includes("POST"));
+      // Forgetting the person token moves to the read-only one; neither its DELETE nor the read-only token's is confirmed.
+      page.elements["forget"].on.click();
+      await page.until(() => page.elements["signout-retry"].hidden === false);
+      await page.until(() => names(page).join() === "yan,zed" && page.scheduled());
+      await page.poll();
+      await page.until(page.scheduled);
+      expect(page.elements["status-line"].textContent).toBe(UNCONFIRMED_SIGNOUT);
+      expect(page.elements["signout-retry"].hidden).toBe(false);
+      refuse = false;
+      const before = signins().length;
+      page.elements["signout-retry"].on.click();
+      await page.until(() => signins().length === before + 1);
+      await page.until(() => page.elements["signout-retry"].hidden === true);
+      expect(signins().at(-1)).toBe("DELETE");
+      expect(page.elements["status-line"].textContent).toBe("");
+      // The retry forgot nothing: the read-only token is still in use and saved.
+      expect(page.store.get("message-cp-token")).toBe(otherReader);
+      expect(saved(page).map((t: { token: string }) => t.token)).toEqual([otherReader]);
+      await page.poll();
+      await page.until(page.scheduled);
+      expect(page.elements["status-line"].textContent).toBe("");
     });
 
     it("marks a token the server refuses and offers it no more until it is entered again, leaving the others", async () => {

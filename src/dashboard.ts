@@ -593,7 +593,9 @@ function signin(init) {
   return fetch("oauth/signin", { ...init, cache: "no-store", credentials: "same-origin", referrerPolicy: "no-referrer", signal: ac.signal }).then(
     (res) => {
       clearTimeout(deadline);
-      return res.ok || res.status === 404;
+      const ok = res.ok || res.status === 404;
+      if (ok) settleSignout();
+      return ok;
     },
     () => {
       clearTimeout(deadline);
@@ -612,7 +614,23 @@ function signout() {
 // says so on the token form with a button to try again, while the token form is still showing and no newer token has
 // been entered.
 const UNCONFIRMED = "The server did not confirm signing this browser out of the page that approves clients, so it may still approve until the browser closes.";
+// Whether the sign-in cookie may still be a token's that "Forget this one" forgot: its DELETE was not confirmed, and no
+// request to oauth/signin has been confirmed since, which would have cleared or replaced the cookie. While it is, a poll
+// that would clear the status line says UNCONFIRMED instead, and "Sign out again" clears the cookie again without
+// forgetting the saved tokens. forget() ends it, as it sends its own DELETE and says so itself, and bumps forgetAlls, so
+// an earlier "Forget this one" answered after it does not start it again.
+let unconfirmed = false;
+let forgetAlls = 0;
+function settleSignout() {
+  if (!unconfirmed) return;
+  unconfirmed = false;
+  signoutRetry.hidden = true;
+  const text = statusLine.textContent;
+  if (text.endsWith(UNCONFIRMED)) say(text.slice(0, -UNCONFIRMED.length).trim(), statusLine.className === "error" && text !== UNCONFIRMED);
+}
 function forget(clear = true) {
+  unconfirmed = false;
+  forgetAlls++;
   keepTokens([]);
   ask();
   const gen = tokenGeneration;
@@ -934,7 +952,7 @@ function ask(message) {
   searchText.value = "";
   view.hidden = true;
   panel("");
-  say(message || "", true);
+  say(unconfirmed ? (message ? message + " " : "") + UNCONFIRMED : message || "", true);
   form.hidden = false;
   input.value = "";
   nameInput.value = "";
@@ -1062,8 +1080,8 @@ tokenPick.addEventListener("change", () => {
 // there is no oauth/signin, and the DELETE gets 404, which changes nothing.
 // With other tokens saved, it forgets only this one, removing it and its name from SAVED, clears the cookie the same way
 // (a full or person token it moves to signs in again) and moves to the first saved token not refused, or to the token
-// form with the saved ones listed; other tabs are told nothing. If the server does not confirm the clearing, it says so
-// while the token it moved to is still the one in use, without forget()'s "Sign out again", which would forget them all.
+// form with the saved ones listed; other tabs are told nothing. If the server does not confirm the clearing, it says so,
+// and keeps saying so across polls and switches, with "Sign out again" clearing only the cookie (see unconfirmed).
 forgetButton.addEventListener("click", () => {
   const held = sessionStorage.getItem(KEY);
   const rest = savedTokens().filter((t) => t.token !== held);
@@ -1073,16 +1091,25 @@ forgetButton.addEventListener("click", () => {
     const next = rest.find((t) => !t.refused);
     if (next) switchTo(next.token);
     else ask();
-    const gen = tokenGeneration;
+    const all = forgetAlls;
     cleared.then((ok) => {
-      if (!ok && gen === tokenGeneration) say(UNCONFIRMED, true);
+      if (ok || all !== forgetAlls) return;
+      unconfirmed = true;
+      signoutRetry.hidden = false;
+      say(UNCONFIRMED, true);
     });
     return;
   }
   forget();
   if (signouts) signouts.postMessage("signout");
 });
-signoutRetry.addEventListener("click", () => forget());
+signoutRetry.addEventListener("click", () => {
+  if (!unconfirmed) return forget();
+  signoutRetry.hidden = true;
+  signout().then((ok) => {
+    if (!ok && unconfirmed) signoutRetry.hidden = false;
+  });
+});
 // Another tab signed out: forget this tab's token too. A sign-in this tab sent that is still unanswered could set the
 // cookie again after the other tab's DELETE, so this tab clears it again once its own requests are answered, and says
 // so if the server does not confirm it, as its own "Forget token" does.
@@ -2783,7 +2810,7 @@ async function search(text) {
 
 function start() {
   cancel();
-  signoutRetry.hidden = true;
+  signoutRetry.hidden = !unconfirmed;
   form.hidden = true;
   view.hidden = false;
   showTokens();
@@ -4127,7 +4154,8 @@ async function poll(gen) {
   if (gen !== generation) return;
   if (result.status === 401) return ask(REFUSED);
   if (result.ok) {
-    say("", false);
+    if (unconfirmed) say(UNCONFIRMED, true);
+    else say("", false);
   } else if (result.status === 403) {
     say("This token cannot read agents, channels or messages (403). Retrying…", true);
   } else if (result.status === 503) {
