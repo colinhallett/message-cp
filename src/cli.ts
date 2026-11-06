@@ -114,9 +114,9 @@ if (command === "serve") {
   };
   const [action, arg, extra, ...more] = rest;
   // Only `token add <account>` takes a flag: --read-only, for a token that can only read, --agent-only, for one that
-  // cannot act as a person, --registers, for an agent token bound to no agent that registers its own agents, as an
-  // approval with "This client registers its own agents" issues, or --person <name>, for one that sends and posts only
-  // as that person.
+  // cannot act as a person, --registers, for an agent token bound to no agent that registers its own agents as one an
+  // approval with "This client registers its own agents" issues does (with no client, so no listen token or approval),
+  // or --person <name>, for one that sends and posts only as that person.
   const tokenAdd = command === "token" && action === "add";
   const readOnly = tokenAdd && extra === "--read-only";
   const registers = tokenAdd && extra === "--registers";
