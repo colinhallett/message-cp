@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { addAccount, addToken, listAccounts, revokeToken } from "../src/accounts.js";
-import { STATUS_TTL_MS, addPerson, identityOf, registerAgent, removeAgent, removePerson, setStatus } from "../src/agents.js";
+import { REGISTERS_NO_KEY, STATUS_TTL_MS, addPerson, identityOf, registerAgent, removeAgent, removePerson, setStatus } from "../src/agents.js";
 import { joinChannel, leaveChannel, post, readChannel, type Member } from "../src/channels.js";
 import { OWNER_ACCOUNT, openDb, type AccountId, type Db } from "../src/db.js";
 import { startHttp, type HttpServer } from "../src/http.js";
@@ -412,7 +412,7 @@ describe("message-cp token add", () => {
     ]) {
       const res = cli(...args);
       expect(res.status).toBe(2);
-      expect(res.stderr).toContain("[--read-only | --agent-only | --person <name>]");
+      expect(res.stderr).toContain("[--read-only | --agent-only | --registers | --person <name>]");
     }
   }, 30_000);
 
@@ -445,7 +445,7 @@ describe("message-cp token add", () => {
       const res = cli(...args);
       expect(res.status, args.join(" ")).toBe(2);
       expect(res.stdout).toBe("");
-      expect(res.stderr).toContain("[--read-only | --agent-only | --person <name>]");
+      expect(res.stderr).toContain("[--read-only | --agent-only | --registers | --person <name>]");
     }
     expect(tokens()).toBe(before);
     expect(listAccounts(db).map((a) => a.name)).toEqual(["owner", "friend"]);
@@ -502,8 +502,121 @@ describe("message-cp token add", () => {
       const res = cli(...args);
       expect(res.status, args.join(" ")).toBe(2);
       expect(res.stdout).toBe("");
-      expect(res.stderr).toContain("[--read-only | --agent-only | --person <name>]");
+      expect(res.stderr).toContain("[--read-only | --agent-only | --registers | --person <name>]");
     }
+    expect(tokens()).toBe(before);
+  }, 60_000);
+});
+
+describe("message-cp token add --registers", () => {
+  const root = resolve(import.meta.dirname, "..");
+  const cli = (...args: string[]) =>
+    spawnSync(join(root, "node_modules/.bin/tsx"), [join(root, "src/cli.ts"), ...args], {
+      env: { ...process.env, MESSAGE_CP_DB: dbFile },
+      encoding: "utf8",
+    });
+  const clients: Client[] = [];
+  afterEach(async () => {
+    await Promise.all(clients.splice(0).map((c) => c.close().catch(() => {})));
+  });
+  const open = async (token: string) => {
+    const client = new Client({ name: "test", version: "0" });
+    await client.connect(new StreamableHTTPClientTransport(new URL(`${base()}/mcp`), { requestInit: { headers: auth(token) } }));
+    clients.push(client);
+    return client;
+  };
+  const call = async (client: Client, name: string, args: Record<string, unknown>) => {
+    const res = (await client.callTool({ name, arguments: args })) as { isError?: boolean; content: { text: string }[] };
+    return { isError: !!res.isError, text: res.content[0]!.text };
+  };
+
+  it("prints an agent token bound to no agent that registers its own agents, stored as an approval stores one", async () => {
+    const res = cli("token", "add", "friend", "--registers");
+    expect(res.status).toBe(0);
+    const token = res.stdout.trim();
+    expect(token).toMatch(/^[0-9a-f]{64}$/);
+    const id = db.prepare("SELECT max(id) FROM tokens").pluck().get() as number;
+    expect(res.stderr).toBe(`message-cp: agent token ${id} for account 'friend', which registers its own agents. It is shown only now; keep it.\n`);
+    expect(db.prepare("SELECT account_id, read_only, agent_only, agent_id, person_id, registers FROM tokens WHERE id = ?").get(id)).toEqual({
+      account_id: friend,
+      read_only: 1,
+      agent_only: 1,
+      agent_id: null,
+      person_id: null,
+      registers: 1,
+    });
+    expect((await agents(token)).status).toBe(403);
+    // The dashboard's "Tokens" view lists it from GET /api/tokens as one that registers its own agents.
+    addPerson(db, "friend", "ana", true);
+    const ana = addToken(db, "friend", false, false, undefined, "ana").token;
+    const listed = (await (await fetch(`${base()}/api/tokens`, { headers: auth(ana) })).json()) as { id: number }[];
+    expect(listed.find((t) => t.id === id)).toMatchObject({ id, kind: "agent", registers: true });
+    expect(listed.find((t) => t.id === id)).not.toHaveProperty("client");
+  }, 30_000);
+
+  it("registers a new name with no key, takes it back in a new session, refuses others' names and a key, and revoke ends its agents", async () => {
+    const token = cli("token", "add", "friend", "--registers").stdout.trim();
+    const id = db.prepare("SELECT max(id) FROM tokens").pluck().get() as number;
+    registerAgent(db, friend, "theirs", "x");
+    registerAgent(db, OWNER_ACCOUNT, "elsewhere", "x");
+    const first = await call(await open(token), "register", { name: "a", bio: "one" });
+    expect(first.isError).toBe(false);
+    expect(JSON.parse(first.text)).not.toHaveProperty("key");
+    const a = identityOf(db, friend, "a")!;
+    await clients.pop()!.close();
+    const session = await open(token);
+    const again = await call(session, "register", { name: "a", bio: "back" });
+    expect(again.isError).toBe(false);
+    expect(JSON.parse(again.text)).toMatchObject({ name: "a", bio: "back" });
+    expect(identityOf(db, friend, "a")).toEqual(a);
+    expect(await call(session, "register", { name: "theirs", bio: "x" })).toEqual({
+      isError: true,
+      text: "Agent 'theirs' is already registered. This token registers only new names and takes back only agents it registered.",
+    });
+    expect(await call(session, "register", { name: "b", bio: "x", key: "mine" })).toEqual({ isError: true, text: REGISTERS_NO_KEY });
+    expect(identityOf(db, friend, "b")).toBeUndefined();
+    // Its own account only: a name another account holds is a new name here, and that account's agent is left alone.
+    expect((await call(session, "register", { name: "elsewhere", bio: "x" })).isError).toBe(false);
+    expect(db.prepare("SELECT account_id, token_id FROM agents WHERE name = 'elsewhere' ORDER BY account_id").all()).toEqual([
+      { account_id: OWNER_ACCOUNT, token_id: null },
+      { account_id: friend, token_id: id },
+    ]);
+
+    const list = cli("token", "list");
+    expect(list.stdout.split("\n").find((l) => l.startsWith(`${id}\t`))).toMatch(new RegExp(`^${id}\tfriend\tagent\tregisters its own agents\tcreated \\S+\tlast used \\S+$`));
+    const revoked = cli("token", "revoke", String(id));
+    expect(revoked.status).toBe(0);
+    expect(revoked.stderr).toBe(`message-cp: revoked token ${id} of account 'friend'. Ended the agents it registered: a, elsewhere.\n`);
+    expect(identityOf(db, friend, "a")).toBeUndefined();
+    expect(identityOf(db, friend, "theirs")).toBeDefined();
+    expect(identityOf(db, OWNER_ACCOUNT, "elsewhere")).toBeDefined();
+  }, 30_000);
+
+  it("refuses --registers with another flag or anywhere but after token add <account>, and makes nothing", () => {
+    addPerson(db, "friend", "maria");
+    const tokens = () => db.prepare("SELECT COUNT(*) FROM tokens").pluck().get();
+    const before = tokens();
+    for (const args of [
+      ["token", "add", "friend", "--registers", "--read-only"],
+      ["token", "add", "friend", "--read-only", "--registers"],
+      ["token", "add", "friend", "--registers", "--agent-only"],
+      ["token", "add", "friend", "--agent-only", "--registers"],
+      ["token", "add", "friend", "--registers", "--person", "maria"],
+      ["token", "add", "friend", "--person", "maria", "--registers"],
+      ["token", "add", "friend", "--person", "--registers"],
+      ["token", "add", "friend", "--registers", "--registers"],
+      ["token", "add", "--registers"],
+      ["token", "add", "--registers", "friend"],
+      ["account", "add", "x", "--registers"],
+      ["token", "list", "--registers"],
+      ["token", "revoke", "1", "--registers"],
+    ]) {
+      const res = cli(...args);
+      expect(res.status, args.join(" ")).toBe(2);
+      expect(res.stdout).toBe("");
+      expect(res.stderr).toContain("[--read-only | --agent-only | --registers | --person <name>]");
+    }
+    expect(cli("token", "add", "nobody", "--registers").status).toBe(1);
     expect(tokens()).toBe(before);
   }, 60_000);
 });

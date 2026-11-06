@@ -23,6 +23,8 @@ export interface NewToken {
   agentOnly: boolean;
   /** For a person token, the stored name of the person it sends and posts as. */
   person?: string;
+  /** For an agent token bound to no agent that registers its own agents. */
+  registers?: true;
 }
 
 /**
@@ -86,6 +88,8 @@ export interface TokenInfo {
   id: number;
   account: string;
   kind: "full" | "read-only" | "agent" | "person";
+  /** For an agent token that registers its own agents. */
+  registers?: true;
   /** For a token the OAuth code exchange issued, the client it was issued to, as `exchangeCode` recorded it. */
   client?: ApprovedClient;
   createdAt: string;
@@ -148,7 +152,7 @@ export function issueToken(
     .get(account, hashToken(token), Date.now(), readOnly || agentOnly || person ? 1 : 0, agentOnly ? 1 : 0, agent ?? null, person?.id ?? null, registers ? 1 : 0) as {
     id: number;
   };
-  return { id, token, readOnly, agentOnly, ...(person && { person: person.name }) };
+  return { id, token, readOnly, agentOnly, ...(person && { person: person.name }), ...(registers && { registers: true as const }) };
 }
 
 /** Creates the account `name` (unique in any case) with its first token. */
@@ -210,8 +214,8 @@ export const addToken = (
 export function listTokens(db: Db): TokenInfo[] {
   const rows = db
     .prepare(
-      `SELECT tokens.id, accounts.name, tokens.read_only, tokens.agent_only, tokens.person_id, tokens.created_at,
-         tokens.oauth, tokens.client_name, tokens.client_host, tokens.last_used_at
+      `SELECT tokens.id, accounts.name, tokens.read_only, tokens.agent_only, tokens.agent_id, tokens.person_id, tokens.registers,
+         tokens.created_at, tokens.oauth, tokens.client_name, tokens.client_host, tokens.last_used_at
        FROM tokens JOIN accounts ON accounts.id = tokens.account_id WHERE tokens.revoked_at IS NULL ORDER BY tokens.id`,
     )
     .all() as {
@@ -219,7 +223,9 @@ export function listTokens(db: Db): TokenInfo[] {
     name: string;
     read_only: number;
     agent_only: number;
+    agent_id: number | null;
     person_id: number | null;
+    registers: number;
     created_at: number;
     oauth: number | null;
     client_name: string | null;
@@ -231,6 +237,8 @@ export function listTokens(db: Db): TokenInfo[] {
     account: r.name,
     // A person token's row has read_only set too (see `issueToken`), so its person comes first.
     kind: r.person_id !== null ? "person" : r.agent_only === 1 ? "agent" : r.read_only === 1 ? "read-only" : "full",
+    // Only in the shape `accountForToken` accepts as registering, as `listTokensBy` in login.ts gives it.
+    ...(r.registers === 1 && r.agent_only === 1 && r.agent_id === null && { registers: true as const }),
     ...(r.oauth === 1 && { client: { name: r.client_name, host: r.client_host } }),
     createdAt: new Date(r.created_at).toISOString(),
     lastUsedAt: r.last_used_at === null ? null : new Date(r.last_used_at).toISOString(),

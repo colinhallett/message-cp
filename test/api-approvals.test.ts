@@ -561,12 +561,13 @@ describe("message-cp token list", () => {
       encoding: "utf8",
     });
 
-  it("shows an OAuth token's client after its kind, its host for a nameless one, and leaves every other line as it was", async () => {
+  it("shows an OAuth token's client after its kind, its host for a nameless one, marks one that registers its own agents, and leaves every other line as it was", async () => {
     const named = await connectClient(ownerFull, "desk", { name: "Cursor\tIDE\n\u001b[31m" });
     const nameless = await connectClient(ownerFull, "bare");
     const claude = await connectClient(ownerFull, "claude", { metadata: true });
     db.prepare("UPDATE tokens SET client_name = NULL WHERE id = ?").run(claude.id);
     const agent = addToken(db, "owner", false, true);
+    const codex = await connectClient(ownerFull, null, { name: "Codex" });
     const res = cli("token", "list");
     expect(res.status).toBe(0);
     const raw = res.stdout.trimEnd().split("\n");
@@ -581,9 +582,11 @@ describe("message-cp token list", () => {
       `${nameless.id}\towner\tagent\tclient (unnamed)\tcreated`,
       `${claude.id}\towner\tagent\tclient claude.ai\tcreated`,
       `${agent.id}\towner\tagent\tcreated`,
+      // One that registers its own agents says so after its kind, before its client.
+      `${codex.id}\towner\tagent\tregisters its own agents\tclient Codex\tcreated`,
     ]);
     const out = res.stdout + res.stderr;
-    for (const secret of [named.token, nameless.token, claude.token, agent.token]) expect(out).not.toContain(secret);
+    for (const secret of [named.token, nameless.token, claude.token, agent.token, codex.token]) expect(out).not.toContain(secret);
   }, 30_000);
 });
 

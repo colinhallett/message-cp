@@ -143,7 +143,7 @@ describe("approving a client that registers its own agents", () => {
     // read_only too, so a server from before `registers` takes it for an unbound agent token, never more.
     expect(row).toMatchObject({ account_id: OWNER_ACCOUNT, read_only: 1, agent_only: 1, agent_id: null, person_id: null, registers: 1, oauth: 1, client_name: "Codex" });
     expect(accountForToken(db, token, OWNER_TOKEN)).toEqual({ account: OWNER_ACCOUNT, readOnly: false, agentOnly: true, registers: row.id, approval: row.id });
-    expect(listTokens(db).find((t) => t.id === row.id)).toMatchObject({ kind: "agent", client: { name: "Codex", host: null } });
+    expect(listTokens(db).find((t) => t.id === row.id)).toMatchObject({ kind: "agent", registers: true, client: { name: "Codex", host: null } });
   });
 
   it("keeps a single-agent approval as it was: bound to its agent, not registering", async () => {
