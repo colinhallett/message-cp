@@ -694,7 +694,8 @@ describe("the page's channels and messages", () => {
       add(page, otherReader, "other");
       await page.until(() => names(page).join() === "yan,zed");
       pick(page, 0);
-      await page.until(() => names(page).length === 3);
+      // The switch's own reads have all answered once the next poll is scheduled; only then does colin's next poll hold.
+      await page.until(() => names(page).length === 3 && page.scheduled());
       // colin's next poll hangs until after the switch, then answers.
       hold = true;
       await page.poll();
