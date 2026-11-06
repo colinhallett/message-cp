@@ -151,9 +151,15 @@ describe("GET /", () => {
     const login = /<form id="login"[^>]*>([\s\S]*?)<\/form>/.exec(html)![1];
     expect(login.trim().split("\n")).toEqual([
       "<h1>message-cp</h1>",
+      '<label id="token-name-label" for="token-name" hidden>Name, shown in the switcher</label>',
+      '<input id="token-name" maxlength="40" autocomplete="off" placeholder="such as owner" hidden>',
       '<label for="token">Token</label>',
       '<input id="token" type="password" autocomplete="off" required>',
       '<button type="submit">Log in</button>',
+      '<div id="saved" hidden>',
+      "<h2>Saved tokens</h2>",
+      '<ul id="saved-rows"></ul>',
+      "</div>",
     ]);
     for (const words of ["token add", "--read-only", "--agent-only", "cookie", "Forget token"]) {
       expect(login).not.toContain(words);
@@ -571,6 +577,242 @@ describe("the page's channels and messages", () => {
     expect(page.scheduled()).toBe(false);
     expect(page.urls.length).toBe(asked);
     expect(db.prepare("SELECT body FROM messages").all()).toEqual([{ body: "private <b>note</b>" }]);
+  });
+
+  describe("several saved tokens", () => {
+    const UNCONFIRMED_SIGNOUT =
+      "The server did not confirm signing this browser out of the page that approves clients, so it may still approve until the browser closes.";
+    // Two accounts with the same agent names and their own messages, a person token for owner's colin and a read-only
+    // token for the other account.
+    function twoAccounts() {
+      addAccount(db, "other");
+      const other = listAccounts(db).find((a) => a.name === "other")!.id;
+      for (const name of ["alice", "bob"]) registerAgent(db, OWNER_ACCOUNT, name, "x");
+      registerAgent(db, other, "zed", "x");
+      registerAgent(db, other, "yan", "x");
+      addPerson(db, "owner", "colin");
+      sendMessage(db, OWNER_ACCOUNT, "alice", "bob", "owner's own");
+      sendMessage(db, other, "zed", "yan", "other's own");
+      post(db, other, { ...identityOf(db, other, "zed")!, name: "zed" }, "elsewhere", "other's channel");
+      const colin = addToken(db, "owner", false, false, undefined, "colin").token;
+      const reader = addToken(db, "other", true);
+      return { other, colin, otherReader: reader.token, otherReaderId: reader.id };
+    }
+    const names = (page: { elements: Record<string, Stub> }) => page.elements["rows"].children.map((row) => row.children[0].children[1]?.textContent);
+    const shown = (page: { elements: Record<string, Stub> }) =>
+      [page.elements["rows"], page.elements["channel-rows"], page.elements["pair-rows"], page.elements["post-rows"]].map((box) => JSON.stringify(box.children.map(text)));
+    const saved = (page: { store: Map<string, string> }) => JSON.parse(page.store.get("message-cp-tokens") ?? "null");
+    // Presses "Add a token", then enters a token under a name on the token form.
+    const add = (page: { elements: Record<string, Stub> }, token: string, name: string) => {
+      page.elements["add-token"].on.click();
+      page.elements["token-name"].value = name;
+      page.elements["token"].value = token;
+      page.elements["login"].on.submit({ preventDefault() {} } as never);
+    };
+    const pick = (page: { elements: Record<string, Stub> }, index: number) => {
+      page.elements["token-pick"].value = String(index);
+      page.elements["token-pick"].on.change();
+    };
+
+    it("with a single token shows no switcher and saves nothing beside the token, as before", async () => {
+      const { colin } = twoAccounts();
+      const page = await load(colin);
+      await page.until(() => page.elements["rows"].children.length === 3);
+      expect(page.elements["token-pick"].hidden).toBe(true);
+      expect(page.elements["add-token"].hidden).toBe(false);
+      expect(page.elements["forget"].textContent).toBe("Forget token");
+      expect([...page.store.keys()]).toEqual(["message-cp-token"]);
+    });
+
+    it("keeps a token for each account under its name and switches between them, showing only that account's data", async () => {
+      const { other, colin, otherReader } = twoAccounts();
+      const page = await load(colin);
+      await page.until(() => names(page).length === 3 && page.elements["new-message"].hidden === false);
+      // The token in use is picked up as the first saved one, named after its person.
+      page.elements["add-token"].on.click();
+      expect(saved(page)).toEqual([{ name: "colin", token: colin, refused: false }]);
+      expect(page.elements["login"].hidden).toBe(false);
+      expect(page.elements["token-name"].hidden).toBe(false);
+      expect(page.elements["saved-rows"].children.map((row) => row.children[0].textContent)).toEqual(["Use colin"]);
+      expect(shown(page)).toEqual(["[]", "[]", "[]", "[]"]);
+      page.elements["token-name"].value = "ember-reach-2";
+      page.elements["token"].value = otherReader;
+      page.elements["login"].on.submit({ preventDefault() {} } as never);
+      expect(saved(page)).toEqual([
+        { name: "colin", token: colin, refused: false },
+        { name: "ember-reach-2", token: otherReader, refused: false },
+      ]);
+      expect(page.store.get("message-cp-token")).toBe(otherReader);
+      await page.until(() => names(page).join() === "yan,zed" && page.elements["pair-rows"].children.length === 1);
+      const pickBox = page.elements["token-pick"];
+      expect(pickBox.hidden).toBe(false);
+      expect(pickBox.children.map((o) => [o.textContent, (o as unknown as { selected: boolean }).selected])).toEqual([
+        ["colin", false],
+        ["ember-reach-2", true],
+      ]);
+      expect(page.elements["forget"].textContent).toBe("Forget this one");
+      for (const box of shown(page)) expect(box).not.toContain("owner's own");
+
+      // A message sent in the account not on screen is there on switching to it.
+      sendMessage(db, OWNER_ACCOUNT, "bob", "alice", "while away");
+      pick(page, 0);
+      expect(page.store.get("message-cp-token")).toBe(colin);
+      // Nothing read with the other token is left on screen at the switch.
+      expect(shown(page)).toEqual(["[]", "[]", "[]", "[]"]);
+      await page.until(() => names(page).length === 3 && page.elements["pair-rows"].children.length === 1);
+      expect(names(page)).not.toContain("zed");
+      open(page.elements["pair-rows"].children[0]);
+      expect(entries(page.elements["post-rows"])).toEqual([
+        ["alice", "owner's own"],
+        ["bob", "while away"],
+      ]);
+      expect(page.elements["channel-rows"].children.map(text).join()).not.toContain("elsewhere");
+
+      sendMessage(db, other, "yan", "zed", "back here");
+      pick(page, 1);
+      await page.until(() => page.elements["pair-rows"].children.length === 1 && names(page).join() === "yan,zed");
+      open(page.elements["pair-rows"].children[0]);
+      expect(entries(page.elements["post-rows"])).toEqual([
+        ["zed", "other's own"],
+        ["yan", "back here"],
+      ]);
+      expect(page.elements["log-title"].textContent).toBe("yan ↔ zed");
+    });
+
+    it("drops every answer to a request started under the token before a switch", async () => {
+      const { colin, otherReader } = twoAccounts();
+      let hold = false;
+      const held: (() => void)[] = [];
+      const page = await load(colin, undefined, {
+        fetch: async (url: string, init: RequestInit) => {
+          const res = await fetch(`${base()}${url}`, init);
+          if (hold && (init.headers as Record<string, string>).Authorization === `Bearer ${colin}`) await new Promise<void>((r) => held.push(r));
+          return res;
+        },
+      });
+      await page.until(() => names(page).length === 3);
+      add(page, otherReader, "other");
+      await page.until(() => names(page).join() === "yan,zed");
+      pick(page, 0);
+      await page.until(() => names(page).length === 3);
+      // colin's next poll hangs until after the switch, then answers.
+      hold = true;
+      await page.poll();
+      await page.until(() => held.length > 0);
+      pick(page, 1);
+      hold = false;
+      for (const release of held.splice(0)) release();
+      await page.until(() => names(page).join() === "yan,zed");
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      for (const release of held.splice(0)) release();
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      expect(names(page)).toEqual(["yan", "zed"]);
+      for (const box of shown(page)) expect(box).not.toContain("owner's own");
+      expect(page.scheduled()).toBe(true);
+    });
+
+    it("forgetting one token removes it and its name and leaves the other signed in", async () => {
+      const { colin, otherReader } = twoAccounts();
+      const page = await load(colin);
+      await page.until(() => names(page).length === 3 && page.elements["new-message"].hidden === false);
+      add(page, otherReader, "ember-reach-2");
+      await page.until(() => names(page).join() === "yan,zed");
+      page.elements["forget"].on.click();
+      // The one left stays saved under its name, for when another is added.
+      expect(saved(page)).toEqual([{ name: "colin", token: colin, refused: false }]);
+      expect(page.store.get("message-cp-token")).toBe(colin);
+      expect(JSON.stringify([...page.store.values()])).not.toContain(otherReader);
+      expect(page.elements["login"].hidden).toBe(true);
+      await page.until(() => names(page).length === 3);
+      expect(page.elements["token-pick"].hidden).toBe(true);
+      expect(page.elements["forget"].textContent).toBe("Forget token");
+      // The last one forgets as before.
+      page.elements["forget"].on.click();
+      expect(page.store.size).toBe(0);
+      expect(page.elements["login"].hidden).toBe(false);
+      expect(page.elements["token-name"].hidden).toBe(true);
+    });
+
+    it("keeps saying an unconfirmed sign-out after Forget this one across polls, and signs out again keeping the other token", async () => {
+      const { colin, otherReader } = twoAccounts();
+      let refuse = true;
+      const methods: string[] = [];
+      const page = await load(otherReader, undefined, {
+        fetch: async (url: string, init: RequestInit) => {
+          if (url !== "oauth/signin") return fetch(`${base()}${url}`, init);
+          methods.push(init.method ?? "GET");
+          return new Response(null, { status: init.method === "DELETE" && refuse ? 503 : 204 });
+        },
+      });
+      const signins = () => methods;
+      await page.until(() => names(page).join() === "yan,zed");
+      add(page, colin, "colin");
+      await page.until(() => names(page).length === 3 && signins().includes("POST"));
+      // Forgetting the person token moves to the read-only one; neither its DELETE nor the read-only token's is confirmed.
+      page.elements["forget"].on.click();
+      await page.until(() => page.elements["signout-retry"].hidden === false);
+      await page.until(() => names(page).join() === "yan,zed" && page.scheduled());
+      await page.poll();
+      await page.until(page.scheduled);
+      expect(page.elements["status-line"].textContent).toBe(UNCONFIRMED_SIGNOUT);
+      expect(page.elements["signout-retry"].hidden).toBe(false);
+      refuse = false;
+      const before = signins().length;
+      page.elements["signout-retry"].on.click();
+      await page.until(() => signins().length === before + 1);
+      await page.until(() => page.elements["signout-retry"].hidden === true);
+      expect(signins().at(-1)).toBe("DELETE");
+      expect(page.elements["status-line"].textContent).toBe("");
+      // The retry forgot nothing: the read-only token is still in use and saved.
+      expect(page.store.get("message-cp-token")).toBe(otherReader);
+      expect(saved(page).map((t: { token: string }) => t.token)).toEqual([otherReader]);
+      await page.poll();
+      await page.until(page.scheduled);
+      expect(page.elements["status-line"].textContent).toBe("");
+    });
+
+    it("marks a token the server refuses and offers it no more until it is entered again, leaving the others", async () => {
+      const { colin, otherReader, otherReaderId } = twoAccounts();
+      const page = await load(colin);
+      // GET /api/token has said whose token it is once the person's "New message" shows.
+      await page.until(() => names(page).length === 3 && page.elements["new-message"].hidden === false);
+      add(page, otherReader, "other");
+      await page.until(() => names(page).join() === "yan,zed");
+      await page.until(page.scheduled);
+      revokeToken(db, otherReaderId);
+      await page.poll();
+      await page.until(() => page.elements["login"].hidden === false);
+      expect(page.elements["status-line"].textContent).toBe("The server refused that token. Enter another.");
+      expect(shown(page)).toEqual(["[]", "[]", "[]", "[]"]);
+      expect(saved(page)).toEqual([
+        { name: "colin", token: colin, refused: false },
+        { name: "other", token: otherReader, refused: true },
+      ]);
+      const rowsOf = page.elements["saved-rows"].children;
+      expect(rowsOf.map((row) => row.children.map((c) => [c.textContent, (c as unknown as { disabled: boolean }).disabled ?? false]))).toEqual([
+        [["Use colin", false]],
+        [
+          ["other (refused)", true],
+          ["Forget", false],
+        ],
+      ]);
+      // Forget on the refused one removes it entirely; using the other signs back in to its account.
+      rowsOf[1].children[1].on.click();
+      expect(saved(page).map((t: { token: string }) => t.token)).toEqual([colin]);
+      page.elements["saved-rows"].children[0].children[0].on.click();
+      expect(page.store.get("message-cp-token")).toBe(colin);
+      await page.until(() => names(page).length === 3);
+    });
+
+    it("forgets an agent token entered as a second token and keeps the first", async () => {
+      const { colin } = twoAccounts();
+      const page = await load(colin);
+      await page.until(() => names(page).length === 3);
+      add(page, agentToken, "agent");
+      await page.until(() => page.elements["status-line"].textContent.startsWith("That is an agent token"));
+      expect(saved(page).map((t: { token: string }) => t.token)).toEqual([colin]);
+      expect(page.store.get("message-cp-token")).toBeUndefined();
+    });
   });
 
   describe("a login link", () => {

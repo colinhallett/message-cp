@@ -6,7 +6,8 @@ import { MAX_BODY_LENGTH } from "./messages.js";
 
 // The page served at GET / by `message-cp serve`. It holds no data and no token: it asks for a token, or redeems the
 // one-time code a `message-cp login-link` link carries in its fragment for a sign-in session with POST /api/login, keeps
-// the token or session in sessionStorage (that tab only), signs the browser in to the approval page with POST
+// the token or session in sessionStorage (that tab only), with any others "Add a token" saved there under names to
+// switch between, signs the browser in to the approval page with POST
 // oauth/signin for a full or person token under an https public URL (and out with DELETE on "Forget token", which also signs out its other dashboard tabs),
 // and polls GET /api/agents, GET /api/channels, GET /api/messages and, while one is
 // open, a channel's GET /api/channel-posts, the account's GET /api/webhook-deliveries, its GET /api/approvals or, for
@@ -152,6 +153,12 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 #login { margin: 15vh auto 0; width: min(32rem, 100% - 2 * var(--s4)); display: flex; flex-direction: column; gap: var(--s3); }
 #login input { width: 100%; padding: var(--s2); background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); }
 #login button { align-self: flex-start; }
+#saved h2 { margin: var(--s2) 0 0; }
+#saved-rows { display: flex; flex-direction: column; gap: var(--s2); }
+#saved-rows li { display: flex; flex-wrap: wrap; gap: var(--s2); align-items: center; }
+#saved-rows button { background: none; border-color: var(--border); color: inherit; font-weight: normal; }
+#saved-rows button:hover:enabled { background: var(--hover); }
+#token-pick { padding: var(--s1); background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); max-width: 12rem; }
 #view { flex: 1; min-height: 0; display: grid; grid-template-columns: 15rem minmax(0, 1fr) 16rem; grid-template-rows: auto minmax(0, 1fr); grid-template-areas: "bar bar bar" "side chat agents"; }
 .bar { grid-area: bar; display: flex; align-items: center; gap: var(--s2); padding: var(--s2) var(--s3); border-bottom: 1px solid var(--border); }
 .bar h1 { flex: 1; display: flex; align-items: center; gap: var(--s2); }
@@ -355,12 +362,25 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 const SCRIPT = `
 "use strict";
 const KEY = "message-cp-token";
+// The tokens this tab keeps signed in besides, once "Add a token" has been used: a JSON list of { name, token, refused },
+// name being the reader's label for it or, left blank, its person or kind as GET /api/token said; the server never
+// says which account a token is for. It lives in sessionStorage, like KEY, which still holds the one every request
+// uses. With a single token it is not written, so the page is as it was before.
+const SAVED = "message-cp-tokens";
+const REFUSED = "The server refused that token. Enter another.";
 const PAGE = 200;
 const POLL_MS = 5000;
 // A poll that has not finished by then is abandoned, so a request that never completes cannot stop the polling.
 const TIMEOUT_MS = 15000;
 const form = document.getElementById("login");
 const input = document.getElementById("token");
+const nameLabel = document.getElementById("token-name-label");
+const nameInput = document.getElementById("token-name");
+const savedBox = document.getElementById("saved");
+const savedRows = document.getElementById("saved-rows");
+const tokenPick = document.getElementById("token-pick");
+const addButton = document.getElementById("add-token");
+const forgetButton = document.getElementById("forget");
 const view = document.getElementById("view");
 const chat = document.getElementById("chat");
 const sidebarButton = document.getElementById("show-sidebar");
@@ -553,6 +573,9 @@ let canPost = false;
 let me;
 let meAdmin = false;
 let fullToken = false;
+// What GET /api/token said this token is, as a name for it when "Add a token" first saves it: its person, "full token"
+// or "read-only token"; undefined until it has answered.
+let tokenLabel;
 let tokenGeneration = 0;
 let tokenController;
 // The last request to oauth/signin, settled once the server has answered or it failed. Each waits for the one before,
@@ -570,7 +593,9 @@ function signin(init) {
   return fetch("oauth/signin", { ...init, cache: "no-store", credentials: "same-origin", referrerPolicy: "no-referrer", signal: ac.signal }).then(
     (res) => {
       clearTimeout(deadline);
-      return res.ok || res.status === 404;
+      const ok = res.ok || res.status === 404;
+      if (ok) settleSignout();
+      return ok;
     },
     () => {
       clearTimeout(deadline);
@@ -588,14 +613,32 @@ function signout() {
 // Forgets this tab's token and, unless clear is false, clears the sign-in cookie; if the server does not confirm that,
 // says so on the token form with a button to try again, while the token form is still showing and no newer token has
 // been entered.
+const UNCONFIRMED = "The server did not confirm signing this browser out of the page that approves clients, so it may still approve until the browser closes.";
+// Whether the sign-in cookie may still be a token's that "Forget this one" forgot: its DELETE was not confirmed, and no
+// request to oauth/signin has been confirmed since, which would have cleared or replaced the cookie. While it is, a poll
+// that would clear the status line says UNCONFIRMED instead, and "Sign out again" clears the cookie again without
+// forgetting the saved tokens. forget() ends it, as it sends its own DELETE and says so itself, and bumps forgetAlls, so
+// an earlier "Forget this one" answered after it does not start it again.
+let unconfirmed = false;
+let forgetAlls = 0;
+function settleSignout() {
+  if (!unconfirmed) return;
+  unconfirmed = false;
+  signoutRetry.hidden = true;
+  const text = statusLine.textContent;
+  if (text.endsWith(UNCONFIRMED)) say(text.slice(0, -UNCONFIRMED.length).trim(), statusLine.className === "error" && text !== UNCONFIRMED);
+}
 function forget(clear = true) {
+  unconfirmed = false;
+  forgetAlls++;
+  keepTokens([]);
   ask();
   const gen = tokenGeneration;
   signoutRetry.hidden = true;
   if (!clear) return;
   signout().then((ok) => {
     if (ok || gen !== tokenGeneration || form.hidden) return;
-    say("The server did not confirm signing this browser out of the page that approves clients, so it may still approve until the browser closes.", true);
+    say(UNCONFIRMED, true);
     signoutRetry.hidden = false;
   });
 }
@@ -816,7 +859,16 @@ function cancel() {
 }
 
 function ask(message) {
+  const held = sessionStorage.getItem(KEY);
   sessionStorage.removeItem(KEY);
+  // A refused token stays saved, marked, so the switcher says so and offers it no more until it is entered again or
+  // forgotten; an agent token, which never works here, is dropped.
+  if (held && (message === REFUSED || message === AGENT_TOKEN)) {
+    let list = savedTokens();
+    if (message === AGENT_TOKEN) list = list.filter((t) => t.token !== held);
+    else for (const t of list) if (t.token === held) t.refused = true;
+    keepTokens(list);
+  }
   cancel();
   // Forget whether the last token could post, its person, and who the page posted as, so the next token starts
   // read-only and with no person.
@@ -825,6 +877,7 @@ function ask(message) {
   canPost = false;
   me = undefined;
   meAdmin = false;
+  tokenLabel = undefined;
   showInviteEntry();
   showWebhookEntry();
   showTokenEntry();
@@ -899,29 +952,164 @@ function ask(message) {
   searchText.value = "";
   view.hidden = true;
   panel("");
-  say(message || "", true);
+  say(unconfirmed ? (message ? message + " " : "") + UNCONFIRMED : message || "", true);
   form.hidden = false;
   input.value = "";
-  input.focus();
+  nameInput.value = "";
+  showTokens();
+  (nameInput.hidden ? input : nameInput).focus();
+}
+
+// The saved tokens, as SAVED holds them; an entry that is not a name and a token is skipped.
+function savedTokens() {
+  let list;
+  try {
+    list = JSON.parse(sessionStorage.getItem(SAVED) || "[]");
+  } catch {
+    list = [];
+  }
+  if (!Array.isArray(list)) return [];
+  return list
+    .filter((t) => t !== null && typeof t === "object" && typeof t.name === "string" && typeof t.token === "string" && t.token)
+    .map((t) => ({ name: t.name, token: t.token, refused: t.refused === true }));
+}
+// Writes the saved tokens, or removes SAVED when there are none, so a forgotten token and its name are kept nowhere.
+function keepTokens(list) {
+  if (list.length > 0) sessionStorage.setItem(SAVED, JSON.stringify(list));
+  else sessionStorage.removeItem(SAVED);
+}
+// A saved token's name as the switcher shows it: its own, else its place in the list until GET /api/token names it.
+function tokenName(t, i) {
+  return t.name || "Token " + (i + 1);
+}
+// Saves a token under a name, or, for one already saved, marks it usable again and renames it when a name is given,
+// and makes it the one every request uses.
+function saveToken(token, name) {
+  const list = savedTokens();
+  const found = list.find((t) => t.token === token);
+  if (found) {
+    found.refused = false;
+    if (name) found.name = name;
+  } else list.push({ name, token, refused: false });
+  keepTokens(list);
+  sessionStorage.setItem(KEY, token);
+}
+// Makes a saved token the one every request uses. It goes through ask(), as signing out does, so every request started
+// under the token before is dropped or aborted and nothing read with it stays on the page, then starts as a sign-in does.
+function switchTo(token) {
+  ask();
+  sessionStorage.setItem(KEY, token);
+  start();
+}
+// Shows the saved tokens: in the header, a switcher once there are two, an "Add a token" button, and "Forget token" or,
+// with others saved, "Forget this one"; on the token form, a name field and a button for each saved token to use it, a
+// refused one marked, with Forget.
+function showTokens() {
+  const list = savedTokens();
+  const held = sessionStorage.getItem(KEY);
+  tokenPick.hidden = list.length < 2 || !list.some((t) => t.token === held);
+  tokenPick.replaceChildren(
+    ...list.map((t, i) => {
+      const option = document.createElement("option");
+      option.value = String(i);
+      option.textContent = t.refused ? tokenName(t, i) + " (refused)" : tokenName(t, i);
+      option.disabled = t.refused;
+      option.selected = t.token === held;
+      return option;
+    }),
+  );
+  addButton.hidden = false;
+  forgetButton.textContent = list.some((t) => t.token !== held) ? "Forget this one" : "Forget token";
+  nameLabel.hidden = list.length === 0;
+  nameInput.hidden = list.length === 0;
+  savedBox.hidden = list.length === 0;
+  savedRows.replaceChildren(
+    ...list.map((t, i) => {
+      const row = document.createElement("li");
+      const use = document.createElement("button");
+      use.type = "button";
+      use.textContent = t.refused ? tokenName(t, i) + " (refused)" : "Use " + tokenName(t, i);
+      use.disabled = t.refused;
+      use.addEventListener("click", () => switchTo(t.token));
+      row.append(use);
+      if (t.refused) {
+        const drop = document.createElement("button");
+        drop.type = "button";
+        drop.textContent = "Forget";
+        drop.addEventListener("click", () => {
+          keepTokens(savedTokens().filter((s) => s.token !== t.token));
+          showTokens();
+        });
+        row.append(drop);
+      }
+      return row;
+    }),
+  );
 }
 
 form.addEventListener("submit", (event) => {
   event.preventDefault();
   const token = input.value.trim();
   if (!token) return;
-  sessionStorage.setItem(KEY, token);
+  if (savedTokens().length > 0) saveToken(token, nameInput.value.trim());
+  else sessionStorage.setItem(KEY, token);
   input.value = "";
+  nameInput.value = "";
   start();
+});
+
+// "Add a token" saves the token in use, named as GET /api/token described it unless it is saved already, and shows the
+// token form with a name field; the saved tokens are listed under it to go back to.
+addButton.addEventListener("click", () => {
+  const held = sessionStorage.getItem(KEY);
+  const list = savedTokens();
+  if (held && !list.some((t) => t.token === held)) {
+    list.unshift({ name: tokenLabel || "", token: held, refused: false });
+    keepTokens(list);
+  }
+  ask();
+});
+tokenPick.addEventListener("change", () => {
+  const chosen = savedTokens()[Number(tokenPick.value)];
+  if (chosen && !chosen.refused && chosen.token !== sessionStorage.getItem(KEY)) switchTo(chosen.token);
+  else showTokens();
 });
 
 // Signing out forgets this tab's token, clears the approval page's sign-in cookie for the whole browser once any sign-in
 // in flight has been answered, and has every other dashboard tab of the browser forget its token. Without a public URL
 // there is no oauth/signin, and the DELETE gets 404, which changes nothing.
-document.getElementById("forget").addEventListener("click", () => {
+// With other tokens saved, it forgets only this one, removing it and its name from SAVED, clears the cookie the same way
+// (a full or person token it moves to signs in again) and moves to the first saved token not refused, or to the token
+// form with the saved ones listed; other tabs are told nothing. If the server does not confirm the clearing, it says so,
+// and keeps saying so across polls and switches, with "Sign out again" clearing only the cookie (see unconfirmed).
+forgetButton.addEventListener("click", () => {
+  const held = sessionStorage.getItem(KEY);
+  const rest = savedTokens().filter((t) => t.token !== held);
+  if (rest.length > 0) {
+    keepTokens(rest);
+    const cleared = signout();
+    const next = rest.find((t) => !t.refused);
+    if (next) switchTo(next.token);
+    else ask();
+    const all = forgetAlls;
+    cleared.then((ok) => {
+      if (ok || all !== forgetAlls) return;
+      unconfirmed = true;
+      signoutRetry.hidden = false;
+      say(UNCONFIRMED, true);
+    });
+    return;
+  }
   forget();
   if (signouts) signouts.postMessage("signout");
 });
-signoutRetry.addEventListener("click", () => forget());
+signoutRetry.addEventListener("click", () => {
+  if (!unconfirmed) return forget();
+  signoutRetry.hidden = true;
+  signout().then((ok) => {
+    if (!ok && unconfirmed) signoutRetry.hidden = false;
+  });
+});
 // Another tab signed out: forget this tab's token too. A sign-in this tab sent that is still unanswered could set the
 // cookie again after the other tab's DELETE, so this tab clears it again once its own requests are answered, and says
 // so if the server does not confirm it, as its own "Forget token" does.
@@ -1608,7 +1796,7 @@ async function addInvitedPerson() {
   if (tokenGen !== tokenGeneration) return;
   adding = undefined;
   personAdd.disabled = false;
-  if (answer.status === 401) return ask("The server refused that token. Enter another.");
+  if (answer.status === 401) return ask(REFUSED);
   if (closings !== inviteClosings) return;
   if (answer.status === 403) return unmarked();
   if (answer.status === 200) {
@@ -1657,7 +1845,7 @@ async function makeInvite() {
   if (tokenGen !== tokenGeneration) return;
   linking = undefined;
   linkMake.disabled = false;
-  if (answer.status === 401) return ask("The server refused that token. Enter another.");
+  if (answer.status === 401) return ask(REFUSED);
   if (closings !== inviteClosings) return;
   if (answer.status === 403) return unmarked();
   if (answer.status === 200) {
@@ -1738,7 +1926,7 @@ async function cancelInvite() {
   if (tokenGen !== tokenGeneration) return;
   cancelling = undefined;
   cancelYes.disabled = false;
-  if (answer.status === 401) return ask("The server refused that token. Enter another.");
+  if (answer.status === 401) return ask(REFUSED);
   if (closings !== inviteClosings) return;
   if (answer.status === 403) return unmarked();
   // A confirmation opened for another invite meanwhile stays.
@@ -1774,7 +1962,7 @@ async function markPerson(name, admin) {
   }
   if (tokenGen !== tokenGeneration) return;
   marking = undefined;
-  if (answer.status === 401) return ask("The server refused that token. Enter another.");
+  if (answer.status === 401) return ask(REFUSED);
   if (closings !== inviteClosings) return;
   if (answer.status === 403) return unmarked();
   if (answer.status === 200) peopleNote.textContent = admin ? name + " is now an admin." : name + " is no longer an admin.";
@@ -1868,7 +2056,7 @@ async function removeAccountPerson() {
   if (tokenGen !== tokenGeneration) return;
   removing = undefined;
   removeYes.disabled = false;
-  if (answer.status === 401) return ask("The server refused that token. Enter another.");
+  if (answer.status === 401) return ask(REFUSED);
   // Their direct messages are deleted (200), were deleted by whoever removed them first (404), or may be (no answer),
   // so the messages the page holds are read again from the start, as deletePair does, since GET /api/messages pages by
   // offset; this holds whichever view is open now.
@@ -1949,7 +2137,7 @@ async function removeWebhook() {
   removingWebhook = undefined;
   removingHook = undefined;
   webhookYes.disabled = false;
-  if (answer.status === 401) return ask("The server refused that token. Enter another.");
+  if (answer.status === 401) return ask(REFUSED);
   if (answer.status === 403) return unmarked();
   if (closings !== webhookClosings) return;
   // A confirmation opened for another webhook meanwhile stays.
@@ -2010,7 +2198,7 @@ async function addAccountWebhook() {
   if (tokenGen !== tokenGeneration) return;
   addingWebhook = undefined;
   hookAdd.disabled = false;
-  if (answer.status === 401) return ask("The server refused that token. Enter another.");
+  if (answer.status === 401) return ask(REFUSED);
   if (answer.status === 403) return unmarked();
   if (closings !== webhookClosings) return;
   if (answer.status === 200) {
@@ -2130,7 +2318,7 @@ async function revokeApproval() {
   revokingApproval = undefined;
   revokingTarget = undefined;
   approvalYes.disabled = false;
-  if (answer.status === 401) return ask("The server refused that token. Enter another.");
+  if (answer.status === 401) return ask(REFUSED);
   if (answer.status === 403) return unmarked();
   if (closings !== approvalClosings) return;
   // A confirmation opened for another approval meanwhile stays.
@@ -2201,7 +2389,7 @@ async function revokeToken() {
   revokingToken = undefined;
   revokingTokenTarget = undefined;
   tokenYes.disabled = false;
-  if (answer.status === 401) return ask("The server refused that token. Enter another.");
+  if (answer.status === 401) return ask(REFUSED);
   if (answer.status === 403) return unmarked();
   if (closings !== tokenClosings) return;
   // A confirmation opened for another token meanwhile stays.
@@ -2270,7 +2458,7 @@ async function endSignin() {
   endingSignin = undefined;
   endingSigninTarget = undefined;
   signinYes.disabled = false;
-  if (answer.status === 401) return ask("The server refused that token. Enter another.");
+  if (answer.status === 401) return ask(REFUSED);
   if (answer.status === 403) return unmarked();
   if (closings !== signinClosings) return;
   // A confirmation opened for another sign-in meanwhile stays.
@@ -2325,7 +2513,7 @@ async function makeToken() {
   if (tokenGen !== tokenGeneration) return;
   makingToken = undefined;
   tokenMake.disabled = false;
-  if (answer.status === 401) return ask("The server refused that token. Enter another.");
+  if (answer.status === 401) return ask(REFUSED);
   if (answer.status === 403) return unmarked();
   if (closings !== tokenClosings) {
     // The view closed or was unmarked while the server may have made the token, which this answer's token is never
@@ -2442,7 +2630,7 @@ async function removeAgent() {
   if (tokenGen !== tokenGeneration) return;
   removingAgent = undefined;
   agentYes.disabled = agentFor?.kind === "key" && resettingKey === tokenGen;
-  if (answer.status === 401) return ask("The server refused that token. Enter another.");
+  if (answer.status === 401) return ask(REFUSED);
   // Its direct messages are deleted (200), were deleted by whoever removed it first (404), or may be (no answer), so
   // the messages the page holds are read again from the start, as removeAccountPerson does.
   const forgot = answer.status === 200 || answer.status === 404 || Boolean(answer.error);
@@ -2507,7 +2695,7 @@ async function resetKey() {
   if (tokenGen !== tokenGeneration) return;
   resettingKey = undefined;
   agentYes.disabled = agentFor?.kind === "remove" && removingAgent === tokenGen;
-  if (answer.status === 401) return ask("The server refused that token. Enter another.");
+  if (answer.status === 401) return ask(REFUSED);
   if (answer.status === 403) {
     const still = agentFor === target;
     unmarked();
@@ -2603,7 +2791,7 @@ async function search(text) {
     clearTimeout(deadline);
   }
   if (gen !== searchGeneration) return;
-  if (answer.status === 401) return ask("The server refused that token. Enter another.");
+  if (answer.status === 401) return ask(REFUSED);
   if (answer.items) {
     resultRows.replaceChildren(...answer.items.map(resultEntry));
     resultRows.scrollTop = 0;
@@ -2622,9 +2810,10 @@ async function search(text) {
 
 function start() {
   cancel();
-  signoutRetry.hidden = true;
+  signoutRetry.hidden = !unconfirmed;
   form.hidden = true;
   view.hidden = false;
+  showTokens();
   say("Loading…", false);
   checkToken();
   poll(generation);
@@ -2674,7 +2863,7 @@ async function checkToken() {
     clearTimeout(deadline);
   }
   if (gen !== tokenGeneration) return;
-  if (refused) return ask("The server refused that token. Enter another.");
+  if (refused) return ask(REFUSED);
   if (agent) return ask(AGENT_TOKEN);
   // A full or person token also signs this browser in to the approval page: the server sets the sign-in cookie, which no
   // page script can read, from the token in the header. A server without an https public URL answers 404, and one reached
@@ -2688,6 +2877,15 @@ async function checkToken() {
       return ok;
     });
   } else if (readOnly) signout();
+  tokenLabel = own !== undefined ? own : full ? "full token" : readOnly ? "read-only token" : undefined;
+  // A token saved without a name takes this one, so the switcher tells it apart.
+  const list = savedTokens();
+  const unnamed = list.find((t) => t.token === token && !t.name);
+  if (unnamed && tokenLabel) {
+    unnamed.name = tokenLabel;
+    keepTokens(list);
+    showTokens();
+  }
   canPost = own !== undefined;
   me = own;
   meAdmin = admin;
@@ -2741,7 +2939,8 @@ async function login(code) {
   }
   if (gen !== tokenGeneration || pollGen !== generation) return;
   if (answer.status === 200 && typeof answer.session === "string" && answer.session) {
-    sessionStorage.setItem(KEY, answer.session);
+    if (savedTokens().length > 0) saveToken(answer.session, "");
+    else sessionStorage.setItem(KEY, answer.session);
     return start();
   }
   if (answer.reason === "used") return ask(LINK_USED);
@@ -2963,7 +3162,7 @@ async function createChannel() {
   if (tokenGen !== tokenGeneration) return;
   creating = undefined;
   channelCreate.disabled = false;
-  if (answer.status === 401) return ask("The server refused that token. Enter another.");
+  if (answer.status === 401) return ask(REFUSED);
   if (answer.status === 200) {
     // The name is now taken, and text typed while the request was in flight stays.
     channelsSent.add(name.toLowerCase());
@@ -3186,7 +3385,7 @@ async function send() {
     clearTimeout(deadline);
   }
   if (tokenGen !== tokenGeneration) return;
-  if (answer.status === 401) return ask("The server refused that token. Enter another.");
+  if (answer.status === 401) return ask(REFUSED);
   const now = composeTarget();
   const same = now !== undefined && now.path === target.path && now.conversation === target.conversation && now.fields.as === target.fields.as;
   if (answer.status === 200 || answer.error) {
@@ -3306,7 +3505,7 @@ async function deletePair() {
   if (tokenGen !== tokenGeneration) return;
   deleting = undefined;
   deleteYes.disabled = false;
-  if (answer.status === 401) return ask("The server refused that token. Enter another.");
+  if (answer.status === 401) return ask(REFUSED);
   const same = openPair === key;
   if (answer.status === 200 || answer.error) {
     if (same && answer.status === 200) {
@@ -3953,9 +4152,10 @@ async function poll(gen) {
   }
   // A newer token or a sign-out since this poll began: drop its answer.
   if (gen !== generation) return;
-  if (result.status === 401) return ask("The server refused that token. Enter another.");
+  if (result.status === 401) return ask(REFUSED);
   if (result.ok) {
-    say("", false);
+    if (unconfirmed) say(UNCONFIRMED, true);
+    else say("", false);
   } else if (result.status === 403) {
     say("This token cannot read agents, channels or messages (403). Retrying…", true);
   } else if (result.status === 503) {
@@ -4745,9 +4945,15 @@ export const DASHBOARD_HTML = `<!doctype html>
 <button id="signout-retry" type="button" hidden>Sign out again</button>
 <form id="login" hidden>
 <h1>message-cp</h1>
+<label id="token-name-label" for="token-name" hidden>Name, shown in the switcher</label>
+<input id="token-name" maxlength="40" autocomplete="off" placeholder="such as owner" hidden>
 <label for="token">Token</label>
 <input id="token" type="password" autocomplete="off" required>
 <button type="submit">Log in</button>
+<div id="saved" hidden>
+<h2>Saved tokens</h2>
+<ul id="saved-rows"></ul>
+</div>
 </form>
 <div id="view" hidden>
 <header class="bar">
@@ -4758,6 +4964,8 @@ export const DASHBOARD_HTML = `<!doctype html>
 <button type="submit">Search</button>
 </form>
 <button id="show-agents" class="toggle" type="button" aria-expanded="false" aria-controls="agents">Agents</button>
+<select id="token-pick" aria-label="Token in use" hidden></select>
+<button id="add-token" type="button">Add a token</button>
 <button id="forget" type="button">Forget token</button>
 </header>
 <nav id="sidebar" aria-label="Channels and conversations">
