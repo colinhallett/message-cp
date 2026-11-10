@@ -185,13 +185,15 @@ describe("concurrent connections", () => {
 
 describe("separate server processes", () => {
   it("deliver every message once while reading and writing the same database", async () => {
+    // Without the caller's agent variables, so a shell set up for HTTP init (MESSAGE_CP_AGENT_KEY alone) cannot stop the server starting.
+    const { MESSAGE_CP_AGENT: _agent, MESSAGE_CP_AGENT_KEY: _key, ...parentEnv } = process.env;
     const start = async (name: string) => {
       const client = new Client({ name: "test", version: "0" });
       await client.connect(
         new StdioClientTransport({
           command: "npx",
           args: ["tsx", join(import.meta.dirname, "../src/index.ts")],
-          env: { ...process.env, MESSAGE_CP_DB: dbFile } as Record<string, string>,
+          env: { ...parentEnv, MESSAGE_CP_DB: dbFile } as Record<string, string>,
         }),
       );
       clients.push(client);
