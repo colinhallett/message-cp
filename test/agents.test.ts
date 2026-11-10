@@ -91,13 +91,15 @@ describe("shared database", () => {
   });
 
   it("works across real server processes over stdio", async () => {
+    // Without the caller's agent variables, so a shell set up for HTTP init (MESSAGE_CP_AGENT_KEY alone) cannot stop the server starting.
+    const { MESSAGE_CP_AGENT: _agent, MESSAGE_CP_AGENT_KEY: _key, ...parentEnv } = process.env;
     const start = async () => {
       const client = new Client({ name: "test", version: "0" });
       await client.connect(
         new StdioClientTransport({
           command: "npx",
           args: ["tsx", join(import.meta.dirname, "../src/index.ts")],
-          env: { ...process.env, MESSAGE_CP_DB: dbFile } as Record<string, string>,
+          env: { ...parentEnv, MESSAGE_CP_DB: dbFile } as Record<string, string>,
         }),
       );
       clients.push(client);
@@ -338,13 +340,15 @@ describe("agent keys", () => {
   });
 
   it("two real server processes: the env-started one acts at once and the takeover is refused", async () => {
+    // Without the caller's agent variables, so a shell set up for HTTP init (MESSAGE_CP_AGENT_KEY alone) cannot stop the server starting.
+    const { MESSAGE_CP_AGENT: _agent, MESSAGE_CP_AGENT_KEY: _key, ...parentEnv } = process.env;
     const start = async (env: Record<string, string>) => {
       const client = new Client({ name: "test", version: "0" });
       await client.connect(
         new StdioClientTransport({
           command: "npx",
           args: ["tsx", join(import.meta.dirname, "../src/index.ts")],
-          env: { ...process.env, MESSAGE_CP_DB: dbFile, ...env } as Record<string, string>,
+          env: { ...parentEnv, MESSAGE_CP_DB: dbFile, ...env } as Record<string, string>,
         }),
       );
       clients.push(client);
