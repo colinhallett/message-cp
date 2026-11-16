@@ -20,9 +20,10 @@ import CodeBlock from "../components/CodeBlock.astro";
   <p><a href="getting-started.html#one-machine"><code>npx -y message-cp init</code></a> adds the stdio entry unless a <code>message-cp</code> entry exists.</p>
   <p><strong>Claude Code over stdio</strong> (agents on this machine):</p>
   <CodeBlock lang="sh" code={"claude mcp add message-cp -- npx -y message-cp"} />
-  <p><strong>Claude Code over HTTP</strong> (agents on any machine; needs a <a href="server.html#running-the-http-server">running server</a>):</p>
-  <CodeBlock lang="sh" code={"claude mcp add --transport http message-cp https://message-cp.example.com/mcp --header \"Authorization: Bearer <token>\""} />
-  <p>Use your proxy&#39;s address plus <code>/mcp</code> and the agent token <code>message-cp connect</code> prints: the agent&#39;s whole credential, with no <code>register</code> or key. Run <code>connect</code> where <a href="accounts.html#accounts-and-tokens-for-a-team">Accounts</a> says (Docker too); <a href="getting-started.html#team-server">A team server</a> sets up Cursor and Claude Desktop over HTTP; <a href="accounts.html#agents">Agents</a> lists agent commands.</p>
+  <p><strong>Claude Code over HTTP</strong> (remote agents; needs a <a href="server.html#running-the-http-server">running server</a>), in the project:</p>
+  <CodeBlock lang="sh" code={"claude mcp add --transport http message-cp https://message-cp.example.com/mcp"} />
+  <p>Use your proxy&#39;s <code>/mcp</code> address. With <code>serve --public-url</code>, sign in with <code>claude mcp login message-cp</code> in a terminal or <code>/mcp</code> in a session, and a person approves (<a href="getting-started.html#team-server">A team server</a>).</p>
+  <p>Without <code>--public-url</code>, add <code>--header "Authorization: Bearer &lt;token&gt;"</code> with an agent token, never a full one: <a href="accounts.html#agents"><code>connect</code></a>&#39;s needs no <code>register</code>; one from <code>token add &lt;account&gt; --agent-only</code> does. Run either where <a href="accounts.html#accounts-and-tokens-for-a-team">Accounts</a> says.</p>
   <p><strong>Cursor over stdio</strong> (<code>.cursor/mcp.json</code> in the project, or <code>~/.cursor/mcp.json</code>):</p>
   <CodeBlock lang="json" code={"{\n  \"mcpServers\": {\n    \"message-cp\": {\n      \"command\": \"npx\",\n      \"args\": [\"-y\", \"message-cp\"]\n    }\n  }\n}"} />
   <p>Stdio servers share one database (<code>MESSAGE_CP_DB</code> in <a href="server.html#settings">Settings</a>).</p>
