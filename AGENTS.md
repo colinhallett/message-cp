@@ -31,7 +31,7 @@ npm test
 
 Keep the whole `npm test` output rather than piping it through `tail`, for example `npm test > /tmp/test.log 2>&1; tail -5 /tmp/test.log; grep -n FAIL /tmp/test.log`, so a failure is named on the first run.
 
-A test that starts `src/index.ts` (the stdio server) as a child process builds the child's `env` from `process.env` without `MESSAGE_CP_AGENT` and `MESSAGE_CP_AGENT_KEY`, as "reports package.json's version to a client over stdio" in `test/version.test.ts` does, and sets either one only on purpose. `registerFromEnv` in `src/agents.ts` refuses one without the other, so a child that inherits a shell's lone `MESSAGE_CP_AGENT_KEY` exits before the test starts.
+A test that starts `src/index.ts` as a child process drops `MESSAGE_CP_AGENT` and `MESSAGE_CP_AGENT_KEY` from the child's `env` unless it sets both on purpose; `test/stdio-env.test.ts` checks it.
 
 `better-sqlite3` ships prebuilt binaries under `node_modules/better-sqlite3/prebuilds/` for Linux (glibc and musl), macOS and Windows on x64 and arm64, so skipping its install script loses nothing. Plain `npm ci` compiles it and fails where there is no `make` or C++ compiler. If plain `npm ci` has already failed that way, use the commands above instead: do not install a compiler, shim `better-sqlite3` over `node:sqlite`, run the tests in a container, or skip them. [Building and testing](CONTRIBUTING.md#building-and-testing) in `CONTRIBUTING.md` gives the same install for people changing the code.
 
