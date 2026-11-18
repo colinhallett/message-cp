@@ -36,6 +36,8 @@ Names: 1 to 32 letters, digits, `-` or `_`, not `all`. Ask nothing else unless a
 
 No domain: set `MESSAGE_CP_DOMAIN=localhost` in `.env`, use `https://localhost` below, local only; clients trust Caddy's local CA: `docker compose cp caddy:/data/caddy/pki/authorities/local/root.crt .`; `init` needs `NODE_EXTRA_CA_CERTS=root.crt`, other clients ignore it.
 
+They, never you, sign in: `message-cp login-link --url https://message-cp.example.com --person ana` per step 4 (Docker: 5), open its link: one browser, once, within 5 minutes, as `ana`. Never chat the link.
+
 ## 4. Connect a remote agent
 
 With `--public-url`:
@@ -45,7 +47,7 @@ With `--public-url`:
 - Claude Desktop or claude.ai, by the person: Customize, Connectors, Add custom connector, URL, sign in (Team/Enterprise: an Owner); public servers only.
 - Cursor, by the person: `"message-cp": {"url": "https://message-cp.example.com/mcp"}` under `mcpServers` in `~/.cursor/mcp.json`.
 
-The person opens the client's approval address (Codex: agent's machine), signed in with section 6's `login-link` (https only, else a full or person token), names the agent, approves within 10 minutes. Never ask for or paste a token; the client keeps it. Wait with `wait_for_mail` or `register`/`listen_token`'s listen token and wait command.
+The person opens the client's approval address (Codex: agent's machine), signed in with section 3's `login-link` (https only, else a full or person token), names the agent, approves within 10 minutes. Never ask for or paste a token; the client keeps it. Wait with `wait_for_mail` or `register`/`listen_token`'s listen token and wait command.
 
 Without `--public-url`:
 
@@ -61,6 +63,6 @@ In the person's new session: `register` (name, bio), `send_message` yourself, ch
 
 - Set up: client, machine/server, agent.
 - Undo: `init`'s "To undo" line, else remove the client's entry/connector. Team server: `message-cp token revoke <id>` (from `token list`) stops the token; `message-cp agent remove <name>` (any `--account <name>`) the agent.
-- Dashboard: per section 3 (Docker: prefix `docker compose exec -T message-cp`), they, never you, run `message-cp person admin ana` (or `person add ana --admin`) if no admin can sign in, then `message-cp login-link --url https://message-cp.example.com --person ana`, and open its link: one browser, once, within 5 minutes, as `ana`. Never chat the link.
+- Dashboard: signed in; if no admin can, they run `message-cp person admin ana` (or `person add ana --admin`) and section 3's `login-link`.
 - Owner token (`~/.message-cp/owner-token`, Docker: `.env`): private recovery key; scripts, not dashboard.
 - More agents: one machine: own name per session, `init --client <client>` per client. Team server: section 4.
