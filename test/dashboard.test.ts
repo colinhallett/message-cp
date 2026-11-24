@@ -8695,6 +8695,20 @@ describe("the page's invites", () => {
       expect(sinUrls(page)).toEqual([]);
     });
 
+    it("marks the Sign-ins entry as the open one while its view is open, and clears the mark when another view opens", async () => {
+      const page = await load(anaToken);
+      await openSignins(page);
+      const button = sinEntry(page)! as Stub & { ariaCurrent?: string | null };
+      expect(button.className).toBe("item current");
+      expect(button.ariaCurrent).toBe("true");
+      const tokens = page.elements["token-entry"].children[0].children[0] as Stub;
+      tokens.on.click();
+      await page.until(() => page.elements["log-note"].textContent !== "Loading…" && page.elements["log-title"].textContent === "Tokens");
+      expect(button.className).toBe("item");
+      expect(button.ariaCurrent ?? null).toBeNull();
+      expect(tokens.className).toBe("item current");
+    });
+
     it("lists the account's sign-ins oldest first, with this browser on the page's own, never a session or another account's", async () => {
       addPerson(db, "owner", "ben");
       const ben = signIn("ben");

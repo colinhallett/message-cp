@@ -4446,12 +4446,12 @@ function showPairs() {
   pairRows.replaceChildren(...items);
 }
 
-// Marks the open channel, pair, webhook deliveries, webhooks, approved clients, tokens or invites in the sidebar, in place, so the button just chosen keeps the focus.
+// Marks the open channel, pair, webhook deliveries, webhooks, approved clients, tokens, sign-ins or invites in the sidebar, in place, so the button just chosen keeps the focus.
 // The open entry's posts or messages all count as seen, so its badge goes.
 function markOpen() {
   const key = openKey();
   if (shownTotals.has(key)) seen.set(key, shownTotals.get(key));
-  const entries = [...channelRows.children, ...pairRows.children, ...deliveryEntry.children, ...webhookEntry.children, ...approvalEntry.children, ...tokenEntry.children, ...inviteEntry.children];
+  const entries = [...channelRows.children, ...pairRows.children, ...deliveryEntry.children, ...webhookEntry.children, ...approvalEntry.children, ...tokenEntry.children, ...signinEntry.children, ...inviteEntry.children];
   for (const li of entries) {
     const button = li.children[0];
     if (!button) continue;
