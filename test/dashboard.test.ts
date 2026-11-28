@@ -1000,6 +1000,40 @@ describe("the page's channels and messages", () => {
       expect(page.store.get("message-cp-token")).toBe(colin);
     });
 
+    it("hides Sign out again once a retry answered after a switch ends the session, so it cannot forget the tokens in use", async () => {
+      const { colin, otherReader } = twoAccounts();
+      const ownerReader = addToken(db, "owner", true).token;
+      const server = endsFetch();
+      const page = await load(colin, undefined, { fetch: server.fetch });
+      await page.until(() => names(page).length === 3);
+      add(page, otherReader, "reader");
+      await page.until(() => names(page).join() === "yan,zed" && page.scheduled());
+      add(page, ownerReader, "owner reader");
+      await page.until(() => names(page).length === 3 && page.scheduled());
+      const dropped = page.store.get("message-cp-token")!;
+      server.state.refuse = 503;
+      page.elements["forget"].on.click();
+      await page.until(() => page.elements["status-line"].textContent === UNENDED && page.elements["signout-retry"].hidden === false);
+      await page.until(() => names(page).length === 3 && page.scheduled());
+      // The retry is in flight when the tab switches to the reader token, whose start() shows the button again.
+      let release!: () => void;
+      server.state.hold = new Promise<void>((resolve) => (release = resolve));
+      server.state.refuse = undefined;
+      page.elements["signout-retry"].on.click();
+      pick(page, 1);
+      await page.until(() => names(page).join() === "yan,zed" && page.scheduled());
+      expect(page.elements["signout-retry"].hidden).toBe(false);
+      release();
+      await page.until(() => sessionOf(dropped) === undefined);
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      expect(page.elements["signout-retry"].hidden).toBe(true);
+      await page.poll();
+      await page.until(page.scheduled);
+      expect(page.elements["status-line"].textContent).toBe("");
+      expect(page.elements["signout-retry"].hidden).toBe(true);
+      expect(saved(page)).toHaveLength(2);
+    });
+
     it("marks a token the server refuses and offers it no more until it is entered again, leaving the others", async () => {
       const { colin, otherReader, otherReaderId } = twoAccounts();
       const page = await load(colin);

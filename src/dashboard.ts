@@ -672,7 +672,8 @@ function endSession(value) {
 // Ends each of the values this tab is dropping with endSession. One the server did not confirm is kept in unended, and
 // a confirmed one is removed, whichever token the tab holds by then, so a failed end is never lost; the answer rewrites
 // the status line only while the tab has not moved to another token or signed in again since gen, and otherwise the
-// next poll or ask() says the warning, as it does for unconfirmed.
+// next poll or ask() says the warning, as it does for unconfirmed. A late answer that leaves no warning still hides
+// "Sign out again", which start() may have shown for it, so the button never stands for a retry that is settled.
 function endSessions(values, gen) {
   for (const value of values) {
     endSession(value).then((ok) => {
@@ -680,6 +681,7 @@ function endSessions(values, gen) {
       if (ok) unended.delete(value);
       else unended.add(value);
       if (gen === tokenGeneration) rewarn(before);
+      else if (!warning()) signoutRetry.hidden = true;
     });
   }
 }
@@ -4289,7 +4291,10 @@ async function poll(gen) {
     if (warning()) {
       say(warning(), true);
       signoutRetry.hidden = false;
-    } else say("", false);
+    } else {
+      say("", false);
+      signoutRetry.hidden = true;
+    }
   } else if (result.status === 403) {
     say("This token cannot read agents, channels or messages (403). Retrying…", true);
   } else if (result.status === 503) {
