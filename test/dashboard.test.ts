@@ -6806,13 +6806,13 @@ describe("the page's invites", () => {
       ([id, node]) => id !== "invite-link" && JSON.stringify(node, (k, v) => (k === "on" ? undefined : v)).includes(secret),
     );
 
-  // The names of the entries under the Admin heading, in the sidebar's order.
+  // The labels of the entries under the Admin heading, in the sidebar's order.
   const adminEntries = (page: Page) =>
     ["invite-entry", "token-entry", "signin-entry", "webhook-entry"].flatMap((id) =>
       page.elements[id].children.map((item) => item.children[0].children[0].textContent),
     );
 
-  it("shows the People entry to an admin person only, never to a plain person, the full token or a read-only token", async () => {
+  it("shows the Admin heading and its four entries to an admin person only, never to a plain person, the full token or a read-only token", async () => {
     addPerson(db, "owner", "maria");
     const plain = addToken(db, "owner", false, false, undefined, "maria").token;
     for (const token of [plain, OWNER_TOKEN, viewer]) {
