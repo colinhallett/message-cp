@@ -926,7 +926,7 @@ describe("the page's channels and messages", () => {
       await page.until(() => page.elements["status-line"].textContent === "" && page.elements["signout-retry"].hidden === true);
     });
 
-    it("says an unconfirmed end on the token form after Forget token, and drops one answered after signing in again", async () => {
+    it("says an unconfirmed end on the token form after Forget token, and keeps one answered after signing in again for the next poll", async () => {
       const { colin, otherReader } = twoAccounts();
       const server = endsFetch();
       const page = await load(colin, undefined, { fetch: server.fetch });
@@ -947,12 +947,57 @@ describe("the page's channels and messages", () => {
       page.elements["token"].value = colin;
       page.elements["login"].on.submit({ preventDefault() {} } as never);
       await page.until(() => names(page).length === 3 && page.scheduled());
+      const said = page.elements["status-line"].textContent;
       release();
       await new Promise((resolve) => setTimeout(resolve, 30));
+      // The late answers change nothing on the page, but the sessions they failed to end are kept, so the next poll says
+      // so and "Sign out again" ends them.
+      expect(page.elements["status-line"].textContent).toBe(said);
+      expect(page.elements["signout-retry"].hidden).toBe(true);
       await page.poll();
       await page.until(page.scheduled);
-      expect(page.elements["status-line"].textContent).toBe("");
+      expect(page.elements["status-line"].textContent).toBe(UNENDED);
+      expect(page.elements["signout-retry"].hidden).toBe(false);
+      const forgotten = server.bearers().slice(1, 3);
+      server.state.refuse = undefined;
+      server.state.hold = undefined;
+      page.elements["signout-retry"].on.click();
+      await page.until(() => page.elements["status-line"].textContent === "" && page.elements["signout-retry"].hidden === true);
+      expect(server.bearers().slice(3).sort()).toEqual([...forgotten].sort());
+      for (const bearer of forgotten) expect(sessionOf(bearer.slice("Bearer ".length))).toBeUndefined();
+    });
+
+    it("keeps a session whose end fails after Add a token was pressed while it was in flight, and ends it with Sign out again", async () => {
+      const { colin, otherReader } = twoAccounts();
+      const server = endsFetch();
+      const page = await load(colin, undefined, { fetch: server.fetch });
+      await page.until(() => names(page).length === 3);
+      add(page, otherReader, "other");
+      await page.until(() => names(page).join() === "yan,zed" && page.scheduled());
+      const otherSession = page.store.get("message-cp-token")!;
+      let release!: () => void;
+      server.state.hold = new Promise<void>((resolve) => (release = resolve));
+      server.state.refuse = 503;
+      // "Forget this one" drops the other session and moves to colin; "Add a token" is pressed before its DELETE answers.
+      page.elements["forget"].on.click();
+      await page.until(() => names(page).length === 3 && page.scheduled());
+      page.elements["add-token"].on.click();
+      release();
+      await new Promise((resolve) => setTimeout(resolve, 30));
       expect(page.elements["signout-retry"].hidden).toBe(true);
+      expect(sessionOf(otherSession)).toBeDefined();
+      // Back on colin, the next poll says the session is not ended, and the retry ends it.
+      page.elements["saved-rows"].children[0].children[0].on.click();
+      await page.until(() => names(page).length === 3 && page.scheduled());
+      await page.poll();
+      await page.until(page.scheduled);
+      expect(page.elements["status-line"].textContent).toBe(UNENDED);
+      server.state.refuse = undefined;
+      server.state.hold = undefined;
+      page.elements["signout-retry"].on.click();
+      await page.until(() => sessionOf(otherSession) === undefined && page.elements["status-line"].textContent === "");
+      expect(server.bearers()).toEqual([`Bearer ${otherSession}`, `Bearer ${otherSession}`]);
+      expect(page.store.get("message-cp-token")).toBe(colin);
     });
 
     it("marks a token the server refuses and offers it no more until it is entered again, leaving the others", async () => {

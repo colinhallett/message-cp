@@ -669,17 +669,17 @@ function endSession(value) {
     .catch(() => false)
     .finally(() => clearTimeout(deadline));
 }
-// Ends each of the values this tab is dropping with endSession. An answer is dropped once the tab has moved to another
-// token or signed in again since gen; otherwise one the server did not confirm is kept in unended and said, and a
-// confirmed one is removed.
+// Ends each of the values this tab is dropping with endSession. One the server did not confirm is kept in unended, and
+// a confirmed one is removed, whichever token the tab holds by then, so a failed end is never lost; the answer rewrites
+// the status line only while the tab has not moved to another token or signed in again since gen, and otherwise the
+// next poll or ask() says the warning, as it does for unconfirmed.
 function endSessions(values, gen) {
   for (const value of values) {
     endSession(value).then((ok) => {
-      if (gen !== tokenGeneration) return;
       const before = warning();
       if (ok) unended.delete(value);
       else unended.add(value);
-      rewarn(before);
+      if (gen === tokenGeneration) rewarn(before);
     });
   }
 }
@@ -4286,8 +4286,10 @@ async function poll(gen) {
   if (gen !== generation) return;
   if (result.status === 401) return ask(REFUSED);
   if (result.ok) {
-    if (warning()) say(warning(), true);
-    else say("", false);
+    if (warning()) {
+      say(warning(), true);
+      signoutRetry.hidden = false;
+    } else say("", false);
   } else if (result.status === 403) {
     say("This token cannot read agents, channels or messages (403). Retrying…", true);
   } else if (result.status === 503) {
