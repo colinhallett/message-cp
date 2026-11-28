@@ -51,10 +51,16 @@ export interface TokenAccess {
    */
   registers?: number;
   /**
-   * For a dashboard sign-in session (`dashboard_sessions`, from a login link or an invite) in place of its token, the
+   * For a dashboard sign-in session (`dashboard_sessions`, from a login link, an invite or a pasted token) in place of its token, the
    * session's row id. It reaches what its token reaches, except /mcp and /wait. Set only when the bearer was a session id.
    */
   session?: number;
+  /**
+   * For a full, read-only or person token made with `message-cp` (a `tokens` row) carried itself, not through a
+   * sign-in session, the token's row id: POST /api/session starts a sign-in session for it. Never for the owner token,
+   * an agent or listen token, or a session.
+   */
+  token?: number;
   /**
    * For an agent token the OAuth code exchange issued (an approval), single-agent or registering, the token's row id:
    * its sessions may ask for a listen token (`issueListenToken`). Never for a listen token itself.
@@ -349,7 +355,7 @@ function recordUse(db: Db, token: number, lastUsedAt: number | null): void {
  * token whose agent or person has been removed included. A created token it accepts is recorded as used now (see
  * `recordUse`), even if a later check refuses the request; nothing is recorded for `ownerToken` or a refused token.
  *
- * `token` may also be a dashboard sign-in session id (`dashboard_sessions`, made by `redeemLoginCode`). When no token's
+ * `token` may also be a dashboard sign-in session id (`dashboard_sessions`, made by `redeemLoginCode` or `signInWithToken`). When no token's
  * hash matches, the session is found by its hash and its token by `tokens.id`, then every check above applies to that
  * token's row, so a session of a revoked token, or of a person token whose person was removed, gives undefined as the
  * token itself would. Its answer is its token's, with `session` set to the session's row id.
@@ -409,7 +415,13 @@ export function accountForToken(db: Db, token: string, ownerToken: string): Toke
   recordUse(db, row.token_id, row.last_used_at);
   if (row.person_row !== null && row.person_name !== null) {
     const person: BoundPerson = { id: row.person_row, name: row.person_name, admin: row.person_admin === 1 };
-    return { account: row.account_id, readOnly: false, agentOnly: false, person, ...(session !== undefined && { session }) };
+    return {
+      account: row.account_id,
+      readOnly: false,
+      agentOnly: false,
+      person,
+      ...(session !== undefined ? { session } : { token: row.token_id }),
+    };
   }
   // An agent token's row also has read_only set (see `issueToken`); it is agent-only here, never both.
   const access: TokenAccess = { account: row.account_id, readOnly: row.read_only === 1 && row.agent_only !== 1, agentOnly: row.agent_only === 1 };
@@ -419,6 +431,7 @@ export function accountForToken(db: Db, token: string, ownerToken: string): Toke
   // Only an agent token, which is what the code exchange issues; a sign-in session is never one.
   if (row.oauth === 1 && row.agent_only === 1 && session === undefined) access.approval = row.token_id;
   if (session !== undefined) access.session = session;
+  else if (row.agent_only !== 1) access.token = row.token_id;
   return access;
 }
 

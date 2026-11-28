@@ -32,6 +32,7 @@ import {
   loginLink,
   makeInvite,
   redeemLoginCode,
+  signInWithToken,
   listWebhooksBy,
   removeAgentBy,
   removeWebhookBy,
@@ -668,6 +669,31 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
       ...(access.person && { person: access.person.name }),
       ...(access.person?.admin && { admin: true }),
     });
+  };
+
+  /**
+   * POST /api/session, from the dashboard when a token is pasted: for a full, read-only or person token made with
+   * `message-cp` (`access.token`), starts a dashboard sign-in session for that token, as `signInWithToken` does, and
+   * answers `{ session }`, its id, never cached; the page keeps it in place of the token. For the owner token or a
+   * bearer that is already a session it starts none and answers `{ session: null }`, and the page keeps what it has.
+   * 429 once the token has MAX_SESSIONS_PER_TOKEN sessions, and 401 for a token revoked since it was checked. Agent and
+   * listen tokens never reach it. It reads no body, so it takes no slot; nothing in the request names an account.
+   */
+  const apiSession = (req: IncomingMessage, res: ServerResponse, access: TokenAccess) => {
+    if (req.method !== "POST") return reply(res, 405, "Method not allowed", { Allow: "POST" });
+    const token = access.token;
+    if (token === undefined) return sendOAuthJson(res, 200, { session: null });
+    let session: string | null | undefined;
+    try {
+      // null for a token revoked meanwhile, kept apart from the undefined `unlessBusy` gives once it has answered 503.
+      session = unlessBusy(res, () => signInWithToken(db, token) ?? null);
+    } catch (err) {
+      if (err instanceof LoginError) return reply(res, 429, err.message);
+      throw err;
+    }
+    if (session === undefined) return;
+    if (session === null) return reply(res, 401, "Unauthorized");
+    sendOAuthJson(res, 200, { session });
   };
 
   /**
@@ -1594,12 +1620,13 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
     ) {
       return reply(res, 403, "Agent tokens cannot use the dashboard API", inviting || managing || hooks || revoking || tokens || signins ? { Connection: "close" } : {});
     }
-    // A dashboard sign-in session (a login link's or an invite's) reaches what its token reaches but /mcp and /wait, so the
+    // A dashboard sign-in session (a login link's, an invite's or a pasted token's) reaches what its token reaches but /mcp and /wait, so the
     // session itself never acts as an agent. It is refused before a slot is taken or a body read.
     if (access.session !== undefined && (path === "/mcp" || path === "/wait")) {
       return reply(res, 403, "A dashboard sign-in cannot use MCP or /wait", { Connection: "close" });
     }
     if (path === "/api/token") return apiToken(req, res, access);
+    if (path === "/api/session") return apiSession(req, res, access);
     if (path === "/api/agents" && !managing) return apiAgents(req, res, account);
     if (path === "/api/channels") return apiChannels(req, res, account);
     if (path === "/api/channel-posts") return apiChannelPosts(req, res, account);

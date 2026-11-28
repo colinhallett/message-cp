@@ -598,6 +598,12 @@ describe("the page's channels and messages", () => {
       const reader = addToken(db, "other", true);
       return { other, colin, otherReader: reader.token, otherReaderId: reader.id };
     }
+    // The row id of the token whose sign-in session `value` is, or undefined for a value that is no session, such as a
+    // token: a pasted token is kept as a session of it, never as itself.
+    const sessionOf = (value: string | undefined) =>
+      value === undefined
+        ? undefined
+        : (db.prepare("SELECT token_id FROM dashboard_sessions WHERE hash = ?").pluck().get(createHash("sha256").update(value).digest("hex")) as number | undefined);
     const names = (page: { elements: Record<string, Stub> }) => page.elements["rows"].children.map((row) => row.children[0].children[1]?.textContent);
     const shown = (page: { elements: Record<string, Stub> }) =>
       [page.elements["rows"], page.elements["channel-rows"], page.elements["pair-rows"], page.elements["post-rows"]].map((box) => JSON.stringify(box.children.map(text)));
@@ -625,7 +631,7 @@ describe("the page's channels and messages", () => {
     });
 
     it("keeps a token for each account under its name and switches between them, showing only that account's data", async () => {
-      const { other, colin, otherReader } = twoAccounts();
+      const { other, colin, otherReader, otherReaderId } = twoAccounts();
       const page = await load(colin);
       await page.until(() => names(page).length === 3 && page.elements["new-message"].hidden === false);
       // The token in use is picked up as the first saved one, named after its person.
@@ -638,11 +644,15 @@ describe("the page's channels and messages", () => {
       page.elements["token-name"].value = "ember-reach-2";
       page.elements["token"].value = otherReader;
       page.elements["login"].on.submit({ preventDefault() {} } as never);
+      await page.until(() => saved(page).length === 2);
+      // The pasted token is kept as a new session of it, under the name typed, and the token itself nowhere.
+      const otherSession = page.store.get("message-cp-token")!;
+      expect(sessionOf(otherSession)).toBe(otherReaderId);
       expect(saved(page)).toEqual([
         { name: "colin", token: colin, refused: false },
-        { name: "ember-reach-2", token: otherReader, refused: false },
+        { name: "ember-reach-2", token: otherSession, refused: false },
       ]);
-      expect(page.store.get("message-cp-token")).toBe(otherReader);
+      expect([...page.store.values()].join()).not.toContain(otherReader);
       await page.until(() => names(page).join() === "yan,zed" && page.elements["pair-rows"].children.length === 1);
       const pickBox = page.elements["token-pick"];
       expect(pickBox.hidden).toBe(false);
@@ -780,6 +790,9 @@ describe("the page's channels and messages", () => {
       add(page, otherReader, "other");
       await page.until(() => names(page).join() === "yan,zed");
       await page.until(page.scheduled);
+      const otherSession = page.store.get("message-cp-token")!;
+      expect(sessionOf(otherSession)).toBe(otherReaderId);
+      // Revoking the token ends the session the page keeps for it.
       revokeToken(db, otherReaderId);
       await page.poll();
       await page.until(() => page.elements["login"].hidden === false);
@@ -787,7 +800,7 @@ describe("the page's channels and messages", () => {
       expect(shown(page)).toEqual(["[]", "[]", "[]", "[]"]);
       expect(saved(page)).toEqual([
         { name: "colin", token: colin, refused: false },
-        { name: "other", token: otherReader, refused: true },
+        { name: "other", token: otherSession, refused: true },
       ]);
       const rowsOf = page.elements["saved-rows"].children;
       expect(rowsOf.map((row) => row.children.map((c) => [c.textContent, (c as unknown as { disabled: boolean }).disabled ?? false]))).toEqual([
@@ -884,10 +897,11 @@ describe("the page's channels and messages", () => {
       const page = await load("", undefined, {
         location: address,
         history: { replaceState: () => (address.hash = "") },
-        // The login reaches the server and redeems the code, but its answer comes only after the paste.
+        // The login reaches the server and redeems the code, but its answer comes only after the paste, even though the
+        // paste aborts it.
         fetch: async (url: string, init: RequestInit) => {
           asked.push(url);
-          const res = await fetch(`${base()}${url}`, init);
+          const res = await fetch(`${base()}${url}`, url === "/api/login" ? { ...init, signal: undefined } : init);
           if (url === "/api/login") {
             await held;
             answered = true;
@@ -899,9 +913,10 @@ describe("the page's channels and messages", () => {
       page.elements["token"].value = viewer;
       page.elements["login"].on.submit({ preventDefault() {} } as never);
       release();
-      await page.until(() => answered);
+      await page.until(() => answered && page.store.has("message-cp-token"));
       await new Promise((resolve) => setTimeout(resolve, 20));
-      expect(page.store.get("message-cp-token")).toBe(viewer);
+      // The pasted read-only token's own session, not the link's.
+      expect(accountForToken(db, page.store.get("message-cp-token")!, OWNER_TOKEN)).toMatchObject({ readOnly: true, session: expect.any(Number) });
       expect(asked.filter((u) => u === "/api/token")).toHaveLength(1);
     });
 
@@ -947,6 +962,99 @@ describe("the page's channels and messages", () => {
       expect(page.replaced).toEqual([]);
       expect(page.urls).not.toContain("/api/login");
       expect(page.elements["login"].hidden).toBe(false);
+    });
+  });
+
+  describe("a pasted token", () => {
+    // The token row whose sign-in session `value` is, or undefined for a value that is no session.
+    const sessionOf = (value: string | undefined) =>
+      value === undefined
+        ? undefined
+        : (db.prepare("SELECT token_id FROM dashboard_sessions WHERE hash = ?").pluck().get(createHash("sha256").update(value).digest("hex")) as number | undefined);
+    const paste = (page: { elements: Record<string, Stub> }, token: string) => {
+      page.elements["token"].value = token;
+      page.elements["login"].on.submit({ preventDefault() {} } as never);
+    };
+
+    it("keeps a new sign-in session of a full token, never the token, and signs the approval page in with the session", async () => {
+      const full = addToken(db, "owner");
+      const signins: string[] = [];
+      const page = await load("", undefined, {
+        fetch: (url: string, init: RequestInit) => {
+          if (url === "oauth/signin") signins.push((init.headers as Record<string, string> | undefined)?.Authorization ?? "");
+          return fetch(`${base()}${url}`, init);
+        },
+      });
+      paste(page, full.token);
+      await page.until(() => page.store.has("message-cp-token") && signins.length === 1 && page.elements["view"].hidden === false);
+      const session = page.store.get("message-cp-token")!;
+      expect(sessionOf(session)).toBe(full.id);
+      expect([...page.store.keys()]).toEqual(["message-cp-token"]);
+      expect(signins).toEqual([`Bearer ${session}`]);
+      // Ending the sign-in on the server refuses the page, as a login link's does, while the token keeps working.
+      await page.until(page.scheduled);
+      db.prepare("DELETE FROM dashboard_sessions").run();
+      await page.poll();
+      await page.until(() => page.elements["login"].hidden === false);
+      expect(page.elements["status-line"].textContent).toBe("The server refused that token. Enter another.");
+      expect(accountForToken(db, full.token, OWNER_TOKEN)).toBeDefined();
+    });
+
+    it("keeps the owner token as pasted, starting no session", async () => {
+      const page = await load("");
+      paste(page, OWNER_TOKEN);
+      await page.until(() => page.store.get("message-cp-token") === OWNER_TOKEN && page.elements["view"].hidden === false);
+      expect(db.prepare("SELECT COUNT(*) FROM dashboard_sessions").pluck().get()).toBe(0);
+    });
+
+    it("keeps nothing and says why when the server refuses the exchange or does not answer", async () => {
+      const full = addToken(db, "owner").token;
+      const cases: [number | "fail", string][] = [
+        [429, "This token already has 100 dashboard sign-ins, so this browser was not signed in. An admin can end some in Sign-ins."],
+        [503, "The server is busy (503), so this browser was not signed in. Enter the token again in a moment."],
+        [500, "The server answered 500, so this browser was not signed in. Enter the token again."],
+        [401, "The server refused that token. Enter another."],
+        [
+          "fail",
+          "No answer from the server, so this browser was not signed in, though the server may have started a sign-in that Sign-ins lists. Enter the token again.",
+        ],
+      ];
+      for (const [status, said] of cases) {
+        const page = await load("", (url) => (url === "/api/session" ? status : undefined));
+        paste(page, full);
+        await page.until(() => page.elements["status-line"].textContent === said);
+        expect(page.store.size).toBe(0);
+        expect(page.elements["login"].hidden).toBe(false);
+        expect(page.urls).not.toContain("/api/token");
+      }
+    });
+
+    it("drops the exchange's answer when another token is pasted meanwhile, so the later paste wins", async () => {
+      const first = addToken(db, "owner");
+      const second = addToken(db, "owner", true);
+      let release: () => void = () => {};
+      const held = new Promise<void>((r) => (release = r));
+      let answered = false;
+      const page = await load("", undefined, {
+        // The first exchange reaches the server and starts a session, but its answer comes only after the second paste.
+        fetch: async (url: string, init: RequestInit) => {
+          const mine = url === "/api/session" && (init.headers as Record<string, string>).Authorization === `Bearer ${first.token}`;
+          const res = await fetch(`${base()}${url}`, mine ? { ...init, signal: undefined } : init);
+          if (mine) {
+            await held;
+            answered = true;
+          }
+          return res;
+        },
+      });
+      paste(page, first.token);
+      await page.until(() => db.prepare("SELECT COUNT(*) FROM dashboard_sessions").pluck().get() === 1);
+      paste(page, second.token);
+      await page.until(() => page.store.has("message-cp-token"));
+      release();
+      await page.until(() => answered);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(sessionOf(page.store.get("message-cp-token"))).toBe(second.id);
     });
   });
 
@@ -3554,6 +3662,7 @@ describe("the page's webhook deliveries", () => {
 
     page.elements["token"].value = otherViewer;
     page.elements["login"].on.submit({ preventDefault() {} } as never);
+    await page.until(() => page.store.size > 0);
     await page.openDeliveries();
     await page.until(() => page.elements["log-note"].textContent === NO_DELIVERIES);
     expect(page.elements["post-rows"].children).toHaveLength(0);
@@ -3909,6 +4018,7 @@ describe("the page's approved clients", () => {
 
     page.elements["token"].value = otherViewer;
     page.elements["login"].on.submit({ preventDefault() {} } as never);
+    await page.until(() => page.store.size > 0);
     await page.openApprovals();
     await page.until(() => page.elements["post-rows"].children.length === 1);
     expect(page.elements["post-rows"].children.map(approval)).toEqual([
@@ -4357,7 +4467,8 @@ describe("the page's posting", () => {
       elements["compose"].on.submit({ preventDefault: () => prevented++ });
     };
     // The sign-in POST oauth/signin is not a post; the approval page tests check it.
-    const posts = () => requests.filter((r) => r.method !== "GET" && r.url !== "oauth/signin");
+    // A pasted token's exchange for a session is not a post either.
+    const posts = () => requests.filter((r) => r.method !== "GET" && r.url !== "oauth/signin" && r.url !== "/api/session");
     // The people the page may post as, as "New message" offers them under From: a person token's person once
     // GET /api/agents lists them, and no one for any other token.
     const picker = () => (elements["new-from"]?.children ?? []).map((o) => o.value).filter((v) => v !== "");
@@ -5543,7 +5654,9 @@ describe("the page's posting", () => {
     seed();
     let release!: () => void;
     const hold = new Promise<void>((resolve) => (release = resolve));
-    const page = await load(colinToken(), (url, method) => (method === "POST" && page.posts().length === 1 ? { hold } : undefined));
+    const page = await load(colinToken(), (url, method) =>
+      method === "POST" && url !== "/api/session" && page.posts().length === 1 ? { hold } : undefined,
+    );
     await page.until(() => page.picker().length === 1 && page.elements["channel-rows"].children.length === 1);
     open(page.elements["channel-rows"], "build");
     page.send("slow");
@@ -8740,7 +8853,7 @@ describe("the page's invites", () => {
       const page = await load(anaToken);
       await openSignins(page);
       expect(page.elements["log-note"].textContent).toBe(
-        "No dashboard sign-ins. A browser is listed here from when it signs in with a login link or an invite until its sign-in ends.",
+        "No dashboard sign-ins. A browser is listed here from when it signs in with a login link, an invite or a pasted token until its sign-in ends.",
       );
       expect(sinRows(page)).toEqual([]);
       for (let i = 0; i < 201; i++) signIn();

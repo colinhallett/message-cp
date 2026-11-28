@@ -234,10 +234,10 @@ describe("account and token management", () => {
 
   it("resolves MESSAGE_CP_HTTP_TOKEN to the owner's account and an account's token to that account", () => {
     expect(accountForToken(db, OWNER_TOKEN, OWNER_TOKEN)).toEqual({ account: OWNER_ACCOUNT, readOnly: false, agentOnly: false });
-    expect(accountForToken(db, friendToken, OWNER_TOKEN)).toEqual({ account: listAccounts(db)[1].id, readOnly: false, agentOnly: false });
+    expect(accountForToken(db, friendToken, OWNER_TOKEN)).toEqual({ account: listAccounts(db)[1].id, readOnly: false, agentOnly: false, token: listAccounts(db)[1].tokenIds[0] });
     const viewer = addToken(db, "friend", true);
     expect(viewer).toMatchObject({ readOnly: true, agentOnly: false });
-    expect(accountForToken(db, viewer.token, OWNER_TOKEN)).toEqual({ account: listAccounts(db)[1].id, readOnly: true, agentOnly: false });
+    expect(accountForToken(db, viewer.token, OWNER_TOKEN)).toEqual({ account: listAccounts(db)[1].id, readOnly: true, agentOnly: false, token: viewer.id });
     const agent = addToken(db, "friend", false, true);
     expect(agent).toMatchObject({ readOnly: false, agentOnly: true });
     expect(accountForToken(db, agent.token, OWNER_TOKEN)).toEqual({ account: listAccounts(db)[1].id, readOnly: false, agentOnly: true });
@@ -253,7 +253,7 @@ describe("account and token management", () => {
     const maria = db.prepare("SELECT id FROM agents WHERE account_id = ? AND name = 'maria'").pluck().get(friend) as number;
     const t = addToken(db, "friend", false, false, undefined, "MARIA");
     expect(t).toMatchObject({ account: "friend", readOnly: false, agentOnly: false, person: "maria" });
-    expect(accountForToken(db, t.token, OWNER_TOKEN)).toEqual({ account: friend, readOnly: false, agentOnly: false, person: { id: maria, name: "maria", admin: false } });
+    expect(accountForToken(db, t.token, OWNER_TOKEN)).toEqual({ account: friend, readOnly: false, agentOnly: false, person: { id: maria, name: "maria", admin: false }, token: t.id });
     // A server from before person tokens reads only read_only, agent_only and agent_id, and so sees a read-only token.
     expect(db.prepare("SELECT read_only, agent_only, agent_id FROM tokens WHERE id = ?").get(t.id)).toEqual({ read_only: 1, agent_only: 0, agent_id: null });
   });

@@ -53,6 +53,12 @@ export const MAX_LOGIN_CODES = 1000;
  * cancelled ones too keeps a loop of making and cancelling from growing the table.
  */
 export const MAX_INVITES_PER_ACCOUNT = 100;
+/**
+ * Sign-in sessions one token may have at once (POST /api/session, each paste of the token into the dashboard making
+ * one); past this its next is refused until an admin ends some in "Sign-ins" or the token is revoked. Counted per token,
+ * so pasting one token in a loop cannot grow `dashboard_sessions` past this, nor refuse another token's sign-in.
+ */
+export const MAX_SESSIONS_PER_TOKEN = 100;
 /** How long a link works once it is made. */
 export const LOGIN_CODE_TTL_MS = 5 * 60 * 1000;
 /** How long an invite works once it is made. */
@@ -572,7 +578,7 @@ export interface AccountSignin {
   /** The `dashboard_sessions` row id, which is not a credential. */
   id: number;
   tokenId: number;
-  kind: "full" | "person";
+  kind: "full" | "read-only" | "person";
   /** For a person token, its person's name. */
   person?: string;
   createdAt: string;
@@ -581,7 +587,8 @@ export interface AccountSignin {
 }
 
 // A sign-in is live while `accountForToken` would accept it: its token is unrevoked and, for a person token, its person
-// is still a live person of the token's own account, found by row. Login codes only make full and person tokens.
+// is still a live person of the token's own account, found by row. Login codes only make full and person tokens; a
+// pasted token's session (`signInWithToken`) may also be a read-only token's.
 const LIVE_SIGNIN_TOKEN = `tokens.account_id = ? AND tokens.revoked_at IS NULL AND (tokens.person_id IS NULL OR people.id IS NOT NULL)`;
 const SIGNIN_PEOPLE = `LEFT JOIN agents people ON people.id = tokens.person_id AND people.account_id = tokens.account_id
   AND people.removed_at IS NULL AND people.person = 1`;
@@ -596,15 +603,15 @@ export const listSigninsBy = (db: Db, account: AccountId, by: number, current: n
     requireAdmin(db, account, by);
     const rows = db
       .prepare(
-        `SELECT dashboard_sessions.id, dashboard_sessions.token_id, dashboard_sessions.created_at, tokens.person_id, people.name AS person
+        `SELECT dashboard_sessions.id, dashboard_sessions.token_id, dashboard_sessions.created_at, tokens.read_only, tokens.person_id, people.name AS person
          FROM dashboard_sessions JOIN tokens ON tokens.id = dashboard_sessions.token_id ${SIGNIN_PEOPLE}
          WHERE ${LIVE_SIGNIN_TOKEN} ORDER BY dashboard_sessions.id LIMIT ? OFFSET ?`,
       )
-      .all(account, limit, offset) as { id: number; token_id: number; created_at: number; person_id: number | null; person: string | null }[];
+      .all(account, limit, offset) as { id: number; token_id: number; created_at: number; read_only: number; person_id: number | null; person: string | null }[];
     return rows.map((r): AccountSignin => ({
       id: r.id,
       tokenId: r.token_id,
-      kind: r.person_id !== null ? "person" : "full",
+      kind: r.person_id !== null ? "person" : r.read_only === 1 ? "read-only" : "full",
       ...(r.person !== null && { person: r.person }),
       createdAt: new Date(r.created_at).toISOString(),
       ...(r.id === current && { current: true as const }),
@@ -706,7 +713,33 @@ export const redeemLoginCode = (db: Db, code: string, now = Date.now()): string 
     }
     db.prepare("UPDATE login_codes SET used_at = ? WHERE id = ?").run(now, row.id);
     const { id } = issueToken(db, row.account_id, false, false, undefined, person);
-    const session = randomBytes(32).toString("hex");
-    db.prepare("INSERT INTO dashboard_sessions (hash, token_id, created_at) VALUES (?, ?, ?)").run(sha256(session), id, now);
-    return session;
+    return startSession(db, id, now);
+  }).immediate();
+
+/**
+ * Inside the caller's transaction: starts a dashboard sign-in session for the token with row id `token`, storing only
+ * the SHA-256 hash of its id, and answers the id, which is returned to nobody else.
+ */
+function startSession(db: Db, token: number, now: number): string {
+  const session = randomBytes(32).toString("hex");
+  db.prepare("INSERT INTO dashboard_sessions (hash, token_id, created_at) VALUES (?, ?, ?)").run(sha256(session), token, now);
+  return session;
+}
+
+/** Counts every sign-in session of the token with the bound id, searched through `dashboard_sessions_by_token`. */
+export const COUNT_TOKEN_SESSIONS = "SELECT COUNT(*) FROM dashboard_sessions WHERE token_id = ?";
+
+/**
+ * For POST /api/session: starts a dashboard sign-in session for the request's own full, read-only or person token, row
+ * `token` (`TokenAccess.token`), and answers its id, as `redeemLoginCode` does but issuing no new token. Answers undefined,
+ * starting none, for a token revoked since the request was checked. Throws `LoginError` once the token has
+ * MAX_SESSIONS_PER_TOKEN sessions. A session ends when an admin ends it or with its token, as a login link's does.
+ */
+export const signInWithToken = (db: Db, token: number, now = Date.now()): string | undefined =>
+  db.transaction((): string | undefined => {
+    if (!db.prepare("SELECT 1 FROM tokens WHERE id = ? AND revoked_at IS NULL").get(token)) return undefined;
+    if ((db.prepare(COUNT_TOKEN_SESSIONS).pluck().get(token) as number) >= MAX_SESSIONS_PER_TOKEN) {
+      throw new LoginError(`This token already has ${MAX_SESSIONS_PER_TOKEN} dashboard sign-ins; an admin can end some in Sign-ins.`);
+    }
+    return startSession(db, token, now);
   }).immediate();
