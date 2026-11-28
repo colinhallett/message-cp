@@ -7,7 +7,7 @@ import { createRequire } from "node:module";
 import { runInNewContext } from "node:vm";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { accountForToken, addAccount, addToken, listAccounts, recordClient, revokeToken } from "../src/accounts.js";
-import { cancelInvite, makeInvite, makeLoginCode, redeemLoginCode } from "../src/login.js";
+import { cancelInvite, makeInvite, makeLoginCode, redeemLoginCode, signInWithToken } from "../src/login.js";
 import { connectAgent } from "../src/connect.js";
 import { OWNER_ACCOUNT, openDb, type Db } from "../src/db.js";
 import { addPerson, identityOf, purgeAgent, registerAgent, registerWithIdentity, removeAgent, removePerson, setPersonAdmin, setStatus } from "../src/agents.js";
@@ -1010,10 +1010,18 @@ describe("the page's channels and messages", () => {
     it("keeps nothing and says why when the server refuses the exchange or does not answer", async () => {
       const full = addToken(db, "owner").token;
       const cases: [number | "fail", string][] = [
-        [429, "This token already has 100 dashboard sign-ins, so this browser was not signed in. An admin can end some in Sign-ins."],
+        [
+          429,
+          "This token already has 100 dashboard sign-ins, so this browser was not signed in. An admin person can end some in Sign-ins, or the token can be revoked and a new one made.",
+        ],
         [503, "The server is busy (503), so this browser was not signed in. Enter the token again in a moment."],
         [500, "The server answered 500, so this browser was not signed in. Enter the token again."],
         [401, "The server refused that token. Enter another."],
+        [403, "That is an agent token, and agent tokens cannot use the dashboard. Enter a full, read-only or person token."],
+        [
+          200,
+          "The server's answer could not be read, so this browser was not signed in, though the server may have started a sign-in that Sign-ins lists. Enter the token again.",
+        ],
         [
           "fail",
           "No answer from the server, so this browser was not signed in, though the server may have started a sign-in that Sign-ins lists. Enter the token again.",
@@ -1027,6 +1035,18 @@ describe("the page's channels and messages", () => {
         expect(page.elements["login"].hidden).toBe(false);
         expect(page.urls).not.toContain("/api/token");
       }
+    });
+
+    it("gives a saved entry holding the pasted token itself its new session, keeping its name and marking it usable again", async () => {
+      const full = addToken(db, "owner");
+      // Saved before sessions, as the token itself, and since refused.
+      const page = await load("");
+      page.store.set("message-cp-tokens", JSON.stringify([{ name: "old", token: full.token, refused: true }]));
+      paste(page, full.token);
+      await page.until(() => page.store.has("message-cp-token"));
+      const session = page.store.get("message-cp-token")!;
+      expect(sessionOf(session)).toBe(full.id);
+      expect(JSON.parse(page.store.get("message-cp-tokens")!)).toEqual([{ name: "old", token: session, refused: false }]);
     });
 
     it("drops the exchange's answer when another token is pasted meanwhile, so the later paste wins", async () => {
@@ -8847,6 +8867,20 @@ describe("the page's invites", () => {
       const other = await load(anaToken);
       await openSignins(other);
       expect(sinRows(other).some((r) => r.some((c) => c.includes("this browser")))).toBe(false);
+    });
+
+    it("lists a pasted read-only token's sign-in as read-only, and ends it", async () => {
+      const reader = addToken(db, "owner", true);
+      const session = signInWithToken(db, reader.id)!;
+      const id = liveIds()[0];
+      const page = await load(anaToken);
+      await openSignins(page);
+      expect(sinRows(page)).toEqual([["read-only", `token ${reader.id}`, `signed in ${at(signedAt(id))}`, "End"]]);
+      endButton(page, id).on.click();
+      page.elements["signin-yes"].on.click();
+      await page.until(() => note(page) === `Ended sign-in ${id} (read-only).`);
+      expect((await fetch(`${base()}/api/token`, { headers: auth(session) })).status).toBe(401);
+      expect((await fetch(`${base()}/api/token`, { headers: auth(reader.token) })).status).toBe(200);
     });
 
     it("says when there are none, and when only the first page is shown", async () => {

@@ -55,8 +55,9 @@ export const MAX_LOGIN_CODES = 1000;
 export const MAX_INVITES_PER_ACCOUNT = 100;
 /**
  * Sign-in sessions one token may have at once (POST /api/session, each paste of the token into the dashboard making
- * one); past this its next is refused until an admin ends some in "Sign-ins" or the token is revoked. Counted per token,
- * so pasting one token in a loop cannot grow `dashboard_sessions` past this, nor refuse another token's sign-in.
+ * one); past this its next is refused until an admin person ends some in "Sign-ins" (a new token can be made in its
+ * place otherwise). Sessions do not expire. Counted per token, so pasting one token in a loop cannot grow
+ * `dashboard_sessions` past this, nor refuse another token's sign-in.
  */
 export const MAX_SESSIONS_PER_TOKEN = 100;
 /** How long a link works once it is made. */
@@ -739,7 +740,7 @@ export const signInWithToken = (db: Db, token: number, now = Date.now()): string
   db.transaction((): string | undefined => {
     if (!db.prepare("SELECT 1 FROM tokens WHERE id = ? AND revoked_at IS NULL").get(token)) return undefined;
     if ((db.prepare(COUNT_TOKEN_SESSIONS).pluck().get(token) as number) >= MAX_SESSIONS_PER_TOKEN) {
-      throw new LoginError(`This token already has ${MAX_SESSIONS_PER_TOKEN} dashboard sign-ins; an admin can end some in Sign-ins.`);
+      throw new LoginError(`This token already has ${MAX_SESSIONS_PER_TOKEN} dashboard sign-ins; an admin person can end some in Sign-ins.`);
     }
     return startSession(db, token, now);
   }).immediate();

@@ -1056,12 +1056,13 @@ form.addEventListener("submit", (event) => {
 });
 
 // Signs this tab in with a pasted token: sends it once to POST /api/session as its bearer, and keeps the sign-in session
-// the answer gives in place of the token, under name when other tokens are saved, as login() keeps a link's. Only when
-// the answer says there is nothing to exchange (the owner token, or a value that is already a session) is the pasted
-// value kept, as it was before. Any token the tab held is forgotten first, and the token form shows while the request
+// the answer gives in place of the token, as login() keeps a link's session, under name when other tokens are saved; a
+// saved entry holding the pasted token itself (saved before sessions) is given the session instead, keeping its name
+// unless another is typed. Only when the answer says there is nothing to exchange (the owner token, or a value that is
+// already a session) is the pasted value kept, as it was before. Any token the tab held is forgotten first, and the token form shows while the request
 // is in flight; a token submitted or forgotten meanwhile wins, so the answer is dropped. A refusal, or no answer, leaves
 // the form with the reason and keeps nothing.
-const SESSION_FULL = "This token already has ${MAX_SESSIONS_PER_TOKEN} dashboard sign-ins, so this browser was not signed in. An admin can end some in Sign-ins.";
+const SESSION_FULL = "This token already has ${MAX_SESSIONS_PER_TOKEN} dashboard sign-ins, so this browser was not signed in. An admin person can end some in Sign-ins, or the token can be revoked and a new one made.";
 async function signInWith(token, name) {
   ask();
   say("Signing in…", false);
@@ -1091,7 +1092,13 @@ async function signInWith(token, name) {
   const session = answer.body !== null && typeof answer.body === "object" ? answer.body.session : undefined;
   if (answer.status === 200 && (session === null || (typeof session === "string" && session))) {
     const kept = session === null ? token : session;
-    if (savedTokens().length > 0) saveToken(kept, name);
+    const list = savedTokens();
+    const raw = list.find((t) => t.token === token);
+    if (raw) {
+      raw.token = kept;
+      keepTokens(list);
+    }
+    if (list.length > 0) saveToken(kept, name);
     else sessionStorage.setItem(KEY, kept);
     return start();
   }
@@ -4864,7 +4871,7 @@ function tokenRow(t) {
 // the shape GET /api/signins gives, so readSignins shows the answer as unreadable.
 function signinRow(s) {
   const kind = s && s.kind;
-  const personShape = kind === "person" ? s.person === undefined || typeof s.person === "string" : kind === "full" && s.person === undefined;
+  const personShape = kind === "person" ? s.person === undefined || typeof s.person === "string" : (kind === "full" || kind === "read-only") && s.person === undefined;
   if (!personShape || !Number.isInteger(s.id) || !Number.isInteger(s.tokenId) || typeof s.createdAt !== "string" || !(s.current === undefined || s.current === true)) {
     throw new TypeError("not a sign-in");
   }

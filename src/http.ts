@@ -1634,7 +1634,8 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
     if (path === "/api/search") return apiSearch(req, res, account);
     if (path === "/api/webhook-deliveries") return apiWebhookDeliveries(req, res, account);
     if (path === "/api/approvals" && !revoking) return apiApprovals(req, res, account);
-    // A read-only token reaches the read-only endpoints above and nothing else: /mcp can write, and so can any path added later.
+    // A read-only token reaches the read-only endpoints above and nothing else, but for POST /api/session, whose one write
+    // is a session of the token itself that reaches no more than it: /mcp can write, and so can any path added later.
     if (access.readOnly) return reply(res, 403, "This token is read-only", inviting || managing || hooks || revoking || tokens || signins ? { Connection: "close" } : {});
     // A person token also sends and posts, only as its person (checked by row once the body is read), approves clients
     // (above), and, while its person is an admin, deletes the account's conversations as a full token does, lists, adds,
