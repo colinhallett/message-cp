@@ -3570,6 +3570,11 @@ function deletedWith(key) {
   return [...pairs].filter(([, p]) => p.count > 0 && fold(p.names) === folded).map(([k]) => k);
 }
 
+// Names the pairs at keys, as "bob and dana, and between Bob and dana".
+function between(keys) {
+  return keys.map((k) => pairs.get(k).names.join(" and ")).join(", and between ");
+}
+
 // Shows the Delete button in the open pair's header bar while it is deletable and not asking, and keeps the confirmation's
 // count to the messages the page holds for the pair; dismisses the confirmation once the pair is not deletable.
 function showDelete() {
@@ -3578,10 +3583,9 @@ function showDelete() {
   deleteButton.hidden = !pair || !deleteConfirm.hidden;
   if (pair && !deleteConfirm.hidden) {
     // Every pair the server deletes with this one is named and counted, so the confirmation covers all it removes.
-    const held = deletedWith(openPair).map((k) => pairs.get(k));
-    const count = held.reduce((sum, p) => sum + p.count, 0);
-    const between = held.map((p) => p.names[0] + " and " + p.names[1]).join(", and between ");
-    deleteText.textContent = "Delete the " + plural(count, "message") + " between " + between + "? This cannot be undone.";
+    const held = deletedWith(openPair);
+    const count = held.reduce((sum, k) => sum + pairs.get(k).count, 0);
+    deleteText.textContent = "Delete the " + plural(count, "message") + " between " + between(held) + "? This cannot be undone.";
   }
 }
 
@@ -3606,9 +3610,9 @@ function closeDelete(refocus) {
 // Deletes the open pair's messages with DELETE /api/conversation, then reads the account's messages again from the
 // start, since GET /api/messages pages by offset and the rows before heldMessages are now fewer. The confirm button stays
 // disabled while the request is in flight. A 200 closes the pair if it is still open, says in the sidebar how many
-// messages it deleted (the answer's deleted, left out when an older serve does not send it), and forgets what this tab
-// had seen of it; with no answer the messages may already be deleted, so they are read again too and the pair stays open with a
-// note, its rows emptied until the read shows what is left. Any other answer keeps the pair open with its reason. An
+// messages it deleted (with no count from an older serve), and forgets what this tab had seen of it; with no answer
+// the messages may already be deleted, so they are read again too and the pair stays open with a note, its rows emptied
+// until the read shows what is left. Any other answer keeps the pair open with its reason. An
 // answer that comes after the token was forgotten is dropped; one that comes after another conversation opened changes
 // only the messages the page holds.
 async function deletePair() {
@@ -3621,7 +3625,7 @@ async function deletePair() {
   const gone = deletedWith(key);
   const [a, b] = pair.names;
   // Named as the confirmation names them, since the server deletes the pairs that differ only in A-Z case with it.
-  const between = gone.map((k) => pairs.get(k)).map((p) => p.names[0] + " and " + p.names[1]).join(", and between ");
+  const names = between(gone);
   deleting = tokenGen;
   deleteYes.disabled = true;
   const ac = new AbortController();
@@ -3662,7 +3666,9 @@ async function deletePair() {
       // poll started below clears. An older serve answers no count.
       const n = answer.deleted;
       deletedNote.textContent =
-        Number.isSafeInteger(n) && n >= 0 ? "Deleted " + counted(n, "message") + " between " + between + "." : "Deleted the conversation between " + between + ".";
+        Number.isSafeInteger(n) && n >= 0
+          ? "Deleted " + counted(n, "message") + " between " + names + "."
+          : "Deleted the conversation between " + names + ".";
       // The log the focus was in is gone, so it goes to the search box, at the top of the page.
       searchText.focus();
     } else if (openPair !== undefined) {
