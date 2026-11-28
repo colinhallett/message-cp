@@ -26,6 +26,7 @@ import {
   addTokenBy,
   cancelInvite,
   dashboardUrl,
+  endOwnSignin,
   endSigninBy,
   listAccountPeople,
   listInvites,
@@ -678,9 +679,21 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
    * bearer that is already a session it starts none and answers `{ session: null }`, and the page keeps what it has.
    * 429 once the token has MAX_SESSIONS_PER_TOKEN sessions, and 401 for a token revoked since it was checked. Agent and
    * listen tokens never reach it. It reads no body, so it takes no slot; nothing in the request names an account.
+   * DELETE /api/session, from the dashboard when it forgets a sign-in: for a bearer that is a sign-in session
+   * (`access.session`), ends that one session, as `endOwnSignin` does, and answers `{ ended: true }`, so its next request
+   * gets 401 while its token and the token's other sessions keep working; for any other bearer that reaches it (the
+   * owner token, or a full, read-only or person token carried itself) it changes nothing, never revoking a token, and
+   * answers `{ ended: false }`. Nothing in the request names a session, token or account, so it ends only its own.
    */
   const apiSession = (req: IncomingMessage, res: ServerResponse, access: TokenAccess) => {
-    if (req.method !== "POST") return reply(res, 405, "Method not allowed", { Allow: "POST" });
+    if (req.method === "DELETE") {
+      const session = access.session;
+      if (session === undefined) return sendOAuthJson(res, 200, { ended: false });
+      const ended = unlessBusy(res, () => endOwnSignin(db, session));
+      if (ended === undefined) return;
+      return sendOAuthJson(res, 200, { ended });
+    }
+    if (req.method !== "POST") return reply(res, 405, "Method not allowed", { Allow: "POST, DELETE" });
     const token = access.token;
     if (token === undefined) return sendOAuthJson(res, 200, { session: null });
     let session: string | null | undefined;
@@ -1634,8 +1647,9 @@ export async function startHttp(db: Db, options: HttpOptions): Promise<HttpServe
     if (path === "/api/search") return apiSearch(req, res, account);
     if (path === "/api/webhook-deliveries") return apiWebhookDeliveries(req, res, account);
     if (path === "/api/approvals" && !revoking) return apiApprovals(req, res, account);
-    // A read-only token reaches the read-only endpoints above and nothing else, but for POST /api/session, whose one write
-    // is a session of the token itself that reaches no more than it: /mcp can write, and so can any path added later.
+    // A read-only token reaches the read-only endpoints above and nothing else, but for /api/session, whose writes are
+    // starting a session of the token itself that reaches no more than it, and ending the bearer's own session: /mcp can
+    // write, and so can any path added later.
     if (access.readOnly) return reply(res, 403, "This token is read-only", inviting || managing || hooks || revoking || tokens || signins ? { Connection: "close" } : {});
     // A person token also sends and posts, only as its person (checked by row once the body is read), approves clients
     // (above), and, while its person is an admin, deletes the account's conversations as a full token does, lists, adds,

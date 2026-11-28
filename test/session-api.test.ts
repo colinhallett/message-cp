@@ -7,7 +7,16 @@ import { addAccount, addToken, revokeToken } from "../src/accounts.js";
 import { addPerson, removePerson } from "../src/agents.js";
 import { openDb, type Db } from "../src/db.js";
 import { startHttp, type HttpServer } from "../src/http.js";
-import { COUNT_TOKEN_SESSIONS, LoginError, MAX_SESSIONS_PER_TOKEN, makeLoginCode, redeemLoginCode, signInWithToken } from "../src/login.js";
+import {
+  COUNT_TOKEN_SESSIONS,
+  END_OWN_SIGNIN,
+  endOwnSignin,
+  LoginError,
+  MAX_SESSIONS_PER_TOKEN,
+  makeLoginCode,
+  redeemLoginCode,
+  signInWithToken,
+} from "../src/login.js";
 
 // POST /api/session: a token pasted into the dashboard is exchanged for its own sign-in session, on a server with the
 // owner's account and a friend's, each with an admin person.
@@ -170,12 +179,12 @@ describe("POST /api/session", () => {
     expect(sessions()).toEqual([]);
   });
 
-  it("answers 405 with Allow: POST for another method", async () => {
+  it("answers 405 with Allow: POST, DELETE for another method", async () => {
     const full = addToken(db, "owner").token;
-    for (const method of ["GET", "PUT", "DELETE"]) {
+    for (const method of ["GET", "PUT", "PATCH"]) {
       const res = await call("/api/session", full, method);
       expect(res.status, method).toBe(405);
-      expect(res.headers.get("allow")).toBe("POST");
+      expect(res.headers.get("allow")).toBe("POST, DELETE");
     }
     expect(sessions()).toEqual([]);
   });
@@ -188,5 +197,125 @@ describe("POST /api/session", () => {
       .all(full.id)
       .map((r) => (r as { detail: string }).detail);
     expect(plan).toEqual(["SEARCH dashboard_sessions USING COVERING INDEX dashboard_sessions_by_token (token_id=?)"]);
+  });
+});
+
+describe("DELETE /api/session", () => {
+  const end = (token: string) => call("/api/session", token, "DELETE");
+
+  it("ends the bearer's own session of a full, read-only, plain person or admin person token, and that one only", async () => {
+    addPerson(db, "owner", "ben");
+    const admin = addToken(db, "owner", false, false, undefined, "maria");
+    const made = [addToken(db, "owner"), addToken(db, "owner", true), addToken(db, "owner", false, false, undefined, "ben"), admin];
+    for (const t of made) {
+      const session = await signIn(t.token);
+      const other = await signIn(t.token);
+      const id = sessionRow(session)?.id;
+      const res = await end(session);
+      expect(res.status).toBe(200);
+      expect(res.headers.get("cache-control")).toBe("no-store");
+      const text = await res.text();
+      expect(text).not.toContain(session);
+      expect(JSON.parse(text)).toEqual({ ended: true });
+      expect(sessionRow(session)).toBeUndefined();
+      for (const path of ["/api/token", "/api/agents", "/api/signins", "/api/session"]) {
+        expect((await call(path, session)).status, path).toBe(401);
+      }
+      expect((await end(session)).status).toBe(401);
+      expect((await call("/api/session", session, "POST")).status).toBe(401);
+      // Its token, and the token's other browser, stay signed in.
+      expect((await call("/api/agents", t.token)).status).toBe(200);
+      expect((await call("/api/agents", other)).status).toBe(200);
+      const listed = (await (await call("/api/signins", admin.token)).json()) as SigninJson[];
+      expect(listed.map((s) => s.id)).not.toContain(id);
+      expect(listed.map((s) => s.id)).toContain(sessionRow(other)?.id);
+    }
+    expect(db.prepare("SELECT COUNT(*) FROM tokens WHERE revoked_at IS NOT NULL").pluck().get()).toBe(0);
+  });
+
+  it("answers { ended: false }, changing nothing, for the owner token and a token carried itself", async () => {
+    addPerson(db, "owner", "ben");
+    const made = [addToken(db, "owner"), addToken(db, "owner", true), addToken(db, "owner", false, false, undefined, "ben"), addToken(db, "owner", false, false, undefined, "maria")];
+    for (const t of made) await signIn(t.token);
+    const before = sessions();
+    const tokensBefore = db.prepare("SELECT * FROM tokens ORDER BY id").all();
+    for (const token of [OWNER_TOKEN, ...made.map((t) => t.token)]) {
+      const res = await end(token);
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ ended: false });
+      expect((await call("/api/agents", token)).status).toBe(200);
+    }
+    expect(sessions()).toEqual(before);
+    expect(db.prepare("SELECT * FROM tokens ORDER BY id").all()).toEqual(tokensBefore);
+  });
+
+  it("refuses agent, registering and unknown tokens as /api does, ending nothing", async () => {
+    await signIn(addToken(db, "owner").token);
+    const before = sessions();
+    const agent = addToken(db, "owner", false, true).token;
+    const registers = addToken(db, "owner", false, true, undefined, undefined, true).token;
+    for (const token of [agent, registers]) expect((await end(token)).status).toBe(403);
+    expect((await end("not-a-token")).status).toBe(401);
+    expect(sessions()).toEqual(before);
+  });
+
+  it("ends a session of another account's token only in that account, never touching this one's", async () => {
+    const mine = await signIn(addToken(db, "owner").token);
+    const theirs = await signIn(addToken(db, "friend", false, false, undefined, "fay").token);
+    expect(await (await end(theirs)).json()).toEqual({ ended: true });
+    expect(sessionRow(theirs)).toBeUndefined();
+    expect((await call("/api/agents", mine)).status).toBe(200);
+  });
+
+  it("makes room for the token's next session once it is at its limit", async () => {
+    const full = addToken(db, "owner");
+    for (let i = 0; i < MAX_SESSIONS_PER_TOKEN - 1; i++) signInWithToken(db, full.id);
+    const last = await signIn(full.token);
+    expect((await exchange(full.token)).status).toBe(429);
+    expect((await end(last)).status).toBe(200);
+    await signIn(full.token);
+  });
+
+  it("answers false for a session already gone, as when two DELETEs race", () => {
+    const full = addToken(db, "owner");
+    signInWithToken(db, full.id);
+    const id = (sessions()[0] as { id: number }).id;
+    expect(endOwnSignin(db, id)).toBe(true);
+    expect(endOwnSignin(db, id)).toBe(false);
+  });
+
+  it("answers 503 with Retry-After when the database is busy, ending none", async () => {
+    const session = await signIn(addToken(db, "owner").token);
+    const before = sessions();
+    const prepare = db.prepare.bind(db);
+    vi.spyOn(db, "prepare").mockImplementation(((sql: string) => {
+      if (sql === END_OWN_SIGNIN) throw Object.assign(new Error("database is locked"), { code: "SQLITE_BUSY" });
+      return prepare(sql);
+    }) as typeof db.prepare);
+    const res = await end(session);
+    vi.restoreAllMocks();
+    expect(res.status).toBe(503);
+    expect(res.headers.get("retry-after")).toBe("1");
+    expect(sessions()).toEqual(before);
+  });
+
+  it("deletes the one session through the primary key, without scanning", () => {
+    const full = addToken(db, "owner");
+    signInWithToken(db, full.id);
+    const id = (sessions()[0] as { id: number }).id;
+    const prepare = db.prepare.bind(db);
+    const prepared: string[] = [];
+    vi.spyOn(db, "prepare").mockImplementation(((sql: string) => {
+      prepared.push(sql);
+      return prepare(sql);
+    }) as typeof db.prepare);
+    endOwnSignin(db, id);
+    vi.restoreAllMocks();
+    expect(prepared).toEqual([END_OWN_SIGNIN]);
+    const plan = db
+      .prepare(`EXPLAIN QUERY PLAN ${prepared[0]}`)
+      .all(id)
+      .map((r) => (r as { detail: string }).detail);
+    expect(plan).toEqual(["SEARCH dashboard_sessions USING INTEGER PRIMARY KEY (rowid=?)"]);
   });
 });

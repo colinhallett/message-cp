@@ -386,9 +386,10 @@ describe("the page's polling", () => {
       sessionStorage: { getItem: (k: string) => store.get(k) ?? null, setItem: (k: string, v: string) => store.set(k, v), removeItem: (k: string) => store.delete(k) },
       setTimeout: (fn: () => void, ms: number) => (timers.set(++nextTimer, { fn, ms }), nextTimer),
       clearTimeout: (id: number) => timers.delete(id),
-      // GET /api/token answers at once, so only the polls' requests are left to hang.
+      // GET /api/token and a sign-out's DELETE /api/session answer at once, so only the polls' requests are left to hang.
       fetch: (url: string, init: { signal: AbortSignal }) => {
         if (url === "/api/token") return Promise.resolve(new Response(JSON.stringify({ readOnly: true })));
+        if (url === "/api/session") return Promise.resolve(new Response(JSON.stringify({ ended: false })));
         if (url === "oauth/signin") return Promise.resolve(new Response(null, { status: 404 }));
         signals.push(init.signal);
         return new Promise((_resolve, reject) => init.signal.addEventListener("abort", () => reject(new Error("aborted"))));
@@ -780,6 +781,257 @@ describe("the page's channels and messages", () => {
       await page.poll();
       await page.until(page.scheduled);
       expect(page.elements["status-line"].textContent).toBe("");
+    });
+
+    const UNENDED =
+      "The server did not confirm ending this browser's sign-in, so it may still work until an admin person ends it in Sign-ins or its token is revoked.";
+    // A fetch for load's globals that answers oauth/signin with 204 (a DELETE there with state.cookie while it is set)
+    // and keeps the bearer and init of each DELETE /api/session in ends, answering those with state.refuse while it is
+    // set, once state.hold settles when that is set, and every other request from the server.
+    function endsFetch() {
+      const ends: { bearer: string; init: RequestInit }[] = [];
+      const state: { refuse?: number; hold?: Promise<void>; cookie?: number } = {};
+      const fetchFn = async (url: string, init: RequestInit) => {
+        if (url === "oauth/signin") return new Response(null, { status: init.method === "DELETE" ? (state.cookie ?? 204) : 204 });
+        if (url === "/api/session" && init.method === "DELETE") {
+          ends.push({ bearer: (init.headers as Record<string, string>).Authorization, init });
+          const { refuse, hold } = state;
+          if (hold) await hold;
+          if (refuse !== undefined) return new Response(null, { status: refuse });
+        }
+        return fetch(`${base()}${url}`, init);
+      };
+      return { ends, bearers: () => ends.map((e) => e.bearer), state, fetch: fetchFn };
+    }
+
+    it("ends the forgotten session on the server with Forget this one and Forget token, leaving its token and the others", async () => {
+      const { colin, otherReader, otherReaderId } = twoAccounts();
+      const server = endsFetch();
+      const page = await load(colin, undefined, { fetch: server.fetch });
+      await page.until(() => names(page).length === 3 && page.elements["new-message"].hidden === false);
+      add(page, otherReader, "ember-reach-2");
+      await page.until(() => names(page).join() === "yan,zed");
+      const otherSession = page.store.get("message-cp-token")!;
+      // A second browser of the same token, which ending this one leaves signed in.
+      const elsewhere = signInWithToken(db, otherReaderId)!;
+      page.elements["forget"].on.click();
+      expect(server.bearers()).toEqual([`Bearer ${otherSession}`]);
+      expect(server.ends[0].init).toMatchObject({ credentials: "omit", referrerPolicy: "no-referrer", cache: "no-store" });
+      expect(server.ends[0].init.signal).toBeInstanceOf(AbortSignal);
+      await page.until(() => sessionOf(otherSession) === undefined);
+      expect(sessionOf(elsewhere)).toBe(otherReaderId);
+      await page.until(() => names(page).length === 3 && page.scheduled());
+      expect(page.elements["signout-retry"].hidden).toBe(true);
+      // The last one, a token held from before sessions, is forgotten as before: its DELETE ends nothing and revokes nothing.
+      page.elements["forget"].on.click();
+      expect(server.bearers()).toEqual([`Bearer ${otherSession}`, `Bearer ${colin}`]);
+      expect(page.store.size).toBe(0);
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      expect(page.elements["signout-retry"].hidden).toBe(true);
+      expect(page.elements["status-line"].textContent).toBe("");
+      expect(db.prepare("SELECT COUNT(*) FROM tokens WHERE revoked_at IS NOT NULL").pluck().get()).toBe(0);
+      expect((await fetch(`${base()}/api/agents`, { headers: { Authorization: `Bearer ${colin}` } })).status).toBe(200);
+    });
+
+    it("ends the one session it holds with Forget token, leaving its token's other browsers signed in", async () => {
+      const { otherReaderId } = twoAccounts();
+      const session = signInWithToken(db, otherReaderId)!;
+      const elsewhere = signInWithToken(db, otherReaderId)!;
+      const server = endsFetch();
+      const page = await load(session, undefined, { fetch: server.fetch });
+      await page.until(() => names(page).join() === "yan,zed");
+      page.elements["forget"].on.click();
+      expect(page.store.size).toBe(0);
+      expect(server.bearers()).toEqual([`Bearer ${session}`]);
+      await page.until(() => sessionOf(session) === undefined);
+      expect(sessionOf(elsewhere)).toBe(otherReaderId);
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      expect(page.elements["status-line"].textContent).toBe("");
+      expect(page.elements["signout-retry"].hidden).toBe(true);
+    });
+
+    it("ends every session it held when another tab signs out", async () => {
+      const { colin, otherReader } = twoAccounts();
+      const channels: { onmessage?: () => void }[] = [];
+      class Channel {
+        onmessage?: () => void;
+        constructor() {
+          channels.push(this);
+        }
+        postMessage() {}
+      }
+      const server = endsFetch();
+      const page = await load(colin, undefined, { BroadcastChannel: Channel, fetch: server.fetch });
+      await page.until(() => names(page).length === 3);
+      add(page, otherReader, "other");
+      await page.until(() => names(page).join() === "yan,zed");
+      const otherSession = page.store.get("message-cp-token")!;
+      channels[0].onmessage!();
+      expect(page.store.size).toBe(0);
+      expect(server.bearers().sort()).toEqual([`Bearer ${colin}`, `Bearer ${otherSession}`].sort());
+      await page.until(() => sessionOf(otherSession) === undefined);
+    });
+
+    it("keeps saying a session's unconfirmed end across polls, and ends it again with Sign out again", async () => {
+      const { colin, otherReader } = twoAccounts();
+      const server = endsFetch();
+      const page = await load(colin, undefined, { fetch: server.fetch });
+      await page.until(() => names(page).length === 3);
+      add(page, otherReader, "other");
+      await page.until(() => names(page).join() === "yan,zed");
+      const otherSession = page.store.get("message-cp-token")!;
+      server.state.refuse = 503;
+      page.elements["forget"].on.click();
+      await page.until(() => page.elements["signout-retry"].hidden === false);
+      expect(page.elements["status-line"].textContent).toBe(UNENDED);
+      expect(sessionOf(otherSession)).toBeDefined();
+      // The tab still forgot it.
+      expect(JSON.stringify([...page.store.values()])).not.toContain(otherSession);
+      await page.until(() => names(page).length === 3 && page.scheduled());
+      await page.poll();
+      await page.until(page.scheduled);
+      expect(page.elements["status-line"].textContent).toBe(UNENDED);
+      server.state.refuse = undefined;
+      page.elements["signout-retry"].on.click();
+      expect(page.elements["signout-retry"].hidden).toBe(true);
+      await page.until(() => sessionOf(otherSession) === undefined && page.elements["status-line"].textContent === "");
+      expect(server.bearers()).toEqual([`Bearer ${otherSession}`, `Bearer ${otherSession}`]);
+      expect(page.elements["signout-retry"].hidden).toBe(true);
+      // The retry forgot nothing: colin is still in use.
+      expect(page.store.get("message-cp-token")).toBe(colin);
+    });
+
+    it("says both warnings when neither the session's end nor the cookie's clearing is confirmed, and settles each alone", async () => {
+      const { colin, otherReader } = twoAccounts();
+      const server = endsFetch();
+      // Forgetting the person token moves to the read-only one, which sends no sign-in that would replace the cookie.
+      const page = await load(otherReader, undefined, { fetch: server.fetch });
+      await page.until(() => names(page).join() === "yan,zed");
+      add(page, colin, "colin");
+      await page.until(() => names(page).length === 3);
+      server.state.refuse = 503;
+      server.state.cookie = 503;
+      page.elements["forget"].on.click();
+      await page.until(() => page.elements["status-line"].textContent === UNCONFIRMED_SIGNOUT + " " + UNENDED);
+      await page.until(() => names(page).join() === "yan,zed" && page.scheduled());
+      await page.poll();
+      await page.until(page.scheduled);
+      expect(page.elements["status-line"].textContent).toBe(UNCONFIRMED_SIGNOUT + " " + UNENDED);
+      // The session ends on the retry; the cookie still is not cleared, and its warning stays with the button.
+      server.state.refuse = undefined;
+      page.elements["signout-retry"].on.click();
+      await page.until(() => page.elements["status-line"].textContent === UNCONFIRMED_SIGNOUT && page.elements["signout-retry"].hidden === false);
+      server.state.cookie = undefined;
+      page.elements["signout-retry"].on.click();
+      await page.until(() => page.elements["status-line"].textContent === "" && page.elements["signout-retry"].hidden === true);
+    });
+
+    it("says an unconfirmed end on the token form after Forget token, and keeps one answered after signing in again for the next poll", async () => {
+      const { colin, otherReader } = twoAccounts();
+      const server = endsFetch();
+      const page = await load(colin, undefined, { fetch: server.fetch });
+      await page.until(() => names(page).length === 3);
+      server.state.refuse = 503;
+      page.elements["forget"].on.click();
+      await page.until(() => page.elements["status-line"].textContent === UNENDED);
+      expect(page.elements["login"].hidden).toBe(false);
+      expect(page.elements["signout-retry"].hidden).toBe(false);
+      // Signing in again and forgetting that one, whose DELETEs answer only once the tab has signed in yet again.
+      page.elements["token"].value = otherReader;
+      page.elements["login"].on.submit({ preventDefault() {} } as never);
+      await page.until(() => names(page).join() === "yan,zed" && page.scheduled());
+      let release!: () => void;
+      server.state.hold = new Promise<void>((resolve) => (release = resolve));
+      page.elements["forget"].on.click();
+      expect(server.bearers()).toHaveLength(3);
+      page.elements["token"].value = colin;
+      page.elements["login"].on.submit({ preventDefault() {} } as never);
+      await page.until(() => names(page).length === 3 && page.scheduled());
+      const said = page.elements["status-line"].textContent;
+      release();
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      // The late answers change nothing on the page, but the sessions they failed to end are kept, so the next poll says
+      // so and "Sign out again" ends them.
+      expect(page.elements["status-line"].textContent).toBe(said);
+      expect(page.elements["signout-retry"].hidden).toBe(true);
+      await page.poll();
+      await page.until(page.scheduled);
+      expect(page.elements["status-line"].textContent).toBe(UNENDED);
+      expect(page.elements["signout-retry"].hidden).toBe(false);
+      const forgotten = server.bearers().slice(1, 3);
+      server.state.refuse = undefined;
+      server.state.hold = undefined;
+      page.elements["signout-retry"].on.click();
+      await page.until(() => page.elements["status-line"].textContent === "" && page.elements["signout-retry"].hidden === true);
+      expect(server.bearers().slice(3).sort()).toEqual([...forgotten].sort());
+      for (const bearer of forgotten) expect(sessionOf(bearer.slice("Bearer ".length))).toBeUndefined();
+    });
+
+    it("keeps a session whose end fails after Add a token was pressed while it was in flight, and ends it with Sign out again", async () => {
+      const { colin, otherReader } = twoAccounts();
+      const server = endsFetch();
+      const page = await load(colin, undefined, { fetch: server.fetch });
+      await page.until(() => names(page).length === 3);
+      add(page, otherReader, "other");
+      await page.until(() => names(page).join() === "yan,zed" && page.scheduled());
+      const otherSession = page.store.get("message-cp-token")!;
+      let release!: () => void;
+      server.state.hold = new Promise<void>((resolve) => (release = resolve));
+      server.state.refuse = 503;
+      // "Forget this one" drops the other session and moves to colin; "Add a token" is pressed before its DELETE answers.
+      page.elements["forget"].on.click();
+      await page.until(() => names(page).length === 3 && page.scheduled());
+      page.elements["add-token"].on.click();
+      release();
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      expect(page.elements["signout-retry"].hidden).toBe(true);
+      expect(sessionOf(otherSession)).toBeDefined();
+      // Back on colin, the next poll says the session is not ended, and the retry ends it.
+      page.elements["saved-rows"].children[0].children[0].on.click();
+      await page.until(() => names(page).length === 3 && page.scheduled());
+      await page.poll();
+      await page.until(page.scheduled);
+      expect(page.elements["status-line"].textContent).toBe(UNENDED);
+      server.state.refuse = undefined;
+      server.state.hold = undefined;
+      page.elements["signout-retry"].on.click();
+      await page.until(() => sessionOf(otherSession) === undefined && page.elements["status-line"].textContent === "");
+      expect(server.bearers()).toEqual([`Bearer ${otherSession}`, `Bearer ${otherSession}`]);
+      expect(page.store.get("message-cp-token")).toBe(colin);
+    });
+
+    it("hides Sign out again once a retry answered after a switch ends the session, so it cannot forget the tokens in use", async () => {
+      const { colin, otherReader } = twoAccounts();
+      const ownerReader = addToken(db, "owner", true).token;
+      const server = endsFetch();
+      const page = await load(colin, undefined, { fetch: server.fetch });
+      await page.until(() => names(page).length === 3);
+      add(page, otherReader, "reader");
+      await page.until(() => names(page).join() === "yan,zed" && page.scheduled());
+      add(page, ownerReader, "owner reader");
+      await page.until(() => names(page).length === 3 && page.scheduled());
+      const dropped = page.store.get("message-cp-token")!;
+      server.state.refuse = 503;
+      page.elements["forget"].on.click();
+      await page.until(() => page.elements["status-line"].textContent === UNENDED && page.elements["signout-retry"].hidden === false);
+      await page.until(() => names(page).length === 3 && page.scheduled());
+      // The retry is in flight when the tab switches to the reader token, whose start() shows the button again.
+      let release!: () => void;
+      server.state.hold = new Promise<void>((resolve) => (release = resolve));
+      server.state.refuse = undefined;
+      page.elements["signout-retry"].on.click();
+      pick(page, 1);
+      await page.until(() => names(page).join() === "yan,zed" && page.scheduled());
+      expect(page.elements["signout-retry"].hidden).toBe(false);
+      release();
+      await page.until(() => sessionOf(dropped) === undefined);
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      expect(page.elements["signout-retry"].hidden).toBe(true);
+      await page.poll();
+      await page.until(page.scheduled);
+      expect(page.elements["status-line"].textContent).toBe("");
+      expect(page.elements["signout-retry"].hidden).toBe(true);
+      expect(saved(page)).toHaveLength(2);
     });
 
     it("marks a token the server refuses and offers it no more until it is entered again, leaving the others", async () => {
@@ -5941,7 +6193,9 @@ describe("the page's posting", () => {
       addPerson(db, "owner", "dana");
       sendMessage(db, OWNER_ACCOUNT, "bob", "dana", "hi dana");
     };
-    const deletes = (page: Awaited<ReturnType<typeof load>>) => page.requests.filter((r) => r.method === "DELETE" && r.url !== "oauth/signin");
+    // A sign-out's DELETE oauth/signin and DELETE /api/session delete no conversation.
+    const deletes = (page: Awaited<ReturnType<typeof load>>) =>
+      page.requests.filter((r) => r.method === "DELETE" && r.url !== "oauth/signin" && r.url !== "/api/session");
     const ready = async (page: Awaited<ReturnType<typeof load>>) => {
       await page.until(() => page.elements["pair-rows"].children.length === 2 && page.elements["channel-rows"].children.length === 1);
     };

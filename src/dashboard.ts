@@ -10,6 +10,7 @@ import { MAX_BODY_LENGTH } from "./messages.js";
 // the session (or owner token) in sessionStorage (that tab only), with any others "Add a token" saved there under names to
 // switch between, signs the browser in to the approval page with POST
 // oauth/signin for a full or person token under an https public URL (and out with DELETE on "Forget token", which also signs out its other dashboard tabs),
+// ends a sign-in session it forgets with DELETE /api/session,
 // and polls GET /api/agents, GET /api/channels, GET /api/messages and, while one is
 // open, a channel's GET /api/channel-posts, the account's GET /api/webhook-deliveries, its GET /api/approvals or, for
 // an admin person, its GET /api/people and GET /api/invites, its GET /api/webhooks, its GET /api/tokens or its GET /api/signins, with it. It shows them as a chat app: channels and the pairs of agents that have
@@ -611,36 +612,97 @@ function signout() {
   signing = done;
   return done;
 }
-// Forgets this tab's token and, unless clear is false, clears the sign-in cookie; if the server does not confirm that,
-// says so on the token form with a button to try again, while the token form is still showing and no newer token has
-// been entered.
+// Forgets this tab's token and every saved one, ending each one's sign-in session with endSessions, and, unless clear
+// is false, clears the sign-in cookie; if the server does not confirm that, says so on the token form with a button to
+// try again, while the token form is still showing and no newer token has been entered.
 const UNCONFIRMED = "The server did not confirm signing this browser out of the page that approves clients, so it may still approve until the browser closes.";
-// Whether the sign-in cookie may still be a token's that "Forget this one" forgot: its DELETE was not confirmed, and no
-// request to oauth/signin has been confirmed since, which would have cleared or replaced the cookie. While it is, a poll
-// that would clear the status line says UNCONFIRMED instead, and "Sign out again" clears the cookie again without
-// forgetting the saved tokens. forget() ends it, as it sends its own DELETE and says so itself, and bumps forgetAlls, so
-// an earlier "Forget this one" answered after it does not start it again.
+// Whether the sign-in cookie may still be a forgotten token's: its DELETE was not confirmed, and no request to
+// oauth/signin has been confirmed since, which would have cleared or replaced the cookie. While it is, a poll that would
+// clear the status line says UNCONFIRMED instead, and "Sign out again" clears the cookie again without forgetting the
+// saved tokens. forget() starts it afresh, as it sends its own DELETE, and bumps forgetAlls, so an earlier "Forget this
+// one" answered after it does not start it again.
 let unconfirmed = false;
 let forgetAlls = 0;
+// The sign-in sessions this tab forgot whose DELETE /api/session the server has not confirmed, held in memory only,
+// never in sessionStorage, so "Sign out again" can end them. While any is, the status line says UNENDED as it says
+// UNCONFIRMED; a confirmed DELETE removes it, and forget() sends them all again.
+const UNENDED = "The server did not confirm ending this browser's sign-in, so it may still work until an admin person ends it in Sign-ins or its token is revoked.";
+let unended = new Set();
+// The warnings the status line ends with while a sign-out is unconfirmed, or "".
+function warning() {
+  return [unconfirmed ? UNCONFIRMED : "", unended.size > 0 ? UNENDED : ""].filter((w) => w).join(" ");
+}
+// Rewrites the end of the status line once the warnings have changed from before, keeping what it said ahead of them;
+// with no warning before, or a line rewritten since, it says the warnings alone. Shows "Sign out again" while there is a
+// warning.
+function rewarn(before) {
+  const now = warning();
+  signoutRetry.hidden = now === "";
+  if (now === before) return;
+  const text = statusLine.textContent;
+  if (before && text.endsWith(before)) {
+    const rest = text.slice(0, -before.length).trim();
+    say(now ? (rest ? rest + " " : "") + now : rest, now !== "" || (statusLine.className === "error" && rest !== ""));
+  } else if (now) say(now, true);
+}
 function settleSignout() {
   if (!unconfirmed) return;
+  const before = warning();
   unconfirmed = false;
-  signoutRetry.hidden = true;
-  const text = statusLine.textContent;
-  if (text.endsWith(UNCONFIRMED)) say(text.slice(0, -UNCONFIRMED.length).trim(), statusLine.className === "error" && text !== UNCONFIRMED);
+  rewarn(before);
+}
+// Ends the sign-in session value with DELETE /api/session as its bearer, with its own deadline, settling with whether
+// the server confirmed it: a 200 it can read, which for a token carried itself, such as the owner token, ends nothing,
+// or a 401, as the value no longer works. It never rejects.
+function endSession(value) {
+  const ac = new AbortController();
+  const deadline = setTimeout(() => ac.abort(), TIMEOUT_MS);
+  return fetch("/api/session", {
+    method: "DELETE",
+    headers: { Authorization: "Bearer " + value },
+    cache: "no-store",
+    credentials: "omit",
+    referrerPolicy: "no-referrer",
+    signal: ac.signal,
+  })
+    .then(async (res) => res.status === 401 || (res.status === 200 && typeof (await res.json()).ended === "boolean"))
+    .catch(() => false)
+    .finally(() => clearTimeout(deadline));
+}
+// Ends each of the values this tab is dropping with endSession. One the server did not confirm is kept in unended, and
+// a confirmed one is removed, whichever token the tab holds by then, so a failed end is never lost; the answer rewrites
+// the status line only while the tab has not moved to another token or signed in again since gen, and otherwise the
+// next poll or ask() says the warning, as it does for unconfirmed. A late answer that leaves no warning still hides
+// "Sign out again", which start() may have shown for it, so the button never stands for a retry that is settled.
+function endSessions(values, gen) {
+  for (const value of values) {
+    endSession(value).then((ok) => {
+      const before = warning();
+      if (ok) unended.delete(value);
+      else unended.add(value);
+      if (gen === tokenGeneration) rewarn(before);
+      else if (!warning()) signoutRetry.hidden = true;
+    });
+  }
 }
 function forget(clear = true) {
+  const held = sessionStorage.getItem(KEY);
+  const dropped = new Set([...unended, ...savedTokens().map((t) => t.token)]);
+  if (held) dropped.add(held);
   unconfirmed = false;
+  unended = new Set();
   forgetAlls++;
   keepTokens([]);
   ask();
   const gen = tokenGeneration;
   signoutRetry.hidden = true;
+  endSessions(dropped, gen);
   if (!clear) return;
   signout().then((ok) => {
     if (ok || gen !== tokenGeneration || form.hidden) return;
-    say(UNCONFIRMED, true);
-    signoutRetry.hidden = false;
+    const before = warning();
+    unconfirmed = true;
+    rewarn(before);
   });
 }
 // Tells the browser's other dashboard tabs that this one signed out, so they forget their tokens too; it carries no token.
@@ -953,7 +1015,8 @@ function ask(message) {
   searchText.value = "";
   view.hidden = true;
   panel("");
-  say(unconfirmed ? (message ? message + " " : "") + UNCONFIRMED : message || "", true);
+  const warn = warning();
+  say(warn ? (message ? message + " " : "") + warn : message || "", true);
   form.hidden = false;
   input.value = "";
   nameInput.value = "";
@@ -1139,13 +1202,15 @@ tokenPick.addEventListener("change", () => {
   else showTokens();
 });
 
-// Signing out forgets this tab's token, clears the approval page's sign-in cookie for the whole browser once any sign-in
-// in flight has been answered, and has every other dashboard tab of the browser forget its token. Without a public URL
-// there is no oauth/signin, and the DELETE gets 404, which changes nothing.
-// With other tokens saved, it forgets only this one, removing it and its name from SAVED, clears the cookie the same way
-// (a full or person token it moves to signs in again) and moves to the first saved token not refused, or to the token
-// form with the saved ones listed; other tabs are told nothing. If the server does not confirm the clearing, it says so,
-// and keeps saying so across polls and switches, with "Sign out again" clearing only the cookie (see unconfirmed).
+// Signing out forgets this tab's token, ending its sign-in session on the server with DELETE /api/session (a raw token
+// held from before sessions, or the owner token, ends nothing), clears the approval page's sign-in cookie for the whole
+// browser once any sign-in in flight has been answered, and has every other dashboard tab of the browser forget its
+// token. Without a public URL there is no oauth/signin, and the DELETE gets 404, which changes nothing.
+// With other tokens saved, it forgets only this one, removing it and its name from SAVED, ends its session and clears
+// the cookie the same way (a full or person token it moves to signs in again) and moves to the first saved token not
+// refused, or to the token form with the saved ones listed; other tabs are told nothing. If the server does not confirm
+// ending the session or clearing the cookie, it says so, and keeps saying so across polls and switches, with "Sign out
+// again" sending only what was not confirmed (see unconfirmed and unended).
 forgetButton.addEventListener("click", () => {
   const held = sessionStorage.getItem(KEY);
   const rest = savedTokens().filter((t) => t.token !== held);
@@ -1155,12 +1220,13 @@ forgetButton.addEventListener("click", () => {
     const next = rest.find((t) => !t.refused);
     if (next) switchTo(next.token);
     else ask();
+    if (held) endSessions([held], tokenGeneration);
     const all = forgetAlls;
     cleared.then((ok) => {
       if (ok || all !== forgetAlls) return;
+      const before = warning();
       unconfirmed = true;
-      signoutRetry.hidden = false;
-      say(UNCONFIRMED, true);
+      rewarn(before);
     });
     return;
   }
@@ -1168,15 +1234,19 @@ forgetButton.addEventListener("click", () => {
   if (signouts) signouts.postMessage("signout");
 });
 signoutRetry.addEventListener("click", () => {
-  if (!unconfirmed) return forget();
+  if (!warning()) return forget();
   signoutRetry.hidden = true;
-  signout().then((ok) => {
-    if (!ok && unconfirmed) signoutRetry.hidden = false;
-  });
+  if (unconfirmed) {
+    signout().then((ok) => {
+      if (!ok && unconfirmed) signoutRetry.hidden = false;
+    });
+  }
+  endSessions([...unended], tokenGeneration);
 });
-// Another tab signed out: forget this tab's token too. A sign-in this tab sent that is still unanswered could set the
-// cookie again after the other tab's DELETE, so this tab clears it again once its own requests are answered, and says
-// so if the server does not confirm it, as its own "Forget token" does.
+// Another tab signed out: forget this tab's token too, ending its sessions as its own "Forget token" does. A sign-in
+// this tab sent that is still unanswered could set the cookie again after the other tab's DELETE, so this tab clears it
+// again once its own requests are answered, and says so if the server does not confirm it, as its own "Forget token"
+// does.
 if (signouts) signouts.onmessage = () => forget(signinsPending > 0);
 document.getElementById("close-log").addEventListener("click", () => {
   closeLog();
@@ -2874,7 +2944,7 @@ async function search(text) {
 
 function start() {
   cancel();
-  signoutRetry.hidden = !unconfirmed;
+  signoutRetry.hidden = !warning();
   form.hidden = true;
   view.hidden = false;
   showTokens();
@@ -4218,8 +4288,13 @@ async function poll(gen) {
   if (gen !== generation) return;
   if (result.status === 401) return ask(REFUSED);
   if (result.ok) {
-    if (unconfirmed) say(UNCONFIRMED, true);
-    else say("", false);
+    if (warning()) {
+      say(warning(), true);
+      signoutRetry.hidden = false;
+    } else {
+      say("", false);
+      signoutRetry.hidden = true;
+    }
   } else if (result.status === 403) {
     say("This token cannot read agents, channels or messages (403). Retrying…", true);
   } else if (result.status === 503) {
