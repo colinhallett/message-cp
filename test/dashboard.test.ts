@@ -785,14 +785,14 @@ describe("the page's channels and messages", () => {
 
     const UNENDED =
       "The server did not confirm ending this browser's sign-in, so it may still work until an admin person ends it in Sign-ins or its token is revoked.";
-    // A fetch for load's globals that answers oauth/signin with 204 and keeps the bearer and init of each
-    // DELETE /api/session in ends, answering those with state.refuse while it is set, once state.hold settles when
-    // that is set, and every other request from the server.
+    // A fetch for load's globals that answers oauth/signin with 204 (a DELETE there with state.cookie while it is set)
+    // and keeps the bearer and init of each DELETE /api/session in ends, answering those with state.refuse while it is
+    // set, once state.hold settles when that is set, and every other request from the server.
     function endsFetch() {
       const ends: { bearer: string; init: RequestInit }[] = [];
-      const state: { refuse?: number; hold?: Promise<void> } = {};
+      const state: { refuse?: number; hold?: Promise<void>; cookie?: number } = {};
       const fetchFn = async (url: string, init: RequestInit) => {
-        if (url === "oauth/signin") return new Response(null, { status: 204 });
+        if (url === "oauth/signin") return new Response(null, { status: init.method === "DELETE" ? (state.cookie ?? 204) : 204 });
         if (url === "/api/session" && init.method === "DELETE") {
           ends.push({ bearer: (init.headers as Record<string, string>).Authorization, init });
           const { refuse, hold } = state;
@@ -831,6 +831,23 @@ describe("the page's channels and messages", () => {
       expect(page.elements["status-line"].textContent).toBe("");
       expect(db.prepare("SELECT COUNT(*) FROM tokens WHERE revoked_at IS NOT NULL").pluck().get()).toBe(0);
       expect((await fetch(`${base()}/api/agents`, { headers: { Authorization: `Bearer ${colin}` } })).status).toBe(200);
+    });
+
+    it("ends the one session it holds with Forget token, leaving its token's other browsers signed in", async () => {
+      const { otherReaderId } = twoAccounts();
+      const session = signInWithToken(db, otherReaderId)!;
+      const elsewhere = signInWithToken(db, otherReaderId)!;
+      const server = endsFetch();
+      const page = await load(session, undefined, { fetch: server.fetch });
+      await page.until(() => names(page).join() === "yan,zed");
+      page.elements["forget"].on.click();
+      expect(page.store.size).toBe(0);
+      expect(server.bearers()).toEqual([`Bearer ${session}`]);
+      await page.until(() => sessionOf(session) === undefined);
+      expect(sessionOf(elsewhere)).toBe(otherReaderId);
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      expect(page.elements["status-line"].textContent).toBe("");
+      expect(page.elements["signout-retry"].hidden).toBe(true);
     });
 
     it("ends every session it held when another tab signs out", async () => {
@@ -882,6 +899,31 @@ describe("the page's channels and messages", () => {
       expect(page.elements["signout-retry"].hidden).toBe(true);
       // The retry forgot nothing: colin is still in use.
       expect(page.store.get("message-cp-token")).toBe(colin);
+    });
+
+    it("says both warnings when neither the session's end nor the cookie's clearing is confirmed, and settles each alone", async () => {
+      const { colin, otherReader } = twoAccounts();
+      const server = endsFetch();
+      // Forgetting the person token moves to the read-only one, which sends no sign-in that would replace the cookie.
+      const page = await load(otherReader, undefined, { fetch: server.fetch });
+      await page.until(() => names(page).join() === "yan,zed");
+      add(page, colin, "colin");
+      await page.until(() => names(page).length === 3);
+      server.state.refuse = 503;
+      server.state.cookie = 503;
+      page.elements["forget"].on.click();
+      await page.until(() => page.elements["status-line"].textContent === UNCONFIRMED_SIGNOUT + " " + UNENDED);
+      await page.until(() => names(page).join() === "yan,zed" && page.scheduled());
+      await page.poll();
+      await page.until(page.scheduled);
+      expect(page.elements["status-line"].textContent).toBe(UNCONFIRMED_SIGNOUT + " " + UNENDED);
+      // The session ends on the retry; the cookie still is not cleared, and its warning stays with the button.
+      server.state.refuse = undefined;
+      page.elements["signout-retry"].on.click();
+      await page.until(() => page.elements["status-line"].textContent === UNCONFIRMED_SIGNOUT && page.elements["signout-retry"].hidden === false);
+      server.state.cookie = undefined;
+      page.elements["signout-retry"].on.click();
+      await page.until(() => page.elements["status-line"].textContent === "" && page.elements["signout-retry"].hidden === true);
     });
 
     it("says an unconfirmed end on the token form after Forget token, and drops one answered after signing in again", async () => {

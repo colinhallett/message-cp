@@ -632,8 +632,9 @@ let unended = new Set();
 function warning() {
   return [unconfirmed ? UNCONFIRMED : "", unended.size > 0 ? UNENDED : ""].filter((w) => w).join(" ");
 }
-// Rewrites the end of the status line once the warnings have changed from before, keeping what it said ahead of them,
-// and shows "Sign out again" while there is a warning.
+// Rewrites the end of the status line once the warnings have changed from before, keeping what it said ahead of them;
+// with no warning before, or a line rewritten since, it says the warnings alone. Shows "Sign out again" while there is a
+// warning.
 function rewarn(before) {
   const now = warning();
   signoutRetry.hidden = now === "";
