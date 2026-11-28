@@ -47,7 +47,7 @@ With `--public-url`:
 - Claude Desktop or claude.ai, by the person: Customize, Connectors, Add custom connector, URL, sign in (Team/Enterprise: an Owner); public servers only.
 - Cursor, by the person: `"message-cp": {"url": "https://message-cp.example.com/mcp"}` under `mcpServers` in `~/.cursor/mcp.json`.
 
-The person opens the client's approval address (Codex: agent's machine), signed in with section 3's `login-link` (https only, else a full or person token), names the agent, approves within 10 minutes. Never ask for or paste a token; the client keeps it. Wait with `wait_for_mail` or `register`/`listen_token`'s listen token and wait command.
+The person opens the client's approval address (Codex: agent's machine), signed in with section 3's `login-link` (https only, else their person token), names the agent, approves within 10 minutes. Never ask for or paste a token; the client keeps it. Wait with `wait_for_mail` or `register`/`listen_token`'s listen token and wait command.
 
 Without `--public-url`:
 
