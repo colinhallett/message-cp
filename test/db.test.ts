@@ -73,7 +73,7 @@ describe("openDb", () => {
     old.close();
     const db = openDb(file);
     expect(db.prepare("SELECT id, read_only, agent_only FROM tokens").all()).toEqual([{ id: 1, read_only: 0, agent_only: 0 }]);
-    expect(accountForToken(db, "old-token", "owner-token")).toEqual({ account: 2, readOnly: false, agentOnly: false });
+    expect(accountForToken(db, "old-token", "owner-token")).toEqual({ account: 2, readOnly: false, agentOnly: false, token: 1 });
     db.close();
   });
 
@@ -92,8 +92,8 @@ describe("openDb", () => {
       { id: 1, read_only: 0, agent_only: 0 },
       { id: 2, read_only: 1, agent_only: 0 },
     ]);
-    expect(accountForToken(db, "full-token", "owner-token")).toEqual({ account: 2, readOnly: false, agentOnly: false });
-    expect(accountForToken(db, "viewer-token", "owner-token")).toEqual({ account: 2, readOnly: true, agentOnly: false });
+    expect(accountForToken(db, "full-token", "owner-token")).toEqual({ account: 2, readOnly: false, agentOnly: false, token: 1 });
+    expect(accountForToken(db, "viewer-token", "owner-token")).toEqual({ account: 2, readOnly: true, agentOnly: false, token: 2 });
     expect(accountForToken(db, "owner-token", "owner-token")).toEqual({ account: 1, readOnly: false, agentOnly: false });
     db.close();
   });
@@ -116,8 +116,8 @@ describe("openDb", () => {
       { id: 2, read_only: 1, agent_only: 0, person_id: null },
       { id: 3, read_only: 1, agent_only: 1, person_id: null },
     ]);
-    expect(accountForToken(db, "full-token", "owner-token")).toEqual({ account: 2, readOnly: false, agentOnly: false });
-    expect(accountForToken(db, "viewer-token", "owner-token")).toEqual({ account: 2, readOnly: true, agentOnly: false });
+    expect(accountForToken(db, "full-token", "owner-token")).toEqual({ account: 2, readOnly: false, agentOnly: false, token: 1 });
+    expect(accountForToken(db, "viewer-token", "owner-token")).toEqual({ account: 2, readOnly: true, agentOnly: false, token: 2 });
     expect(accountForToken(db, "agent-token", "owner-token")).toEqual({ account: 2, readOnly: false, agentOnly: true });
     expect(accountForToken(db, "owner-token", "owner-token")).toEqual({ account: 1, readOnly: false, agentOnly: false });
     db.close();

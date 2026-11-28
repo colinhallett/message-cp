@@ -127,7 +127,8 @@ CREATE INDEX IF NOT EXISTS login_codes_by_expiry ON login_codes (expires_at);
 -- The same as mcp_authorizations_by_agent, for an agent's row, should one ever be deleted.
 CREATE INDEX IF NOT EXISTS login_codes_by_person ON login_codes (person_id);`;
 
-// The dashboard sign-ins a login link or an invite started (`redeemLoginCode` in src/login.ts), one per redeemed code.
+// The dashboard sign-ins a login link or an invite started (`redeemLoginCode` in src/login.ts), one per redeemed code, and
+// those a pasted token started for itself (`signInWithToken`), at most MAX_SESSIONS_PER_TOKEN per token.
 // Only a hash of the session id is kept: the id is a bearer credential in place of its token, which `accountForToken`
 // checks afresh on every request, so revoking the token or removing its person ends the session too. Tokens are never
 // deleted, only revoked, so `token_id` needs no ON DELETE. `hash` is UNIQUE, which gives the lookup its index.

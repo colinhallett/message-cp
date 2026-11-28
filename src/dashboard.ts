@@ -1,12 +1,13 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
-import { INVITE_TTL_MS } from "./login.js";
+import { INVITE_TTL_MS, MAX_SESSIONS_PER_TOKEN } from "./login.js";
 import { MAX_BODY_LENGTH } from "./messages.js";
 
-// The page served at GET / by `message-cp serve`. It holds no data and no token: it asks for a token, or redeems the
+// The page served at GET / by `message-cp serve`. It holds no data and no token: it asks for a token, which it exchanges
+// once for a sign-in session with POST /api/session (keeping the owner token as it is), or redeems the
 // one-time code a `message-cp login-link` link carries in its fragment for a sign-in session with POST /api/login, keeps
-// the token or session in sessionStorage (that tab only), with any others "Add a token" saved there under names to
+// the session (or owner token) in sessionStorage (that tab only), with any others "Add a token" saved there under names to
 // switch between, signs the browser in to the approval page with POST
 // oauth/signin for a full or person token under an https public URL (and out with DELETE on "Forget token", which also signs out its other dashboard tabs),
 // and polls GET /api/agents, GET /api/channels, GET /api/messages and, while one is
@@ -843,7 +844,7 @@ let signinClosings = 0;
 let signinRowsKey = "";
 // The view's note for an account with no live sign-in. The page's own sign-in is listed while it is live, so this shows
 // only to a page that reads with a token it was given rather than a sign-in.
-const NO_SIGNINS = "No dashboard sign-ins. A browser is listed here from when it signs in with a login link or an invite until its sign-in ends.";
+const NO_SIGNINS = "No dashboard sign-ins. A browser is listed here from when it signs in with a login link, an invite or a pasted token until its sign-in ends.";
 const NOT_ADMIN_SIGNINS = "The server says you are no longer an admin of this account (403), so this page no longer lists or ends sign-ins.";
 
 function say(text, isError) {
@@ -1038,6 +1039,8 @@ function showTokens() {
         drop.textContent = "Forget";
         drop.addEventListener("click", () => {
           keepTokens(savedTokens().filter((s) => s.token !== t.token));
+          // Forgetting the token a sign-in is in flight for drops that sign-in's answer, as ask() does.
+          if (exchanging && exchanging.token === t.token && exchanging.gen === tokenGeneration) return ask();
           showTokens();
         });
         row.append(drop);
@@ -1051,12 +1054,73 @@ form.addEventListener("submit", (event) => {
   event.preventDefault();
   const token = input.value.trim();
   if (!token) return;
-  if (savedTokens().length > 0) saveToken(token, nameInput.value.trim());
-  else sessionStorage.setItem(KEY, token);
-  input.value = "";
-  nameInput.value = "";
-  start();
+  signInWith(token, nameInput.value.trim());
 });
+
+// Signs this tab in with a pasted token: sends it once to POST /api/session as its bearer, and keeps the sign-in session
+// the answer gives in place of the token, as login() keeps a link's session, under name when other tokens are saved; a
+// saved entry holding the pasted token itself (saved before sessions) is given the session instead, keeping its name
+// unless another is typed. Only when the answer says there is nothing to exchange (the owner token, or a value that is
+// already a session) is the pasted value kept, as it was before. Any token the tab held is forgotten first, and the token form shows while the request
+// is in flight; a token submitted or forgotten meanwhile wins, so the answer is dropped. A refusal, or no answer, leaves
+// the form with the reason and keeps nothing.
+// The token a POST /api/session is in flight for and the tokenGeneration it started under, or undefined; Forget on that
+// token's saved row drops the answer.
+let exchanging;
+const SESSION_FULL = "This token already has ${MAX_SESSIONS_PER_TOKEN} dashboard sign-ins, so this browser was not signed in. An admin person can end some in Sign-ins, or the token can be revoked and a new one made.";
+async function signInWith(token, name) {
+  ask();
+  say("Signing in…", false);
+  const gen = tokenGeneration;
+  const pollGen = generation;
+  exchanging = { token, gen };
+  const ac = new AbortController();
+  tokenController = ac;
+  const deadline = setTimeout(() => ac.abort(), TIMEOUT_MS);
+  let answer;
+  try {
+    const res = await fetch("/api/session", {
+      method: "POST",
+      headers: { Authorization: "Bearer " + token },
+      cache: "no-store",
+      credentials: "omit",
+      referrerPolicy: "no-referrer",
+      signal: ac.signal,
+    });
+    const body = res.ok ? await res.json().catch(() => undefined) : undefined;
+    answer = { status: res.status, body };
+  } catch {
+    answer = {};
+  } finally {
+    clearTimeout(deadline);
+  }
+  if (gen !== tokenGeneration || pollGen !== generation) return;
+  exchanging = undefined;
+  const session = answer.body !== null && typeof answer.body === "object" ? answer.body.session : undefined;
+  if (answer.status === 200 && (session === null || (typeof session === "string" && session))) {
+    const kept = session === null ? token : session;
+    const list = savedTokens();
+    const raw = list.find((t) => t.token === token);
+    if (raw) {
+      raw.token = kept;
+      keepTokens(list);
+    }
+    if (list.length > 0) saveToken(kept, name);
+    else sessionStorage.setItem(KEY, kept);
+    return start();
+  }
+  if (answer.status === 401) return ask(REFUSED);
+  if (answer.status === 403) return ask(AGENT_TOKEN);
+  if (answer.status === 429) return ask(SESSION_FULL);
+  if (answer.status === 503) return ask("The server is busy (503), so this browser was not signed in. Enter the token again in a moment.");
+  ask(
+    answer.status === undefined
+      ? "No answer from the server, so this browser was not signed in, though the server may have started a sign-in that Sign-ins lists. Enter the token again."
+      : answer.status === 200
+        ? "The server's answer could not be read, so this browser was not signed in, though the server may have started a sign-in that Sign-ins lists. Enter the token again."
+        : "The server answered " + answer.status + ", so this browser was not signed in. Enter the token again.",
+  );
+}
 
 // "Add a token" saves the token in use, named as GET /api/token described it unless it is saved already, and shows the
 // token form with a name field; the saved tokens are listed under it to go back to.
@@ -4814,7 +4878,7 @@ function tokenRow(t) {
 // the shape GET /api/signins gives, so readSignins shows the answer as unreadable.
 function signinRow(s) {
   const kind = s && s.kind;
-  const personShape = kind === "person" ? s.person === undefined || typeof s.person === "string" : kind === "full" && s.person === undefined;
+  const personShape = kind === "person" ? s.person === undefined || typeof s.person === "string" : (kind === "full" || kind === "read-only") && s.person === undefined;
   if (!personShape || !Number.isInteger(s.id) || !Number.isInteger(s.tokenId) || typeof s.createdAt !== "string" || !(s.current === undefined || s.current === true)) {
     throw new TypeError("not a sign-in");
   }

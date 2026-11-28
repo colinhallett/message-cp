@@ -106,8 +106,10 @@ describe("accountForToken", () => {
   it("keeps an unbound agent token, and every other kind, as it was", () => {
     const unbound = addToken(db, "owner", false, true);
     expect(accountForToken(db, unbound.token, TOKEN)).toEqual({ account: OWNER_ACCOUNT, readOnly: false, agentOnly: true });
-    expect(accountForToken(db, addToken(db, "owner").token, TOKEN)).toEqual({ account: OWNER_ACCOUNT, readOnly: false, agentOnly: false });
-    expect(accountForToken(db, addToken(db, "owner", true).token, TOKEN)).toEqual({ account: OWNER_ACCOUNT, readOnly: true, agentOnly: false });
+    const full = addToken(db, "owner");
+    expect(accountForToken(db, full.token, TOKEN)).toEqual({ account: OWNER_ACCOUNT, readOnly: false, agentOnly: false, token: full.id });
+    const viewer = addToken(db, "owner", true);
+    expect(accountForToken(db, viewer.token, TOKEN)).toEqual({ account: OWNER_ACCOUNT, readOnly: true, agentOnly: false, token: viewer.id });
     expect(accountForToken(db, TOKEN, TOKEN)).toEqual({ account: OWNER_ACCOUNT, readOnly: false, agentOnly: false });
   });
 
