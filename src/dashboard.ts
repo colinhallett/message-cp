@@ -452,7 +452,7 @@ const signinConfirm = document.getElementById("signin-confirm");
 const signinText = document.getElementById("signin-text");
 const signinYes = document.getElementById("signin-yes");
 const signinNote = document.getElementById("signin-note");
-const peopleHead = document.getElementById("people-head");
+const adminHead = document.getElementById("admin-head");
 const inviteEntry = document.getElementById("invite-entry");
 const inviteForms = document.getElementById("invite-forms");
 const peopleRows = document.getElementById("people-rows");
@@ -1665,8 +1665,8 @@ function openTokenLog() {
   poll(generation);
 }
 
-// Makes the sidebar's "Webhooks" entry, under its Webhooks heading beside "Webhook deliveries", while the token is an
-// admin person's, and removes it otherwise, as showInviteEntry does.
+// Makes the sidebar's "Webhooks" entry, last under its Admin heading after "Sign-ins", while the token is an admin
+// person's, and removes it otherwise, as showInviteEntry does.
 function showWebhookEntry() {
   if (!meAdmin) {
     webhookEntry.replaceChildren();
@@ -1677,8 +1677,8 @@ function showWebhookEntry() {
   }
 }
 
-// Makes the sidebar's "Tokens" entry, under its Clients heading beside "Approved clients", while the token is an admin
-// person's, and removes it otherwise, as showWebhookEntry does.
+// Makes the sidebar's "Tokens" entry, under its Admin heading after "People", while the token is an admin person's, and
+// removes it otherwise, as showWebhookEntry does.
 function showTokenEntry() {
   if (!meAdmin) {
     tokenEntry.replaceChildren();
@@ -1705,7 +1705,7 @@ function openSigninLog() {
   poll(generation);
 }
 
-// Makes the sidebar's "Sign-ins" entry, under its Clients heading after "Tokens", while the token is an admin person's,
+// Makes the sidebar's "Sign-ins" entry, under its Admin heading after "Tokens", while the token is an admin person's,
 // and removes it otherwise, as showTokenEntry does.
 function showSigninEntry() {
   if (!meAdmin) {
@@ -1717,10 +1717,11 @@ function showSigninEntry() {
   }
 }
 
-// Makes the sidebar's "People" entry, under its People heading, while the token is an admin person's, and removes both
-// otherwise.
+// Makes the sidebar's "People" entry, first under its Admin heading, while the token is an admin person's, and removes
+// it and hides the heading otherwise. Every caller also runs showTokenEntry, showSigninEntry and showWebhookEntry, so
+// the heading shows exactly while its four entries exist.
 function showInviteEntry() {
-  peopleHead.hidden = !meAdmin;
+  adminHead.hidden = !meAdmin;
   if (!meAdmin) {
     inviteEntry.replaceChildren();
     inviteCount = undefined;
@@ -5149,13 +5150,13 @@ export const DASHBOARD_HTML = `<!doctype html>
 <ul id="pair-rows"></ul>
 <h2>Webhooks</h2>
 <ul id="delivery-entry"></ul>
-<ul id="webhook-entry"></ul>
 <h2>Clients</h2>
 <ul id="approval-entry"></ul>
+<h2 id="admin-head" hidden>Admin</h2>
+<ul id="invite-entry"></ul>
 <ul id="token-entry"></ul>
 <ul id="signin-entry"></ul>
-<h2 id="people-head" hidden>People</h2>
-<ul id="invite-entry"></ul>
+<ul id="webhook-entry"></ul>
 </nav>
 <main id="chat">
 <section id="log" hidden>

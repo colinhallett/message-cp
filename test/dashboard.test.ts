@@ -294,6 +294,14 @@ describe("GET /", () => {
     expect(html).toContain("<h2>Channels</h2>");
     expect(html).toContain("<h2>Direct messages</h2>");
   });
+
+  it("puts the four admin entries, and only them, under one hidden Admin heading after Webhooks and Clients", async () => {
+    const html = await (await fetch(`${base()}/`)).text();
+    expect(html).toMatch(
+      /<h2>Webhooks<\/h2>\s*<ul id="delivery-entry"><\/ul>\s*<h2>Clients<\/h2>\s*<ul id="approval-entry"><\/ul>\s*<h2 id="admin-head" hidden>Admin<\/h2>\s*<ul id="invite-entry"><\/ul>\s*<ul id="token-entry"><\/ul>\s*<ul id="signin-entry"><\/ul>\s*<ul id="webhook-entry"><\/ul>\s*<\/nav>/,
+    );
+    expect(html).not.toContain("people-head");
+  });
 });
 
 describe("GET /fonts/<file>", () => {
@@ -6798,6 +6806,12 @@ describe("the page's invites", () => {
       ([id, node]) => id !== "invite-link" && JSON.stringify(node, (k, v) => (k === "on" ? undefined : v)).includes(secret),
     );
 
+  // The names of the entries under the Admin heading, in the sidebar's order.
+  const adminEntries = (page: Page) =>
+    ["invite-entry", "token-entry", "signin-entry", "webhook-entry"].flatMap((id) =>
+      page.elements[id].children.map((item) => item.children[0].children[0].textContent),
+    );
+
   it("shows the People entry to an admin person only, never to a plain person, the full token or a read-only token", async () => {
     addPerson(db, "owner", "maria");
     const plain = addToken(db, "owner", false, false, undefined, "maria").token;
@@ -6805,14 +6819,16 @@ describe("the page's invites", () => {
       const page = await load(token);
       await page.until(() => page.elements["approval-entry"].children.length === 1 && page.requests.some((r) => r.url === "/api/token"));
       await page.poll();
-      expect(page.elements["people-head"].hidden).toBe(true);
+      expect(page.elements["admin-head"].hidden).toBe(true);
       expect(page.entry()).toBeUndefined();
+      expect(adminEntries(page)).toEqual([]);
       expect(page.requests.filter((r) => r.url.startsWith("/api/invites") || r.url.startsWith("/api/people"))).toEqual([]);
     }
     const page = await load(anaToken);
     await page.until(() => page.entry() !== undefined);
-    expect(page.elements["people-head"].hidden).toBe(false);
+    expect(page.elements["admin-head"].hidden).toBe(false);
     expect(page.entry()!.children.map((c) => c.textContent)).toEqual(["People", ""]);
+    expect(adminEntries(page)).toEqual(["People", "Tokens", "Sign-ins", "Webhooks"]);
     // Until the view is opened, the people and invites are not read.
     expect(page.requests.filter((r) => r.url.startsWith("/api/invites") || r.url.startsWith("/api/people"))).toEqual([]);
   });
@@ -7144,8 +7160,9 @@ describe("the page's invites", () => {
     submit(page.elements["person-form"]);
     await page.until(() => page.elements["log-note"].textContent.startsWith("The server says you are no longer an admin"));
     expect(page.elements["invite-forms"].hidden).toBe(true);
-    expect(page.elements["people-head"].hidden).toBe(true);
+    expect(page.elements["admin-head"].hidden).toBe(true);
     expect(page.entry()).toBeUndefined();
+    expect(adminEntries(page)).toEqual([]);
     expect(db.prepare("SELECT 1 FROM agents WHERE name = 'ben2'").get()).toBeUndefined();
     // The next poll does not read the invites again.
     const before = page.requests.length;
