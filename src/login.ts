@@ -638,6 +638,17 @@ export const endSigninBy = (db: Db, account: AccountId, by: number, id: number):
     return changed === 0 ? undefined : { id };
   }).immediate();
 
+/** Deletes the sign-in session with the bound row id, found through the primary key. */
+export const END_OWN_SIGNIN = "DELETE FROM dashboard_sessions WHERE id = ?";
+
+/**
+ * For DELETE /api/session: ends the request's own dashboard sign-in, row `session` (`TokenAccess.session`), by deleting
+ * that one row, so its next request gets 401 while its token and the token's other sign-ins keep working. Answers whether
+ * it ended one: false for a row already gone. Nothing references `dashboard_sessions`, so the delete cascades nowhere.
+ */
+export const endOwnSignin = (db: Db, session: number): boolean =>
+  db.transaction(() => db.prepare(END_OWN_SIGNIN).run(session).changes === 1).immediate();
+
 /** An unused invite as GET /api/invites lists it: never its code or hash. */
 export interface PendingInvite {
   id: number;
@@ -734,7 +745,8 @@ export const COUNT_TOKEN_SESSIONS = "SELECT COUNT(*) FROM dashboard_sessions WHE
  * For POST /api/session: starts a dashboard sign-in session for the request's own full, read-only or person token, row
  * `token` (`TokenAccess.token`), and answers its id, as `redeemLoginCode` does but issuing no new token. Answers undefined,
  * starting none, for a token revoked since the request was checked. Throws `LoginError` once the token has
- * MAX_SESSIONS_PER_TOKEN sessions. A session ends when an admin ends it or with its token, as a login link's does.
+ * MAX_SESSIONS_PER_TOKEN sessions. A session ends when it ends itself (DELETE /api/session), when an admin ends it or
+ * with its token, as a login link's does.
  */
 export const signInWithToken = (db: Db, token: number, now = Date.now()): string | undefined =>
   db.transaction((): string | undefined => {
