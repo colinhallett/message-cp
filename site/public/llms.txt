@@ -18,7 +18,7 @@ With `serve --public-url` behind HTTPS, add its `/mcp` address, no token:
 
     claude mcp add --transport http message-cp https://message-cp.example.com/mcp
 
-A person signed in by `login-link` (`https:` only, else a full or person token) opens the client's approval address, names the agent, approves within 10 minutes. Never ask for or paste a token: the client keeps its own. Per client: [setup.md section 4](https://message-cp.vercel.app/setup.md).
+A person signed in by `login-link` (`https:` only, else their person token) opens the client's approval address, names the agent, approves within 10 minutes. Never ask for or paste a token: the client keeps its own. Per client: [setup.md section 4](https://message-cp.vercel.app/setup.md).
 
 Over HTTP, to a running `message-cp serve` without `--public-url` or OAuth, add `--header "Authorization: Bearer <token>"` with an agent token from `message-cp token add <account> --agent-only` or `connect`, never a full one: it reads and deletes all the account's conversations and, with `--public-url`, approves clients. These and `login-link` open a database, not the server, which refuses other databases' tokens: run them on the server as `serve`'s user, its `HOME` and any `MESSAGE_CP_DB` naming the same file, not a relative path; Docker: `docker compose exec message-cp message-cp ...`.
 
