@@ -399,6 +399,7 @@ const logNote = document.getElementById("log-note");
 const postRows = document.getElementById("post-rows");
 const pairRows = document.getElementById("pair-rows");
 const messagesNote = document.getElementById("messages-note");
+const deletedNote = document.getElementById("deleted-note");
 const statusLine = document.getElementById("status-line");
 const signoutRetry = document.getElementById("signout-retry");
 const searchForm = document.getElementById("search");
@@ -1505,6 +1506,7 @@ function closeLog() {
   closeChannelForm(false);
   closeDelete(false);
   deleteNote.textContent = "";
+  deletedNote.textContent = "";
   showDelete();
 }
 
@@ -3603,8 +3605,9 @@ function closeDelete(refocus) {
 
 // Deletes the open pair's messages with DELETE /api/conversation, then reads the account's messages again from the
 // start, since GET /api/messages pages by offset and the rows before heldMessages are now fewer. The confirm button stays
-// disabled while the request is in flight. A 200 closes the pair if it is still open and forgets what this tab had seen
-// of it; with no answer the messages may already be deleted, so they are read again too and the pair stays open with a
+// disabled while the request is in flight. A 200 closes the pair if it is still open, says in the sidebar how many
+// messages it deleted (the answer's deleted, left out when an older serve does not send it), and forgets what this tab
+// had seen of it; with no answer the messages may already be deleted, so they are read again too and the pair stays open with a
 // note, its rows emptied until the read shows what is left. Any other answer keeps the pair open with its reason. An
 // answer that comes after the token was forgotten is dropped; one that comes after another conversation opened changes
 // only the messages the page holds.
@@ -3617,6 +3620,8 @@ async function deletePair() {
   const key = openPair;
   const gone = deletedWith(key);
   const [a, b] = pair.names;
+  // Named as the confirmation names them, since the server deletes the pairs that differ only in A-Z case with it.
+  const between = gone.map((k) => pairs.get(k)).map((p) => p.names[0] + " and " + p.names[1]).join(", and between ");
   deleting = tokenGen;
   deleteYes.disabled = true;
   const ac = new AbortController();
@@ -3632,6 +3637,13 @@ async function deletePair() {
       signal: ac.signal,
     });
     answer = res.status === 400 ? { status: 400, reason: await reasonOf(res) } : { status: res.status };
+    if (res.status === 200) {
+      try {
+        answer.deleted = (await res.json()).deleted;
+      } catch {
+        // A body that is not JSON still answers that the messages were deleted, only not how many.
+      }
+    }
   } catch {
     answer = { error: "No answer from the server, so the messages may already be deleted. Reading them again." };
   } finally {
@@ -3646,6 +3658,11 @@ async function deletePair() {
     if (same && answer.status === 200) {
       closeLog();
       markOpen();
+      // The note sits in the sidebar, since the log it would show in is closed, and not in the status line, which the
+      // poll started below clears. An older serve answers no count.
+      const n = answer.deleted;
+      deletedNote.textContent =
+        Number.isSafeInteger(n) && n >= 0 ? "Deleted " + counted(n, "message") + " between " + between + "." : "Deleted the conversation between " + between + ".";
       // The log the focus was in is gone, so it goes to the search box, at the top of the page.
       searchText.focus();
     } else if (openPair !== undefined) {
@@ -5147,6 +5164,7 @@ export const DASHBOARD_HTML = `<!doctype html>
 </div>
 </form>
 <p id="messages-note" class="note"></p>
+<p id="deleted-note" class="note" role="status"></p>
 <ul id="pair-rows"></ul>
 <h2>Webhooks</h2>
 <ul id="delivery-entry"></ul>

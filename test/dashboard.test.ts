@@ -6334,6 +6334,12 @@ describe("the page's posting", () => {
       await page.until(() => page.elements["log"].hidden && page.elements["pair-rows"].children.length === 1);
       expect(page.elements["delete-yes"].disabled).toBe(false);
       expect(stored()).toEqual([{ f: "bob", t: "dana" }]);
+      // The sidebar says what the delete ended, from the server's count, and the polls it starts leave the note.
+      expect(page.elements["deleted-note"].textContent).toBe("Deleted 2 messages between bob and colin.");
+      await page.until(page.scheduled);
+      await page.poll();
+      await page.until(page.scheduled);
+      expect(page.elements["deleted-note"].textContent).toBe("Deleted 2 messages between bob and colin.");
       const res = await fetch(`${base()}/api/messages`, { headers: auth(OWNER_TOKEN) });
       expect((await res.json()).map((m: { from: string; to: string }) => [m.from, m.to])).toEqual([["bob", "dana"]]);
       // The page read the messages again from the start, and kept the other pair's.
@@ -6365,6 +6371,7 @@ describe("the page's posting", () => {
       await page.until(() => page.elements["log"].hidden && page.elements["pair-rows"].children.length === 1);
       expect(deletes(page).map((r) => r.url)).toEqual(["/api/conversation?a=bob&b=dana"]);
       expect(stored()).toHaveLength(2);
+      expect(page.elements["deleted-note"].textContent).toBe("Deleted 3 messages between bob and dana, and between Bob and dana.");
       expect(page.elements["pair-rows"].children.map(label)).toEqual(["bob ↔ colin"]);
       // Both start again with nothing seen when they come back.
       sendMessage(db, OWNER_ACCOUNT, "Bob", "dana", "back");
@@ -6372,6 +6379,34 @@ describe("the page's posting", () => {
       await page.until(() => page.elements["pair-rows"].children.length === 2);
       const back = page.elements["pair-rows"].children.find((row) => label(row) === "Bob ↔ dana")!;
       expect(back.children[0].children[1].textContent).toBe("1");
+    });
+
+    it("says one message in the singular, and clears the note when another conversation opens or the token is forgotten", async () => {
+      seedPairs();
+      const page = await load(OWNER_TOKEN);
+      await openReady(page, "bob ↔ dana");
+      confirmDelete(page);
+      await page.until(() => page.elements["log"].hidden && page.elements["deleted-note"].textContent !== "");
+      expect(page.elements["deleted-note"].textContent).toBe("Deleted 1 message between bob and dana.");
+      await page.until(() => page.elements["pair-rows"].children.length === 1);
+      open(page.elements["pair-rows"], "bob ↔ colin");
+      expect(page.elements["deleted-note"].textContent).toBe("");
+      await page.until(() => !page.elements["delete-pair"].hidden);
+      confirmDelete(page);
+      await page.until(() => page.elements["deleted-note"].textContent === "Deleted 2 messages between bob and colin.");
+      page.elements["forget"].on.click();
+      expect(page.elements["deleted-note"].textContent).toBe("");
+    });
+
+    it("says the conversation was deleted, with no count, when the answer has no whole-number deleted", async () => {
+      seedPairs();
+      for (const body of ["{}", JSON.stringify({ deleted: "2" }), JSON.stringify({ deleted: 1.5 }), "not json", undefined]) {
+        const page = await load(OWNER_TOKEN, (url, method) => (method === "DELETE" ? { status: 200, body } : undefined));
+        await openReady(page, "bob ↔ colin");
+        confirmDelete(page);
+        await page.until(() => page.elements["log"].hidden && page.elements["deleted-note"].textContent !== "");
+        expect(page.elements["deleted-note"].textContent).toBe("Deleted the conversation between bob and colin.");
+      }
     });
 
     it("keeps a conversation from New message open when a delete started elsewhere answers", async () => {
@@ -6394,6 +6429,8 @@ describe("the page's posting", () => {
       expect(page.elements["log"].hidden).toBe(false);
       expect(page.elements["log-title"].textContent).toBe("colin ↔ dana");
       expect(page.elements["log-note"].textContent).toBe("No messages yet.");
+      // The note is for the conversation open when the delete answers, so another one open by then gets none.
+      expect(page.elements["deleted-note"].textContent).toBe("");
       expect(page.elements["compose"].hidden).toBe(false);
       page.send("first");
       await page.until(() => stored().length === 2);
@@ -6431,6 +6468,7 @@ describe("the page's posting", () => {
         expect(page.elements["delete-confirm"].hidden).toBe(true);
         expect(page.elements["delete-pair"].hidden).toBe(false);
         expect(page.elements["delete-yes"].disabled).toBe(false);
+        expect(page.elements["deleted-note"].textContent).toBe("");
         // Opening another conversation clears the note.
         open(page.elements["pair-rows"], "bob ↔ dana");
         expect(page.elements["delete-note"].textContent).toBe("");
@@ -6453,6 +6491,7 @@ describe("the page's posting", () => {
       expect(stored()).toEqual([{ f: "bob", t: "dana" }]);
       expect(page.elements["post-rows"].children).toEqual([]);
       expect(page.elements["delete-pair"].hidden).toBe(true);
+      expect(page.elements["deleted-note"].textContent).toBe("");
     });
 
     it("with no answer, keeps the open conversation's status line through the polls that read it again", async () => {
