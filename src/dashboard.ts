@@ -1039,6 +1039,8 @@ function showTokens() {
         drop.textContent = "Forget";
         drop.addEventListener("click", () => {
           keepTokens(savedTokens().filter((s) => s.token !== t.token));
+          // Forgetting the token a sign-in is in flight for drops that sign-in's answer, as ask() does.
+          if (exchanging && exchanging.token === t.token && exchanging.gen === tokenGeneration) return ask();
           showTokens();
         });
         row.append(drop);
@@ -1062,12 +1064,16 @@ form.addEventListener("submit", (event) => {
 // already a session) is the pasted value kept, as it was before. Any token the tab held is forgotten first, and the token form shows while the request
 // is in flight; a token submitted or forgotten meanwhile wins, so the answer is dropped. A refusal, or no answer, leaves
 // the form with the reason and keeps nothing.
+// The token a POST /api/session is in flight for and the tokenGeneration it started under, or undefined; Forget on that
+// token's saved row drops the answer.
+let exchanging;
 const SESSION_FULL = "This token already has ${MAX_SESSIONS_PER_TOKEN} dashboard sign-ins, so this browser was not signed in. An admin person can end some in Sign-ins, or the token can be revoked and a new one made.";
 async function signInWith(token, name) {
   ask();
   say("Signing in…", false);
   const gen = tokenGeneration;
   const pollGen = generation;
+  exchanging = { token, gen };
   const ac = new AbortController();
   tokenController = ac;
   const deadline = setTimeout(() => ac.abort(), TIMEOUT_MS);
@@ -1089,6 +1095,7 @@ async function signInWith(token, name) {
     clearTimeout(deadline);
   }
   if (gen !== tokenGeneration || pollGen !== generation) return;
+  exchanging = undefined;
   const session = answer.body !== null && typeof answer.body === "object" ? answer.body.session : undefined;
   if (answer.status === 200 && (session === null || (typeof session === "string" && session))) {
     const kept = session === null ? token : session;

@@ -1076,6 +1076,44 @@ describe("the page's channels and messages", () => {
       await new Promise((resolve) => setTimeout(resolve, 20));
       expect(sessionOf(page.store.get("message-cp-token"))).toBe(second.id);
     });
+    it("drops the exchange's answer when its saved entry is forgotten meanwhile, keeping nothing", async () => {
+      const full = addToken(db, "owner");
+      const other = addToken(db, "owner", true);
+      let release: () => void = () => {};
+      const held = new Promise<void>((r) => (release = r));
+      let answered = false;
+      const page = await load("", undefined, {
+        // The exchange reaches the server and starts a session, but its answer comes only after Forget.
+        fetch: async (url: string, init: RequestInit) => {
+          const mine = url === "/api/session";
+          const res = await fetch(`${base()}${url}`, mine ? { ...init, signal: undefined } : init);
+          if (mine) {
+            await held;
+            answered = true;
+          }
+          return res;
+        },
+      });
+      page.store.set(
+        "message-cp-tokens",
+        JSON.stringify([
+          { name: "old", token: full.token, refused: true },
+          { name: "other", token: other.token, refused: false },
+        ]),
+      );
+      paste(page, full.token);
+      await page.until(() => db.prepare("SELECT COUNT(*) FROM dashboard_sessions").pluck().get() === 1);
+      const row = page.elements["saved-rows"].children[0];
+      expect(row.children.map((c) => c.textContent)).toEqual(["old (refused)", "Forget"]);
+      row.children[1].on.click();
+      release();
+      await page.until(() => answered);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(page.store.has("message-cp-token")).toBe(false);
+      expect(JSON.parse(page.store.get("message-cp-tokens")!)).toEqual([{ name: "other", token: other.token, refused: false }]);
+      expect(page.elements["login"].hidden).toBe(false);
+      expect(page.urls).not.toContain("/api/token");
+    });
   });
 
   it("lists the channels with a read-only token and shows a chosen channel's posts oldest first", async () => {
